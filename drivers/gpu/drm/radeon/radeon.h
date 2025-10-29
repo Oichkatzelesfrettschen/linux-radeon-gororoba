@@ -79,6 +79,7 @@
 
 #include <drm/drm_exec.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_print.h>
 #include <drm/drm_audio_component.h>
 #include <drm/drm_suballoc.h>
 
