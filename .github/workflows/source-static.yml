@@ -1,0 +1,93 @@
+# Gates that hold from the first commit, before any driver source lands.
+#
+# The closure declaration is only worth having if something enforces it, so the
+# tracked-content checks run on every push rather than waiting for the import.
+name: source-static
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  closure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No tracked generated register tables
+        run: |
+          if git ls-files | grep -E '_reg_safe\.h$'; then
+            echo "a generated register table is tracked; the build derives these" >&2
+            echo "from reg_srcs/ through mkregtable, so tracking one lets a stale" >&2
+            echo "artifact outrank its source" >&2
+            exit 1
+          fi
+          echo "no tracked generated register tables"
+
+      - name: No tracked executables
+        run: |
+          # A prebuilt host program on the path the build invokes is what the
+          # legacy snapshot shipped, and it is the class this repository
+          # declines to carry. Scripts under scripts/ are the intended
+          # exception.
+          found=0
+          for f in $(git ls-files); do
+            case "$f" in scripts/*) continue ;; esac
+            if [ -x "$f" ]; then echo "tracked executable: $f"; found=1; fi
+          done
+          [ "$found" -eq 0 ] || { echo "tracked executable outside scripts/" >&2; exit 1; }
+          echo "no tracked executables outside scripts/"
+
+      - name: Upstream base declaration is complete
+        run: |
+          for k in repository tag tag_object commit path subtree_tree; do
+            grep -qE "^$k[[:space:]]*=" UPSTREAM_BASE.toml || {
+              echo "UPSTREAM_BASE.toml is missing $k" >&2; exit 1; }
+          done
+          # A tag name is mutable, so identity rests on the two object IDs.
+          grep -qE '^commit[[:space:]]*=[[:space:]]*"[0-9a-f]{40}"' UPSTREAM_BASE.toml || {
+            echo "commit must be a full 40-character object ID" >&2; exit 1; }
+          grep -qE '^subtree_tree[[:space:]]*=[[:space:]]*"[0-9a-f]{40}"' UPSTREAM_BASE.toml || {
+            echo "subtree_tree must be a full 40-character object ID" >&2; exit 1; }
+          echo "upstream base declaration complete"
+
+      - name: No hardware verdict language
+        run: |
+          # Hardware verdicts live in steinmarder-r300. A source repository
+          # claiming one would create a second home for the same fact.
+          if git ls-files '*.md' | xargs grep -nE 'hardware-pass|hardware-run' 2>/dev/null; then
+            echo "hardware verdict language belongs in steinmarder-r300" >&2
+            exit 1
+          fi
+          echo "no hardware verdict language"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S error scripts/*.sh
+      - name: ruff
+        run: |
+          pipx install ruff
+          ruff check scripts/
+      - name: importer resolves and calibrates
+        run: |
+          # Known-bad: a declaration naming the wrong subtree object must exit 3
+          # rather than import whatever the remote currently serves.
+          sed -i 's/^subtree_tree = "[0-9a-f]\{40\}"/subtree_tree = "0000000000000000000000000000000000000000"/' \
+            UPSTREAM_BASE.toml
+          set +e
+          sh scripts/import-upstream-radeon.sh --out /tmp/badimport \
+            --remote https://github.com/torvalds/linux >/tmp/bad.log 2>&1
+          rc=$?
+          set -e
+          git checkout UPSTREAM_BASE.toml
+          [ "$rc" -eq 3 ] || { echo "expected exit 3, got $rc"; cat /tmp/bad.log; exit 1; }
+          echo "importer rejects a mismatched subtree declaration"

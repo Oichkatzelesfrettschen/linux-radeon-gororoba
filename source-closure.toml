@@ -1,0 +1,44 @@
+# What the source closure contains, and what it refuses to carry.
+#
+# Phase 0 measured the constructed legacy tree and found nothing reaching
+# outside drivers/gpu/drm/radeon/, so the closure is that directory plus the
+# project deltas. Generated outputs and prebuilt executables stay out: they are
+# build products, and carrying them lets a stale artifact outrank its source.
+
+schema = 1
+
+[closure]
+upstream_path = "drivers/gpu/drm/radeon"
+reaches_outside_upstream_path = false
+
+# Build products regenerated from reg_srcs/ by mkregtable during the build. The
+# legacy snapshot shipped all ten as files.
+[[excluded]]
+pattern = "*_reg_safe.h"
+reason = "generated build product"
+legacy_state = "shipped pre-generated in the snapshot"
+
+# A stripped x86-64 ELF executable occupying the path the build invokes to
+# generate the headers above, beside its own source.
+[[excluded]]
+pattern = "mkregtable"
+reason = "prebuilt host executable of unrecorded provenance"
+legacy_state = "shipped as a binary beside mkregtable.c"
+
+# Source the snapshot dropped. Restoring it returns evergreen_reg_safe.h to
+# build-product status, with the SMX_DC_CTL0 permission expressed as source.
+[[restored]]
+path = "reg_srcs/evergreen"
+reason = "generator input for evergreen_reg_safe.h"
+carries = "SMX_DC_CTL0 at register 0xA020 accepted by the command-stream checker"
+
+# Real source the active series adds.
+[[retained]]
+path = "reg_srcs/rs480"
+reason = "generator input added by the patch series"
+
+# Upstream metadata. It is repository content rather than a DKMS build input,
+# so the package export drops it.
+[[repository_only]]
+path = ".gitignore"
+reason = "upstream metadata, excluded from the exported package payload"

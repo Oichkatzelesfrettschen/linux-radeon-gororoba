@@ -1,0 +1,31 @@
+# Upstream identity of the imported Radeon subtree.
+#
+# A tag name is a mutable reference, so identity rests on the peeled commit and
+# the subtree tree object. Both are reproducible from any mirror, because git
+# object IDs are content addresses rather than repository-local names.
+
+schema = 1
+
+repository = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+tag = "v6.18"
+tag_object = "f7b88edb52c8dd01b7e576390d658ae6eef0e134"
+commit = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+path = "drivers/gpu/drm/radeon"
+subtree_tree = "06a00c78fc5be13ed90c2a2c6973f272d993b6a3"
+
+import_method = "git archive"
+import_script = "scripts/import-upstream-radeon.sh"
+
+# Object IDs above were read from the github.com/torvalds/linux mirror. They
+# address the same objects in the kernel.org repository named above, and an
+# importer re-resolves them from whichever remote it reaches. Signature
+# verification of the annotated tag requires the kernel maintainer keyring and
+# is performed by the importer rather than asserted here.
+signature_verified = false
+
+# The second build target. The driver subtree differs from the base in 46 files,
+# and the snapshot's version-compat class is what lets one source serve both.
+[target.mainline]
+tag = "v7.1"
+commit = "8cd9520d35a6c38db6567e97dd93b1f11f185dc6"
+subtree_tree = "0424c540fe93a2551dc79e4f9cbded9542be3212"

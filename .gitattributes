@@ -1,0 +1,16 @@
+# The package export carries driver source alone, so repository metadata and
+# project documentation stay out of the exported payload.
+.gitignore export-ignore
+.gitattributes export-ignore
+/docs export-ignore
+/scripts export-ignore
+/.github export-ignore
+/README.md export-ignore
+/AGENTS.md export-ignore
+/CLAUDE.md export-ignore
+/UPSTREAM_BASE.toml export-ignore
+/source-closure.toml export-ignore
+
+# Kernel sources keep their bytes: the package verifies exported content by
+# hash, and an end-of-line rewrite would change every hash.
+* -text
