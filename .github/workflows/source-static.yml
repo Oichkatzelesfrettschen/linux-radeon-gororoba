@@ -14,9 +14,13 @@ permissions:
 
 jobs:
   closure:
-    runs-on: [self-hosted, linux, cachyos]
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          clean: true
 
       - name: No tracked generated register tables
         run: |
@@ -66,24 +70,63 @@ jobs:
           echo "no hardware verdict language"
 
   lint:
-    runs-on: [self-hosted, linux, cachyos]
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          clean: true
       - name: shellcheck
         run: shellcheck -S error scripts/*.sh
       - name: ruff
         run: ruff check scripts/
-      - name: importer resolves and calibrates
+      - name: source manifest calibration
+        run: python3 scripts/manifest_source_tree.py --self-test
+
+      - name: importer calibration
         run: |
-          # Known-bad: a declaration naming the wrong subtree object must exit 3
-          # rather than import whatever the remote currently serves.
-          sed -i 's/^subtree_tree = "[0-9a-f]\{40\}"/subtree_tree = "0000000000000000000000000000000000000000"/' \
-            UPSTREAM_BASE.toml
-          set +e
-          sh scripts/import-upstream-radeon.sh --out /tmp/badimport \
-            --remote https://github.com/torvalds/linux >/tmp/bad.log 2>&1
-          rc=$?
-          set -e
-          git checkout UPSTREAM_BASE.toml
-          [ "$rc" -eq 3 ] || { echo "expected exit 3, got $rc"; cat /tmp/bad.log; exit 1; }
-          echo "importer rejects a mismatched subtree declaration"
+          # A verdict-producing importer earns trust by rejecting each way a
+          # declaration can be wrong before its successful import is believed.
+          work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/import.XXXXXX")
+          trap 'rm -rf "$work"; git checkout -- UPSTREAM_BASE.toml' EXIT
+          remote=https://github.com/torvalds/linux
+
+          expect() {
+            want=$1 label=$2 dest=$3
+            set +e
+            sh scripts/import-upstream-radeon.sh --out "$dest" --remote "$remote" \
+              >"$work/out.log" 2>&1
+            rc=$?
+            set -e
+            git checkout -- UPSTREAM_BASE.toml
+            [ "$rc" -eq "$want" ] || {
+              echo "$label: expected exit $want, got $rc" >&2
+              sed 's/^/    /' "$work/out.log" >&2
+              exit 1; }
+            echo "  ok: $label exits $rc"
+          }
+
+          mkdir -p "$work/nonempty" && : > "$work/nonempty/residual.c"
+          expect 2 "nonempty destination" "$work/nonempty"
+
+          sed -i 's/^tag_object = "[0-9a-f]\{40\}"/tag_object = "1111111111111111111111111111111111111111"/' UPSTREAM_BASE.toml
+          expect 3 "wrong tag object" "$work/d1"
+
+          sed -i 's/^commit = "[0-9a-f]\{40\}"/commit = "2222222222222222222222222222222222222222"/' UPSTREAM_BASE.toml
+          expect 3 "wrong peeled commit" "$work/d2"
+
+          sed -i 's/^subtree_tree = "[0-9a-f]\{40\}"/subtree_tree = "0000000000000000000000000000000000000000"/' UPSTREAM_BASE.toml
+          expect 3 "wrong subtree tree" "$work/d3"
+
+          # Known good, last: the declaration must import and match what the
+          # repository already carries.
+          sh scripts/import-upstream-radeon.sh --out "$work/good" --remote "$remote"
+          n=$(find "$work/good" -type f | wc -l)
+          [ "$n" -eq 213 ] || { echo "imported $n files, expected 213" >&2; exit 1; }
+          python3 scripts/manifest_source_tree.py --tree "$work/good" --root . \
+            --out "$work/imported.tsv"
+          python3 scripts/manifest_source_tree.py --tree drivers/gpu/drm/radeon --root . \
+            --out "$work/tracked.tsv"
+          python3 scripts/manifest_source_tree.py --compare "$work/imported.tsv" "$work/tracked.tsv"
+          echo "  ok: declared import matches the tracked driver subtree"

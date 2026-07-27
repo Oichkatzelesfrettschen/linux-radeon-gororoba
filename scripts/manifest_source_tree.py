@@ -2,15 +2,21 @@
 """Emit a content manifest for a source tree, or compare two manifests.
 
 The migration proof compares an exported source tree against a normalized
-reference, so both sides need one manifest format: path, mode, size, and
-SHA-256 per regular file, sorted by path under C collation. Mode is recorded
-because an executable bit is part of a source tree's identity, and a comparison
-that ignores it would pass a tree that ships a program as data.
+reference, so both sides need one manifest format: path, git mode, size, and
+SHA-256 per file, sorted by path under C collation.
 
-Excluded classes come from source-closure.toml rather than from a constant
-here, so the gate and the declaration cannot drift apart.
+Git modes are recorded rather than a two-way executable flag, because a source
+tree's identity includes 100644 against 100755 against 120000, and a
+comparison that collapses those would accept a tree shipping a program as data
+or a symlink as a regular file.
 
-Exit: 0 manifests match or manifest written, 1 mismatch, 2 usage error.
+The excluded and repository-only classes come from source-closure.toml, which
+is the single home for that policy. A missing or malformed declaration is
+fatal: falling back to built-in defaults would let a damaged declaration
+silently widen what a manifest accepts.
+
+Exit: 0 manifests match or manifest written, 1 mismatch, 2 usage or policy
+error.
 """
 
 from __future__ import annotations
@@ -18,57 +24,105 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import os
 import sys
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
-# Classes source-closure.toml declares as build products. Parsing the manifest
-# of exclusions from that file keeps one home for the fact; this list is the
-# fallback used when the declaration is absent, and it is checked against the
-# declaration when one exists.
-DEFAULT_EXCLUDED = ["*_reg_safe.h", "mkregtable"]
 SKIP_DIRS = {".git", ".github"}
 
 
-def declared_exclusions(root: Path) -> list[str]:
-    """Read excluded patterns from source-closure.toml without a TOML parser.
+class PolicyError(Exception):
+    """The closure declaration is absent or does not carry what it must."""
 
-    The file is project-authored and its excluded entries are single-line
-    pattern assignments, so a line scan avoids a dependency for one field.
-    """
+
+@dataclass(frozen=True)
+class ClosurePolicy:
+    excluded_patterns: tuple[str, ...]
+    repository_only_paths: tuple[str, ...]
+    restored_paths: tuple[str, ...]
+    retained_paths: tuple[str, ...]
+
+    def is_excluded(self, rel: str) -> bool:
+        """Excluded by generated-pattern match or by exact repository-only path."""
+        if rel in self.repository_only_paths:
+            return True
+        name = rel.rsplit("/", 1)[-1]
+        return any(fnmatch.fnmatch(name, p) for p in self.excluded_patterns)
+
+
+def load_policy(root: Path) -> ClosurePolicy:
     decl = root / "source-closure.toml"
     if not decl.is_file():
-        return list(DEFAULT_EXCLUDED)
-    patterns = []
-    in_excluded = False
-    for line in decl.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[["):
-            in_excluded = stripped == "[[excluded]]"
-            continue
-        if in_excluded and stripped.startswith("pattern"):
-            _, _, value = stripped.partition("=")
-            patterns.append(value.strip().strip('"'))
-    return patterns or list(DEFAULT_EXCLUDED)
+        raise PolicyError(f"missing closure declaration: {decl}")
+    try:
+        with decl.open("rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise PolicyError(f"malformed closure declaration: {exc}") from exc
+
+    def paths(table: str) -> tuple[str, ...]:
+        entries = data.get(table, [])
+        if not isinstance(entries, list):
+            raise PolicyError(f"{table} is not a list of tables")
+        out = []
+        for entry in entries:
+            value = entry.get("path")
+            if not value:
+                raise PolicyError(f"an entry in {table} carries no path")
+            out.append(value)
+        return tuple(out)
+
+    excluded = []
+    for entry in data.get("excluded", []):
+        pattern = entry.get("pattern")
+        if not pattern:
+            raise PolicyError("an entry in excluded carries no pattern")
+        excluded.append(pattern)
+    if not excluded:
+        raise PolicyError("the declaration names no excluded pattern")
+
+    return ClosurePolicy(
+        excluded_patterns=tuple(excluded),
+        repository_only_paths=paths("repository_only"),
+        restored_paths=paths("restored"),
+        retained_paths=paths("retained"),
+    )
 
 
-def is_excluded(rel: str, patterns: list[str]) -> bool:
-    name = rel.rsplit("/", 1)[-1]
-    return any(fnmatch.fnmatch(name, p) for p in patterns)
+def git_mode(path: Path) -> str:
+    if path.is_symlink():
+        return "120000"
+    return "100755" if os.stat(path).st_mode & 0o111 else "100644"
 
 
-def manifest(root: Path, patterns: list[str]) -> list[str]:
+def entry_digest(path: Path) -> tuple[str, int]:
+    """Hash content, or the link target for a symlink.
+
+    A symlink's identity is where it points, so hashing the target keeps a
+    retargeted link from comparing equal to the original.
+    """
+    if path.is_symlink():
+        target = os.readlink(path).encode()
+        return hashlib.sha256(target).hexdigest(), len(target)
+    blob = path.read_bytes()
+    return hashlib.sha256(blob).hexdigest(), len(blob)
+
+
+def manifest(root: Path, policy: ClosurePolicy) -> list[str]:
     rows = []
     for path in root.rglob("*"):
-        if not path.is_file() or path.is_symlink():
+        rel_parts = path.relative_to(root).parts
+        if any(part in SKIP_DIRS for part in rel_parts):
+            continue
+        if path.is_dir() and not path.is_symlink():
             continue
         rel = path.relative_to(root).as_posix()
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+        if policy.is_excluded(rel):
             continue
-        if is_excluded(rel, patterns):
-            continue
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        mode = "755" if path.stat().st_mode & 0o111 else "644"
-        rows.append(f"{rel}\t{mode}\t{path.stat().st_size}\t{digest}")
+        digest, size = entry_digest(path)
+        rows.append(f"{rel}\t{git_mode(path)}\t{size}\t{digest}")
     rows.sort()
     return ["path\tmode\tsize\tsha256", *rows]
 
@@ -86,12 +140,109 @@ def compare(a: Path, b: Path) -> int:
     for p in only_right:
         print(f"only in {b.name}: {p}")
     for p in differ:
-        print(f"differs: {p}")
+        lm, rm = lmap[p].split("\t"), rmap[p].split("\t")
+        if lm[1] != rm[1]:
+            print(f"mode differs: {p} ({lm[1]} against {rm[1]})")
+        else:
+            print(f"content differs: {p}")
     total = len(only_left) + len(only_right) + len(differ)
     if total:
         print(f"source manifests differ: {total} paths")
         return 1
     print(f"source manifests match: {len(lmap)} files")
+    return 0
+
+
+def self_test() -> int:
+    """Calibrate against a mutation of each class the manifest claims to catch."""
+    import shutil
+    import tempfile
+
+    failures = 0
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "source-closure.toml").write_text(
+            'schema = 1\n'
+            '[[excluded]]\npattern = "*_reg_safe.h"\nreason = "generated"\n'
+            '[[repository_only]]\npath = ".gitignore"\nreason = "metadata"\n',
+            encoding="utf-8",
+        )
+        policy = load_policy(root)
+
+        tree = root / "tree"
+        tree.mkdir()
+        (tree / "r300.c").write_text("int probe(void) { return 0; }\n", encoding="utf-8")
+        (tree / "reg_srcs").mkdir()
+        (tree / "reg_srcs" / "r300").write_text("r300 0x4000\n", encoding="utf-8")
+        (tree / "gen_reg_safe.h").write_text("generated\n", encoding="utf-8")
+        (tree / ".gitignore").write_text("*.o\n", encoding="utf-8")
+        (tree / "tool.sh").write_text("#!/bin/sh\ntrue\n", encoding="utf-8")
+        (tree / "tool.sh").chmod(0o755)
+
+        base = manifest(tree, policy)
+        paths = {r.split("\t")[0] for r in base[1:]}
+
+        def check(label: str, condition: bool) -> None:
+            nonlocal failures
+            if condition:
+                print(f"  ok: {label}")
+            else:
+                print(f"  CALIBRATION FAIL: {label}")
+                failures += 1
+
+        check("generated pattern excluded", "gen_reg_safe.h" not in paths)
+        check("repository-only path excluded", ".gitignore" not in paths)
+        check("regular file recorded 100644",
+              any(r.startswith("r300.c\t100644\t") for r in base))
+        check("executable recorded 100755",
+              any(r.startswith("tool.sh\t100755\t") for r in base))
+
+        # Symlink: identity is its target, and its mode is distinct.
+        (tree / "link.c").symlink_to("r300.c")
+        with_link = manifest(tree, policy)
+        check("symlink recorded 120000",
+              any(r.startswith("link.c\t120000\t") for r in with_link))
+        (tree / "link.c").unlink()
+
+        def mutate(label: str, fn) -> None:
+            snapshot = root / "snap"
+            shutil.copytree(tree, snapshot)
+            try:
+                fn(snapshot)
+                check(label, manifest(snapshot, policy) != base)
+            finally:
+                shutil.rmtree(snapshot)
+
+        mutate("changed content detected",
+               lambda t: (t / "r300.c").write_text("int probe(void) { return 1; }\n"))
+        mutate("changed executable bit detected",
+               lambda t: (t / "r300.c").chmod(0o755))
+        mutate("unexpected file detected",
+               lambda t: (t / "extra.c").write_text("void x(void) {}\n"))
+        mutate("missing file detected", lambda t: (t / "r300.c").unlink())
+
+        # A damaged declaration is fatal rather than a fallback to defaults.
+        for label, body in (
+            ("missing declaration is fatal", None),
+            ("malformed declaration is fatal", "schema = [[[\n"),
+        ):
+            broken = root / "broken"
+            broken.mkdir(exist_ok=True)
+            decl = broken / "source-closure.toml"
+            if body is None:
+                decl.unlink(missing_ok=True)
+            else:
+                decl.write_text(body, encoding="utf-8")
+            try:
+                load_policy(broken)
+                check(label, False)
+            except PolicyError:
+                check(label, True)
+
+    if failures:
+        print(f"source-manifest calibration: FAIL ({failures})")
+        return 1
+    print("source-manifest calibration: every class detected, fail-closed on policy")
     return 0
 
 
@@ -102,17 +253,26 @@ def main() -> int:
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("A", "B"))
     parser.add_argument("--root", type=Path, default=Path("."),
                         help="repository root holding source-closure.toml")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
+    if args.self_test:
+        return self_test()
     if args.compare:
         return compare(*args.compare)
     if not args.tree:
-        parser.error("give --tree or --compare")
+        parser.error("give --tree, --compare, or --self-test")
     if not args.tree.is_dir():
         print(f"not a directory: {args.tree}", file=sys.stderr)
         return 2
 
-    rows = manifest(args.tree, declared_exclusions(args.root))
+    try:
+        policy = load_policy(args.root)
+    except PolicyError as exc:
+        print(f"closure policy: {exc}", file=sys.stderr)
+        return 2
+
+    rows = manifest(args.tree, policy)
     text = "\n".join(rows) + "\n"
     if args.out:
         args.out.write_text(text, encoding="utf-8")
