@@ -27,14 +27,20 @@ legacy_state = "shipped as a binary beside mkregtable.c"
 
 # Source the snapshot dropped. Restoring it returns evergreen_reg_safe.h to
 # build-product status, with the SMX_DC_CTL0 permission expressed as source.
+# status separates what the tree holds now from what reconstruction must reach.
+# At the upstream import this path exists carrying upstream content alone; the
+# project's SMX_DC_CTL0 line arrives with the base-delta reconstruction, and the
+# status becomes "present" in that commit.
 [[restored]]
 path = "reg_srcs/evergreen"
+status = "pending-base-delta-reconstruction"
 reason = "generator input for evergreen_reg_safe.h"
 carries = "SMX_DC_CTL0 at register 0xA020 accepted by the command-stream checker"
 
 # Real source the active series adds.
 [[retained]]
 path = "reg_srcs/rs480"
+status = "pending-legacy-patch-reconstruction"
 reason = "generator input added by the patch series"
 
 # Upstream metadata. It is repository content rather than a DKMS build input,

@@ -52,41 +52,59 @@ field() {
 declared_repo=$(field repository)
 declared_commit=$(field commit)
 declared_tag=$(field tag)
+declared_tag_object=$(field tag_object)
 declared_path=$(field path)
 declared_tree=$(field subtree_tree)
 
-for v in declared_commit declared_path declared_tree; do
+for v in declared_commit declared_tag declared_tag_object declared_path declared_tree; do
   eval "val=\$$v"
   [ -n "$val" ] || { echo "declaration missing $v" >&2; exit 2; }
 done
+
+if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
+  echo "destination is not empty: $out" >&2
+  echo "  importing over residual files would attribute them to upstream" >&2
+  exit 2
+fi
 
 url=${remote:-$declared_repo}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM
 
-echo "fetching $declared_commit from $url"
+echo "fetching $declared_tag and $declared_commit from $url"
 git init -q --bare "$work/mirror"
-# Blobs arrive on demand and only the named commit is fetched, so the import
+# Blobs arrive on demand and only the named objects are fetched, so the import
 # does not acquire the full Linux history to read one subtree.
 git -C "$work/mirror" remote add origin "$url"
-if ! git -C "$work/mirror" fetch -q --depth 1 --filter=blob:none origin \
-       "$declared_commit" 2>/dev/null; then
-  echo "fetching by tag $declared_tag, then verifying the peeled commit"
-  git -C "$work/mirror" fetch -q --depth 1 --filter=blob:none origin \
-      "refs/tags/$declared_tag:refs/tags/$declared_tag"
-  peeled=$(git -C "$work/mirror" rev-parse "$declared_tag^{commit}")
-  if [ "$peeled" != "$declared_commit" ]; then
-    echo "tag $declared_tag peels to $peeled, declaration names $declared_commit" >&2
-    exit 3
-  fi
+git -C "$work/mirror" fetch -q --depth 1 --filter=blob:none origin \
+    "refs/tags/$declared_tag:refs/tags/$declared_tag"
+
+# The annotated tag object itself, before anything derived from it. A tag moved
+# to a different object fails here rather than after the export.
+actual_tag_object=$(git -C "$work/mirror" rev-parse "refs/tags/$declared_tag")
+if [ "$actual_tag_object" != "$declared_tag_object" ]; then
+  echo "tag object mismatch for $declared_tag" >&2
+  echo "  declared: $declared_tag_object" >&2
+  echo "  actual:   $actual_tag_object" >&2
+  exit 3
 fi
+echo "tag object: $actual_tag_object (matches declaration)"
+
+peeled=$(git -C "$work/mirror" rev-parse "$declared_tag^{commit}")
+if [ "$peeled" != "$declared_commit" ]; then
+  echo "tag $declared_tag peels to $peeled, declaration names $declared_commit" >&2
+  exit 3
+fi
+echo "peeled commit: $peeled (matches declaration)"
 
 if [ "$require_sig" -eq 1 ]; then
   if git -C "$work/mirror" verify-tag "$declared_tag" >/dev/null 2>&1; then
     echo "tag signature: verified"
   else
     echo "tag signature: unverified, and --require-signature was given" >&2
-    echo "  a verification needs the kernel maintainer keyring in this GNUPGHOME" >&2
+    echo "  the tag object is present and matches the declaration, so this is a" >&2
+    echo "  keyring result: verification needs the kernel maintainer keys in" >&2
+    echo "  this GNUPGHOME" >&2
     exit 4
   fi
 fi
