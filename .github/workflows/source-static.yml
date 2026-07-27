@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   closure:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cachyos]
     steps:
       - uses: actions/checkout@v4
 
@@ -66,17 +66,13 @@ jobs:
           echo "no hardware verdict language"
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, cachyos]
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S error scripts/*.sh
+        run: shellcheck -S error scripts/*.sh
       - name: ruff
-        run: |
-          pipx install ruff
-          ruff check scripts/
+        run: ruff check scripts/
       - name: importer resolves and calibrates
         run: |
           # Known-bad: a declaration naming the wrong subtree object must exit 3
