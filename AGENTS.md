@@ -5,10 +5,21 @@
 `AGENTS.md` is the root instruction file and owns the rules for this
 repository. `CLAUDE.md` loads it and adds tool-specific notes only.
 
-The doctrine in `radeon-custom/AGENTS.md` governs the shared subjects: voice,
-evidence rank, durable names, comment shape, hazard gates, AI disclosure, and
-the prose rules. This file states what differs because this repository holds
-kernel source rather than a patch series and a package.
+Every load-bearing rule for source commits is stated in this file, so a
+commit's governing rules are pinned by the commit that carries them rather
+than by another repository's `main`. The shared doctrine summarized here:
+prose is direct, declarative, indicative present tense in American English and
+plain ASCII, with no dash constructions in project-authored text; durable
+names come from mechanism or content, never chronology, actors, or process
+labels; a load-bearing claim binds to a named source at the highest available
+evidence rank (silicon evidence, then register documents, then kernel source,
+then the packaging series, then retained findings, then commentary); known,
+hypothesized, and speculative stay marked; commits carry a component prefix,
+a one-to-five-sentence mechanism body, and an `Assisted-by:` trailer naming
+AI tools, with `Co-authored-by:` reserved for human co-authors; hazardous
+paths open only on the exact token their declaration names as armed; and
+every change lands through a branch and a pull request. `radeon-custom/AGENTS.md`
+remains an informative companion for packaging-side detail.
 
 ## What this repository owns
 
@@ -54,13 +65,19 @@ rather than silently narrowed, because narrowing changes behavior.
 Source history encodes final mechanisms rather than experiment chronology. One
 final-safe mechanism per commit, and legacy patches map many-to-one where a
 later patch completed or corrected the same mechanism.
-`docs/legacy-patch-effect-map.tsv` preserves the historical numbering that
-retained evidence cites.
+The packaging repository's `docs/legacy-patch-mechanism-map.tsv` preserves the
+historical numbering that retained evidence cites, and
+`docs/legacy-patch-transitions.tsv` there bonds each legacy patch to the tree
+mutation it produces.
 
-The legacy series applies with fuzz on eight patches, so a hunk's landing site
-is verified against the function or declaration it was meant to change rather
-than inferred from the final tree matching. Compile success establishes
-compilable code and not intended placement.
+At pkgrel 90 the legacy series applied with fuzz on eight patches; the
+pkgrel-91 correction in `radeon-custom` regenerated them, and the pkgrel-92
+series applies under exact context with both engines producing identical
+trees, `docs/legacy-patch-context-drift.tsv` there preserving each drift
+finding. A hunk's landing site is still verified against the function or
+declaration it was meant to change rather than inferred from the final tree
+matching, because compile success establishes compilable code and not
+intended placement.
 
 Reconstruction commits are preserved on merge. A squash merge would destroy the
 legacy-to-source mapping.

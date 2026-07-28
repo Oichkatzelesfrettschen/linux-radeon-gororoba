@@ -59,6 +59,40 @@ jobs:
             echo "subtree_tree must be a full 40-character object ID" >&2; exit 1; }
           echo "upstream base declaration complete"
 
+      - name: Migration input declaration is complete
+        run: |
+          for k in packaging_repository packaging_commit pkgver pkgrel \
+                   upstream_commit upstream_subtree base_manifest_sha256 \
+                   migration_manifest_sha256 generated_output_proof_sha256 \
+                   base_delta_map_sha256 patch_transitions_sha256 \
+                   mechanism_map_sha256; do
+            grep -qE "^$k[[:space:]]*=" MIGRATION_INPUT.toml || {
+              echo "MIGRATION_INPUT.toml is missing $k" >&2; exit 1; }
+          done
+          grep -qE '^packaging_commit[[:space:]]*=[[:space:]]*"[0-9a-f]{40}"' MIGRATION_INPUT.toml || {
+            echo "packaging_commit must be a full 40-character object ID" >&2; exit 1; }
+          if grep -cE '_sha256[[:space:]]*=[[:space:]]*"[0-9a-f]{64}"' MIGRATION_INPUT.toml | grep -qx 6; then
+            echo "migration input declaration complete"
+          else
+            echo "every *_sha256 value must be a full 64-character hash" >&2; exit 1
+          fi
+
+      - name: Migration input matches the upstream base
+        run: |
+          # The pin repeats the upstream identity so a reconstruction commit
+          # is self-describing; the two declarations must agree.
+          for k in commit subtree_tree; do
+            base=$(grep -m1 -E "^$k[[:space:]]*=" UPSTREAM_BASE.toml | grep -oE '[0-9a-f]{40}')
+            case "$k" in
+              commit) pin=$(grep -E '^upstream_commit' MIGRATION_INPUT.toml | grep -oE '[0-9a-f]{40}') ;;
+              subtree_tree) pin=$(grep -E '^upstream_subtree' MIGRATION_INPUT.toml | grep -oE '[0-9a-f]{40}') ;;
+            esac
+            [ "$base" = "$pin" ] || {
+              echo "MIGRATION_INPUT.toml upstream $k disagrees with UPSTREAM_BASE.toml" >&2
+              exit 1; }
+          done
+          echo "migration input agrees with the upstream base declaration"
+
       - name: No hardware verdict language
         run: |
           # Hardware verdicts live in steinmarder-r300. A source repository
@@ -68,6 +102,29 @@ jobs:
             exit 1
           fi
           echo "no hardware verdict language"
+
+  module-build:
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          clean: true
+      - name: radeon.ko builds from the tracked subtree
+        env:
+          RADEON_MODULE_KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
+        run: |
+          # Full-content verification of this root lives in the packaging
+          # repository's gates; this job asserts the root's identity before
+          # trusting it with a verdict.
+          [ -n "$RADEON_MODULE_KERNEL_BUILD_ROOT" ] || {
+            echo "RADEON_MODULE_KERNEL_BUILD_ROOT_618 is unset" >&2; exit 1; }
+          rel=$(cat "$RADEON_MODULE_KERNEL_BUILD_ROOT/include/config/kernel.release")
+          [ "$rel" = "6.18.38-2-cachyos-lts" ] || {
+            echo "unexpected kernel release in build root: $rel" >&2; exit 1; }
+          sh scripts/build_radeon_module.sh --self-test
+          sh scripts/build_radeon_module.sh
 
   lint:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
