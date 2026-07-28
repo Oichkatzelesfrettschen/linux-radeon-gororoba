@@ -1,0 +1,35 @@
+# Frozen input for the source-history reconstruction.
+#
+# The reconstruction reproduces one packaging state, so that state is pinned by
+# commit and content hash rather than referenced through a moving main. A
+# reconstruction commit answers to these values; a packaging change after this
+# pin is a new migration input and lands here as an explicit update.
+
+schema = 1
+
+packaging_repository = "Oichkatzelesfrettschen/radeon-custom"
+packaging_commit = "210e2b06c0266e316f08eb0b2b3e9832884c43de"
+pkgver = "0.3"
+pkgrel = 92
+
+# The pkgrel-92 series produces the same applied tree as pkgrel 91; the
+# revision moved for patch-context regeneration alone, so the 0.3-91 oracle
+# names below identify the tree content.
+upstream_commit = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+upstream_subtree = "06a00c78fc5be13ed90c2a2c6973f272d993b6a3"
+
+# SHA-256 of the named files at packaging_commit.
+base_manifest_sha256 = "1f085124056f24cdfe26ff3c19e615c32cefdb5fef5a9343205acce17e7d94c7"
+migration_manifest_sha256 = "71ae424fc8af1828200ec98e9233b646c6483c11ecfb778d91ec64ef6bf9f5dc"
+generated_output_proof_sha256 = "1efe8d77577c8c9173093d5c47a8df2905fd487471a22c5c9d0507693502909a"
+base_delta_map_sha256 = "0b2921790e86de5f70e17c94767ae2c2f1ad1963ef15c56a85563caaabbcb9d1"
+patch_transitions_sha256 = "9f63e84e7c82b4db5e7251ad7a3dc79454bc017a1f22256b9b2d2dca75e97e20"
+mechanism_map_sha256 = "a9832203e53a918caa302ca311ffa11399e115d280afdbac3555ae987ac1ee6b"
+
+[files]
+base_manifest = "docs/legacy-base-source-manifest.tsv"
+migration_manifest = "docs/migration-oracle-0.3-91-exact-context-manifest.tsv"
+generated_output_proof = "docs/migration-oracle-0.3-91-exact-context-normalization.tsv"
+base_delta_map = "docs/base-delta-map.tsv"
+patch_transitions = "docs/legacy-patch-transitions.tsv"
+mechanism_map = "docs/legacy-patch-mechanism-map.tsv"
