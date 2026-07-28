@@ -2,8 +2,17 @@
 """Emit a content manifest for a source tree, or compare two manifests.
 
 The migration proof compares an exported source tree against a normalized
-reference, so both sides need one manifest format: path, git mode, size, and
-SHA-256 per file, sorted by path under C collation.
+reference that radeon-custom emits, so both sides carry one format: a schema
+declaration, then path, git mode, size, and SHA-256 per file, sorted by path
+under C collation.
+
+    # manifest-schema: gororoba-source-tree-v1
+    path<TAB>mode<TAB>size<TAB>sha256
+
+The declaration is load-bearing rather than decorative. A comparison reads the
+token from each side and refuses a mismatch, because manifests written in two
+schemas differ at every path for a reason that has nothing to do with the
+trees, and reporting that as drift buries the real answer.
 
 Git modes are recorded rather than a two-way executable flag, because a source
 tree's identity includes 100644 against 100755 against 120000, and a
@@ -31,6 +40,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SKIP_DIRS = {".git", ".github"}
+SCHEMA = "gororoba-source-tree-v1"
+SCHEMA_LINE = f"# manifest-schema: {SCHEMA}"
+COLUMNS = "path\tmode\tsize\tsha256"
+
+
+class SchemaError(Exception):
+    """A manifest carries no schema token, or carries a foreign one."""
 
 
 class PolicyError(Exception):
@@ -124,14 +140,32 @@ def manifest(root: Path, policy: ClosurePolicy) -> list[str]:
         digest, size = entry_digest(path)
         rows.append(f"{rel}\t{git_mode(path)}\t{size}\t{digest}")
     rows.sort()
-    return ["path\tmode\tsize\tsha256", *rows]
+    return [SCHEMA_LINE, COLUMNS, *rows]
+
+
+def read_manifest(path: Path) -> dict[str, str]:
+    """Read a manifest after proving it speaks this schema.
+
+    The token is checked before any row is parsed. A foreign schema differs at
+    every path for a reason unrelated to the trees, so it is rejected rather
+    than reported as drift.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    declared = next((ln for ln in lines if ln.startswith("# manifest-schema:")), None)
+    if declared is None:
+        raise SchemaError(f"{path} declares no manifest schema")
+    token = declared.split(":", 1)[1].strip()
+    if token != SCHEMA:
+        raise SchemaError(f"{path} declares schema {token!r}, and this tool speaks {SCHEMA!r}")
+    rows = [ln for ln in lines if ln and not ln.startswith("#")]
+    if not rows or rows[0] != COLUMNS:
+        raise SchemaError(f"{path} carries no {COLUMNS!r} header")
+    return {r.split("\t")[0]: r for r in rows[1:]}
 
 
 def compare(a: Path, b: Path) -> int:
-    left = a.read_text(encoding="utf-8").splitlines()
-    right = b.read_text(encoding="utf-8").splitlines()
-    lmap = {r.split("\t")[0]: r for r in left[1:]}
-    rmap = {r.split("\t")[0]: r for r in right[1:]}
+    lmap = read_manifest(a)
+    rmap = read_manifest(b)
     only_left = sorted(set(lmap) - set(rmap))
     only_right = sorted(set(rmap) - set(lmap))
     differ = sorted(p for p in set(lmap) & set(rmap) if lmap[p] != rmap[p])
@@ -239,10 +273,33 @@ def self_test() -> int:
             except PolicyError:
                 check(label, True)
 
+        # The schema token gates the comparison. A foreign or absent token is a
+        # tool mismatch rather than tree drift, so it stops the run instead of
+        # reporting every path as changed.
+        text = "\n".join(base) + "\n"
+        good = root / "good.tsv"
+        good.write_text(text, encoding="utf-8")
+        check("matching schema compares", compare(good, good) == 0)
+
+        for label, mutated in (
+            ("absent schema token rejected", text.replace(SCHEMA_LINE + "\n", "")),
+            ("foreign schema token rejected",
+             text.replace(SCHEMA, "some-other-tree-v9")),
+            ("absent column header rejected", text.replace(COLUMNS + "\n", "")),
+        ):
+            other = root / "other.tsv"
+            other.write_text(mutated, encoding="utf-8")
+            try:
+                compare(good, other)
+                check(label, False)
+            except SchemaError:
+                check(label, True)
+
     if failures:
         print(f"source-manifest calibration: FAIL ({failures})")
         return 1
-    print("source-manifest calibration: every class detected, fail-closed on policy")
+    print("source-manifest calibration: every class detected, "
+          "fail-closed on policy and schema")
     return 0
 
 
@@ -259,7 +316,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
     if args.compare:
-        return compare(*args.compare)
+        try:
+            return compare(*args.compare)
+        except SchemaError as exc:
+            print(f"manifest schema: {exc}", file=sys.stderr)
+            return 2
     if not args.tree:
         parser.error("give --tree, --compare, or --self-test")
     if not args.tree.is_dir():
@@ -276,7 +337,8 @@ def main() -> int:
     text = "\n".join(rows) + "\n"
     if args.out:
         args.out.write_text(text, encoding="utf-8")
-        print(f"manifest: {args.out} ({len(rows) - 1} files)", file=sys.stderr)
+        # The schema declaration and the column header both precede the rows.
+        print(f"manifest: {args.out} ({len(rows) - 2} files)", file=sys.stderr)
     else:
         sys.stdout.write(text)
     return 0
