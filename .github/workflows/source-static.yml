@@ -119,14 +119,13 @@ jobs:
           sed -i 's/^subtree_tree = "[0-9a-f]\{40\}"/subtree_tree = "0000000000000000000000000000000000000000"/' UPSTREAM_BASE.toml
           expect 3 "wrong subtree tree" "$work/d3"
 
-          # Known good, last: the declaration must import and match what the
-          # repository already carries.
+          # Known good, last. The import is compared against the committed
+          # pristine manifest rather than the tracked subtree: the manifest is
+          # keyed to UPSTREAM_BASE.toml and stays constant, while the tracked
+          # tree diverges from pristine the moment driver work lands on it.
           sh scripts/import-upstream-radeon.sh --out "$work/good" --remote "$remote"
-          n=$(find "$work/good" -type f | wc -l)
-          [ "$n" -eq 213 ] || { echo "imported $n files, expected 213" >&2; exit 1; }
           python3 scripts/manifest_source_tree.py --tree "$work/good" --root . \
             --out "$work/imported.tsv"
-          python3 scripts/manifest_source_tree.py --tree drivers/gpu/drm/radeon --root . \
-            --out "$work/tracked.tsv"
-          python3 scripts/manifest_source_tree.py --compare "$work/imported.tsv" "$work/tracked.tsv"
-          echo "  ok: declared import matches the tracked driver subtree"
+          python3 scripts/manifest_source_tree.py --compare "$work/imported.tsv" \
+            docs/upstream-pristine-manifest.tsv
+          echo "  ok: declared import matches the committed pristine manifest"
