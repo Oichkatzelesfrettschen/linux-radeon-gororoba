@@ -968,6 +968,99 @@ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_sclk_cntl);
 
+/* PLL-indirect clock-tree read-out.
+ *
+ * The clock generators live in the PLL index space (CLOCK_CNTL_INDEX +
+ * CLOCK_CNTL_DATA), not the BAR0 MMIO window, so they are reached through
+ * RREG32_PLL.  r100_pll_rreg (rdev->pll_rreg on RS400/RS480) takes
+ * rdev->pll_idx_lock across the index write and the data read, the same lock
+ * the driver's own modeset clock path holds, so a read here cannot race the
+ * shared index pointer -- this is the index/data port done safely, unlike the
+ * BAR0 PALETTE/FOG data ports the hazard-read node deliberately excludes.  The
+ * aperture is always clocked (the 0018 SCLK_CNTL read returns on this IGP), so
+ * these reads complete instead of stalling the K8 northbridge.
+ *
+ * The 6-bit index (reg & 0x3f in r100_pll_rreg) bounds the table to the PLL
+ * indices named in radeon_reg.h; the node never sweeps undefined indices and
+ * never writes the PLL space.  The dividers and feedback registers carry the
+ * documented multi-bit fields the dot-clock and memory-clock frequencies are
+ * derived from, decoded after the raw dump.
+ */
+struct rs480_pll_reg {
+	u8 index;
+	const char *name;
+};
+
+static const struct rs480_pll_reg rs480_pll_reg_list[] = {
+	/* Pixel PLL: display dot-clock generation. */
+	{ 0x02, "PPLL_CNTL" },
+	{ 0x03, "PPLL_REF_DIV" },
+	{ 0x04, "PPLL_DIV_0" },
+	{ 0x05, "PPLL_DIV_1" },
+	{ 0x06, "PPLL_DIV_2" },
+	{ 0x07, "PPLL_DIV_3" },
+	/* System, memory, and engine PLLs. */
+	{ 0x0a, "M_SPLL_REF_FB_DIV" },
+	{ 0x0c, "SPLL_CNTL" },
+	{ 0x0d, "SCLK_CNTL" },
+	{ 0x0e, "MPLL_CNTL" },
+	{ 0x12, "MCLK_CNTL" },
+	{ 0x1f, "MCLK_MISC" },
+	{ 0x35, "SCLK_MORE_CNTL" },
+	/* Clock sources, pins, and clock power management. */
+	{ 0x01, "CLK_PIN_CNTL" },
+	{ 0x08, "VCLK_ECP_CNTL" },
+	{ 0x09, "HTOTAL_CNTL" },
+	{ 0x0b, "AGP_PLL_CNTL" },
+	{ 0x13, "PLL_TEST_CNTL" },
+	{ 0x14, "CLK_PWRMGT_CNTL" },
+	{ 0x15, "PLL_PWRMGT_CNTL" },
+	/* Secondary-display and TV-out PLLs.  These may be unimplemented on the
+	 * laptop IGP; a read of an unimplemented PLL index returns the data
+	 * port, it does not stall. */
+	{ 0x20, "TV_PLL_FINE_CNTL" },
+	{ 0x21, "TV_PLL_CNTL" },
+	{ 0x22, "TV_PLL_CNTL1" },
+	{ 0x2b, "P2PLL_REF_DIV" },
+	{ 0x2e, "HTOTAL2_CNTL" },
+};
+
+static int rs480_pll_regs_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	unsigned int i;
+	u32 ppll_ref, ppll_div3, m_spll, vclk;
+
+	for (i = 0; i < ARRAY_SIZE(rs480_pll_reg_list); i++)
+		seq_printf(m, "%-18s (PLL 0x%02x) = 0x%08x\n",
+			   rs480_pll_reg_list[i].name,
+			   rs480_pll_reg_list[i].index,
+			   RREG32_PLL(rs480_pll_reg_list[i].index));
+
+	/* Decode the divider and feedback fields (radeon_reg.h masks):
+	 *   PPLL_REF_DIV.ref_div      bits [9:0]   (PPLL_REF_DIV_MASK 0x03ff)
+	 *   PPLL_DIV_3.fb_div         bits [10:0]  (PPLL_FB3_DIV_MASK 0x07ff)
+	 *   PPLL_DIV_3.post_div       bits [18:16] (PPLL_POST3_DIV_MASK)
+	 *   M_SPLL_REF_FB_DIV.ref_div bits [7:0],  .mpll_fb [15:8], .spll_fb [23:16]
+	 *   VCLK_ECP_CNTL.src_sel     bits [1:0]   (VCLK_SRC_SEL_MASK 0x03)
+	 */
+	ppll_ref  = RREG32_PLL(0x03);
+	ppll_div3 = RREG32_PLL(0x07);
+	m_spll    = RREG32_PLL(0x0a);
+	vclk      = RREG32_PLL(0x08);
+	seq_puts(m, "\nderived fields:\n");
+	seq_printf(m, "  PPLL_REF_DIV.ref_div      = %u\n", ppll_ref & 0x03ff);
+	seq_printf(m, "  PPLL_DIV_3.fb_div         = %u\n", ppll_div3 & 0x07ff);
+	seq_printf(m, "  PPLL_DIV_3.post_div(2:0)  = %u\n", (ppll_div3 >> 16) & 0x7);
+	seq_printf(m, "  M_SPLL_REF_FB_DIV.ref_div = %u\n", m_spll & 0xff);
+	seq_printf(m, "  M_SPLL_REF_FB_DIV.mpll_fb = %u\n", (m_spll >> 8) & 0xff);
+	seq_printf(m, "  M_SPLL_REF_FB_DIV.spll_fb = %u\n", (m_spll >> 16) & 0xff);
+	seq_printf(m, "  VCLK_ECP_CNTL.src_sel     = %u\n", vclk & 0x03);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_pll_regs);
+
 /* CP MicroEngine instruction-memory read-back dump.
  *
  * The loaded R300_cp.bin is the entire CP-ME instruction memory: a 256-microword
@@ -1409,6 +1502,89 @@ static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
 }
 
 DEFINE_SHOW_ATTRIBUTE(rs480_cp_me_oracle);
+
+/* Single-register first-observation read of the BAR0 hazard tier.
+ *
+ * The 471-register vet flagged 62 registers hazard_exclude_by_name with a name
+ * regex.  Re-reading the match basis (the matched_pattern column of
+ * rs482_unreferenced_430_name_class_vet.tsv) shows the registers below are regex
+ * FALSE POSITIVES, not wedge hazards: SCRATCH matched the BIOS_8..15 and GUI
+ * scratch registers, PORT_ matched SE_VPORT_* (the viewport transform, not an
+ * I/O port), and SEMAPHORE and WAIT_UNTIL matched two engine-status words.  A
+ * plain RREG32 of any of them is read-safe -- scratch and viewport are ordinary
+ * registers, the SE block is always clocked on an R300-class part, and a read
+ * neither acquires the semaphore nor advances any index or FIFO pointer.  They
+ * stayed unpromoted only because the regex parked them, and most still carry no
+ * per-register observed value.
+ *
+ * This node takes that first observation under discipline: one register per
+ * open, selected by radeon_rs480_hazard_index (default -1 disarmed), so each
+ * value is captured deliberately before the register is promoted into the
+ * read-only safe-regs list.  It is NOT a wedge-hazard probe and shares no
+ * mechanism with the attended frontier_probe node above.
+ *
+ * Kept out of the list at compile time:
+ *   - CRTC8_IDX (0x03b4) and BIF_SLAVE_CNTL (0x180c): the two genuine
+ *     northbridge-stall registers.  A 32-bit read can stall the K8 northbridge,
+ *     which has no MMIO completion timeout, wedging both cores past the
+ *     single-core-only software autoreboot net (physical power cycle only).
+ *   - the index/data/FIFO/aperture ports (PALETTE_INDEX/DATA, FOG_TABLE_INDEX/
+ *     DATA, PCIE_PORT_INDEX/DATA, DVI_I2C_DATA, CRC_CMDFIFO_*, CP_CSQ_APER_*,
+ *     VIPH_CH*, CP_ME_RAM_RADDR, HOST_DATA_LAST): a read without the matching
+ *     index write desyncs the live driver's pointer state and returns only a
+ *     transient word.
+ *   - the CP command-engine and VIP/CAP capture registers (CP_GUI_COMMAND,
+ *     CP_IB*, CP_RESYNC_*, CP_CSQ*, CP_ME_CNTL, CP_VID_*, FCP_CNTL,
+ *     CAP0/CAP1_PORT_MODE_CNTL): a read races the running CP or touches a
+ *     possibly-unclocked capture block, so they belong on the attended frontier
+ *     lane, not this first-observation lane.
+ */
+static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
+	{ 0x00c0, "BIOS_8_SCRATCH", 0 },
+	{ 0x00c4, "BIOS_9_SCRATCH", 0 },
+	{ 0x00c8, "BIOS_10_SCRATCH", 0 },
+	{ 0x00cc, "BIOS_11_SCRATCH", 0 },
+	{ 0x00d0, "BIOS_12_SCRATCH", 0 },
+	{ 0x00d4, "BIOS_13_SCRATCH", 0 },
+	{ 0x00d8, "BIOS_14_SCRATCH", 0 },
+	{ 0x00dc, "BIOS_15_SCRATCH", 0 },
+	{ 0x013c, "SW_SEMAPHORE", 0 },
+	{ 0x15e0, "GUI_SCRATCH_REG0", 0 },
+	{ 0x15e4, "GUI_SCRATCH_REG1", 0 },
+	{ 0x15e8, "GUI_SCRATCH_REG2", 0 },
+	{ 0x15ec, "GUI_SCRATCH_REG3", 0 },
+	{ 0x15f0, "GUI_SCRATCH_REG4", 0 },
+	{ 0x15f4, "GUI_SCRATCH_REG5", 0 },
+	{ 0x1720, "WAIT_UNTIL", 0 },
+	{ 0x1d98, "SE_VPORT_XSCALE", 0 },
+	{ 0x1d9c, "SE_VPORT_XOFFSET", 0 },
+	{ 0x1da0, "SE_VPORT_YSCALE", 0 },
+	{ 0x1da4, "SE_VPORT_YOFFSET", 0 },
+	{ 0x1da8, "SE_VPORT_ZSCALE", 0 },
+	{ 0x1dac, "SE_VPORT_ZOFFSET", 0 },
+};
+
+static int rs480_hazard_read_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	int idx = radeon_rs480_hazard_index;
+	const struct rs480_candidate_reg *reg;
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_hazard_read_reg_list)) {
+		seq_printf(m,
+			   "hazard read disarmed: set rs480_hazard_index=N (0..%zu)\n",
+			   ARRAY_SIZE(rs480_hazard_read_reg_list) - 1);
+		return 0;
+	}
+
+	reg = &rs480_hazard_read_reg_list[idx];
+	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
+		   idx, reg->name, reg->offset,
+		   rs480_candidate_reg_read(rdev, reg));
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
 #endif /* CONFIG_DEBUG_FS */
 
 /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
@@ -1527,6 +1703,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
 	debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root, rdev,
 			    &rs480_cp_me_oracle_fops);
+	/* PLL-indirect clock-tree read-out.  Read-only and low hazard: the PLL
+	 * aperture is always clocked and r100_pll_rreg serializes the index/data
+	 * dance under pll_idx_lock. */
+	debugfs_create_file("radeon_rs480_pll_regs", 0444, root, rdev,
+			    &rs480_pll_regs_fops);
+	/* Hazard-tier first-observation read.  Mode 0444: the listed registers
+	 * are read-safe name-pattern false-positives, read one at a time as
+	 * radeon_rs480_hazard_index selects (default -1 disarmed), so each value
+	 * is captured deliberately before promotion to the safe-regs list. */
+	debugfs_create_file("radeon_rs480_hazard_read", 0444, root, rdev,
+			    &rs480_hazard_read_fops);
 #endif
 }
 
