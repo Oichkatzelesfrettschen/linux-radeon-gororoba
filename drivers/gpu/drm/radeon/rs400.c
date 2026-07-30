@@ -919,6 +919,86 @@ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_sclk_cntl);
 
+/* CP MicroEngine instruction-memory read-back dump.
+ *
+ * The loaded R300_cp.bin is the entire CP-ME instruction memory: a 256-microword
+ * ME_RAM overlay loaded through CP_ME_RAM_ADDR (the write pointer) and read back
+ * through CP_ME_RAM_RADDR -- write the address, then read the (DATAH, DATAL)
+ * microword pair.  CP_ME_RAM_RADDR is 8-bit on RS48x: read-back of 0x000, 0x100
+ * and 0x200 returns identical data, so the read pointer wraps mod-256 and the
+ * addressable memory is exactly the 256-word overlay.  There is no separately
+ * addressable on-chip ROM through this port: the class-0x08 branch targets and
+ * the PACKET3 dispatch handler refs are encoded operands that resolve to in-RAM
+ * microwords by their low byte (DATAL = condition<<8 | 8-bit target), not
+ * addresses into a larger ROM.  The kernel itself writes CP_ME_RAM_RADDR during
+ * resume on r600 and later, so the read pointer is a driver-exercised access --
+ * but it is still a CP register on reset-less R300 silicon, so the dump is gated
+ * default-off and must only be read with the engine idle.
+ *
+ * The sweep is a seq_file iterator (one microword per step), so seq_file never
+ * re-runs the whole sweep when paginating.  All 256 microwords must read back
+ * equal to R300_cp.bin -- a self-calibration verified by the offline analysis
+ * (the 8-bit-RADDR read-back, 256/256 match).
+ */
+#define RS480_CP_ME_RAM_DUMP_LIMIT 0x100u	/* 256 microwords; CP_ME_RAM_RADDR is 8-bit, higher wraps */
+
+static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)
+{
+	if (!radeon_rs480_cp_me_ram_dump)
+		return NULL;
+	if (*pos >= RS480_CP_ME_RAM_DUMP_LIMIT)
+		return NULL;
+	return pos;
+}
+
+static void *rs480_cp_me_ram_seq_next(struct seq_file *m, void *v, loff_t *pos)
+{
+	++*pos;
+	if (*pos >= RS480_CP_ME_RAM_DUMP_LIMIT)
+		return NULL;
+	return pos;
+}
+
+static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
+{
+}
+
+static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
+{
+	struct radeon_device *rdev = m->private;
+	unsigned int addr = (unsigned int)*(loff_t *)v;
+	u32 datah, datal;
+
+	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
+	datah = RREG32(RADEON_CP_ME_RAM_DATAH);
+	datal = RREG32(RADEON_CP_ME_RAM_DATAL);
+	seq_printf(m, "%04x %08x %08x\n", addr, datah, datal);
+	return 0;
+}
+
+static const struct seq_operations rs480_cp_me_ram_seq_ops = {
+	.start = rs480_cp_me_ram_seq_start,
+	.next  = rs480_cp_me_ram_seq_next,
+	.stop  = rs480_cp_me_ram_seq_stop,
+	.show  = rs480_cp_me_ram_seq_show,
+};
+
+static int rs480_cp_me_ram_dump_open(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &rs480_cp_me_ram_seq_ops);
+
+	if (!ret)
+		((struct seq_file *)file->private_data)->private = inode->i_private;
+	return ret;
+}
+
+static const struct file_operations rs480_cp_me_ram_dump_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs480_cp_me_ram_dump_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release,
+};
 #endif /* CONFIG_DEBUG_FS */
 
 /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
@@ -1012,6 +1092,13 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 			    &rs480_uma_status_fops);
 	debugfs_create_file("radeon_rs480_sclk_cntl", 0444, root, rdev,
 			    &rs480_sclk_cntl_fops);
+	/* CP_ME_RAM read-back dump.  Created on RS400/RS480 when the candidate-regs
+	 * group is enabled, but inert until the operator sets
+	 * radeon_rs480_cp_me_ram_dump=1 (the seq start() gate), because the read
+	 * sweep writes the CP_ME_RAM_RADDR pointer on reset-less silicon.
+	 */
+	debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0444, root, rdev,
+			    &rs480_cp_me_ram_dump_fops);
 #endif
 }
 

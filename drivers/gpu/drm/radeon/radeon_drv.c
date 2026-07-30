@@ -143,6 +143,7 @@ int radeon_hard_reset;
 int radeon_palm_pci_reset_unsafe;
 int radeon_rs480_safe_regs = 1;
 int radeon_rs480_candidate_regs = 1;
+int radeon_rs480_cp_me_ram_dump;
 int radeon_rs480_hazard_readers_armed;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
@@ -241,6 +242,17 @@ MODULE_PARM_DESC(rs480_candidate_regs,
 	"candidate files for bounded register validation."
 );
 module_param_named(rs480_candidate_regs, radeon_rs480_candidate_regs, int, 0444);
+
+MODULE_PARM_DESC(rs480_cp_me_ram_dump,
+	"Dump the RS480/RS482/RS485 CP MicroEngine instruction memory through the "
+	"CP_ME_RAM_RADDR read-back port in debugfs. Default 0 (OFF): this writes a CP "
+	"register on reset-less R300-class silicon, so it stays inert until the operator "
+	"sets it to 1 AND the engine is idle. CP_ME_RAM_RADDR is 8-bit on RS48x, so the "
+	"read pointer wraps mod-256 and the addressable memory is exactly the 256-microword "
+	"R300_cp.bin overlay; microwords 0..255 read back the loaded blob (a built-in "
+	"calibration) and there is no separately-addressable ROM through this port."
+);
+module_param_named(rs480_cp_me_ram_dump, radeon_rs480_cp_me_ram_dump, int, 0644);
 
 
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
