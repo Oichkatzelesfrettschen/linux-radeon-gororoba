@@ -405,7 +405,15 @@ void r300_gpu_init(struct radeon_device *rdev)
 	if (r100_gui_wait_for_idle(rdev)) {
 		pr_warn("Failed to wait GUI idle while programming pipes. Bad things might happen.\n");
 	}
-	if (r300_mc_wait_for_idle(rdev)) {
+	/* r300_mc_wait_for_idle polls RADEON_MC_STATUS for R300_MC_IDLE, the
+	 * discrete-R300 memory-controller idle bit.  RS400/RS480 IGPs have no
+	 * dedicated VRAM MC -- memory is the host northbridge UMA path -- and that
+	 * bit never asserts, so the wait always times out and warns once per boot.
+	 * The IGP-correct check, rs400_mc_wait_for_idle (a different MC_STATUS bit),
+	 * runs immediately after this in rs400_gpu_init and succeeds, proving the MC
+	 * is genuinely idle.  Skip the discrete check on IGP; keep it for discrete
+	 * R300/R350/R420 parts where R300_MC_IDLE is valid. */
+	if (!(rdev->flags & RADEON_IS_IGP) && r300_mc_wait_for_idle(rdev)) {
 		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
 	}
 	DRM_INFO("radeon: %d quad pipes, %d Z pipes initialized\n",
