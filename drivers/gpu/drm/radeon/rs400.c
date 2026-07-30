@@ -27,8 +27,10 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/mutex.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
 
 #include <drm/drm_device.h>
 #include <drm/drm_file.h>
@@ -999,6 +1001,199 @@ static const struct file_operations rs480_cp_me_ram_dump_fops = {
 	.llseek  = seq_lseek,
 	.release = seq_release,
 };
+
+/* CP MicroEngine instruction-memory injection -- increment 1: write, verify,
+ * restore, NEVER execute.
+ *
+ * The dump node above proves the ME_RAM read-back port; this proves the write
+ * port and its restore.  The engine loads R300_cp.bin through CP_ME_RAM_ADDR
+ * (write pointer, auto-incrementing past DATAL), so one microword is written by
+ * ADDR, then the (DATAH, DATAL) pair.  To inject one word and undo it without
+ * ever running it: require the GFX fence stream and GUI to be idle, save the
+ * original via the RADDR read pointer, stop the command queue with
+ * CP_CSQ_CNTL=CSQ_PRIDIS_INDDIS (the microcode stays loaded --
+ * r100_cp_disable()/r100_cp_init() would reload R300_cp.bin and clobber the
+ * write), write the modified word, read it straight back through RADDR to prove
+ * the write took, then restore the original word and re-read it to prove the
+ * restore took before re-enabling the queue.  The modified word is never live,
+ * so no modified microcode executes -- that is the increment-2 stop-line and is
+ * deliberately absent from this build.
+ *
+ * Two gates guard the write.  The address is bounded to the 256-microword
+ * R300_cp.bin overlay: those words are known-writable and the restore is
+ * cross-checkable against the loaded firmware, whereas a write above the
+ * overlay lands in the on-chip ME ROM, no-ops, and would read back != written
+ * -- a false "not writable" verdict.  The module param must equal an exact arm
+ * token (not merely be nonzero) and the debugfs write must carry the literal
+ * ARM keyword, so neither a stray sysfs value nor an unprefixed write alone
+ * arms a live CP_ME_RAM write.
+ */
+#define RS480_CP_ME_INJECT_ARM_TOKEN  0x494e4a31u	/* "INJ1" */
+#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x100u		/* R300_cp.bin overlay window */
+
+/* Per-device inject state.  A file-static result buffer would be shared across
+ * every radeon instance; the result and its lock belong to one rdev, allocated
+ * for the device lifetime and reached through the debugfs node's i_private. */
+struct rs480_cp_me_inject_ctx {
+	struct radeon_device *rdev;
+	struct mutex lock;
+	char result[160];
+};
+
+static int rs480_cp_me_ram_inject_wait_idle(struct radeon_device *rdev)
+{
+	int ret = 0;
+
+	mutex_lock(&rdev->ring_lock);
+	if (!rdev->ring[RADEON_RING_TYPE_GFX_INDEX].ready) {
+		ret = -ENODEV;
+		goto out;
+	}
+	ret = radeon_fence_wait_empty(rdev, RADEON_RING_TYPE_GFX_INDEX);
+	if (ret)
+		goto out;
+	if (r100_gui_wait_for_idle(rdev))
+		ret = -EBUSY;
+out:
+	mutex_unlock(&rdev->ring_lock);
+	return ret;
+}
+
+static int rs480_cp_me_ram_inject_one(struct radeon_device *rdev, u32 addr,
+				      u32 new_h, u32 new_l,
+				      u32 *rb_h, u32 *rb_l,
+				      u32 *restored_h, u32 *restored_l)
+{
+	u32 orig_h, orig_l, csq;
+
+	/* save the original microword through the read pointer */
+	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
+	orig_h = RREG32(RADEON_CP_ME_RAM_DATAH);
+	orig_l = RREG32(RADEON_CP_ME_RAM_DATAL);
+
+	/* stop the queue only; the loaded microcode is preserved */
+	csq = RREG32(RADEON_CP_CSQ_CNTL);
+	WREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);
+
+	/* write the modified microword */
+	WREG32(RADEON_CP_ME_RAM_ADDR, addr);
+	WREG32(RADEON_CP_ME_RAM_DATAH, new_h);
+	WREG32(RADEON_CP_ME_RAM_DATAL, new_l);
+
+	/* read it straight back -- increment 1 never executes the word */
+	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
+	*rb_h = RREG32(RADEON_CP_ME_RAM_DATAH);
+	*rb_l = RREG32(RADEON_CP_ME_RAM_DATAL);
+
+	/* restore the original microword */
+	WREG32(RADEON_CP_ME_RAM_ADDR, addr);
+	WREG32(RADEON_CP_ME_RAM_DATAH, orig_h);
+	WREG32(RADEON_CP_ME_RAM_DATAL, orig_l);
+
+	/* confirm the restore took before re-enabling the queue */
+	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
+	*restored_h = RREG32(RADEON_CP_ME_RAM_DATAH);
+	*restored_l = RREG32(RADEON_CP_ME_RAM_DATAL);
+
+	WREG32(RADEON_CP_CSQ_CNTL, csq);
+
+	/* -EIO is the dangerous outcome: the restore read-back does not match the
+	 * saved word, so the loaded microcode is left modified -- the caller must
+	 * see the failure, not a success return.  -ENXIO is the safe negative: the
+	 * word restored cleanly but the write never took (an address backed by ME
+	 * ROM rather than the writable R300_cp.bin overlay reads back != written). */
+	if (*restored_h != orig_h || *restored_l != orig_l)
+		return -EIO;
+	if (*rb_h != new_h || *rb_l != new_l)
+		return -ENXIO;
+	return 0;
+}
+
+static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
+					    const char __user *ubuf,
+					    size_t len, loff_t *ppos)
+{
+	struct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;
+	struct radeon_device *rdev = ctx->rdev;
+	u32 addr, new_h, new_l, rb_h, rb_l, rs_h, rs_l;
+	char kbuf[64];
+	int ret;
+
+	/* One self-contained "ARM ..." command per write; reject a continued or
+	 * seeked write so a split payload cannot arm with a truncated address. */
+	if (*ppos != 0)
+		return -EINVAL;
+	if (radeon_rs480_cp_me_ram_inject != RS480_CP_ME_INJECT_ARM_TOKEN)
+		return -EACCES;
+	if (len >= sizeof(kbuf))
+		return -EINVAL;
+	if (copy_from_user(kbuf, ubuf, len))
+		return -EFAULT;
+	kbuf[len] = '\0';
+
+	/* "ARM <addr> <datah> <datal>" -- the ARM keyword is the second gate */
+	if (sscanf(kbuf, "ARM %x %x %x", &addr, &new_h, &new_l) != 3)
+		return -EINVAL;
+	if (addr >= RS480_CP_ME_INJECT_ADDR_LIMIT)
+		return -ERANGE;
+
+	mutex_lock(&ctx->lock);
+	ret = rs480_cp_me_ram_inject_wait_idle(rdev);
+	if (ret) {
+		snprintf(ctx->result, sizeof(ctx->result),
+			 "addr=%04x idle_gate=failed ret=%d\n", addr, ret);
+		mutex_unlock(&ctx->lock);
+		dev_warn_ratelimited(rdev->dev,
+				     "rs480_cp_me_ram_inject: idle gate failed at addr=%04x ret=%d\n",
+				     addr, ret);
+		return ret;
+	}
+	ret = rs480_cp_me_ram_inject_one(rdev, addr, new_h, new_l,
+					 &rb_h, &rb_l, &rs_h, &rs_l);
+	snprintf(ctx->result, sizeof(ctx->result),
+		 "addr=%04x wrote=%08x:%08x read=%08x:%08x write_ok=%d restored=%08x:%08x restore_ok=%d\n",
+		 addr, new_h, new_l, rb_h, rb_l,
+		 (rb_h == new_h && rb_l == new_l), rs_h, rs_l, (ret != -EIO));
+	mutex_unlock(&ctx->lock);
+
+	if (ret == -EIO)
+		dev_err_ratelimited(rdev->dev,
+				    "rs480_cp_me_ram_inject: restore mismatch at addr=%04x\n",
+				    addr);
+	else if (ret == -ENXIO)
+		dev_warn_ratelimited(rdev->dev,
+				     "rs480_cp_me_ram_inject: write did not stick at addr=%04x\n",
+				     addr);
+	else
+		dev_info(rdev->dev, "rs480_cp_me_ram_inject: %s", ctx->result);
+	/* Propagate the failure: -EIO (restore failed) or -ENXIO (not writable). */
+	return ret ? ret : len;
+}
+
+static int rs480_cp_me_ram_inject_show(struct seq_file *m, void *unused)
+{
+	struct rs480_cp_me_inject_ctx *ctx = m->private;
+
+	mutex_lock(&ctx->lock);
+	seq_printf(m, "%s", ctx->result[0] ?
+		   ctx->result : "no inject performed\n");
+	mutex_unlock(&ctx->lock);
+	return 0;
+}
+
+static int rs480_cp_me_ram_inject_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rs480_cp_me_ram_inject_show, inode->i_private);
+}
+
+static const struct file_operations rs480_cp_me_ram_inject_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs480_cp_me_ram_inject_open,
+	.read    = seq_read,
+	.write   = rs480_cp_me_ram_inject_write,
+	.llseek  = seq_lseek,
+	.release = single_release,
+};
 #endif /* CONFIG_DEBUG_FS */
 
 /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
@@ -1052,6 +1247,7 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
 	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
+	struct rs480_cp_me_inject_ctx *inject_ctx;
 
 	if (!radeon_rs480_candidate_regs)
 		return;
@@ -1099,6 +1295,18 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 */
 	debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0444, root, rdev,
 			    &rs480_cp_me_ram_dump_fops);
+	/* CP_ME_RAM injection -- increment 1 (write-verify-restore, no execute).
+	 * Mode 0600: a write here pokes a live CP register, so it is root-only and
+	 * additionally inert until radeon_rs480_cp_me_ram_inject equals the exact
+	 * arm token and the write payload carries the ARM keyword.
+	 */
+	inject_ctx = devm_kzalloc(rdev->dev, sizeof(*inject_ctx), GFP_KERNEL);
+	if (inject_ctx) {
+		inject_ctx->rdev = rdev;
+		mutex_init(&inject_ctx->lock);
+		debugfs_create_file("radeon_rs480_cp_me_ram_inject", 0600, root,
+				    inject_ctx, &rs480_cp_me_ram_inject_fops);
+	}
 #endif
 }
 

@@ -144,6 +144,7 @@ int radeon_palm_pci_reset_unsafe;
 int radeon_rs480_safe_regs = 1;
 int radeon_rs480_candidate_regs = 1;
 int radeon_rs480_cp_me_ram_dump;
+int radeon_rs480_cp_me_ram_inject;
 int radeon_rs480_hazard_readers_armed;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
@@ -253,6 +254,20 @@ MODULE_PARM_DESC(rs480_cp_me_ram_dump,
 	"calibration) and there is no separately-addressable ROM through this port."
 );
 module_param_named(rs480_cp_me_ram_dump, radeon_rs480_cp_me_ram_dump, int, 0644);
+
+MODULE_PARM_DESC(rs480_cp_me_ram_inject,
+	"Arm the RS480/RS482/RS485 CP MicroEngine instruction-memory injection "
+	"increment 1 (write a microword through CP_ME_RAM_ADDR, read it back, "
+	"restore it; the modified word is NEVER executed). Default 0 (OFF). This "
+	"writes a CP register on reset-less R300-class silicon, so it is an exact "
+	"arm gate, not a boolean: it must equal 0x494e4a31 ('INJ1') AND the "
+	"debugfs write to radeon_rs480_cp_me_ram_inject must carry the literal ARM "
+	"keyword. A stray nonzero value alone does nothing. The address is bounded "
+	"to the 256-microword R300_cp.bin overlay (known-writable, restore "
+	"cross-checkable). The execute-the-word increment 2 is the stop-line and is "
+	"absent from this build."
+);
+module_param_named(rs480_cp_me_ram_inject, radeon_rs480_cp_me_ram_inject, int, 0644);
 
 
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
