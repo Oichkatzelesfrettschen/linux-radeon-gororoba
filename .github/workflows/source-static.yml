@@ -114,18 +114,19 @@ jobs:
           clean: true
       - name: radeon.ko builds from the tracked subtree
         env:
-          RADEON_MODULE_KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
+          KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
         run: |
-          # Full-content verification of this root lives in the packaging
-          # repository's gates; this job asserts the root's identity before
-          # trusting it with a verdict.
-          [ -n "$RADEON_MODULE_KERNEL_BUILD_ROOT" ] || {
+          [ -n "$KERNEL_BUILD_ROOT" ] || {
             echo "RADEON_MODULE_KERNEL_BUILD_ROOT_618 is unset" >&2; exit 1; }
-          rel=$(cat "$RADEON_MODULE_KERNEL_BUILD_ROOT/include/config/kernel.release")
-          [ "$rel" = "6.18.38-2-cachyos-lts" ] || {
-            echo "unexpected kernel release in build root: $rel" >&2; exit 1; }
-          sh scripts/build_radeon_module.sh --self-test
-          sh scripts/build_radeon_module.sh
+          python3 scripts/check_kernel_build_root.py \
+            --root "$KERNEL_BUILD_ROOT" \
+            --declaration ci/kernel-build-roots/6.18.38-2-cachyos-lts.toml \
+            --manifest ci/kernel-build-roots/6.18.38-2-cachyos-lts.manifest.tsv
+          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh --self-test
+          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   kernel-build-root-7-1:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
@@ -172,6 +173,10 @@ jobs:
         run: python3 scripts/materialize_reconstruction_prefixes.py --self-test
       - name: reconstruction prefixes
         run: python3 scripts/materialize_reconstruction_prefixes.py
+      - name: migration input calibration
+        run: python3 scripts/materialize_migration_input.py --self-test
+      - name: reconstruction history calibration
+        run: python3 scripts/check_reconstruction_history.py --self-test
 
       - name: importer calibration
         run: |

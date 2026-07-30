@@ -1,0 +1,179 @@
+# Protected-base control code validates exact source commits from the PR head.
+name: reconstruction-history
+
+on:
+  pull_request:
+    paths:
+      - "drivers/gpu/drm/radeon/**"
+
+permissions:
+  contents: read
+
+jobs:
+  trusted-oracle:
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Check out pinned packaging input
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: Oichkatzelesfrettschen/radeon-custom
+          ref: 210e2b06c0266e316f08eb0b2b3e9832884c43de
+          path: packaging
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+          ssh-key: ${{ secrets.RADEON_CUSTOM_READ_DEPLOY_KEY }}
+
+      - name: Materialize sanitized migration input
+        run: |
+          python3 control/scripts/materialize_migration_input.py \
+            --control-root control \
+            --packaging-root packaging \
+            --output "$RUNNER_TEMP/reconstruction-oracle"
+
+      - name: Upload sanitized migration input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reconstruction-oracle-${{ github.event.pull_request.base.sha }}
+          path: ${{ runner.temp }}/reconstruction-oracle
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Discard private-repository checkout
+        if: always()
+        run: |
+          packaging_path="$GITHUB_WORKSPACE/packaging"
+          [ "$packaging_path" = "$GITHUB_WORKSPACE/packaging" ] || exit 1
+          rm -rf -- "$packaging_path"
+
+  history-plan:
+    needs: trusted-oracle
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.history.outputs.matrix }}
+    steps:
+      - name: Check out trusted control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Check out exact subject head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Download sanitized migration input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: reconstruction-oracle-${{ github.event.pull_request.base.sha }}
+          path: migration
+
+      - name: Calibrate trusted history checker
+        run: python3 control/scripts/check_reconstruction_history.py --self-test
+
+      - name: Validate range and emit build matrix
+        id: history
+        run: |
+          set --
+          if [ "${{ github.event.pull_request.draft }}" = "false" ]; then
+            set -- --require-complete
+          fi
+          python3 control/scripts/check_reconstruction_history.py \
+            --repository subject \
+            --control-root control \
+            --oracle-root migration \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --prepare \
+            --github-output "$GITHUB_OUTPUT" \
+            "$@"
+
+  history-build:
+    needs: [trusted-oracle, history-plan]
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        reconstruction_id: ${{ fromJSON(needs.history-plan.outputs.matrix) }}
+    steps:
+      - name: Check out trusted control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Check out exact subject head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Download sanitized migration input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: reconstruction-oracle-${{ github.event.pull_request.base.sha }}
+          path: migration
+
+      - name: Prepare immutable log path
+        run: mkdir -p "$RUNNER_TEMP/logs/${{ matrix.reconstruction_id }}"
+
+      - name: Build exact reconstruction prefix
+        env:
+          ROOT_6_18: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
+          ROOT_7_1: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_71 }}
+        run: |
+          [ -n "$ROOT_6_18" ] || {
+            echo "RADEON_MODULE_KERNEL_BUILD_ROOT_618 is unset" >&2
+            exit 1
+          }
+          [ -n "$ROOT_7_1" ] || {
+            echo "RADEON_MODULE_KERNEL_BUILD_ROOT_71 is unset" >&2
+            exit 1
+          }
+          python3 control/scripts/check_reconstruction_history.py \
+            --repository subject \
+            --control-root control \
+            --oracle-root migration \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --reconstruction-id "${{ matrix.reconstruction_id }}" \
+            --root-6-18 "$ROOT_6_18" \
+            --root-7-1 "$ROOT_7_1" \
+            --log-root "$RUNNER_TEMP/logs/${{ matrix.reconstruction_id }}" \
+            --build-timeout-seconds 900
+
+      - name: Upload immutable commit logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reconstruction-${{ github.event.number }}-${{ github.event.pull_request.head.sha }}-${{ matrix.reconstruction_id }}
+          path: ${{ runner.temp }}/logs/${{ matrix.reconstruction_id }}
+          if-no-files-found: warn
+          retention-days: 30
