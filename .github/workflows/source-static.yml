@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
           clean: true
 
@@ -104,6 +106,12 @@ jobs:
           fi
           echo "no hardware verdict language"
 
+      - name: Source closure declarations are proven
+        run: python3 scripts/check_source_closure.py
+
+      - name: Source equivalence attestation is proven
+        run: python3 scripts/check_source_equivalence_attestation.py
+
   module-build-6-18:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
@@ -160,6 +168,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
           clean: true
       - name: shellcheck
@@ -170,6 +180,10 @@ jobs:
         run: python3 scripts/check_kernel_build_root.py --self-test
       - name: source manifest calibration
         run: python3 scripts/manifest_source_tree.py --self-test
+      - name: source closure calibration
+        run: python3 scripts/check_source_closure.py --self-test
+      - name: source equivalence attestation calibration
+        run: python3 scripts/check_source_equivalence_attestation.py --self-test
       - name: reconstruction plan calibration
         run: python3 scripts/check_reconstruction_plan.py --self-test
       - name: reconstruction plan

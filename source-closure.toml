@@ -1,9 +1,9 @@
 # What the source closure contains, and what it refuses to carry.
 #
-# Phase 0 measured the constructed legacy tree and found nothing reaching
-# outside drivers/gpu/drm/radeon/, so the closure is that directory plus the
-# project deltas. Generated outputs and prebuilt executables stay out: they are
-# build products, and carrying them lets a stale artifact outrank its source.
+# The constructed legacy tree reaches only drivers/gpu/drm/radeon/, so the
+# closure is that directory plus the project deltas. Generated outputs and
+# prebuilt executables stay out: they are build products, and carrying them
+# lets a stale artifact outrank its source.
 
 schema = 1
 
@@ -27,21 +27,21 @@ legacy_state = "shipped as a binary beside mkregtable.c"
 
 # Source the snapshot dropped. Restoring it returns evergreen_reg_safe.h to
 # build-product status, with the SMX_DC_CTL0 permission expressed as source.
-# status separates what the tree holds now from what reconstruction must reach.
-# At the upstream import this path exists carrying upstream content alone; the
-# project's SMX_DC_CTL0 line arrives with the base-delta reconstruction, and the
-# status becomes "present" in that commit.
 [[restored]]
 path = "reg_srcs/evergreen"
-status = "pending-base-delta-reconstruction"
+status = "present"
+reconstruction_id = "B14"
+source_commit = "e9ca81c39e0cc7c3a10c5a54aa8dbead389bc71d"
 reason = "generator input for evergreen_reg_safe.h"
 carries = "SMX_DC_CTL0 at register 0xA020 accepted by the command-stream checker"
 
-# Real source the active series adds.
+# Source added by the reconstructed R400-US command policy.
 [[retained]]
 path = "reg_srcs/rs480"
-status = "pending-legacy-patch-reconstruction"
-reason = "generator input added by the patch series"
+status = "present"
+reconstruction_id = "M12"
+source_commit = "80f3b2915e0ad0103680293471ad9d936e1a7f82"
+reason = "generator input for the R400-US command policy"
 
 # Upstream metadata. It is repository content rather than a DKMS build input,
 # so the package export drops it.

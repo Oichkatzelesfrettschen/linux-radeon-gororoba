@@ -66,14 +66,19 @@ classes; a closed item names its proof, and an open item names its gate.
   `30541547484` carries the per-commit logs.
 - Protected-main merge commit
   `9079be562eebd184da9cf891fbc6a72d5ac0d9f3` retains the M24 driver tree.
-  Source-static run `30546146534` passes the 6.18 and 7.1 module lanes. The
-  source manifest matches the migration oracle at SHA-256
+  Equivalence-source run `30546146534` passes the 6.18 and 7.1 module lanes.
+  The source manifest matches the migration oracle at SHA-256
   `71ae424fc8af1828200ec98e9233b646c6483c11ecfb778d91ec64ef6bf9f5dc`,
   and all ten legacy generated outputs match the frozen proof.
+- Post-tag documentation merge
+  `c999a1dcfcc2cb7e4a5794d450c435e00fbe7fff` retains the M24 driver tree.
+  Closure-documentation run `30547154024` passes the same four source-static
+  job classes.
 - SSH-signed annotated tag
   `radeon-unified-0.3-pkgrel91-source-equivalent` has tag object
   `81a2510e34d1d62f5486683bcd6e240db8223b7d` and peels to the protected-main
-  merge commit.
+  merge commit. `docs/source-equivalence-attestation.toml` records the signer
+  identity and a repository-local verification command.
 - Migration input frozen by packaging commit and content hashes:
   `MIGRATION_INPUT.toml`, completeness- and base-agreement-checked in CI.
 - Governing rules made self-contained in this repository's `AGENTS.md`, so a

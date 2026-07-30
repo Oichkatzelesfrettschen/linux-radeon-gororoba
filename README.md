@@ -23,9 +23,12 @@ Packaging targets Arch and CachyOS alone.
 
 ## Transitional authority
 
-`radeon-custom` remains the deployable authority until the packaging source-pin
-cutover. This repository is a reconstruction candidate until the source
-equivalence tag exists. Deployment consumes `radeon-custom`.
+`linux-radeon-gororoba` is the canonical modified-source authority from
+`radeon-unified-0.3-pkgrel91-source-equivalent` onward.
+
+`radeon-custom` remains the deployment and packaging authority until its
+source-pin cutover. Deployments continue to consume `radeon-custom` until that
+cutover is validated.
 
 ## Source closure
 
