@@ -114,6 +114,21 @@ extern int radeon_runtime_pm;
 extern int radeon_hard_reset;
 extern int radeon_palm_pci_reset_unsafe;
 extern int radeon_rs480_safe_regs;
+extern int radeon_rs480_candidate_regs;
+extern int radeon_rs480_cp_me_ram_dump;
+extern int radeon_rs480_cp_me_ram_inject;
+extern int radeon_rs480_cp_me_oracle;
+extern int radeon_rs480_cp_ib_scratch_oracle;
+extern int radeon_rs480_gpu_reset_recover_probe;
+extern int radeon_rs480_reset_hang_probe;
+extern int radeon_rs480_r400_us_cs;
+extern int radeon_rs480_frontier_index;
+extern int radeon_rs480_vertex_index;
+extern int radeon_rs480_hazard_index;
+extern int radeon_rs480_force_clock_index;
+extern int radeon_rs480_force_clock_3d_index;
+extern int radeon_rs480_gated_read_index;
+extern int radeon_rs480_hazard_readers_armed;
 extern int radeon_vm_size;
 extern int radeon_vm_block_size;
 extern int radeon_deep_color;
@@ -2386,6 +2401,13 @@ struct radeon_device {
 	bool				accel_working;
 	bool				fastfb_working; /* IGP feature*/
 	bool				needs_reset, in_reset;
+	/* Failed RS400/RS480 reset with the GA register bus wedged: every
+	 * MMIO read -- direct 3D space, RBBM after clock gating re-engages,
+	 * MC-indirect GART queries -- is a non-posted HyperTransport black
+	 * hole that hard-locks the CPU. gpu_parked gates all register access
+	 * on paths still reachable from userspace teardown.
+	 */
+	bool				gpu_parked;
 	struct radeon_surface_reg surface_regs[RADEON_GEM_MAX_SURFACES];
 	const struct firmware *me_fw;	/* all family ME firmware */
 	const struct firmware *pfp_fw;	/* r6/700 PFP firmware */
@@ -2482,6 +2504,12 @@ static inline struct drm_device *rdev_to_drm(struct radeon_device *rdev)
 {
 	return &rdev->ddev;
 }
+
+/* RS400/RS480 RE debugfs registration, deferred to the drm_driver.debugfs_init
+ * hook so the nodes land under dri/N/ once minor->debugfs_root is valid. */
+struct drm_minor;
+void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
+void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev);
 
 /*
  * Cast helper

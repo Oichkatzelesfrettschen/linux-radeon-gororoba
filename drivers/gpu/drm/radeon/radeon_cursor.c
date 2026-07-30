@@ -264,7 +264,11 @@ static int radeon_cursor_move_locked(struct drm_crtc *crtc, int x, int y)
 int radeon_crtc_cursor_move(struct drm_crtc *crtc,
 			    int x, int y)
 {
+	struct radeon_device *rdev = crtc->dev->dev_private;
 	int ret;
+
+	if (rdev->gpu_parked)
+		return -ENODEV;
 
 	radeon_lock_cursor(crtc, true);
 	ret = radeon_cursor_move_locked(crtc, x, y);
@@ -286,6 +290,9 @@ int radeon_crtc_cursor_set2(struct drm_crtc *crtc,
 	struct drm_gem_object *obj;
 	struct radeon_bo *robj;
 	int ret;
+
+	if (rdev->gpu_parked)
+		return -ENODEV;
 
 	if (!handle) {
 		/* turn off cursor */

@@ -275,6 +275,16 @@ static void radeon_fence_check_lockup(struct work_struct *work)
 	rdev = fence_drv->rdev;
 	ring = fence_drv - &rdev->fence_drv[0];
 
+	/* The lockup check reads ring pointers and RBBM_STATUS; on a parked
+	 * RS480 those are non-posted black holes, the fences are already
+	 * force-completed, and a "lockup" verdict here would re-arm
+	 * needs_reset into a reset cascade against the dead frontend. The
+	 * queued instance from the pre-park waiters lands ~300ms after the
+	 * park; it exits here instead.
+	 */
+	if (rdev->gpu_parked)
+		return;
+
 	if (!down_read_trylock(&rdev->exclusive_lock)) {
 		/* just reschedule the check if a reset is going on */
 		radeon_fence_schedule_check(rdev, ring);

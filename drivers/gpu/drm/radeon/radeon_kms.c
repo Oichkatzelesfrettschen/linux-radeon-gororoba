@@ -26,6 +26,7 @@
  *          Jerome Glisse
  */
 
+#include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -103,6 +104,21 @@ void radeon_driver_unload_kms(struct drm_device *dev)
 
 	if (rdev->rmmio == NULL)
 		goto done_free;
+
+	/* A parked RS400/RS480 holds a wedged, GA-routed register bus that never
+	 * grants a non-posted read; the normal unload teardown
+	 * (radeon_modeset_fini / radeon_device_fini, plus the PM-runtime and ACPI
+	 * paths) issues GPU MMIO that black-holes the K8 northbridge and
+	 * sync-floods the box.  Leave the hardware parked and drop straight to the
+	 * software free -- reboot reclaims the GPU.  This mirrors the parked
+	 * leak-by-design teardown and the rmmio == NULL early-out above; the
+	 * module is part of the parked containment boundary, not a recovery path. */
+	if (rdev->gpu_parked &&
+	    (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)) {
+		dev_err(rdev->dev,
+			"parked: bypassing hardware teardown on unload, leaking to reboot\n");
+		goto done_free;
+	}
 
 	if (radeon_is_px(dev)) {
 		pm_runtime_get_sync(dev->dev);
@@ -749,6 +765,16 @@ err_suspend:
 void radeon_driver_postclose_kms(struct drm_device *dev,
 				 struct drm_file *file_priv)
 {
+	{
+		struct radeon_device *bc_rdev = dev->dev_private;
+
+		if (bc_rdev && !bc_rdev->accel_working) {
+			msleep(1);
+			dev_err(bc_rdev->dev, "postclose on parked GPU: begin teardown\n");
+			msleep(1);
+		}
+	}
+
 	struct radeon_device *rdev = dev->dev_private;
 
 	pm_runtime_get_sync(dev->dev);
@@ -784,6 +810,16 @@ void radeon_driver_postclose_kms(struct drm_device *dev,
 	}
 	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
+	{
+		struct radeon_device *bc_rdev = dev->dev_private;
+
+		if (bc_rdev && !bc_rdev->accel_working) {
+			msleep(1);
+			dev_err(bc_rdev->dev, "postclose on parked GPU: teardown complete\n");
+			msleep(1);
+		}
+	}
+
 }
 
 /*
@@ -804,6 +840,9 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
 	int vpos, hpos, stat;
 	u32 count;
 	struct radeon_device *rdev = dev->dev_private;
+
+	if (rdev->gpu_parked)
+		return 0;
 
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %u\n", pipe);
@@ -874,6 +913,9 @@ int radeon_enable_vblank_kms(struct drm_crtc *crtc)
 	struct radeon_device *rdev = dev->dev_private;
 	unsigned long irqflags;
 	int r;
+
+	if (rdev->gpu_parked)
+		return -ENODEV;
 
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %d\n", pipe);

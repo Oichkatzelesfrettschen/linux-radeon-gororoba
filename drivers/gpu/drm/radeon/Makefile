@@ -4,7 +4,7 @@
 # Direct Rendering Infrastructure (DRI) in XFree86 4.1.0 and higher.
 
 hostprogs := mkregtable
-targets := rn50_reg_safe.h r100_reg_safe.h r200_reg_safe.h rv515_reg_safe.h r300_reg_safe.h r420_reg_safe.h rs600_reg_safe.h r600_reg_safe.h evergreen_reg_safe.h cayman_reg_safe.h
+targets := rn50_reg_safe.h r100_reg_safe.h r200_reg_safe.h rv515_reg_safe.h r300_reg_safe.h r420_reg_safe.h rs480_reg_safe.h rs600_reg_safe.h r600_reg_safe.h evergreen_reg_safe.h cayman_reg_safe.h
 
 quiet_cmd_mkregtable = MKREG   $@
       cmd_mkregtable = $(obj)/mkregtable $< > $@
@@ -19,6 +19,8 @@ $(obj)/r200.o: $(obj)/r200_reg_safe.h
 $(obj)/rv515.o: $(obj)/rv515_reg_safe.h
 
 $(obj)/r300.o: $(obj)/r300_reg_safe.h
+
+$(obj)/rs400.o: $(obj)/rs480_reg_safe.h
 
 $(obj)/r420.o: $(obj)/r420_reg_safe.h
 

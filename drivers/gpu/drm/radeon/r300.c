@@ -30,6 +30,8 @@
 #include <linux/pci.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/moduleparam.h>
+#include <linux/build_bug.h>
 
 #include <drm/drm.h>
 #include <drm/drm_device.h>
@@ -405,17 +407,124 @@ void r300_gpu_init(struct radeon_device *rdev)
 	if (r100_gui_wait_for_idle(rdev)) {
 		pr_warn("Failed to wait GUI idle while programming pipes. Bad things might happen.\n");
 	}
-	if (r300_mc_wait_for_idle(rdev)) {
+	/* r300_mc_wait_for_idle polls RADEON_MC_STATUS for R300_MC_IDLE, the
+	 * discrete-R300 memory-controller idle bit.  RS400/RS480 IGPs have no
+	 * dedicated VRAM MC -- memory is the host northbridge UMA path -- and that
+	 * bit never asserts, so the wait always times out and warns once per boot.
+	 * The IGP-correct check, rs400_mc_wait_for_idle (a different MC_STATUS bit),
+	 * runs immediately after this in rs400_gpu_init and succeeds, proving the MC
+	 * is genuinely idle.  Skip the discrete check on IGP; keep it for discrete
+	 * R300/R350/R420 parts where R300_MC_IDLE is valid. */
+	if (!(rdev->flags & RADEON_IS_IGP) && r300_mc_wait_for_idle(rdev)) {
 		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
 	}
 	DRM_INFO("radeon: %d quad pipes, %d Z pipes initialized\n",
 		 rdev->num_gb_pipes, rdev->num_z_pipes);
 }
 
+/* RS480-class IGP soft-reset recovery clock force.  The stock CP soft-reset
+ * below "sometimes ends up hard locking the computer" because the reset runs
+ * with the display quiesced, which can leave the geometry (VAP/GA) and 2D (E2)
+ * clock domains gated when the RBBM_SOFT_RESET write lands.  Force those domains
+ * across the reset writes and restore them after: SCLK_CNTL (PLL 0x0d)
+ * CP(16)/E2(20)/SE(21)/TX(27)/US(28)/SU(30) and SCLK_CNTL2 (PLL 0x1e)
+ * TCL(13)/CBA(14)/GA(15).  Scoped to CHIP_RS400/RS480 so discrete R3xx/R4xx
+ * reset behavior is unchanged. */
+#define R300_RS480_SCLK_CNTL_FORCE_3D  (BIT(16) | BIT(20) | BIT(21) | \
+					BIT(27) | BIT(28) | BIT(30))
+#define R300_RS480_SCLK_CNTL2_FORCE_3D (BIT(13) | BIT(14) | BIT(15))
+
+/* RS480 0x0000F0 soft-reset candidate masks (RAD-05j).  0043 asserts VAP|GA and
+ * GA still holds; the still-open recovery space is host-safe 3D co-masks.  Expose
+ * a small bounded set of NAMED compiled masks, never a raw operator mask -- a
+ * free mask is too easy to point at a host-facing bit and wedge the box.
+ *
+ * The permitted bits are an ALLOW-LIST, not a forbidden list: a candidate may set
+ * only the 3D-domain bits VAP/RE/PP/RB/GA.  Every other 0x0000F0 bit is
+ * compile-rejected -- the host bits HI/HDP/MC/AIC, the display/video/clock bits
+ * VIP/DISP/CG, the 2D engine E2, and the video IDCT -- so no candidate can reset
+ * a host, display, clock, 2D, or video block on a parked RS480.  An allow-list is
+ * safe against a future 0x0000F0 bit being added without re-vetting. */
+#define RS480_RESET_ALLOWED_MASK \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_RE(1) | \
+	 S_0000F0_SOFT_RESET_PP(1) | S_0000F0_SOFT_RESET_RB(1) | \
+	 S_0000F0_SOFT_RESET_GA(1))
+
+#define RS480_RESET_M_BASELINE \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_GA(1))
+#define RS480_RESET_M_GA_RB \
+	(RS480_RESET_M_BASELINE | S_0000F0_SOFT_RESET_RB(1))
+#define RS480_RESET_M_GA_RE \
+	(RS480_RESET_M_BASELINE | S_0000F0_SOFT_RESET_RE(1))
+/* full_3d drops E2 (2D engine) and IDCT (video): neither is tied to the GA
+ * recovery mechanism.  VAP/RE/PP/RB/GA is the geometry-through-backend cluster. */
+#define RS480_RESET_M_FULL_3D \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_RE(1) | \
+	 S_0000F0_SOFT_RESET_PP(1) | S_0000F0_SOFT_RESET_RB(1) | \
+	 S_0000F0_SOFT_RESET_GA(1))
+
+static_assert((RS480_RESET_M_BASELINE & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 baseline reset mask sets a non-allowed 0x00F0 bit");
+static_assert((RS480_RESET_M_GA_RB & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 ga_rb reset mask sets a non-allowed 0x00F0 bit");
+static_assert((RS480_RESET_M_GA_RE & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 ga_re reset mask sets a non-allowed 0x00F0 bit");
+static_assert((RS480_RESET_M_FULL_3D & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 full_3d reset mask sets a non-allowed 0x00F0 bit");
+
+enum rs480_reset_mask_sel {
+	RS480_RESET_MASK_BASELINE = 0,
+	RS480_RESET_MASK_GA_RB,
+	RS480_RESET_MASK_GA_RE,
+	RS480_RESET_MASK_FULL_3D,
+	RS480_RESET_MASK__COUNT
+};
+
+static const struct {
+	const char *name;
+	u32 mask;
+} rs480_reset_mask_tbl[RS480_RESET_MASK__COUNT] = {
+	[RS480_RESET_MASK_BASELINE] = { "baseline(VAP|GA)", RS480_RESET_M_BASELINE },
+	[RS480_RESET_MASK_GA_RB]    = { "ga_rb(VAP|GA|RB)",  RS480_RESET_M_GA_RB },
+	[RS480_RESET_MASK_GA_RE]    = { "ga_re(VAP|GA|RE)",  RS480_RESET_M_GA_RE },
+	[RS480_RESET_MASK_FULL_3D]  = { "full_3d",           RS480_RESET_M_FULL_3D },
+};
+
+static unsigned int rs480_reset_mask = RS480_RESET_MASK_BASELINE;
+module_param(rs480_reset_mask, uint, 0644);
+MODULE_PARM_DESC(rs480_reset_mask,
+		 "RS480 0x00F0 soft-reset candidate: 0=baseline(VAP|GA) 1=ga_rb 2=ga_re 3=full_3d (invalid -> baseline)");
+
+/* Bounded, one-shot selector: an out-of-range value never passes through as a
+ * mask, it falls back to the conservative BASELINE (0043) candidate.  A
+ * non-baseline candidate is CONSUMED on read -- rs480_reset_mask reverts to
+ * BASELINE -- so an armed experimental mask fires exactly once and a later,
+ * unrelated GPU reset uses the safe baseline rather than reusing GA_RB. */
+static u32 rs480_selected_reset_mask(const char **name_out)
+{
+	unsigned int sel = READ_ONCE(rs480_reset_mask);
+
+	if (sel >= RS480_RESET_MASK__COUNT)
+		sel = RS480_RESET_MASK_BASELINE;
+	/* Atomic one-shot consume.  rs480_reset_mask is a 0644 sysfs-writable module
+	 * param; cmpxchg reverts it to BASELINE only if it still holds the value we
+	 * read (a valid non-baseline selector), so a concurrent sysfs write between
+	 * the read and the consume is preserved rather than clobbered (lost-update
+	 * race a plain WRITE_ONCE would have).  The clamped out-of-range case is not
+	 * consumed -- it re-clamps to BASELINE on every read until fixed. */
+	if (sel != RS480_RESET_MASK_BASELINE)
+		cmpxchg(&rs480_reset_mask, sel, RS480_RESET_MASK_BASELINE);
+	*name_out = rs480_reset_mask_tbl[sel].name;
+	return rs480_reset_mask_tbl[sel].mask;
+}
+
 int r300_asic_reset(struct radeon_device *rdev, bool hard)
 {
 	struct r100_mc_save save;
-	u32 status, tmp;
+	bool igp_force_clk = (rdev->family == CHIP_RS400 ||
+			      rdev->family == CHIP_RS480);
+	u32 status, tmp, sclk = 0, sclk2 = 0;
+	u32 rs480_reset_used_mask = RS480_RESET_M_BASELINE;
 	int ret = 0;
 
 	status = RREG32(R_000E40_RBBM_STATUS);
@@ -436,11 +545,36 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
 	pci_save_state(rdev->pdev);
 	/* disable bus mastering */
 	r100_bm_disable(rdev);
-	WREG32(R_0000F0_RBBM_SOFT_RESET, S_0000F0_SOFT_RESET_VAP(1) |
-					S_0000F0_SOFT_RESET_GA(1));
-	RREG32(R_0000F0_RBBM_SOFT_RESET);
-	mdelay(500);
-	WREG32(R_0000F0_RBBM_SOFT_RESET, 0);
+	if (igp_force_clk) {
+		sclk = RREG32_PLL(0x0000000D);
+		sclk2 = RREG32_PLL(0x0000001E);
+		WREG32_PLL(0x0000000D, sclk | R300_RS480_SCLK_CNTL_FORCE_3D);
+		WREG32_PLL(0x0000001E, sclk2 | R300_RS480_SCLK_CNTL2_FORCE_3D);
+	}
+	{
+		const char *rs480_mask_name;
+		u32 rs480_mask;
+
+		/* The experimental candidate masks are RS400/RS480-only.  Discrete
+		 * R3xx/R4xx share r300_asic_reset and must keep the stock VAP|GA
+		 * baseline regardless of the module param. */
+		if (igp_force_clk) {
+			rs480_mask = rs480_selected_reset_mask(&rs480_mask_name);
+		} else {
+			rs480_mask = RS480_RESET_M_BASELINE;
+			rs480_mask_name = "baseline(VAP|GA)";
+		}
+		dev_info(rdev->dev,
+			 "RS480 soft-reset candidate %s mask 0x%08x\n",
+			 rs480_mask_name, rs480_mask);
+		rs480_reset_used_mask = rs480_mask;
+		/* Posted assert; NO readback on the assert path -- the
+		 * mdelay(500) hold serializes the write before the deassert.
+		 * Failure classification stays on the RBBM_STATUS read below. */
+		WREG32(R_0000F0_RBBM_SOFT_RESET, rs480_mask);
+		mdelay(500);
+		WREG32(R_0000F0_RBBM_SOFT_RESET, 0);
+	}
 	mdelay(1);
 	status = RREG32(R_000E40_RBBM_STATUS);
 	dev_info(rdev->dev, "(%s:%d) RBBM_STATUS=0x%08X\n", __func__, __LINE__, status);
@@ -459,13 +593,50 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
 	/* restore PCI & busmastering */
 	pci_restore_state(rdev->pdev);
 	r100_enable_bm(rdev);
-	/* Check if GPU is idle */
-	if (G_000E40_GA_BUSY(status) || G_000E40_VAP_BUSY(status)) {
+	/* Check if GPU is idle.  On BASELINE -- and on the discrete R3xx/R4xx path,
+	 * which forces BASELINE -- the check keeps exactly the 0043 predicate
+	 * (GA_BUSY || VAP_BUSY): no behaviour change on the non-experimental path.
+	 * An experimental co-mask
+	 * (GA_RB/GA_RE/full_3d) resets more blocks (RB3D, RE, and PP for full_3d), and
+	 * the CP reset below runs on every path, so for a non-baseline mask also
+	 * require the master GUI_ACTIVE idle -- one bit that catches every reset block
+	 * including PP and CP, so a newly reset block left stuck is not misread as
+	 * recovered. */
+	if (G_000E40_GA_BUSY(status) || G_000E40_VAP_BUSY(status) ||
+	    (rs480_reset_used_mask != RS480_RESET_M_BASELINE &&
+	     G_000E40_GUI_ACTIVE(status))) {
 		dev_err(rdev->dev, "failed to reset GPU\n");
 		ret = -1;
 	} else
 		dev_info(rdev->dev, "GPU reset succeed\n");
-	r100_mc_resume(rdev, &save);
+	/* The register-bus readback grant dies with dynamic clock gating when
+	 * the GA frontend stays wedged: the RBBM_STATUS read lands while the
+	 * restored clocks still spin, and the next read some milliseconds
+	 * later hangs the CPU as a non-posted HyperTransport black hole.
+	 * A failed reset therefore keeps SCLK_CNTL/SCLK_CNTL2 forced so the
+	 * RBBM, CP, and MC domains stay readable on the parked GPU; only a
+	 * successful reset restores the saved gating.
+	 */
+	if (igp_force_clk) {
+		if (ret) {
+			dev_err(rdev->dev, "failed reset: leaving 3D clocks forced, register bus stays readable\n");
+		} else {
+			WREG32_PLL(0x0000001E, sclk2);
+			WREG32_PLL(0x0000000D, sclk);
+		}
+	}
+	/* Re-enabling display memory requests against the wedge-held MC client
+	 * arbiter deadlocks the host interface within one or two vblank
+	 * periods: the next CPU MMIO read from any domain -- probe, vblank IRQ
+	 * handler -- never completes, force-clock notwithstanding. A failed
+	 * reset leaves the MC stopped and the display parked; the console goes
+	 * dark and the host stays alive.
+	 */
+	if (ret) {
+		dev_err(rdev->dev, "failed reset: leaving MC/display requests parked\n");
+	} else {
+		r100_mc_resume(rdev, &save);
+	}
 	return ret;
 }
 
