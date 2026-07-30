@@ -68,6 +68,7 @@
 #include <linux/interval_tree.h>
 #include <linux/hashtable.h>
 #include <linux/dma-fence.h>
+#include <linux/version.h>
 
 #ifdef CONFIG_MMU_NOTIFIER
 #include <linux/mmu_notifier.h>
