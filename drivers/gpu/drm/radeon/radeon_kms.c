@@ -104,6 +104,21 @@ void radeon_driver_unload_kms(struct drm_device *dev)
 	if (rdev->rmmio == NULL)
 		goto done_free;
 
+	/* A parked RS400/RS480 holds a wedged, GA-routed register bus that never
+	 * grants a non-posted read; the normal unload teardown
+	 * (radeon_modeset_fini / radeon_device_fini, plus the PM-runtime and ACPI
+	 * paths) issues GPU MMIO that black-holes the K8 northbridge and
+	 * sync-floods the box.  Leave the hardware parked and drop straight to the
+	 * software free -- reboot reclaims the GPU.  This mirrors the parked
+	 * leak-by-design teardown and the rmmio == NULL early-out above; the
+	 * module is part of the parked containment boundary, not a recovery path. */
+	if (rdev->gpu_parked &&
+	    (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)) {
+		dev_err(rdev->dev,
+			"parked: bypassing hardware teardown on unload, leaking to reboot\n");
+		goto done_free;
+	}
+
 	if (radeon_is_px(dev)) {
 		pm_runtime_get_sync(dev->dev);
 		pm_runtime_forbid(dev->dev);

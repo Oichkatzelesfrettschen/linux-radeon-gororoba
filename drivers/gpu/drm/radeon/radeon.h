@@ -2399,6 +2399,13 @@ struct radeon_device {
 	bool				accel_working;
 	bool				fastfb_working; /* IGP feature*/
 	bool				needs_reset, in_reset;
+	/* Failed RS400/RS480 reset with the GA register bus wedged: every
+	 * MMIO read -- direct 3D space, RBBM after clock gating re-engages,
+	 * MC-indirect GART queries -- is a non-posted HyperTransport black
+	 * hole that hard-locks the CPU. gpu_parked gates all register access
+	 * on paths still reachable from userspace teardown.
+	 */
+	bool				gpu_parked;
 	struct radeon_surface_reg surface_regs[RADEON_GEM_MAX_SURFACES];
 	const struct firmware *me_fw;	/* all family ME firmware */
 	const struct firmware *pfp_fw;	/* r6/700 PFP firmware */

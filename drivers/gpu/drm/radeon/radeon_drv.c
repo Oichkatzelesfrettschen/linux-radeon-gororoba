@@ -528,7 +528,16 @@ radeon_pci_shutdown(struct pci_dev *pdev)
 	 * Make this power and Loongson specific because
 	 * it breaks some other boards.
 	 */
-	radeon_suspend_kms(pci_get_drvdata(pdev), true, true, false);
+	struct drm_device *ddev = pci_get_drvdata(pdev);
+	struct radeon_device *rdev = ddev->dev_private;
+
+	/* A parked RS400/RS480 cannot take a hardware suspend -- its register bus
+	 * is wedged; skip it and let the platform reset reclaim the GPU on the
+	 * shutdown/reboot.  (On x86 this whole block is compiled out, so the
+	 * Vostro RS480 shutdown path is already hardware-free.) */
+	if (!(rdev->gpu_parked &&
+	      (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)))
+		radeon_suspend_kms(ddev, true, true, false);
 #endif
 }
 

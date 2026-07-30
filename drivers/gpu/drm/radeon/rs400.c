@@ -30,6 +30,7 @@
 #include <linux/mutex.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/pci.h>
 #include <linux/uaccess.h>
 
 #include <drm/drm_device.h>
@@ -72,6 +73,17 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
 {
 	uint32_t tmp;
 	unsigned int timeout = rdev->usec_timeout;
+
+	/* The GART cache serves the 3D engine's fetch path, and the MC
+	 * indirect data read polls a block held by the wedged GA client: on a
+	 * parked GPU the RREG32_MC below is a non-posted black hole. Teardown
+	 * still rewrites the PTEs in system RAM; nothing fetches through
+	 * these TLBs again before a reboot, so the flush is skippable.
+	 */
+	if (rdev->gpu_parked) {
+		dev_err_once(rdev->dev, "parked: skipping GART tlb flush (MC indirect unreadable)\n");
+		return;
+	}
 
 	WREG32_MC(RS480_GART_CACHE_CNTRL, RS480_GART_CACHE_INVALIDATE);
 	do {
@@ -326,9 +338,28 @@ void rs400_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 }
 
 #if defined(CONFIG_DEBUG_FS)
+/* rs480_debugfs_refuse_if_parked -- after a failed RS480 reset the GA-routed
+ * register bus never grants a non-posted read, so a debugfs register read
+ * black-holes the K8 northbridge and sync-floods the box (cold cycle only).
+ * Every RS480 RE debugfs reader refuses hardware access once gpu_parked is
+ * set; the node reports the parked state instead of touching MMIO. */
+static bool rs480_debugfs_refuse_if_parked(struct seq_file *m,
+					   struct radeon_device *rdev)
+{
+	if (!rdev->gpu_parked)
+		return false;
+	/* seq_file iterators call .show per position; emit once per open. */
+	if (m->count == 0)
+		seq_puts(m,
+			 "gpu parked: RS480 register read disabled to avoid non-posted MMIO black hole\n");
+	return true;
+}
+
 static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	uint32_t tmp;
 
 	tmp = RREG32(RADEON_HOST_PATH_CNTL);
@@ -529,6 +560,8 @@ static const struct rs480_safe_reg rs480_safe_reg_list[] = {
 static int rs480_safe_regs_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(rs480_safe_reg_list); i++) {
@@ -576,6 +609,8 @@ static bool rs480_offset_is_read_hazard(u32 offset)
 static u32 rs480_candidate_reg_read(struct radeon_device *rdev,
 				    const struct rs480_candidate_reg *reg)
 {
+	if (rdev->gpu_parked)
+		return RS480_READ_HAZARD_SENTINEL;
 	if (rs480_offset_is_read_hazard(reg->offset))
 		return RS480_READ_HAZARD_SENTINEL;
 	if (reg->access)
@@ -637,6 +672,8 @@ static const struct rs480_candidate_reg rs480_candidate_zb_reg_list[] = {
 static int rs480_candidate_config_regs_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(rs480_candidate_config_reg_list); i++) {
@@ -655,6 +692,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_config_regs);
 static int rs480_candidate_gart_mc_regs_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(rs480_candidate_gart_mc_reg_list); i++) {
@@ -675,6 +714,8 @@ static int rs480_candidate_regs_emit(struct seq_file *m,
 				     const struct rs480_candidate_reg *list,
 				     unsigned int count)
 {
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	unsigned int i;
 
 	for (i = 0; i < count; i++) {
@@ -900,6 +941,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_gart_status_regs);
 static int rs480_uma_status_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	u32 tom = RREG32(RADEON_NB_TOM);
 	u32 base = tom & 0xffff;
 	u32 top = tom >> 16;
@@ -953,6 +996,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_uma_status);
 static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	/* PLL index 0x0d == R_00000D_SCLK_CNTL (r300d.h / r100d.h). */
 	u32 sclk = RREG32_PLL(0x0000000D);
 	/* PLL index 0x1e == R300_SCLK_CNTL2.  It holds the R300 3D-engine force
@@ -1044,6 +1089,8 @@ static const struct rs480_pll_reg rs480_pll_reg_list[] = {
 static int rs480_pll_regs_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	unsigned int i;
 	u32 ppll_ref, ppll_div3, m_spll, vclk;
 
@@ -1124,6 +1171,8 @@ static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
 static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	unsigned int addr = (unsigned int)*(loff_t *)v;
 	u32 datah, datal;
 
@@ -1271,6 +1320,8 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
 {
 	struct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;
 	struct radeon_device *rdev = ctx->rdev;
+	if (rdev->gpu_parked)
+		return -EIO;
 	u32 addr, new_h, new_l, rb_h, rb_l, rs_h, rs_l;
 	char kbuf[64];
 	int ret;
@@ -1393,6 +1444,8 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
 static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 
 	if (radeon_rs480_cp_me_oracle != RS480_CP_ME_ORACLE_ARM_TOKEN) {
 		seq_printf(m, "oracle disarmed: set rs480_cp_me_oracle=0x%08x\n",
@@ -1530,6 +1583,8 @@ static const struct rs480_candidate_reg rs480_frontier_probe_reg_list[] = {
 static int rs480_frontier_probe_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	int idx = radeon_rs480_frontier_index;
 	const struct rs480_candidate_reg *reg;
 	u32 value;
@@ -1576,6 +1631,8 @@ static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
 static int rs480_vertex_probe_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	int idx = radeon_rs480_vertex_index;
 	const struct rs480_candidate_reg *reg;
 	u32 value;
@@ -1660,6 +1717,8 @@ static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
 static int rs480_hazard_read_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	int idx = radeon_rs480_hazard_index;
 	const struct rs480_candidate_reg *reg;
 
@@ -1702,6 +1761,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
 static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 	int r;
 
@@ -1967,6 +2028,8 @@ static const struct rs480_force_clock_reg rs480_force_clock_list[] = {
 static int rs480_force_clock_read_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	const struct rs480_force_clock_reg *e;
 	u32 sclk_orig, value;
 	int idx = radeon_rs480_force_clock_index;
@@ -2271,6 +2334,8 @@ static const struct rs480_force_clock_3d_reg rs480_force_clock_3d_list[] = {
 static int rs480_force_clock_3d_read_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	const struct rs480_force_clock_3d_reg *e;
 	u32 sclk_orig, sclk2_orig, value;
 	int idx = radeon_rs480_force_clock_3d_index;
@@ -2331,6 +2396,8 @@ static const struct rs480_gated_read_reg rs480_gated_read_list[] = {
 static int rs480_gated_read_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_refuse_if_parked(m, rdev))
+		return 0;
 	const struct rs480_gated_read_reg *e;
 	u32 sclk_orig, value;
 	int idx = radeon_rs480_gated_read_index;
