@@ -44,17 +44,50 @@ struct sg_table *radeon_gem_prime_get_sg_table(struct drm_gem_object *obj);
 int radeon_gem_prime_pin(struct drm_gem_object *obj);
 void radeon_gem_prime_unpin(struct drm_gem_object *obj);
 
+#include <linux/delay.h>
+
+/* Counted parked-GPU teardown breadcrumb. The DRM file-close handle walk frees
+ * every client BO through radeon_gem_object_free, each leaked under gpu_parked
+ * (0053). dev_err_once hides the walk after the first object, so the death
+ * window between the first leak and radeon_driver_postclose_kms is invisible.
+ * A per-object counter, paced so netconsole keeps every line, makes the last
+ * object index on the wire the pin for the remaining teardown killer.
+ */
+static atomic_t rs480_parked_gem_leak = ATOMIC_INIT(0);
+
 static vm_fault_t radeon_gem_fault(struct vm_fault *vmf)
 {
 	struct ttm_buffer_object *bo = vmf->vma->vm_private_data;
 	struct radeon_device *rdev = radeon_get_rdev(bo->bdev);
 	vm_fault_t ret;
 
+	/* A userspace touch of a CPU-mapped VRAM page goes through the
+	 * host aperture, and a parked RS480 holds MC aperture requests
+	 * parked: the access becomes a non-posted HyperTransport read
+	 * that hard-locks the machine from userspace, with no kernel
+	 * print possible. Kill the faulting client with SIGBUS instead;
+	 * its buffer objects already outlive teardown via the parked
+	 * GEM-leak path. GTT and system placements stay mapped -- their
+	 * pages are plain system RAM.
+	 *
+	 * Reserve the BO before reading placement: a concurrent TTM move
+	 * can free or rewrite bo->resource between an unlocked mem_type
+	 * peek and the later reserve, so the SIGBUS decision and the
+	 * subsequent fault path must share one reserved view.
+	 */
 	down_read(&rdev->pm.mclk_lock);
 
 	ret = ttm_bo_vm_reserve(bo, vmf);
 	if (ret)
 		goto unlock_mclk;
+
+	if (rdev->gpu_parked &&
+	    bo->resource && bo->resource->mem_type == TTM_PL_VRAM) {
+		dev_err_once(rdev->dev,
+			     "parked: SIGBUS on VRAM mmap fault (aperture unreadable)\n");
+		ret = VM_FAULT_SIGBUS;
+		goto unlock_resv;
+	}
 
 	ret = radeon_bo_fault_reserve_notify(bo);
 	if (ret)
@@ -85,6 +118,24 @@ static void radeon_gem_object_free(struct drm_gem_object *gobj)
 	struct radeon_bo *robj = gem_to_radeon_bo(gobj);
 
 	if (robj) {
+		/* BO teardown funnels into ttm core, whose fini path reaches
+		 * driver callbacks and aperture accesses that are non-posted
+		 * black holes on a parked RS480 (the fire-12 pin dies inside
+		 * the first ttm_bo_fini). The core is not patchable from this
+		 * module, so a parked GPU leaks its BOs by design: the frontend
+		 * is dead, nothing recycles its memory before the reboot that
+		 * reclaims everything, and the host stays alive.
+		 */
+		if (robj->rdev->gpu_parked) {
+			int leak_n = atomic_inc_return(&rs480_parked_gem_leak);
+
+			dev_err(robj->rdev->dev, "parked: GEM leak #%d begin (mn_unregister then return, no ttm_bo_fini)\n", leak_n);
+			msleep(1);
+			radeon_mn_unregister(robj);
+			dev_err(robj->rdev->dev, "parked: GEM leak #%d mn_unregister returned; deferring teardown to reboot\n", leak_n);
+			msleep(1);
+			return;
+		}
 		radeon_mn_unregister(robj);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 		ttm_bo_fini(&robj->tbo);

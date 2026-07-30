@@ -464,6 +464,8 @@ static void radeon_ttm_backend_unbind(struct ttm_device *bdev, struct ttm_tt *tt
 	if (!gtt->bound)
 		return;
 
+	if (rdev->gpu_parked)
+		dev_err_once(rdev->dev, "parked: first GART unbind (PTE rewrite, flush guarded)\n");
 	radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);
 
 	gtt->bound = false;

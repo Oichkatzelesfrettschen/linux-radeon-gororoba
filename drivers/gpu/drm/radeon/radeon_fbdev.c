@@ -170,6 +170,75 @@ static int radeon_fbdev_fb_release(struct fb_info *info, int user)
 	return 0;
 }
 
+/* fbcon takes the console over the moment the last DRM client dies and
+ * redraws through this framebuffer, whose backing store is the VRAM
+ * aperture. A parked RS480 holds MC display and host-aperture requests
+ * parked, so a CPU read of that aperture (fb_read, copyarea scroll) is a
+ * non-posted HyperTransport read that hard-locks the machine. Reads fail
+ * with -ENODEV; writes and drawing ops are swallowed as success so fbcon
+ * proceeds blind. The console stays dark until reboot; the host stays
+ * alive. Userspace mmap of the aperture stays ungated (fbcon does not
+ * mmap; a mapped page touch is accepted residual risk).
+ */
+static bool radeon_fbdev_gpu_parked(struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+
+	if (!rdev->gpu_parked)
+		return false;
+	dev_err_once(rdev->dev,
+		     "parked: dropping fbdev aperture access (VRAM unreadable)\n");
+	return true;
+}
+
+static ssize_t radeon_fbdev_fb_read(struct fb_info *info, char __user *buf,
+				    size_t count, loff_t *ppos)
+{
+	if (radeon_fbdev_gpu_parked(info))
+		return -ENODEV;
+	return fb_io_read(info, buf, count, ppos);
+}
+
+static ssize_t radeon_fbdev_fb_write(struct fb_info *info,
+				     const char __user *buf, size_t count,
+				     loff_t *ppos)
+{
+	if (radeon_fbdev_gpu_parked(info)) {
+		/* VFS advances file position from *ppos; a success return
+		 * without advancing it makes the next write retry the same
+		 * offset forever. Advance as if the swallowed write landed.
+		 */
+		*ppos += count;
+		return count;
+	}
+	return fb_io_write(info, buf, count, ppos);
+}
+
+static void radeon_fbdev_fb_fillrect(struct fb_info *info,
+				     const struct fb_fillrect *rect)
+{
+	if (radeon_fbdev_gpu_parked(info))
+		return;
+	cfb_fillrect(info, rect);
+}
+
+static void radeon_fbdev_fb_copyarea(struct fb_info *info,
+				     const struct fb_copyarea *area)
+{
+	if (radeon_fbdev_gpu_parked(info))
+		return;
+	cfb_copyarea(info, area);
+}
+
+static void radeon_fbdev_fb_imageblit(struct fb_info *info,
+				      const struct fb_image *image)
+{
+	if (radeon_fbdev_gpu_parked(info))
+		return;
+	cfb_imageblit(info, image);
+}
+
 static void radeon_fbdev_fb_destroy(struct fb_info *info)
 {
 	struct drm_fb_helper *fb_helper = info->par;
@@ -192,7 +261,12 @@ static const struct fb_ops radeon_fbdev_fb_ops = {
 	.owner = THIS_MODULE,
 	.fb_open = radeon_fbdev_fb_open,
 	.fb_release = radeon_fbdev_fb_release,
-	FB_DEFAULT_IOMEM_OPS,
+	.fb_read = radeon_fbdev_fb_read,
+	.fb_write = radeon_fbdev_fb_write,
+	.fb_fillrect = radeon_fbdev_fb_fillrect,
+	.fb_copyarea = radeon_fbdev_fb_copyarea,
+	.fb_imageblit = radeon_fbdev_fb_imageblit,
+	.fb_mmap = fb_io_mmap,
 	DRM_FB_HELPER_DEFAULT_OPS,
 	.fb_destroy = radeon_fbdev_fb_destroy,
 };
