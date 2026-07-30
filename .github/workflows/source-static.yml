@@ -103,7 +103,7 @@ jobs:
           fi
           echo "no hardware verdict language"
 
-  module-build:
+  module-build-6-18:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
     steps:
@@ -126,6 +126,27 @@ jobs:
           sh scripts/build_radeon_module.sh --self-test
           sh scripts/build_radeon_module.sh
 
+  kernel-build-root-7-1:
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          clean: true
+      - name: Retained 7.1 build root matches its declaration
+        env:
+          KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_71 }}
+        run: |
+          [ -n "$KERNEL_BUILD_ROOT" ] || {
+            echo "RADEON_MODULE_KERNEL_BUILD_ROOT_71 is unset" >&2
+            exit 1
+          }
+          python3 scripts/check_kernel_build_root.py \
+            --root "$KERNEL_BUILD_ROOT" \
+            --declaration ci/kernel-build-roots/7.1.4-1-cachyos.toml \
+            --manifest ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv
+
   lint:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
@@ -138,6 +159,8 @@ jobs:
         run: shellcheck -S error scripts/*.sh
       - name: ruff
         run: ruff check scripts/
+      - name: retained kernel root calibration
+        run: python3 scripts/check_kernel_build_root.py --self-test
       - name: source manifest calibration
         run: python3 scripts/manifest_source_tree.py --self-test
 
