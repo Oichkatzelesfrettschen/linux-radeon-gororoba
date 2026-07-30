@@ -141,6 +141,7 @@ int radeon_aspm = -1;
 int radeon_runtime_pm = -1;
 int radeon_hard_reset;
 int radeon_palm_pci_reset_unsafe;
+int radeon_rs480_safe_regs = 1;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
 int radeon_deep_color;
@@ -224,6 +225,14 @@ MODULE_PARM_DESC(palm_pci_reset_unsafe,
 	"Set to 1 only for forensic experimentation on a controlled host."
 );
 module_param_named(palm_pci_reset_unsafe, radeon_palm_pci_reset_unsafe, int, 0644);
+
+MODULE_PARM_DESC(rs480_safe_regs,
+	"Expose the read-only RS480/RS482/RS485 curated MMIO snapshot in debugfs. "
+	"Default 1: create radeon_rs480_safe_regs. Set to 0 to keep the DKMS "
+	"radeon module active but suppress the extra reverse-engineering debugfs file."
+);
+module_param_named(rs480_safe_regs, radeon_rs480_safe_regs, int, 0444);
+
 
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
 module_param_named(vm_size, radeon_vm_size, int, 0444);

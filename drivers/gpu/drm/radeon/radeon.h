@@ -113,6 +113,7 @@ extern int radeon_aspm;
 extern int radeon_runtime_pm;
 extern int radeon_hard_reset;
 extern int radeon_palm_pci_reset_unsafe;
+extern int radeon_rs480_safe_regs;
 extern int radeon_vm_size;
 extern int radeon_vm_block_size;
 extern int radeon_deep_color;
