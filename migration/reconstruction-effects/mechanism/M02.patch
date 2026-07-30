@@ -1,0 +1,160 @@
+diff --git a/radeon_cs.c b/radeon_cs.c
+index 3f9c001..340b6d0 100644
+--- a/radeon_cs.c
++++ b/radeon_cs.c
+@@ -261,6 +261,24 @@ static int radeon_cs_sync_rings(struct radeon_cs_parser *p)
+ 	return 0;
+ }
+ 
++static int radeon_rs480_cs_parser_init_fail(struct radeon_cs_parser *p,
++					   const char *reason, int ret,
++					   unsigned chunk, unsigned nchunks,
++					   u32 chunk_id, u32 length_dw)
++{
++	if (p->rdev &&
++	    (p->rdev->family == CHIP_RS400 ||
++	     p->rdev->family == CHIP_RS480)) {
++		DRM_ERROR("RS4xx CS parser init failed: reason=%s ret=%d "
++			  "chunk=%u/%u chunk_id=%u length_dw=%u "
++			  "cs_flags=0x%08x\n",
++			  reason, ret, chunk, nchunks, chunk_id, length_dw,
++			  p->cs_flags);
++	}
++
++	return ret;
++}
++
+ /* XXX: note that this is called from the legacy UMS CS ioctl as well */
+ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
+ {
+@@ -288,18 +306,24 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
+ 	p->chunk_const_ib = NULL;
+ 	p->chunks_array = kvmalloc_array(cs->num_chunks, sizeof(uint64_t), GFP_KERNEL);
+ 	if (p->chunks_array == NULL) {
+-		return -ENOMEM;
++		return radeon_rs480_cs_parser_init_fail(p, "chunk_array_alloc",
++							-ENOMEM, 0,
++							cs->num_chunks, 0, 0);
+ 	}
+ 	chunk_array_ptr = (uint64_t *)(unsigned long)(cs->chunks);
+ 	if (copy_from_user(p->chunks_array, chunk_array_ptr,
+ 			       sizeof(uint64_t)*cs->num_chunks)) {
+-		return -EFAULT;
++		return radeon_rs480_cs_parser_init_fail(p, "chunk_array_copy",
++							-EFAULT, 0,
++							cs->num_chunks, 0, 0);
+ 	}
+ 	p->cs_flags = 0;
+ 	p->nchunks = cs->num_chunks;
+ 	p->chunks = kvcalloc(p->nchunks, sizeof(struct radeon_cs_chunk), GFP_KERNEL);
+ 	if (p->chunks == NULL) {
+-		return -ENOMEM;
++		return radeon_rs480_cs_parser_init_fail(p, "chunk_state_alloc",
++							-ENOMEM, 0,
++							cs->num_chunks, 0, 0);
+ 	}
+ 	for (i = 0; i < p->nchunks; i++) {
+ 		struct drm_radeon_cs_chunk __user **chunk_ptr = NULL;
+@@ -309,7 +333,9 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
+ 		chunk_ptr = (void __user*)(unsigned long)p->chunks_array[i];
+ 		if (copy_from_user(&user_chunk, chunk_ptr,
+ 				       sizeof(struct drm_radeon_cs_chunk))) {
+-			return -EFAULT;
++			return radeon_rs480_cs_parser_init_fail(p, "chunk_header_copy",
++								-EFAULT, i,
++								p->nchunks, 0, 0);
+ 		}
+ 		p->chunks[i].length_dw = user_chunk.length_dw;
+ 		if (user_chunk.chunk_id == RADEON_CHUNK_ID_RELOCS) {
+@@ -319,19 +345,31 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
+ 			p->chunk_ib = &p->chunks[i];
+ 			/* zero length IB isn't useful */
+ 			if (p->chunks[i].length_dw == 0)
+-				return -EINVAL;
++				return radeon_rs480_cs_parser_init_fail(p, "zero_ib",
++									-EINVAL, i,
++									p->nchunks,
++									user_chunk.chunk_id,
++									user_chunk.length_dw);
+ 		}
+ 		if (user_chunk.chunk_id == RADEON_CHUNK_ID_CONST_IB) {
+ 			p->chunk_const_ib = &p->chunks[i];
+ 			/* zero length CONST IB isn't useful */
+ 			if (p->chunks[i].length_dw == 0)
+-				return -EINVAL;
++				return radeon_rs480_cs_parser_init_fail(p, "zero_const_ib",
++									-EINVAL, i,
++									p->nchunks,
++									user_chunk.chunk_id,
++									user_chunk.length_dw);
+ 		}
+ 		if (user_chunk.chunk_id == RADEON_CHUNK_ID_FLAGS) {
+ 			p->chunk_flags = &p->chunks[i];
+ 			/* zero length flags aren't useful */
+ 			if (p->chunks[i].length_dw == 0)
+-				return -EINVAL;
++				return radeon_rs480_cs_parser_init_fail(p, "zero_flags",
++									-EINVAL, i,
++									p->nchunks,
++									user_chunk.chunk_id,
++									user_chunk.length_dw);
+ 		}
+ 
+ 		size = p->chunks[i].length_dw;
+@@ -348,10 +386,18 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
+ 		p->chunks[i].kdata = kvmalloc_array(size, sizeof(uint32_t), GFP_KERNEL);
+ 		size *= sizeof(uint32_t);
+ 		if (p->chunks[i].kdata == NULL) {
+-			return -ENOMEM;
++			return radeon_rs480_cs_parser_init_fail(p, "chunk_data_alloc",
++								-ENOMEM, i,
++								p->nchunks,
++								user_chunk.chunk_id,
++								user_chunk.length_dw);
+ 		}
+ 		if (copy_from_user(p->chunks[i].kdata, cdata, size)) {
+-			return -EFAULT;
++			return radeon_rs480_cs_parser_init_fail(p, "chunk_data_copy",
++								-EFAULT, i,
++								p->nchunks,
++								user_chunk.chunk_id,
++								user_chunk.length_dw);
+ 		}
+ 		if (user_chunk.chunk_id == RADEON_CHUNK_ID_FLAGS) {
+ 			p->cs_flags = p->chunks[i].kdata[0];
+@@ -367,23 +413,31 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
+ 		if ((p->cs_flags & RADEON_CS_USE_VM) &&
+ 		    !p->rdev->vm_manager.enabled) {
+ 			DRM_ERROR("VM not active on asic!\n");
+-			return -EINVAL;
++			return radeon_rs480_cs_parser_init_fail(p, "vm_inactive",
++								-EINVAL, p->nchunks,
++								p->nchunks, 0, 0);
+ 		}
+ 
+ 		if (radeon_cs_get_ring(p, ring, priority))
+-			return -EINVAL;
++			return radeon_rs480_cs_parser_init_fail(p, "ring_select",
++								-EINVAL, p->nchunks,
++								p->nchunks, 0, 0);
+ 
+ 		/* we only support VM on some SI+ rings */
+ 		if ((p->cs_flags & RADEON_CS_USE_VM) == 0) {
+ 			if (p->rdev->asic->ring[p->ring]->cs_parse == NULL) {
+ 				DRM_ERROR("Ring %d requires VM!\n", p->ring);
+-				return -EINVAL;
++				return radeon_rs480_cs_parser_init_fail(p, "ring_requires_vm",
++									-EINVAL, p->nchunks,
++									p->nchunks, 0, 0);
+ 			}
+ 		} else {
+ 			if (p->rdev->asic->ring[p->ring]->ib_parse == NULL) {
+ 				DRM_ERROR("VM not supported on ring %d!\n",
+ 					  p->ring);
+-				return -EINVAL;
++				return radeon_rs480_cs_parser_init_fail(p, "ring_no_vm",
++									-EINVAL, p->nchunks,
++									p->nchunks, 0, 0);
+ 			}
+ 		}
+ 	}

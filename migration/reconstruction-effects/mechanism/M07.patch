@@ -1,0 +1,244 @@
+diff --git a/radeon.h b/radeon.h
+index 55331c3..bbd84a6 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -117,6 +117,7 @@ extern int radeon_rs480_safe_regs;
+ extern int radeon_rs480_candidate_regs;
+ extern int radeon_rs480_cp_me_ram_dump;
+ extern int radeon_rs480_cp_me_ram_inject;
++extern int radeon_rs480_cp_me_oracle;
+ extern int radeon_rs480_hazard_readers_armed;
+ extern int radeon_vm_size;
+ extern int radeon_vm_block_size;
+diff --git a/radeon_drv.c b/radeon_drv.c
+index 919b08f..920141d 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -145,6 +145,7 @@ int radeon_rs480_safe_regs = 1;
+ int radeon_rs480_candidate_regs = 1;
+ int radeon_rs480_cp_me_ram_dump;
+ int radeon_rs480_cp_me_ram_inject;
++int radeon_rs480_cp_me_oracle;
+ int radeon_rs480_hazard_readers_armed;
+ int radeon_vm_size = 8;
+ int radeon_vm_block_size = -1;
+@@ -269,6 +270,28 @@ MODULE_PARM_DESC(rs480_cp_me_ram_inject,
+ );
+ module_param_named(rs480_cp_me_ram_inject, radeon_rs480_cp_me_ram_inject, int, 0644);
+ 
++MODULE_PARM_DESC(rs480_cp_me_oracle,
++	"Arm the CP MicroEngine oracle debugfs node radeon_rs480_cp_me_oracle. "
++	"Default 0 (OFF); arm with the exact token 0x4f524331 ('ORC1'), a stray "
++	"nonzero value does nothing. On an IGP the live-fire is EXCLUDED: reading "
++	"the node prints an exclusion notice, because the CSQ stop/restart + gfx "
++	"ring test scratch poll hard-locks the K8 northbridge (no MMIO completion "
++	"timeout). Use radeon_rs480_cp_me_ram_inject for safe CP_ME_RAM "
++	"read/verify/restore. The live-fire (inject a sentinel into dead microword "
++	"0xff, stop/restart the command queue, ring test, restore) is retained for a "
++	"future discrete Radeon, where the PCIe completion timeout makes a wedged "
++	"poll fail cleanly; root-only, run with the display quiesced."
++);
++module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
++
++MODULE_PARM_DESC(rs480_hazard_readers_armed,
++	"RS480 hazard-reader arm gate: 0 (default) makes the wedge-prone "
++	"radeon_rs480_candidate_vap_regs and radeon_rs480_candidate_firmware_read_regs "
++	"nodes refuse the MMIO read.  VAP/PVS clock-gates at rest and a read can "
++	"stall the reset-less K8 northbridge; the firmware_read cohort includes "
++	"HOST_PATH_CNTL (0x0130), which gates the HyperTransport host path.  Set 1 "
++	"to arm an attended read.");
++module_param_named(rs480_hazard_readers_armed, radeon_rs480_hazard_readers_armed, int, 0644);
+ 
+ MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
+ module_param_named(vm_size, radeon_vm_size, int, 0444);
+diff --git a/rs400.c b/rs400.c
+index 317ec35..5523d0b 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -1194,6 +1194,174 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
+ 	.llseek  = seq_lseek,
+ 	.release = single_release,
+ };
++
++/* CP-ME oracle Run #1: inject -> restart -> ring-test -> restore mechanical loop.
++ *
++ * Increment-1 (the inject node above) proved CP_ME_RAM write-verify-restore with
++ * no execute.  This proves the next step -- that a microcode write survives a CSQ
++ * stop/restart and the engine still services the ring afterward -- with a
++ * PREDICTED POSITIVE rather than an exploratory observation.  The target is word
++ * 0xff of the 256-word R300_cp.bin overlay, which is all-zero tail padding after
++ * the last real instruction at word 0xfb (verified against the firmware blob and
++ * the microword decode); no workload executes it.  The stronger invariant is in
++ * the write itself: only DATAL (the operand) is replaced with the sentinel, while
++ * DATAH (the opcode, 0x00 = const_or_control) is preserved from the original.  So
++ * even in the worst case -- the PC falling through 0xfb into the padding -- the
++ * executed opcode at 0xff is unchanged; only an operand that opcode 0x00 ignores
++ * differs.  ring_test issues only a PACKET0 scratch write, so the loop is
++ * isolated to the inject/restart/restore machinery.
++ *
++ * The sequence mirrors increment-1's quiesce/restart exactly: save the word, stop
++ * the queue with CSQ_PRIDIS_INDDIS, write the sentinel, read it back, restore the
++ * saved CSQ value (not a guessed constant) to restart, run the gfx ring test with
++ * the sentinel live (must PASS -- dead word), quiesce again, restore the original
++ * word, restart, and run the ring test once more.
++ *
++ * HARDWARE OUTCOME: firing this on an RS480 IGP hard-locked both CPU cores.  The
++ * CSQ stop/restart desyncs the live CP, and the ring_test scratch poll then reads
++ * MMIO that never returns, because the K8 northbridge / HyperTransport has no
++ * PCIe-style completion timeout.  The RS480 CP-ME oracle CSQ-toggle ring_test
++ * safety RCA retains the bounded evidence.  The node
++ * therefore excludes every RADEON_IS_IGP part and returns early.  The live-fire
++ * sequence is retained, commented, for a future discrete Radeon, where a
++ * wedged-CP poll returns 0xffffffff once the PCIe completion timeout fires, so
++ * ring_test fails cleanly and the GPU reset path (radeon_gpu_reset ->
++ * rs400_startup -> r100_cp_init re-uploads FIRMWARE_R300) recovers without a
++ * reboot.  Inert unless radeon_rs480_cp_me_oracle is armed to the exact token;
++ * root-only; run with the display quiesced.
++ */
++#define RS480_CP_ME_ORACLE_ARM_TOKEN 0x4f524331u	/* "ORC1" */
++#define RS480_CP_ME_ORACLE_ADDR      0xffu		/* dead tail-padding microword */
++#define RS480_CP_ME_ORACLE_SENTINEL  0xdeadbeefu
++
++static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++
++	if (radeon_rs480_cp_me_oracle != RS480_CP_ME_ORACLE_ARM_TOKEN) {
++		seq_printf(m, "oracle disarmed: set rs480_cp_me_oracle=0x%08x\n",
++			   RS480_CP_ME_ORACLE_ARM_TOKEN);
++		return 0;
++	}
++
++	/* IGP exclusion.  The live-fire loop stops and restarts the command queue
++	 * and then polls a scratch register through r100_ring_test.  On an IGP that
++	 * poll MMIO read crosses the K8 northbridge / HyperTransport, which has no
++	 * PCIe-style completion timeout: a wedged CP makes the read never return and
++	 * hard-locks both CPU cores.  The RS480 CP-ME oracle CSQ-toggle ring_test
++	 * safety RCA retains the bounded evidence.  Refuse on
++	 * every RADEON_IS_IGP part.  The safe CP_ME_RAM read/verify/restore is still
++	 * available through the radeon_rs480_cp_me_ram_inject node. */
++	if (rdev->flags & RADEON_IS_IGP) {
++		seq_puts(m,
++			 "oracle live-fire excluded on IGP: CSQ stop/restart + ring_test "
++			 "scratch poll hard-locks the K8 northbridge (no MMIO completion "
++			 "timeout).  Use radeon_rs480_cp_me_ram_inject for safe CP_ME_RAM "
++			 "read/verify/restore.  See the RS480 CP-ME oracle "
++			 "CSQ-toggle ring_test safety RCA.\n");
++		return 0;
++	}
++
++	/* The live-fire path below drives the gfx ring through radeon_ring_test.
++	 * With acceleration disabled the ring is never initialized, so refuse before
++	 * the inject/restart sequence rather than touch an uninitialized ring. */
++	if (!rdev->accel_working) {
++		seq_puts(m,
++			 "oracle live-fire requires acceleration; rdev->accel_working is off\n");
++		return 0;
++	}
++
++	/*
++	 * Dedicated-Radeon live-fire path, retained (commented) for future analysis
++	 * on a discrete card -- this lane has no discrete target to validate it on.
++	 * On a discrete GPU a wedged-CP scratch poll returns 0xffffffff once the
++	 * PCIe completion timeout fires, so r100_ring_test fails cleanly and the
++	 * driver recovers, which makes the operation sound there.  To exercise on a
++	 * dedicated Radeon, restore the block below: it injects the sentinel into
++	 * dead microword 0xff, stops the command queue (CSQ_PRIDIS_INDDIS), restarts
++	 * from the saved CSQ value, runs the gfx ring test (predicted PASS -- the
++	 * word never executes), restores the original word, and re-tests.
++	 *
++	 * Uncommenting requires three things this lane has not wired, because no
++	 * discrete card validated them:
++	 *   - the oracle node's i_private must be the shared rs480_cp_me_inject_ctx
++	 *     (today it is rdev), so the live-fire holds ctx->lock and serializes
++	 *     against radeon_rs480_cp_me_ram_inject -- both write CP_ME_RAM;
++	 *   - the target word must read back all-zero first (a nonzero word is a real
++	 *     instruction, not dead padding -- abort);
++	 *   - the inject read-back must match the opcode (DATAH preserved) AND the
++	 *     operand (DATAL == sentinel); on any mismatch restore and abort rather
++	 *     than ring-test a half-written microword.
++	 *
++	 *	struct rs480_cp_me_inject_ctx *ctx = m->private;
++	 *	struct radeon_device *rdev = ctx->rdev;
++	 *	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
++	 *	const u32 addr = RS480_CP_ME_ORACLE_ADDR;
++	 *	u32 orig_h, orig_l, rb_h, rb_l, csq;
++	 *	int r;
++	 *
++	 *	mutex_lock(&ctx->lock);
++	 *	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
++	 *	orig_h = RREG32(RADEON_CP_ME_RAM_DATAH);
++	 *	orig_l = RREG32(RADEON_CP_ME_RAM_DATAL);
++	 *	seq_printf(m, "target 0x%02x original = %08x:%08x\n", addr, orig_h, orig_l);
++	 *
++	 *	if (orig_h || orig_l) {
++	 *		seq_printf(m, "abort: word 0x%02x not dead padding (%08x:%08x)\n",
++	 *			   addr, orig_h, orig_l);
++	 *		mutex_unlock(&ctx->lock);
++	 *		return 0;
++	 *	}
++	 *
++	 *	csq = RREG32(RADEON_CP_CSQ_CNTL);
++	 *	WREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);
++	 *
++	 *	WREG32(RADEON_CP_ME_RAM_ADDR, addr);
++	 *	WREG32(RADEON_CP_ME_RAM_DATAH, orig_h);
++	 *	WREG32(RADEON_CP_ME_RAM_DATAL, RS480_CP_ME_ORACLE_SENTINEL);
++	 *
++	 *	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
++	 *	rb_h = RREG32(RADEON_CP_ME_RAM_DATAH);
++	 *	rb_l = RREG32(RADEON_CP_ME_RAM_DATAL);
++	 *	if (rb_h != orig_h || rb_l != RS480_CP_ME_ORACLE_SENTINEL) {
++	 *		seq_printf(m, "abort: inject readback %08x:%08x != %08x:%08x; restoring\n",
++	 *			   rb_h, rb_l, orig_h, RS480_CP_ME_ORACLE_SENTINEL);
++	 *		WREG32(RADEON_CP_ME_RAM_ADDR, addr);
++	 *		WREG32(RADEON_CP_ME_RAM_DATAH, orig_h);
++	 *		WREG32(RADEON_CP_ME_RAM_DATAL, orig_l);
++	 *		WREG32(RADEON_CP_CSQ_CNTL, csq);
++	 *		mutex_unlock(&ctx->lock);
++	 *		return 0;
++	 *	}
++	 *
++	 *	WREG32(RADEON_CP_CSQ_CNTL, csq);
++	 *	r = radeon_ring_test(rdev, RADEON_RING_TYPE_GFX_INDEX, ring);
++	 *	seq_printf(m, "ring_test with sentinel live: %s\n", r ? "FAIL" : "PASS");
++	 *
++	 *	WREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);
++	 *	WREG32(RADEON_CP_ME_RAM_ADDR, addr);
++	 *	WREG32(RADEON_CP_ME_RAM_DATAH, orig_h);
++	 *	WREG32(RADEON_CP_ME_RAM_DATAL, orig_l);
++	 *	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
++	 *	rb_h = RREG32(RADEON_CP_ME_RAM_DATAH);
++	 *	rb_l = RREG32(RADEON_CP_ME_RAM_DATAL);
++	 *	seq_printf(m, "restored: readback %08x:%08x (%s)\n", rb_h, rb_l,
++	 *		   (rb_h == orig_h && rb_l == orig_l) ? "OK" : "MISMATCH");
++	 *	WREG32(RADEON_CP_CSQ_CNTL, csq);
++	 *	mutex_unlock(&ctx->lock);
++	 *
++	 *	r = radeon_ring_test(rdev, RADEON_RING_TYPE_GFX_INDEX, ring);
++	 *	seq_printf(m, "ring_test after restore: %s\n", r ? "FAIL" : "PASS");
++	 *	seq_puts(m, "oracle Run #1 complete\n");
++	 */
++	seq_puts(m,
++		 "oracle live-fire retained (commented) for dedicated-Radeon analysis; "
++		 "not compiled in this lane.  See the RS480 CP-ME oracle "
++		 "CSQ-toggle ring_test safety RCA.\n");
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_cp_me_oracle);
+ #endif /* CONFIG_DEBUG_FS */
+ 
+ /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
+@@ -1307,6 +1475,11 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
+ 		debugfs_create_file("radeon_rs480_cp_me_ram_inject", 0600, root,
+ 				    inject_ctx, &rs480_cp_me_ram_inject_fops);
+ 	}
++	/* CP-ME oracle Run #1.  Mode 0400: reading it runs a live CP_ME_RAM
++	 * inject/restart/ring-test/restore loop, so it is root-only and inert
++	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
++	debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root, rdev,
++			    &rs480_cp_me_oracle_fops);
+ #endif
+ }
+ 

@@ -5,12 +5,21 @@
 /docs export-ignore
 /scripts export-ignore
 /.github export-ignore
+/ci export-ignore
+/migration export-ignore
 /README.md export-ignore
 /AGENTS.md export-ignore
 /CLAUDE.md export-ignore
+/MIGRATION_INPUT.toml export-ignore
 /UPSTREAM_BASE.toml export-ignore
 /source-closure.toml export-ignore
 
 # Kernel sources keep their bytes: the package verifies exported content by
 # hash, and an end-of-line rewrite would change every hash.
 * -text
+
+# Frozen migration inputs and exact effect bundles preserve source bytes,
+# including whitespace defects that belong to the evidence. Whitespace gates
+# apply to the materialized source commits instead.
+migration/input/** -whitespace
+migration/reconstruction-effects/** -whitespace

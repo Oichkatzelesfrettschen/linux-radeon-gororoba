@@ -1,0 +1,12 @@
+diff --git a/radeon.h b/radeon.h
+index 63c4758..2915d7b 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -68,6 +68,7 @@
+ #include <linux/interval_tree.h>
+ #include <linux/hashtable.h>
+ #include <linux/dma-fence.h>
++#include <linux/version.h>
+ 
+ #ifdef CONFIG_MMU_NOTIFIER
+ #include <linux/mmu_notifier.h>

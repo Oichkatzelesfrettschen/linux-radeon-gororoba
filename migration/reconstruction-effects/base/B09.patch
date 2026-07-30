@@ -1,0 +1,32 @@
+diff --git a/radeon_ttm.c b/radeon_ttm.c
+index 616d25c..9e49238 100644
+--- a/radeon_ttm.c
++++ b/radeon_ttm.c
+@@ -680,11 +680,27 @@ int radeon_ttm_init(struct radeon_device *rdev)
+ 	int r;
+ 
+ 	/* No others user of address space so set it to 0 */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
++	{
++		unsigned int alloc_flags = 0;
++
++		if (rdev->need_swiotlb)
++			alloc_flags |= TTM_ALLOCATION_POOL_USE_DMA_ALLOC;
++		if (dma_addressing_limited(&rdev->pdev->dev))
++			alloc_flags |= TTM_ALLOCATION_POOL_USE_DMA32;
++
++		r = ttm_device_init(&rdev->mman.bdev, &radeon_bo_driver, rdev->dev,
++				       rdev_to_drm(rdev)->anon_inode->i_mapping,
++				       rdev_to_drm(rdev)->vma_offset_manager,
++				       alloc_flags);
++	}
++#else
+ 	r = ttm_device_init(&rdev->mman.bdev, &radeon_bo_driver, rdev->dev,
+ 			       rdev_to_drm(rdev)->anon_inode->i_mapping,
+ 			       rdev_to_drm(rdev)->vma_offset_manager,
+ 			       rdev->need_swiotlb,
+ 			       dma_addressing_limited(&rdev->pdev->dev));
++#endif
+ 	if (r) {
+ 		DRM_ERROR("failed initializing buffer object driver(%d).\n", r);
+ 		return r;

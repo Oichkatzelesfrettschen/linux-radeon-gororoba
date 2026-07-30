@@ -1,0 +1,497 @@
+diff --git a/radeon.h b/radeon.h
+index 2c66fed..488198c 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -119,6 +119,8 @@ extern int radeon_rs480_cp_me_ram_dump;
+ extern int radeon_rs480_cp_me_ram_inject;
+ extern int radeon_rs480_cp_me_oracle;
+ extern int radeon_rs480_cp_ib_scratch_oracle;
++extern int radeon_rs480_gpu_reset_recover_probe;
++extern int radeon_rs480_reset_hang_probe;
+ extern int radeon_rs480_r400_us_cs;
+ extern int radeon_rs480_frontier_index;
+ extern int radeon_rs480_vertex_index;
+diff --git a/radeon_drv.c b/radeon_drv.c
+index 88917f1..aba173a 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -147,6 +147,8 @@ int radeon_rs480_cp_me_ram_dump;
+ int radeon_rs480_cp_me_ram_inject;
+ int radeon_rs480_cp_me_oracle;
+ int radeon_rs480_cp_ib_scratch_oracle;
++int radeon_rs480_gpu_reset_recover_probe;
++int radeon_rs480_reset_hang_probe;
+ int radeon_rs480_r400_us_cs;
+ int radeon_rs480_frontier_index = -1;
+ int radeon_rs480_vertex_index = -1;
+@@ -304,6 +306,40 @@ MODULE_PARM_DESC(rs480_cp_ib_scratch_oracle,
+ 	"radeon_rs480_cp_me_oracle. Requires an initialized gfx ring; root-only.");
+ module_param_named(rs480_cp_ib_scratch_oracle, radeon_rs480_cp_ib_scratch_oracle, int, 0644);
+ 
++MODULE_PARM_DESC(rs480_gpu_reset_recover_probe,
++	"Arm the GPU-reset recovery probe debugfs node "
++	"radeon_rs480_gpu_reset_recover_probe. Default 0 (OFF); arm with the exact "
++	"token 0x52435652 ('RCVR'). Reading the armed node sets needs_reset and "
++	"calls radeon_gpu_reset() directly -- the deterministic reset the stock "
++	"radeon_gpu_reset node cannot deliver, since that node only wakes the fence "
++	"queue and fires nothing without a blocked waiter. Idle-gated: it refuses "
++	"unless RBBM_STATUS reads !GUI_ACTIVE, so r300_asic_reset early-returns and "
++	"the RBBM_SOFT_RESET CP reset (the documented R3XX/R4XX hard-locking path) "
++	"is skipped. A PASS proves the suspend/resume/cp_init recovery path "
++	"survives; it does NOT prove a wedged ring recovers. Requires an "
++	"initialized gfx ring; root-only; run with the display quiesced.");
++module_param_named(rs480_gpu_reset_recover_probe, radeon_rs480_gpu_reset_recover_probe, int, 0644);
++
++MODULE_PARM_DESC(rs480_reset_hang_probe,
++	"Arm the RBBM soft-reset recovery probe debugfs node "
++	"radeon_rs480_reset_hang_probe. Default 0 (OFF); arm with 0x53525354 "
++	"('SRST') for the idle soft-reset stage, 0x48414E47 ('HANG') for the "
++	"2D-blit in-busy stage that busies the E2 engine via r100_copy_blit and resets "
++	"while it drains, 0x57443341 ('WD3A') for the wedged-3D drainable stage, or "
++	"0x57443342 ('WD3B') for the wedged-3D hung stage. The WD3A/WD3B stages recover "
++	"a userspace-induced VAP/GA frontend stall through the production radeon_gpu_reset "
++	"path (ring backup, r300_asic_reset, ring restore or fence force-completion, "
++	"radeon_ib_ring_tests); WD3A gates on a busy frontend, WD3B on the frontend-wedge "
++	"signature (RB3D/RE idle). Reading a soft-reset-scaffold node (SRST/HANG) force-clocks "
++	"VAP/GA/E2 and runs the documented RBBM_SOFT_RESET sequence (the half of "
++	"r300_asic_reset that radeon_gpu_reset skips on an idle engine), rebuilds the "
++	"CP with r100_cp_init, and re-tests it with r100_ib_test. It proves whether the "
++	"soft-reset write wedges this reset-less northbridge and whether the CP executes "
++	"again, NOT that a hung engine recovers. RBBM_SOFT_RESET (0x0000F0) is low control "
++	"space, not the gated VAP aperture. Idle-only, root-only, initialized gfx ring; "
++	"run with the display quiesced.");
++module_param_named(rs480_reset_hang_probe, radeon_rs480_reset_hang_probe, int, 0644);
++
+ MODULE_PARM_DESC(rs480_r400_us_cs,
+ 	"RS480 R400-US CS-checker allowlist: 0 (default) keeps the stock R300 "
+ 	"bitmap.  Set 1 at module load for an attended R300_HB_R400_US run; this "
+diff --git a/rs400.c b/rs400.c
+index ec48a6e..dafa8e0 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -38,6 +38,7 @@
+ #include "radeon.h"
+ #include "radeon_asic.h"
+ #include "rs400d.h"
++#include "radeon_object.h"
+ 
+ #include "rs480_reg_safe.h"
+ 
+@@ -1735,6 +1736,399 @@ static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
+ }
+ 
+ DEFINE_SHOW_ATTRIBUTE(rs480_cp_ib_scratch_oracle);
++
++/* GPU-reset recovery probe (idle-gated direct reset).
++ *
++ * Sets needs_reset and calls radeon_gpu_reset() directly -- the deterministic
++ * one-shot the stock radeon_gpu_reset debugfs node cannot deliver.  That node
++ * only sets needs_reset and wakes the fence queue, so it fires nothing unless a
++ * task is already blocked in a GEM or CS fence wait; this node forces the reset
++ * itself.
++ *
++ * The handler holds no exclusive_lock.  radeon_gpu_reset takes down_write on
++ * rdev->exclusive_lock, and the stock radeon_debugfs_gpu_reset holds that rwsem
++ * for read, so a handler modelled on it that also called the reset would
++ * deadlock.  Setting needs_reset without the lock is the same unsynchronized
++ * store the stock node performs.
++ *
++ * Idle-gated by design.  It refuses unless RBBM_STATUS reads back !GUI_ACTIVE,
++ * so r300_asic_reset early-returns at its own !GUI_ACTIVE gate and the
++ * RBBM_SOFT_RESET CP reset -- the sequence the radeon driver flags as
++ * "sometimes ends up hard locking the computer" on R3XX/R4XX -- never executes.
++ * The probe therefore exercises radeon_suspend, an asic_reset that is a no-op on
++ * the idle engine, radeon_resume through rs400_startup and r100_cp_init, and the
++ * closing radeon_ib_ring_tests.  A PASS proves the suspend/resume/CSQ-resync
++ * recovery path survives on this IGP; it does not prove a wedged ring recovers,
++ * because the wedged-engine soft-reset is exactly the half the idle gate skips.
++ *
++ * Root-only, armed only when radeon_rs480_gpu_reset_recover_probe equals the
++ * token, and only with an initialized gfx ring.  Run with the display quiesced:
++ * the reset tears the GPU down and rebuilds it, invalidating live GL contexts.
++ */
++#define RS480_GPU_RESET_RECOVER_PROBE_ARM_TOKEN 0x52435652u	/* "RCVR" */
++
++static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
++	u32 status;
++	int r;
++
++	if (radeon_rs480_gpu_reset_recover_probe !=
++	    RS480_GPU_RESET_RECOVER_PROBE_ARM_TOKEN) {
++		seq_printf(m,
++			   "gpu-reset recovery probe disarmed: set rs480_gpu_reset_recover_probe=0x%08x\n",
++			   RS480_GPU_RESET_RECOVER_PROBE_ARM_TOKEN);
++		return 0;
++	}
++
++	if (!rdev->accel_working || !ring->ready) {
++		seq_puts(m,
++			 "gpu-reset recovery probe requires an initialized gfx ring "
++			 "(accel_working and ring->ready)\n");
++		return 0;
++	}
++
++	/* Idle gate: refuse while the engine is busy so r300_asic_reset skips the
++	 * RBBM_SOFT_RESET CP reset (the documented hard-locking path). */
++	status = RREG32(R_000E40_RBBM_STATUS);
++	if (G_000E40_GUI_ACTIVE(status)) {
++		seq_printf(m,
++			   "gpu-reset recovery probe refused: RBBM_STATUS=0x%08x GUI_ACTIVE; runs "
++			   "only idle so r300_asic_reset skips the RBBM_SOFT_RESET CP reset\n",
++			   status);
++		return 0;
++	}
++
++	/* Force the deterministic reset: set needs_reset (the unlocked store the
++	 * stock node makes) and drive radeon_gpu_reset() ourselves.  No
++	 * exclusive_lock is held here; radeon_gpu_reset takes its own down_write. */
++	rdev->needs_reset = true;
++	r = radeon_gpu_reset(rdev);
++
++	status = RREG32(R_000E40_RBBM_STATUS);
++	seq_printf(m,
++		   "gpu-reset recovery probe: radeon_gpu_reset => %s (r=%d) post RBBM_STATUS=0x%08x\n"
++		   "idle-gated: exercised suspend/resume/cp_init recovery, NOT wedged-ring "
++		   "soft-reset; reset chain and ib-ring-test verdict in dmesg\n",
++		   r ? "FAIL" : "PASS", r, status);
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_gpu_reset_recover_probe);
++
++/* RBBM_SOFT_RESET is low RBBM control space, not the gated VAP aperture
++ * (0x2200-0x2504) whose raw write wedges the K8 northbridge.  r300d.h is not
++ * included here (its R_000E40 family collides with rs400d.h), so the soft-reset
++ * bit-setters are spelled locally from the R3xx register definition. */
++#define RS480_RBBM_SOFT_RESET            0x0000F0
++#define RS480_SOFT_RESET_CP(x)           (((x) & 0x1) << 0)
++#define RS480_SOFT_RESET_VAP(x)          (((x) & 0x1) << 2)
++#define RS480_SOFT_RESET_GA(x)           (((x) & 0x1) << 13)
++
++/* SCLK_CNTL (PLL 0x0d) clock force bits: CP (16), E2/2D (20), SE (21), TX (27),
++ * US (28), SU (30); SCLK_CNTL2 (PLL 0x1e): TCL (13), CBA (14), GA (15).  The
++ * fire runs with the display quiesced, which can gate the 2D (E2) and geometry
++ * (VAP/GA) domains; the reset writes those blocks and the 2D-blit trigger drives
++ * E2, so all are force-clocked across the sequence and restored after. */
++#define RS480_SCLK_CNTL_FORCE_3D    (BIT(16) | BIT(20) | BIT(21) | BIT(27) | BIT(28) | BIT(30))
++#define RS480_SCLK_CNTL2_FORCE_3D   (BIT(13) | BIT(14) | BIT(15))
++
++struct rs480_soft_reset_result {
++	u32 at_reset;	/* RBBM_STATUS read immediately before the SOFT_RESET write */
++	u32 post;	/* RBBM_STATUS after the reset */
++	int ib_test;	/* r100_ib_test after cp_init: 0 means the CP executes again */
++};
++
++/* Run the documented R300 RBBM_SOFT_RESET sequence (r300_asic_reset body),
++ * rebuild the CP ring, and verify the CP runs an IB again.
++ *
++ * This is the contained re-use of r300_asic_reset that radeon_gpu_reset cannot
++ * deliver on an idle engine: r300_asic_reset early-returns at !GUI_ACTIVE before
++ * the soft-reset writes, so issuing them directly is the only way to drive them
++ * without first hanging the engine.
++ *
++ * exclusive_lock is held for write across the register sequence to serialise
++ * against a concurrent command submission -- the same rwsem radeon_gpu_reset
++ * takes for write -- and released before r100_ib_test so the recovery IB submits
++ * through the normal ring path.
++ *
++ * res->at_reset is read immediately before the SOFT_RESET write, so a busy-engine
++ * caller sees the true engine state at the instant of reset, not an earlier
++ * sample taken before r100_mc_stop.  res->ib_test demonstrates recovery: the
++ * driver's own reset ends with radeon_ib_ring_tests because an idle RBBM_STATUS
++ * does not prove the CP executes again.
++ *
++ * Recovery is r100_cp_init, not rs400_startup: the soft-reset tears down the CP
++ * ring and the VAP/GA/CP engine blocks but leaves GART, the memory controller,
++ * the writeback buffer, fences, and the IB pool live, so the full startup would
++ * double-initialise them.
++ *
++ * CP_CSQ_CNTL = 0 is the register the CSQ-toggle ring_test RCA forbade, but here
++ * it is the driver-native reset write paired with mdelay, not the r100_ring_test
++ * poll that never returned on the wedge -- the reset's risk profile, not the
++ * forbidden poll's. */
++static void rs480_soft_reset(struct radeon_device *rdev,
++			     struct rs480_soft_reset_result *res)
++{
++	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
++	struct r100_mc_save save;
++	u32 sclk, sclk2, tmp;
++
++	down_write(&rdev->exclusive_lock);
++	sclk = RREG32_PLL(0x0000000D);
++	sclk2 = RREG32_PLL(0x0000001E);
++	WREG32_PLL(0x0000000D, sclk | RS480_SCLK_CNTL_FORCE_3D);
++	WREG32_PLL(0x0000001E, sclk2 | RS480_SCLK_CNTL2_FORCE_3D);
++
++	r100_mc_stop(rdev, &save);
++	WREG32(RADEON_CP_CSQ_CNTL, 0);
++	tmp = RREG32(RADEON_CP_RB_CNTL);
++	WREG32(RADEON_CP_RB_CNTL, tmp | RADEON_RB_RPTR_WR_ENA);
++	WREG32(RADEON_CP_RB_RPTR_WR, 0);
++	WREG32(RADEON_CP_RB_WPTR, 0);
++	WREG32(RADEON_CP_RB_CNTL, tmp);
++	pci_save_state(rdev->pdev);
++	r100_bm_disable(rdev);
++	res->at_reset = RREG32(R_000E40_RBBM_STATUS);
++	WREG32(RS480_RBBM_SOFT_RESET,
++	       RS480_SOFT_RESET_VAP(1) | RS480_SOFT_RESET_GA(1));
++	RREG32(RS480_RBBM_SOFT_RESET);
++	mdelay(500);
++	WREG32(RS480_RBBM_SOFT_RESET, 0);
++	mdelay(1);
++	WREG32(RS480_RBBM_SOFT_RESET, RS480_SOFT_RESET_CP(1));
++	RREG32(RS480_RBBM_SOFT_RESET);
++	mdelay(500);
++	WREG32(RS480_RBBM_SOFT_RESET, 0);
++	mdelay(1);
++	pci_restore_state(rdev->pdev);
++	r100_enable_bm(rdev);
++	res->post = RREG32(R_000E40_RBBM_STATUS);
++	r100_mc_resume(rdev, &save);
++
++	r100_cp_init(rdev, 1024 * 1024);
++	WREG32_PLL(0x0000001E, sclk2);
++	WREG32_PLL(0x0000000D, sclk);
++	up_write(&rdev->exclusive_lock);
++
++	res->ib_test = r100_ib_test(rdev, ring);
++}
++
++/* RBBM soft-reset recovery probe (idle, stage 1 of the hang-recovery test).
++ * Drives the RBBM_SOFT_RESET sequence -- the half of r300_asic_reset that 0040
++ * skips on an idle engine -- so the operator learns whether the soft-reset write
++ * wedges this reset-less northbridge before a real hang is induced, and whether
++ * the CP runs an IB again afterward.  Root-only, armed by token, idle-only, run
++ * display-quiesced. */
++#define RS480_RESET_HANG_PROBE_SOFT_RESET_TOKEN 0x53525354u	/* "SRST" */
++
++/* In-busy stage (Mode H): busy the 2D engine with a real BITBLT, then run the
++ * soft-reset while it drains.  GUI_ACTIVE (RBBM_STATUS bit 31) is the OR of the
++ * engine-busy bits; the 2D engine (E2/RB2D, bits 17/18) is driven by
++ * PACKET3_BITBLT_MULTI through r100_copy_blit -- the live r300/rs400 copy hook --
++ * without touching the gated VAP aperture (0x2200-0x2504) a geometry draw would.
++ * So it raises GUI_ACTIVE for the reset's RBBM_STATUS read without driving the
++ * wedge-prone geometry path.
++ *
++ * The reset still asserts SOFT_RESET_VAP|GA|CP, not E2, so this proves the
++ * documented soft-reset write survives while the engine is globally GUI_ACTIVE
++ * (E2 busy); it is not a 2D-block-specific reset.  rs480_soft_reset samples
++ * RBBM_STATUS at the instant of the reset write, so res.at_reset (E2_BUSY,
++ * GUI_ACTIVE) records whether the reset actually landed on a busy engine or the
++ * blit drained first through r100_mc_stop and the run degenerated to the idle
++ * case.  The blit fence can never signal once the CP is reset, so
++ * radeon_fence_driver_force_completion retires it before the ref is dropped. */
++#define RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN 0x48414E47u	/* "HANG" */
++
++static int rs480_blit_busy_reset(struct radeon_device *rdev, struct seq_file *m)
++{
++	struct rs480_soft_reset_result res;
++	struct radeon_bo *bo = NULL;
++	struct radeon_fence *fence;
++	u64 gpu_addr;
++	unsigned long sz = 2 * 1024 * 1024;
++	unsigned pages = (sz / 2) / RADEON_GPU_PAGE_SIZE;
++	int r;
++
++	r = radeon_bo_create(rdev, sz, PAGE_SIZE, true, RADEON_GEM_DOMAIN_GTT,
++			     0, NULL, NULL, &bo);
++	if (r) {
++		seq_printf(m, "blit-reset: scratch bo create failed (%d)\n", r);
++		return 0;
++	}
++	r = radeon_bo_reserve(bo, false);
++	if (r)
++		goto unref;
++	r = radeon_bo_pin(bo, RADEON_GEM_DOMAIN_GTT, &gpu_addr);
++	radeon_bo_unreserve(bo);
++	if (r) {
++		seq_printf(m, "blit-reset: scratch bo pin failed (%d)\n", r);
++		goto unref;
++	}
++
++	fence = r100_copy_blit(rdev, gpu_addr, gpu_addr + (sz / 2), pages, NULL);
++	if (IS_ERR(fence)) {
++		seq_printf(m, "blit-reset: BITBLT emit failed (%ld)\n", PTR_ERR(fence));
++		goto unpin;
++	}
++
++	rs480_soft_reset(rdev, &res);
++	radeon_fence_driver_force_completion(rdev, RADEON_RING_TYPE_GFX_INDEX);
++	radeon_fence_unref(&fence);
++
++	seq_printf(m,
++		   "reset-hang probe blit-reset: at-reset RBBM_STATUS=0x%08x (E2_BUSY=%u GUI_ACTIVE=%u) post=0x%08x ib_test=%s(%d) %s\n"
++		   "2D BITBLT busied E2; RBBM_SOFT_RESET(VAP|GA|CP) asserted while the engine was %s; CP rebuilt and re-tested. "
++		   "Proves the soft-reset write survives on a globally-active engine, not 2D-block-specific recovery\n",
++		   res.at_reset, G_000E40_E2_BUSY(res.at_reset), G_000E40_GUI_ACTIVE(res.at_reset),
++		   res.post, res.ib_test ? "FAIL" : "PASS", res.ib_test,
++		   (G_000E40_GA_BUSY(res.post) || G_000E40_VAP_BUSY(res.post)) ? "ENGINE-BUSY(reset suspect)" : "ENGINE-IDLE(reset clean)",
++		   G_000E40_GUI_ACTIVE(res.at_reset) ? "busy" : "idle(blit drained before the reset write, race lost)");
++unpin:
++	radeon_bo_reserve(bo, false);
++	radeon_bo_unpin(bo);
++	radeon_bo_unreserve(bo);
++unref:
++	radeon_bo_unref(&bo);
++	return 0;
++}
++
++/* Wedged-3D stages: recover a busy geometry frontend through the production
++ * reset path radeon.lockup_timeout invokes -- radeon_gpu_reset ->
++ * radeon_asic_reset -> r300_asic_reset -- not the standalone rs480_soft_reset
++ * scaffold the SRST/HANG stages drive.  The fault is induced out of band (a
++ * userspace 3D draw for the drainable stage; the pre-fix #996 TEXCOORD_XY
++ * rectangular-point-sprite blit on has_tcl=false for the hung stage), so these
++ * stages only validate recovery.  radeon_gpu_reset runs the full production
++ * recovery: radeon_ring_backup saves the in-flight ring, radeon_asic_reset drives
++ * r300_asic_reset (which, with the IGP force-clock, recovers instead of
++ * hard-locking), then radeon_ring_restore re-emits on success or
++ * radeon_fence_driver_force_completion retires the wedged fence on failure,
++ * closing with radeon_ib_ring_tests.  It early-returns unless rdev->needs_reset,
++ * which lockup detection sets and these stages set by hand.  Return code: 0
++ * recovered; -EAGAIN reset landed but the ring re-test failed and commands were
++ * saved (partial, another reset pending); other negative failed.
++ *
++ * Two stages preserve the ladder cadence.  WD3A drainable gates on a busy
++ * frontend alone (VAP or GA busy), so a legitimate mid-flight 3D draw whose 3D
++ * backend is still busy is accepted -- the first reset of an actually-busy
++ * VAP/GA block, reboot-safe.  WD3B hung gates on the #996 signature (frontend
++ * busy with RB3D/RE idle, the live 0x8411c100 shape), the production stall
++ * lockup_timeout exists for.  A RECOVERED verdict must be corroborated by the
++ * r300_asic_reset dmesg lines ("GPU reset succeed" and a non-idle at-reset
++ * RBBM_STATUS); if the fault drains in the gap before r300_asic_reset samples
++ * RBBM_STATUS it early-returns at !GUI_ACTIVE and resets nothing. */
++#define RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN 0x57443341u	/* "WD3A" */
++#define RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN      0x57443342u	/* "WD3B" */
++
++static bool rs480_frontend_busy(u32 status)
++{
++	return G_000E40_VAP_BUSY(status) || G_000E40_GA_BUSY(status);
++}
++
++static bool rs480_frontend_wedged(u32 status)
++{
++	return rs480_frontend_busy(status) &&
++	       !G_000E40_RB3D_BUSY(status) && !G_000E40_RE_BUSY(status);
++}
++
++static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
++				 bool require_backend_idle)
++{
++	const char *stage = require_backend_idle ? "hung" : "drainable";
++	u32 pre, post;
++	int r;
++
++	pre = RREG32(R_000E40_RBBM_STATUS);
++	if (require_backend_idle ? !rs480_frontend_wedged(pre)
++				 : !rs480_frontend_busy(pre)) {
++		seq_printf(m,
++			   "reset-hang probe wedged-3D(%s) refused: RBBM_STATUS=0x%08x lacks the "
++			   "%s; induce the userspace 3D fault before reading this node\n",
++			   stage, pre,
++			   require_backend_idle
++				   ? "frontend-wedge signature (VAP_BUSY|GA_BUSY set, RB3D/RE idle)"
++				   : "busy-frontend signature (VAP_BUSY|GA_BUSY set)");
++		return 0;
++	}
++
++	rdev->needs_reset = true;
++	r = radeon_gpu_reset(rdev);
++	post = RREG32(R_000E40_RBBM_STATUS);
++
++	seq_printf(m,
++		   "reset-hang probe wedged-3D(%s): pre RBBM_STATUS=0x%08x (VAP_BUSY=%u GA_BUSY=%u RB3D_BUSY=%u RE_BUSY=%u) "
++		   "radeon_gpu_reset=%d post=0x%08x -> %s\n"
++		   "production path: ring backup, r300_asic_reset (IGP force-clocked), ring restore or fence "
++		   "force-completion, radeon_ib_ring_tests; corroborate RECOVERED with the r300_asic_reset dmesg "
++		   "\"GPU reset succeed\" line and a non-idle at-reset RBBM_STATUS\n",
++		   stage, pre, G_000E40_VAP_BUSY(pre), G_000E40_GA_BUSY(pre),
++		   G_000E40_RB3D_BUSY(pre), G_000E40_RE_BUSY(pre),
++		   r, post,
++		   r == 0 ? "RECOVERED(corroborate via dmesg)" :
++		   r == -EAGAIN ? "PARTIAL(reset landed, ring re-test failed, commands saved)" :
++		   "FAILED");
++	return 0;
++}
++
++static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
++	struct rs480_soft_reset_result res;
++	u32 pre;
++
++	if (radeon_rs480_reset_hang_probe != RS480_RESET_HANG_PROBE_SOFT_RESET_TOKEN &&
++	    radeon_rs480_reset_hang_probe != RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN &&
++	    radeon_rs480_reset_hang_probe != RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN &&
++	    radeon_rs480_reset_hang_probe != RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN) {
++		seq_printf(m,
++			   "reset-hang probe disarmed: set rs480_reset_hang_probe=0x%08x for the idle "
++			   "soft-reset stage, 0x%08x for the 2D-blit in-busy stage, 0x%08x for the "
++			   "wedged-3D drainable stage, or 0x%08x for the wedged-3D hung stage\n",
++			   RS480_RESET_HANG_PROBE_SOFT_RESET_TOKEN,
++			   RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN,
++			   RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN,
++			   RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN);
++		return 0;
++	}
++
++	if (!rdev->accel_working || !ring->ready) {
++		seq_puts(m,
++			 "reset-hang probe requires an initialized gfx ring "
++			 "(accel_working and ring->ready)\n");
++		return 0;
++	}
++
++	if (radeon_rs480_reset_hang_probe == RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN)
++		return rs480_blit_busy_reset(rdev, m);
++
++	if (radeon_rs480_reset_hang_probe == RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN)
++		return rs480_wedged_3d_reset(rdev, m, false);
++
++	if (radeon_rs480_reset_hang_probe == RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN)
++		return rs480_wedged_3d_reset(rdev, m, true);
++
++	pre = RREG32(R_000E40_RBBM_STATUS);
++	if (G_000E40_GUI_ACTIVE(pre)) {
++		seq_printf(m,
++			   "reset-hang probe refused: RBBM_STATUS=0x%08x GUI_ACTIVE; the idle "
++			   "soft-reset stage runs only on an idle engine\n", pre);
++		return 0;
++	}
++
++	rs480_soft_reset(rdev, &res);
++	seq_printf(m,
++		   "reset-hang probe soft-reset(idle): at-reset RBBM_STATUS=0x%08x post=0x%08x ib_test=%s(%d) %s\n"
++		   "VAP/GA/E2 force-clocked, RBBM_SOFT_RESET asserted, CP rebuilt and re-tested; proves the "
++		   "soft-reset writes survive AND the CP executes again on the idle engine, NOT in-hang recovery\n",
++		   res.at_reset, res.post, res.ib_test ? "FAIL" : "PASS", res.ib_test,
++		   (G_000E40_GA_BUSY(res.post) || G_000E40_VAP_BUSY(res.post)) ? "ENGINE-BUSY(reset suspect)" : "ENGINE-IDLE(reset clean)");
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_reset_hang_probe);
+ #endif /* CONFIG_DEBUG_FS */
+ 
+ /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
+@@ -2478,6 +2872,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
+ 	 * the IB fences through the live ring, no CSQ stop/restart. */
+ 	debugfs_create_file("radeon_rs480_cp_ib_scratch_oracle", 0400, root, rdev,
+ 			    &rs480_cp_ib_scratch_oracle_fops);
++	/* GPU-reset recovery probe.  Mode 0400: reading it forces a deterministic
++	 * radeon_gpu_reset (suspend/resume/cp_init), root-only, inert until
++	 * radeon_rs480_gpu_reset_recover_probe equals the arm token, and refused
++	 * unless the engine is idle so the hard-locking CP soft-reset is skipped. */
++	debugfs_create_file("radeon_rs480_gpu_reset_recover_probe", 0400, root, rdev,
++			    &rs480_gpu_reset_recover_probe_fops);
++	/* RBBM soft-reset recovery probe (idle, stage 1 of hang-recovery).  Mode
++	 * 0400: reading it runs the RBBM_SOFT_RESET sequence on the idle engine,
++	 * root-only, inert until radeon_rs480_reset_hang_probe equals the token. */
++	debugfs_create_file("radeon_rs480_reset_hang_probe", 0400, root, rdev,
++			    &rs480_reset_hang_probe_fops);
+ #endif
+ }
+ 

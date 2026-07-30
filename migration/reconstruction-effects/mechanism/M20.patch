@@ -1,0 +1,188 @@
+diff --git a/radeon_fbdev.c b/radeon_fbdev.c
+index 38617d8..5d1c2a9 100644
+--- a/radeon_fbdev.c
++++ b/radeon_fbdev.c
+@@ -170,6 +170,75 @@ static int radeon_fbdev_fb_release(struct fb_info *info, int user)
+ 	return 0;
+ }
+ 
++/* fbcon takes the console over the moment the last DRM client dies and
++ * redraws through this framebuffer, whose backing store is the VRAM
++ * aperture. A parked RS480 holds MC display and host-aperture requests
++ * parked, so a CPU read of that aperture (fb_read, copyarea scroll) is a
++ * non-posted HyperTransport read that hard-locks the machine. Reads fail
++ * with -ENODEV; writes and drawing ops are swallowed as success so fbcon
++ * proceeds blind. The console stays dark until reboot; the host stays
++ * alive. Userspace mmap of the aperture stays ungated (fbcon does not
++ * mmap; a mapped page touch is accepted residual risk).
++ */
++static bool radeon_fbdev_gpu_parked(struct fb_info *info)
++{
++	struct drm_fb_helper *fb_helper = info->par;
++	struct radeon_device *rdev = fb_helper->dev->dev_private;
++
++	if (!rdev->gpu_parked)
++		return false;
++	dev_err_once(rdev->dev,
++		     "parked: dropping fbdev aperture access (VRAM unreadable)\n");
++	return true;
++}
++
++static ssize_t radeon_fbdev_fb_read(struct fb_info *info, char __user *buf,
++				    size_t count, loff_t *ppos)
++{
++	if (radeon_fbdev_gpu_parked(info))
++		return -ENODEV;
++	return fb_io_read(info, buf, count, ppos);
++}
++
++static ssize_t radeon_fbdev_fb_write(struct fb_info *info,
++				     const char __user *buf, size_t count,
++				     loff_t *ppos)
++{
++	if (radeon_fbdev_gpu_parked(info)) {
++		/* VFS advances file position from *ppos; a success return
++		 * without advancing it makes the next write retry the same
++		 * offset forever. Advance as if the swallowed write landed.
++		 */
++		*ppos += count;
++		return count;
++	}
++	return fb_io_write(info, buf, count, ppos);
++}
++
++static void radeon_fbdev_fb_fillrect(struct fb_info *info,
++				     const struct fb_fillrect *rect)
++{
++	if (radeon_fbdev_gpu_parked(info))
++		return;
++	cfb_fillrect(info, rect);
++}
++
++static void radeon_fbdev_fb_copyarea(struct fb_info *info,
++				     const struct fb_copyarea *area)
++{
++	if (radeon_fbdev_gpu_parked(info))
++		return;
++	cfb_copyarea(info, area);
++}
++
++static void radeon_fbdev_fb_imageblit(struct fb_info *info,
++				      const struct fb_image *image)
++{
++	if (radeon_fbdev_gpu_parked(info))
++		return;
++	cfb_imageblit(info, image);
++}
++
+ static void radeon_fbdev_fb_destroy(struct fb_info *info)
+ {
+ 	struct drm_fb_helper *fb_helper = info->par;
+@@ -192,7 +261,12 @@ static const struct fb_ops radeon_fbdev_fb_ops = {
+ 	.owner = THIS_MODULE,
+ 	.fb_open = radeon_fbdev_fb_open,
+ 	.fb_release = radeon_fbdev_fb_release,
+-	FB_DEFAULT_IOMEM_OPS,
++	.fb_read = radeon_fbdev_fb_read,
++	.fb_write = radeon_fbdev_fb_write,
++	.fb_fillrect = radeon_fbdev_fb_fillrect,
++	.fb_copyarea = radeon_fbdev_fb_copyarea,
++	.fb_imageblit = radeon_fbdev_fb_imageblit,
++	.fb_mmap = fb_io_mmap,
+ 	DRM_FB_HELPER_DEFAULT_OPS,
+ 	.fb_destroy = radeon_fbdev_fb_destroy,
+ };
+diff --git a/radeon_gem.c b/radeon_gem.c
+index 9ccc9f0..b380c43 100644
+--- a/radeon_gem.c
++++ b/radeon_gem.c
+@@ -44,18 +44,51 @@ struct sg_table *radeon_gem_prime_get_sg_table(struct drm_gem_object *obj);
+ int radeon_gem_prime_pin(struct drm_gem_object *obj);
+ void radeon_gem_prime_unpin(struct drm_gem_object *obj);
+ 
++#include <linux/delay.h>
++
++/* Counted parked-GPU teardown breadcrumb. The DRM file-close handle walk frees
++ * every client BO through radeon_gem_object_free, each leaked under gpu_parked
++ * (0053). dev_err_once hides the walk after the first object, so the death
++ * window between the first leak and radeon_driver_postclose_kms is invisible.
++ * A per-object counter, paced so netconsole keeps every line, makes the last
++ * object index on the wire the pin for the remaining teardown killer.
++ */
++static atomic_t rs480_parked_gem_leak = ATOMIC_INIT(0);
++
+ static vm_fault_t radeon_gem_fault(struct vm_fault *vmf)
+ {
+ 	struct ttm_buffer_object *bo = vmf->vma->vm_private_data;
+ 	struct radeon_device *rdev = radeon_get_rdev(bo->bdev);
+ 	vm_fault_t ret;
+ 
++	/* A userspace touch of a CPU-mapped VRAM page goes through the
++	 * host aperture, and a parked RS480 holds MC aperture requests
++	 * parked: the access becomes a non-posted HyperTransport read
++	 * that hard-locks the machine from userspace, with no kernel
++	 * print possible. Kill the faulting client with SIGBUS instead;
++	 * its buffer objects already outlive teardown via the parked
++	 * GEM-leak path. GTT and system placements stay mapped -- their
++	 * pages are plain system RAM.
++	 *
++	 * Reserve the BO before reading placement: a concurrent TTM move
++	 * can free or rewrite bo->resource between an unlocked mem_type
++	 * peek and the later reserve, so the SIGBUS decision and the
++	 * subsequent fault path must share one reserved view.
++	 */
+ 	down_read(&rdev->pm.mclk_lock);
+ 
+ 	ret = ttm_bo_vm_reserve(bo, vmf);
+ 	if (ret)
+ 		goto unlock_mclk;
+ 
++	if (rdev->gpu_parked &&
++	    bo->resource && bo->resource->mem_type == TTM_PL_VRAM) {
++		dev_err_once(rdev->dev,
++			     "parked: SIGBUS on VRAM mmap fault (aperture unreadable)\n");
++		ret = VM_FAULT_SIGBUS;
++		goto unlock_resv;
++	}
++
+ 	ret = radeon_bo_fault_reserve_notify(bo);
+ 	if (ret)
+ 		goto unlock_resv;
+@@ -85,6 +118,24 @@ static void radeon_gem_object_free(struct drm_gem_object *gobj)
+ 	struct radeon_bo *robj = gem_to_radeon_bo(gobj);
+ 
+ 	if (robj) {
++		/* BO teardown funnels into ttm core, whose fini path reaches
++		 * driver callbacks and aperture accesses that are non-posted
++		 * black holes on a parked RS480 (the fire-12 pin dies inside
++		 * the first ttm_bo_fini). The core is not patchable from this
++		 * module, so a parked GPU leaks its BOs by design: the frontend
++		 * is dead, nothing recycles its memory before the reboot that
++		 * reclaims everything, and the host stays alive.
++		 */
++		if (robj->rdev->gpu_parked) {
++			int leak_n = atomic_inc_return(&rs480_parked_gem_leak);
++
++			dev_err(robj->rdev->dev, "parked: GEM leak #%d begin (mn_unregister then return, no ttm_bo_fini)\n", leak_n);
++			msleep(1);
++			radeon_mn_unregister(robj);
++			dev_err(robj->rdev->dev, "parked: GEM leak #%d mn_unregister returned; deferring teardown to reboot\n", leak_n);
++			msleep(1);
++			return;
++		}
+ 		radeon_mn_unregister(robj);
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+ 		ttm_bo_fini(&robj->tbo);
+diff --git a/radeon_ttm.c b/radeon_ttm.c
+index 9e49238..d17eda3 100644
+--- a/radeon_ttm.c
++++ b/radeon_ttm.c
+@@ -464,6 +464,8 @@ static void radeon_ttm_backend_unbind(struct ttm_device *bdev, struct ttm_tt *tt
+ 	if (!gtt->bound)
+ 		return;
+ 
++	if (rdev->gpu_parked)
++		dev_err_once(rdev->dev, "parked: first GART unbind (PTE rewrite, flush guarded)\n");
+ 	radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);
+ 
+ 	gtt->bound = false;
