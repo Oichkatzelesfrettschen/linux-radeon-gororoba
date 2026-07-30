@@ -252,7 +252,11 @@ static bool radeon_msi_ok(struct radeon_device *rdev)
 	 */
 	if (rdev->family < CHIP_BONAIRE) {
 		dev_info(rdev->dev, "radeon: MSI limited to 32-bit\n");
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+		rdev->pdev->msi_addr_mask = DMA_BIT_MASK(32);
+#else
 		rdev->pdev->no_64bit_msi = 1;
+#endif
 	}
 
 	/* force MSI on */

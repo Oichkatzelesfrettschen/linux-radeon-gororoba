@@ -32,6 +32,8 @@
 #include <linux/aperture.h>
 #include <linux/compat.h>
 #include <linux/module.h>
+#include <linux/namei.h>
+#include <linux/path.h>
 #include <linux/pm_runtime.h>
 #include <linux/vga_switcheroo.h>
 #include <linux/mmu_notifier.h>
@@ -138,6 +140,8 @@ int radeon_dpm = -1;
 int radeon_aspm = -1;
 int radeon_runtime_pm = -1;
 int radeon_hard_reset;
+int radeon_palm_pci_reset_unsafe;
+int radeon_rs480_safe_regs = 1;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
 int radeon_deep_color;
@@ -214,6 +218,22 @@ module_param_named(runpm, radeon_runtime_pm, int, 0444);
 MODULE_PARM_DESC(hard_reset, "PCI config reset (1 = force enable, 0 = disable (default))");
 module_param_named(hard_reset, radeon_hard_reset, int, 0444);
 
+MODULE_PARM_DESC(palm_pci_reset_unsafe,
+	"Allow evergreen_gpu_pci_config_reset_safe to fire on CHIP_PALM (Wrestler GPU). "
+	"Default 0: refuse, because the reset propagates a transient PCIe-fabric stall "
+	"to adjacent integrated devices (NIC drops, X session loses output layout). "
+	"Set to 1 only for forensic experimentation on a controlled host."
+);
+module_param_named(palm_pci_reset_unsafe, radeon_palm_pci_reset_unsafe, int, 0644);
+
+MODULE_PARM_DESC(rs480_safe_regs,
+	"Expose the read-only RS480/RS482/RS485 curated MMIO snapshot in debugfs. "
+	"Default 1: create radeon_rs480_safe_regs. Set to 0 to keep the DKMS "
+	"radeon module active but suppress the extra reverse-engineering debugfs file."
+);
+module_param_named(rs480_safe_regs, radeon_rs480_safe_regs, int, 0444);
+
+
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
 module_param_named(vm_size, radeon_vm_size, int, 0444);
 
@@ -256,6 +276,28 @@ MODULE_DEVICE_TABLE(pci, pciidlist);
 
 static const struct drm_driver kms_driver;
 
+/* Test that /lib/firmware/radeon is a directory (or symlink to a
+ * directory).  We could try to match the udev search path, but let's
+ * keep it simple.
+ */
+static bool radeon_firmware_installed(void)
+{
+#if IS_BUILTIN(CONFIG_DRM_RADEON)
+	/* It may be too early to tell.  Assume it's there. */
+	return true;
+#else
+	struct path path;
+
+	if (kern_path("/lib/firmware/radeon", LOOKUP_DIRECTORY | LOOKUP_FOLLOW,
+		      &path) == 0) {
+		path_put(&path);
+		return true;
+	}
+
+	return false;
+#endif
+}
+
 static int radeon_pci_probe(struct pci_dev *pdev,
 			    const struct pci_device_id *ent)
 {
@@ -297,6 +339,12 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 
 	if (vga_switcheroo_client_probe_defer(pdev))
 		return -EPROBE_DEFER;
+
+	if ((ent->driver_data & RADEON_FAMILY_MASK) >= CHIP_R600 &&
+	    !radeon_firmware_installed()) {
+		DRM_ERROR("radeon kernel modesetting for R600 or later requires firmware installed\n");
+		return -ENODEV;
+	}
 
 	/* Get rid of things like offb */
 	ret = aperture_remove_conflicting_pci_devices(pdev, kms_driver.name);

@@ -1674,6 +1674,7 @@ int atombios_crtc_set_base(struct drm_crtc *crtc, int x, int y,
 		return radeon_crtc_do_set_base(crtc, old_fb, x, y, 0);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 int atombios_crtc_set_base_atomic(struct drm_crtc *crtc,
 				  struct drm_framebuffer *fb,
 				  int x, int y, enum mode_set_atomic state)
@@ -1688,6 +1689,7 @@ int atombios_crtc_set_base_atomic(struct drm_crtc *crtc,
 	else
 		return radeon_crtc_do_set_base(crtc, fb, x, y, 1);
 }
+#endif
 
 /* properly set additional regs when using atombios */
 static void radeon_legacy_atom_fixup(struct drm_crtc *crtc)
@@ -2215,7 +2217,9 @@ static const struct drm_crtc_helper_funcs atombios_helper_funcs = {
 	.mode_fixup = atombios_crtc_mode_fixup,
 	.mode_set = atombios_crtc_mode_set,
 	.mode_set_base = atombios_crtc_set_base,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	.mode_set_base_atomic = atombios_crtc_set_base_atomic,
+#endif
 	.prepare = atombios_crtc_prepare,
 	.commit = atombios_crtc_commit,
 	.disable = atombios_crtc_disable,

@@ -68,6 +68,7 @@
 #include <linux/interval_tree.h>
 #include <linux/hashtable.h>
 #include <linux/dma-fence.h>
+#include <linux/version.h>
 
 #ifdef CONFIG_MMU_NOTIFIER
 #include <linux/mmu_notifier.h>
@@ -78,6 +79,7 @@
 
 #include <drm/drm_exec.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_print.h>
 #include <drm/drm_audio_component.h>
 #include <drm/drm_suballoc.h>
 
@@ -110,6 +112,8 @@ extern int radeon_dpm;
 extern int radeon_aspm;
 extern int radeon_runtime_pm;
 extern int radeon_hard_reset;
+extern int radeon_palm_pci_reset_unsafe;
+extern int radeon_rs480_safe_regs;
 extern int radeon_vm_size;
 extern int radeon_vm_block_size;
 extern int radeon_deep_color;

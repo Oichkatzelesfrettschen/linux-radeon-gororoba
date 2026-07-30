@@ -513,6 +513,7 @@ int evergreen_resume(struct radeon_device *rdev);
 bool evergreen_gfx_is_lockup(struct radeon_device *rdev, struct radeon_ring *cp);
 bool evergreen_dma_is_lockup(struct radeon_device *rdev, struct radeon_ring *cp);
 int evergreen_asic_reset(struct radeon_device *rdev, bool hard);
+int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev);
 void evergreen_bandwidth_update(struct radeon_device *rdev);
 void evergreen_ring_ib_execute(struct radeon_device *rdev, struct radeon_ib *ib);
 void evergreen_hpd_init(struct radeon_device *rdev);
