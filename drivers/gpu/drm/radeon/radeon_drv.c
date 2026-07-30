@@ -146,6 +146,7 @@ int radeon_rs480_candidate_regs = 1;
 int radeon_rs480_cp_me_ram_dump;
 int radeon_rs480_cp_me_ram_inject;
 int radeon_rs480_cp_me_oracle;
+int radeon_rs480_r400_us_cs;
 int radeon_rs480_frontier_index = -1;
 int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
@@ -289,6 +290,13 @@ MODULE_PARM_DESC(rs480_cp_me_oracle,
 	"poll fail cleanly; root-only, run with the display quiesced."
 );
 module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
+MODULE_PARM_DESC(rs480_r400_us_cs,
+	"RS480 R400-US CS-checker allowlist: 0 (default) keeps the stock R300 "
+	"bitmap.  Set 1 at module load for an attended R300_HB_R400_US run; this "
+	"admits PACKET0 writes to US_CODE_BANK, US_CODE_EXT, and "
+	"US_ALU_EXT_ADDR_0..63 on CHIP_RS480.");
+module_param_named(rs480_r400_us_cs, radeon_rs480_r400_us_cs, int, 0644);
+
 MODULE_PARM_DESC(rs480_frontier_index,
 	"RS480 attended frontier probe: residual frontier exhausted; no valid "
 	"index performs an MMIO read.  -1 (default) remains disarmed."

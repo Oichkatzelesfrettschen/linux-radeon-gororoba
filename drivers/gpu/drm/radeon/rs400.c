@@ -39,6 +39,8 @@
 #include "radeon_asic.h"
 #include "rs400d.h"
 
+#include "rs480_reg_safe.h"
+
 /* This files gather functions specifics to : rs400,rs480 */
 static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
 static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev);
@@ -2554,6 +2556,32 @@ void rs400_fini(struct radeon_device *rdev)
 	rdev->bios = NULL;
 }
 
+/*
+ * The RS480-family IGP (RS480/RS482/RS485/RC410, all CHIP_RS480 in the
+ * radeon family table) instantiates the R400 fragment-shader (US) extended
+ * register file -- US_CODE_BANK (0x46b8), US_CODE_EXT (0x46bc), and the
+ * 64-entry US_ALU_EXT_ADDR array (0x4ac0-0x4bbc) -- even though the part is
+ * R300-class.  The stock r300_reg_safe_bm omits them, so r300_packet0_check
+ * rejects a command stream that writes them ("Forbidden register"), which is
+ * what blocks the mesa R300_HB_R400_US route from reaching the silicon.  The
+ * widened bitmap is a hardware-facing permission change, so keep the stock
+ * r300 bitmap unless rs480_r400_us_cs=1 is set at module load for an attended
+ * run.  Every other family keeps the stock r300 bitmap.  These are plain value
+ * registers (code-bank index, extended-address bits), not BO offsets, so they
+ * need no relocation handling once the operator arms the route.
+ */
+static void rs480_set_reg_safe(struct radeon_device *rdev)
+{
+	if (rdev->family == CHIP_RS480 && radeon_rs480_r400_us_cs == 1) {
+		rdev->config.r300.reg_safe_bm = rs480_reg_safe_bm;
+		rdev->config.r300.reg_safe_bm_size = ARRAY_SIZE(rs480_reg_safe_bm);
+		dev_info(rdev->dev,
+			 "RS480 R400-US CS-checker allowlist armed by rs480_r400_us_cs=1\n");
+	} else {
+		r300_set_reg_safe(rdev);
+	}
+}
+
 int rs400_init(struct radeon_device *rdev)
 {
 	int r;
@@ -2604,7 +2632,7 @@ int rs400_init(struct radeon_device *rdev)
 	r = rs400_gart_init(rdev);
 	if (r)
 		return r;
-	r300_set_reg_safe(rdev);
+	rs480_set_reg_safe(rdev);
 
 	/* Initialize power management */
 	radeon_pm_init(rdev);
