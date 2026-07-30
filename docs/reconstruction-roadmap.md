@@ -38,6 +38,12 @@ classes; a closed item names its proof, and an open item names its gate.
 - Prefix composition and plan policy are calibrated and enforced:
   `scripts/check_reconstruction_plan.py` and
   `scripts/materialize_reconstruction_prefixes.py`.
+- Per-commit reconstruction validation executes plans, checkers, build
+  harnesses, and policy from the protected base SHA:
+  `.github/workflows/reconstruction-history.yml`.
+- A repository-scoped read-only deploy key materializes the pinned private
+  packaging input in a credential-bearing setup job. Source builds receive
+  only the sanitized, hash-verified oracle artifact.
 - Migration input frozen by packaging commit and content hashes:
   `MIGRATION_INPUT.toml`, completeness- and base-agreement-checked in CI.
 - Governing rules made self-contained in this repository's `AGENTS.md`, so a
@@ -49,24 +55,21 @@ classes; a closed item names its proof, and an open item names its gate.
 
 ## Open, in dependency order
 
-1. Per-commit reconstruction CI. Trusted control code from the protected base
-   evaluates the exact subject commit range. B01 through B08 build on 6.18.
-   B09 through B14 and every mechanism commit build on 6.18 and 7.1.
-2. Base reconstruction commits: the two exact upstream backports preserving
+1. Base reconstruction commits: the two exact upstream backports preserving
    their original authors, the six version-compat adaptations grouped by API
    transition, the Palm bounded reset, the RS48X safe-register exposure, the
    source-form SMX_DC_CTL0 change, and the unproven-authorship helpers
    carrying `Authorship-status: unproven`. Ends at the 212-entry checkpoint:
    `source_export == normalized_source_reference` and
    `generate(source_export) == legacy_generated_outputs`.
-3. Final-safe mechanism commits follow the exact checker-emitted sequence.
+2. Final-safe mechanism commits follow the exact checker-emitted sequence.
    Each commit is one mechanism and one expected prefix. M24 closes the
    213-entry checkpoint.
-4. The reconstruction branch merges into protected `main`. Post-merge source,
+3. The reconstruction branch merges into protected `main`. Post-merge source,
    generated-output, and dual-kernel checks verify the merge commit. The signed
    annotated tag `radeon-unified-0.3-pkgrel91-source-equivalent` then names that
    green merge commit.
-5. Post-tag corrections, each its own reviewed change: the RS485/0x5975
+4. Post-tag corrections, each its own reviewed change: the RS485/0x5975
    comment correction, the guard-scope audit against
    `policy/rs4xx-guard-scope.tsv`, structural refactoring, and RAD-06
    source changes.

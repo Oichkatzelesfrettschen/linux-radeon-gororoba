@@ -1,0 +1,35 @@
+# Provenance and identity for the retained CachyOS 6.18 module-build root.
+
+schema = 1
+
+kernel_release = "6.18.38-2-cachyos-lts"
+linux_version_code = 397862
+
+headers_package = "linux-cachyos-lts-headers-6.18.38-2-x86_64_v3.pkg.tar.zst"
+package_sha256 = "057509fe27ef3d1cb096df59acc4eeac56a72ccc58065945873bd43b9fd68cb7"
+signature_file = "linux-cachyos-lts-headers-6.18.38-2-x86_64_v3.pkg.tar.zst.sig"
+signature_sha256 = "ea07946915cb69868eec238655e56b6e2aa0c36f9604e8ec80e75ac3e2c1e86e"
+signature_result = "good"
+verified_signer_fingerprint = "882DCFE48E2051D48E2562ABF3B607488DB35A47"
+verification_command = "pacman-key --verify <signature-file> <headers-package>"
+signature_timestamp = "2026-07-08T20:13:28Z"
+verification_timestamp = "2026-07-30T08:45:12Z"
+
+compiler_family = "clang"
+compiler_version = "22.1.6"
+linker_family = "lld"
+linker_version = "22.1.6"
+
+entry_count = 21323
+regular_file_count = 19226
+directory_count = 2088
+symlink_count = 9
+manifest_sha256 = "61b9556fa2a57320ba87f7e402fbc773168dee11532250c17e58bd32b5f2ab77"
+
+[host_policy]
+uid = 0
+gid = 0
+group_writable = false
+other_writable = false
+runner_directory_write = false
+special_files = false
