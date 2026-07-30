@@ -47,8 +47,17 @@ scan_build_warnings() {
   return 0
 }
 
+make_work_dir() {
+  temp_base=${RUNNER_TEMP:-${TMPDIR:-/var/tmp}}
+  [ -d "$temp_base" ] && [ -w "$temp_base" ] || {
+    echo "temporary build root is absent or not writable: $temp_base" >&2
+    return 1
+  }
+  mktemp -d "$temp_base/radeon-module.XXXXXX"
+}
+
 if [ "$self_test" -eq 1 ]; then
-  TMP=$(mktemp -d)
+  TMP=$(make_work_dir) || exit 2
   trap 'rm -rf "$TMP"' EXIT INT TERM
   fails=0
   echo "module build gate calibration:"
@@ -106,7 +115,7 @@ do
 done
 kernel_release=$(cat "$KB/include/config/kernel.release")
 
-WORK=$(mktemp -d)
+WORK=$(make_work_dir) || exit 2
 trap 'rm -rf "$WORK"' EXIT INT TERM
 mkdir -p "$WORK/$subtree"
 ( cd "$repo_root" && git archive HEAD "$subtree" ) |
