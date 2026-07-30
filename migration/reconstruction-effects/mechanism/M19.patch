@@ -1,0 +1,207 @@
+diff --git a/radeon_connectors.c b/radeon_connectors.c
+index 9f6a3df..f734710 100644
+--- a/radeon_connectors.c
++++ b/radeon_connectors.c
+@@ -845,6 +845,15 @@ radeon_lvds_detect(struct drm_connector *connector, bool force)
+ 	enum drm_connector_status ret = connector_status_disconnected;
+ 	int r;
+ 
++	/* A parked GPU keeps no readable display registers: connector
++	 * detection walks DDC and load-detect paths straight into the wedged
++	 * register bus, and the drm_kms_helper output-poll worker calls detect
++	 * from a system workqueue outside every radeon-local drained work.
++	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
++	 */
++	if (rdev->gpu_parked)
++		return connector_status_disconnected;
++
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector->dev->dev);
+ 		if (r < 0) {
+@@ -993,6 +1002,15 @@ radeon_vga_detect(struct drm_connector *connector, bool force)
+ 	enum drm_connector_status ret = connector_status_disconnected;
+ 	int r;
+ 
++	/* A parked GPU keeps no readable display registers: connector
++	 * detection walks DDC and load-detect paths straight into the wedged
++	 * register bus, and the drm_kms_helper output-poll worker calls detect
++	 * from a system workqueue outside every radeon-local drained work.
++	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
++	 */
++	if (rdev->gpu_parked)
++		return connector_status_disconnected;
++
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector->dev->dev);
+ 		if (r < 0) {
+@@ -1126,12 +1144,22 @@ static enum drm_mode_status radeon_tv_mode_valid(struct drm_connector *connector
+ static enum drm_connector_status
+ radeon_tv_detect(struct drm_connector *connector, bool force)
+ {
++	struct radeon_device *rdev = connector->dev->dev_private;
+ 	struct drm_encoder *encoder;
+ 	const struct drm_encoder_helper_funcs *encoder_funcs;
+ 	struct radeon_connector *radeon_connector = to_radeon_connector(connector);
+ 	enum drm_connector_status ret = connector_status_disconnected;
+ 	int r;
+ 
++	/* A parked GPU keeps no readable display registers: connector
++	 * detection walks DDC and load-detect paths straight into the wedged
++	 * register bus, and the drm_kms_helper output-poll worker calls detect
++	 * from a system workqueue outside every radeon-local drained work.
++	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
++	 */
++	if (rdev->gpu_parked)
++		return connector_status_disconnected;
++
+ 	if (!radeon_connector->dac_load_detect)
+ 		return ret;
+ 
+@@ -1221,6 +1249,15 @@ radeon_dvi_detect(struct drm_connector *connector, bool force)
+ 	enum drm_connector_status ret = connector_status_disconnected;
+ 	bool dret = false, broken_edid = false;
+ 
++	/* A parked GPU keeps no readable display registers: connector
++	 * detection walks DDC and load-detect paths straight into the wedged
++	 * register bus, and the drm_kms_helper output-poll worker calls detect
++	 * from a system workqueue outside every radeon-local drained work.
++	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
++	 */
++	if (rdev->gpu_parked)
++		return connector_status_disconnected;
++
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector->dev->dev);
+ 		if (r < 0) {
+@@ -1630,6 +1667,15 @@ radeon_dp_detect(struct drm_connector *connector, bool force)
+ 	struct drm_encoder *encoder = radeon_best_single_encoder(connector);
+ 	int r;
+ 
++	/* A parked GPU keeps no readable display registers: connector
++	 * detection walks DDC and load-detect paths straight into the wedged
++	 * register bus, and the drm_kms_helper output-poll worker calls detect
++	 * from a system workqueue outside every radeon-local drained work.
++	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
++	 */
++	if (rdev->gpu_parked)
++		return connector_status_disconnected;
++
+ 	if (!drm_kms_helper_is_poll_worker()) {
+ 		r = pm_runtime_get_sync(connector->dev->dev);
+ 		if (r < 0) {
+diff --git a/radeon_cursor.c b/radeon_cursor.c
+index 3507805..268da8d 100644
+--- a/radeon_cursor.c
++++ b/radeon_cursor.c
+@@ -264,8 +264,12 @@ static int radeon_cursor_move_locked(struct drm_crtc *crtc, int x, int y)
+ int radeon_crtc_cursor_move(struct drm_crtc *crtc,
+ 			    int x, int y)
+ {
++	struct radeon_device *rdev = crtc->dev->dev_private;
+ 	int ret;
+ 
++	if (rdev->gpu_parked)
++		return -ENODEV;
++
+ 	radeon_lock_cursor(crtc, true);
+ 	ret = radeon_cursor_move_locked(crtc, x, y);
+ 	radeon_lock_cursor(crtc, false);
+@@ -287,6 +291,9 @@ int radeon_crtc_cursor_set2(struct drm_crtc *crtc,
+ 	struct radeon_bo *robj;
+ 	int ret;
+ 
++	if (rdev->gpu_parked)
++		return -ENODEV;
++
+ 	if (!handle) {
+ 		/* turn off cursor */
+ 		radeon_hide_cursor(crtc);
+diff --git a/radeon_display.c b/radeon_display.c
+index 351b9df..c2f80ac 100644
+--- a/radeon_display.c
++++ b/radeon_display.c
+@@ -493,6 +493,12 @@ static int radeon_crtc_page_flip_target(struct drm_crtc *crtc,
+ 	unsigned long flags;
+ 	int r;
+ 
++	/* Page flips program display fetch registers; a parked RS480 rejects
++	 * them for the same reason it rejects modesets.
++	 */
++	if (rdev->gpu_parked)
++		return -ENODEV;
++
+ 	work = kzalloc(sizeof *work, GFP_KERNEL);
+ 	if (work == NULL)
+ 		return -ENOMEM;
+@@ -632,6 +638,19 @@ radeon_crtc_set_config(struct drm_mode_set *set,
+ 
+ 	dev = set->crtc->dev;
+ 
++	/* The DRM core restores the fbdev mode on last close, and any modeset
++	 * against a parked RS480 re-enables display memory requests into the
++	 * wedge-held MC client arbiter -- the host interface deadlocks and
++	 * the next CPU MMIO read hard-locks the machine. A parked GPU accepts
++	 * the modeset as a no-op success; the console stays dark until
++	 * reboot, and the host stays alive.
++	 */
++	rdev = dev->dev_private;
++	if (rdev->gpu_parked) {
++		dev_err_once(rdev->dev, "parked: rejecting modeset, display stays down\n");
++		return 0;
++	}
++
+ 	ret = pm_runtime_get_sync(dev->dev);
+ 	if (ret < 0) {
+ 		pm_runtime_put_autosuspend(dev->dev);
+diff --git a/radeon_irq_kms.c b/radeon_irq_kms.c
+index 3175657..0b3d418 100644
+--- a/radeon_irq_kms.c
++++ b/radeon_irq_kms.c
+@@ -56,6 +56,15 @@ static irqreturn_t radeon_driver_irq_handler_kms(int irq, void *arg)
+ 	struct radeon_device *rdev = dev->dev_private;
+ 	irqreturn_t ret;
+ 
++	/* Shared PCI lines still deliver IRQs after a parked RS480 reset.
++	 * r100_irq_ack starts with RREG32(GEN_INT_STATUS); that MMIO is a
++	 * non-posted black hole once the GA client is wedged. Return without
++	 * touching hardware so an unrelated device on the same line cannot
++	 * re-enter the parked register path.
++	 */
++	if (rdev->gpu_parked)
++		return IRQ_NONE;
++
+ 	ret = radeon_irq_process(rdev);
+ 	if (ret == IRQ_HANDLED)
+ 		pm_runtime_mark_last_busy(dev->dev);
+diff --git a/radeon_kms.c b/radeon_kms.c
+index 7e6c0df..5855bf2 100644
+--- a/radeon_kms.c
++++ b/radeon_kms.c
+@@ -26,6 +26,7 @@
+  *          Jerome Glisse
+  */
+ 
++#include <linux/delay.h>
+ #include <linux/pci.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/slab.h>
+@@ -820,6 +821,9 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
+ 	u32 count;
+ 	struct radeon_device *rdev = dev->dev_private;
+ 
++	if (rdev->gpu_parked)
++		return 0;
++
+ 	if (pipe >= rdev->num_crtc) {
+ 		DRM_ERROR("Invalid crtc %u\n", pipe);
+ 		return -EINVAL;
+@@ -890,6 +894,9 @@ int radeon_enable_vblank_kms(struct drm_crtc *crtc)
+ 	unsigned long irqflags;
+ 	int r;
+ 
++	if (rdev->gpu_parked)
++		return -ENODEV;
++
+ 	if (pipe >= rdev->num_crtc) {
+ 		DRM_ERROR("Invalid crtc %d\n", pipe);
+ 		return -EINVAL;

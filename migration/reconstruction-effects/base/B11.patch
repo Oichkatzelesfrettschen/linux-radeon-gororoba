@@ -1,0 +1,144 @@
+diff --git a/evergreen.c b/evergreen.c
+index bc4ab71..5b0ffad 100644
+--- a/evergreen.c
++++ b/evergreen.c
+@@ -3848,6 +3848,12 @@ u32 evergreen_gpu_check_soft_reset(struct radeon_device *rdev)
+ 	if (!(tmp & DMA_IDLE))
+ 		reset_mask |= RADEON_RESET_DMA;
+ 
++	/* W5: DMA_IDLE can under-report latent DMA pipeline state after
++	 * GFX-path lockups. If GFX reset is already required, force DMA
++	 * reset in the same cycle.
++	 */
++	if (reset_mask & RADEON_RESET_GFX)
++		reset_mask |= RADEON_RESET_DMA;
+ 	/* SRBM_STATUS2 */
+ 	tmp = RREG32(SRBM_STATUS2);
+ 	if (tmp & DMA_BUSY)
+@@ -3918,7 +3924,14 @@ static void evergreen_gpu_soft_reset(struct radeon_device *rdev, u32 reset_mask)
+ 
+ 	evergreen_mc_stop(rdev, &save);
+ 	if (evergreen_mc_wait_for_idle(rdev)) {
+-		dev_warn(rdev->dev, "Wait for MC idle timedout !\n");
++		/* MC engine is mid-transaction; writing GRBM_SOFT_RESET now
++		 * leaves the MC inconsistent on CHIP_PALM-class silicon
++		 * (Wrestler GPU / Evergreen-TeraScale-2 VLIW5). Bail cleanly.
++		 */
++		dev_warn(rdev->dev,
++			"aborting soft reset: MC stayed busy after 100ms\n");
++		evergreen_mc_resume(rdev, &save);
++		return;
+ 	}
+ 
+ 	if (reset_mask & (RADEON_RESET_GFX | RADEON_RESET_COMPUTE)) {
+@@ -4047,6 +4060,59 @@ void evergreen_gpu_pci_config_reset(struct radeon_device *rdev)
+ 	}
+ }
+ 
++
++int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)
++{
++	struct evergreen_mc_save save;
++	u32 tmp, i;
++
++	/* CHIP_PALM (Wrestler GPU on Brazos APU, Evergreen / TeraScale-2 VLIW5)
++	 * shares the PCIe root-complex with the embedded GbE controller.
++	 * A pci-config reset propagates a brief link-training stall to
++	 * adjacent devices (the NIC goes offline for ~2 minutes on the
++	 * ThinkPad X130e and X-server loses its dual-output layout state).
++	 * Refuse by default on Palm-class silicon; userspace must set
++	 * radeon.palm_pci_reset_unsafe=1 to override.
++	 */
++	if (rdev->family == CHIP_PALM && !radeon_palm_pci_reset_unsafe) {
++		dev_warn(rdev->dev,
++			"refusing pci-config reset on CHIP_PALM: propagates to PCIe root-complex; set radeon.palm_pci_reset_unsafe=1 to override\n");
++		return -EPERM;
++	}
++
++	dev_info(rdev->dev, "GPU pci config reset (bounded MC-wait safe variant)\n");
++
++	WREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);
++	udelay(50);
++	tmp = RREG32(DMA_RB_CNTL);
++	tmp &= ~DMA_RB_ENABLE;
++	WREG32(DMA_RB_CNTL, tmp);
++	r600_rlc_stop(rdev);
++	udelay(50);
++	rv770_set_clk_bypass_mode(rdev);
++	pci_clear_master(rdev->pdev);
++	evergreen_mc_stop(rdev, &save);
++
++	/* If MC is still busy after the bounded wait, refuse: writing the
++	 * PCI-config reset bits with the MC mid-transaction is the failure
++	 * mode the safe variant exists to prevent.
++	 */
++	if (evergreen_mc_wait_for_idle(rdev)) {
++		dev_warn(rdev->dev,
++			"refusing PCI config reset: MC stuck busy after bounded wait\n");
++		evergreen_mc_resume(rdev, &save);
++		return -EBUSY;
++	}
++
++	radeon_pci_config_reset(rdev);
++	for (i = 0; i < rdev->usec_timeout; i++) {
++		if (RREG32(CONFIG_MEMSIZE) != 0xffffffff)
++			break;
++		udelay(1);
++	}
++	return 0;
++}
++
+ int evergreen_asic_reset(struct radeon_device *rdev, bool hard)
+ {
+ 	u32 reset_mask;
+diff --git a/radeon.h b/radeon.h
+index 5dd08e8..bebd7e6 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -112,6 +112,7 @@ extern int radeon_dpm;
+ extern int radeon_aspm;
+ extern int radeon_runtime_pm;
+ extern int radeon_hard_reset;
++extern int radeon_palm_pci_reset_unsafe;
+ extern int radeon_vm_size;
+ extern int radeon_vm_block_size;
+ extern int radeon_deep_color;
+diff --git a/radeon_asic.h b/radeon_asic.h
+index 9e697f1..109f231 100644
+--- a/radeon_asic.h
++++ b/radeon_asic.h
+@@ -513,6 +513,7 @@ int evergreen_resume(struct radeon_device *rdev);
+ bool evergreen_gfx_is_lockup(struct radeon_device *rdev, struct radeon_ring *cp);
+ bool evergreen_dma_is_lockup(struct radeon_device *rdev, struct radeon_ring *cp);
+ int evergreen_asic_reset(struct radeon_device *rdev, bool hard);
++int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev);
+ void evergreen_bandwidth_update(struct radeon_device *rdev);
+ void evergreen_ring_ib_execute(struct radeon_device *rdev, struct radeon_ib *ib);
+ void evergreen_hpd_init(struct radeon_device *rdev);
+diff --git a/radeon_drv.c b/radeon_drv.c
+index 9483310..fa76cfc 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -140,6 +140,7 @@ int radeon_dpm = -1;
+ int radeon_aspm = -1;
+ int radeon_runtime_pm = -1;
+ int radeon_hard_reset;
++int radeon_palm_pci_reset_unsafe;
+ int radeon_vm_size = 8;
+ int radeon_vm_block_size = -1;
+ int radeon_deep_color;
+@@ -216,6 +217,14 @@ module_param_named(runpm, radeon_runtime_pm, int, 0444);
+ MODULE_PARM_DESC(hard_reset, "PCI config reset (1 = force enable, 0 = disable (default))");
+ module_param_named(hard_reset, radeon_hard_reset, int, 0444);
+ 
++MODULE_PARM_DESC(palm_pci_reset_unsafe,
++	"Allow evergreen_gpu_pci_config_reset_safe to fire on CHIP_PALM (Wrestler GPU). "
++	"Default 0: refuse, because the reset propagates a transient PCIe-fabric stall "
++	"to adjacent integrated devices (NIC drops, X session loses output layout). "
++	"Set to 1 only for forensic experimentation on a controlled host."
++);
++module_param_named(palm_pci_reset_unsafe, radeon_palm_pci_reset_unsafe, int, 0644);
++
+ MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
+ module_param_named(vm_size, radeon_vm_size, int, 0444);
+ 

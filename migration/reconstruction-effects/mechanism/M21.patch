@@ -1,0 +1,261 @@
+diff --git a/r300.c b/r300.c
+index 13f42f2..d9ff5e5 100644
+--- a/r300.c
++++ b/r300.c
+@@ -482,10 +482,6 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
+ 	mdelay(500);
+ 	WREG32(R_0000F0_RBBM_SOFT_RESET, 0);
+ 	mdelay(1);
+-	if (igp_force_clk) {
+-		WREG32_PLL(0x0000001E, sclk2);
+-		WREG32_PLL(0x0000000D, sclk);
+-	}
+ 	status = RREG32(R_000E40_RBBM_STATUS);
+ 	dev_info(rdev->dev, "(%s:%d) RBBM_STATUS=0x%08X\n", __func__, __LINE__, status);
+ 	/* restore PCI & busmastering */
+@@ -497,7 +493,34 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
+ 		ret = -1;
+ 	} else
+ 		dev_info(rdev->dev, "GPU reset succeed\n");
+-	r100_mc_resume(rdev, &save);
++	/* The register-bus readback grant dies with dynamic clock gating when
++	 * the GA frontend stays wedged: the RBBM_STATUS read lands while the
++	 * restored clocks still spin, and the next read some milliseconds
++	 * later hangs the CPU as a non-posted HyperTransport black hole.
++	 * A failed reset therefore keeps SCLK_CNTL/SCLK_CNTL2 forced so the
++	 * RBBM, CP, and MC domains stay readable on the parked GPU; only a
++	 * successful reset restores the saved gating.
++	 */
++	if (igp_force_clk) {
++		if (ret) {
++			dev_err(rdev->dev, "failed reset: leaving 3D clocks forced, register bus stays readable\n");
++		} else {
++			WREG32_PLL(0x0000001E, sclk2);
++			WREG32_PLL(0x0000000D, sclk);
++		}
++	}
++	/* Re-enabling display memory requests against the wedge-held MC client
++	 * arbiter deadlocks the host interface within one or two vblank
++	 * periods: the next CPU MMIO read from any domain -- probe, vblank IRQ
++	 * handler -- never completes, force-clock notwithstanding. A failed
++	 * reset leaves the MC stopped and the display parked; the console goes
++	 * dark and the host stays alive.
++	 */
++	if (ret) {
++		dev_err(rdev->dev, "failed reset: leaving MC/display requests parked\n");
++	} else {
++		r100_mc_resume(rdev, &save);
++	}
+ 	return ret;
+ }
+ 
+diff --git a/radeon_device.c b/radeon_device.c
+index 93c88ab..6706db0 100644
+--- a/radeon_device.c
++++ b/radeon_device.c
+@@ -30,6 +30,7 @@
+ #include <linux/efi.h>
+ #include <linux/pci.h>
+ #include <linux/pm_runtime.h>
++#include <linux/interrupt.h>
+ #include <linux/slab.h>
+ #include <linux/vga_switcheroo.h>
+ #include <linux/vgaarb.h>
+@@ -1348,6 +1349,8 @@ static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
+ 
+ 	if (rdev->family != CHIP_RS480 && rdev->family != CHIP_RS400)
+ 		return -ENODEV;
++	if (rdev->gpu_parked)
++		return -EIO;
+ 
+ 	r = radeon_ring_lock(rdev, ring, 16);
+ 	if (r)
+@@ -1883,6 +1886,7 @@ int radeon_gpu_reset(struct radeon_device *rdev)
+ 	uint32_t *ring_data[RADEON_NUM_RINGS];
+ 
+ 	bool saved = false;
++	bool gpu_parked;
+ 
+ 	int i, r;
+ 
+@@ -1893,6 +1897,14 @@ int radeon_gpu_reset(struct radeon_device *rdev)
+ 		return 0;
+ 	}
+ 
++	if (rdev->gpu_parked) {
++		rdev->needs_reset = false;
++		up_write(&rdev->exclusive_lock);
++		dev_err_once(rdev->dev,
++			     "parked: refusing radeon_gpu_reset re-entry\n");
++		return -EIO;
++	}
++
+ 	atomic_inc(&rdev->gpu_reset_counter);
+ 
+ 	/* Log RS400/RS480 queue and cache state before GPU reset.
+@@ -1938,11 +1950,34 @@ int radeon_gpu_reset(struct radeon_device *rdev)
+ 	}
+ 
+ 	r = radeon_asic_reset(rdev);
++
++	/* Park the GPU when the ASIC reset fails on an RS400/RS480 IGP.
++	 *
++	 * A failed reset leaves the GA register-bus client wedged, and every
++	 * register in the 0x4000+ 3D pipe space remains a non-posted-read
++	 * black hole: the HyperTransport read never completes and the CPU
++	 * hard-locks silently. RB3D_BUSY=0 does not make RB3D registers
++	 * readable; the readback grant is GA-routed. The resume-side stream
++	 * (power management, AtomBIOS encoder tables, HPD, forced modeset)
++	 * executes BIOS bytecode and display bring-up with unaudited register
++	 * access, so none of it may run against a wedged frontend. Parking
++	 * keeps the host alive: fences force-complete so userspace waiters
++	 * unblock, acceleration turns off so no new CS reaches the dead
++	 * frontend, and the stage breadcrumbs let netconsole pin any residual
++	 * hazard to an exact instruction window.
++	 */
++	gpu_parked = (r != 0) &&
++		(rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400);
++	if (gpu_parked)
++		dev_err(rdev->dev, "RS480 reset failed: parking GPU, skipping resume-side access\n");
++
+ 	if (!r) {
+ 		dev_info(rdev->dev, "GPU reset succeeded, trying to resume\n");
+ 		radeon_resume(rdev);
+ 	}
+ 
++	if (gpu_parked)
++		dev_err(rdev->dev, "parked: restoring BIOS scratch (posted writes)\n");
+ 	radeon_restore_bios_scratch_regs(rdev);
+ 
+ 	for (i = 0; i < RADEON_NUM_RINGS; ++i) {
+@@ -1950,11 +1985,73 @@ int radeon_gpu_reset(struct radeon_device *rdev)
+ 			radeon_ring_restore(rdev, &rdev->ring[i],
+ 					    ring_sizes[i], ring_data[i]);
+ 		} else {
++			if (gpu_parked) {
++				msleep(1);
++				dev_err(rdev->dev, "parked: force-completing fences on ring %d\n", i);
++			}
+ 			radeon_fence_driver_force_completion(rdev, i);
+ 			kfree(ring_data[i]);
+ 		}
+ 	}
+ 
++	if (gpu_parked) {
++		/* Paced breadcrumbs: netconsole netpoll has no flow control and
++		 * drops frames under printk bursts; a millisecond between lines
++		 * keeps every stage on the wire so the off-box capture pins a
++		 * death to one instruction window.
++		 */
++		msleep(1);
++		dev_err(rdev->dev, "parked: acceleration off, skipping pm/atom/hpd/modeset resume\n");
++		rdev->accel_working = false;
++		/* Stop TTM blit eviction choosing the copy ring after park. */
++		for (i = 0; i < RADEON_NUM_RINGS; ++i)
++			rdev->ring[i].ready = false;
++		rdev->gpu_parked = true;
++		for (i = 0; i < RADEON_NUM_RINGS; ++i)
++			cancel_delayed_work(&rdev->fence_drv[i].lockup_work);
++		/* free_irq uses the same dev_id as request_irq so only the radeon
++		 * handler is removed. disable_irq would mask a shared PCI line.
++		 * The IRQ handler also early-returns under gpu_parked.
++		 */
++		dev_err(rdev->dev, "parked: freeing radeon IRQ handler (shared-line safe)\n");
++		free_irq(rdev->pdev->irq, rdev_to_drm(rdev));
++		msleep(1);
++		/* Zap GEM CPU mappings immediately so a live VRAM PTE cannot be
++		 * touched during the drain sleeps. Page-table only, no MMIO.
++		 */
++		dev_err(rdev->dev, "parked: zapping userspace GEM mappings (SIGBUS on re-fault)\n");
++		unmap_mapping_range(rdev_to_drm(rdev)->anon_inode->i_mapping,
++				    0, 0, 1);
++		msleep(1);
++		/* Drain remaining delayed works after gpu_parked is latched. */
++		dev_err(rdev->dev, "parked: draining fence lockup works (sync)\n");
++		for (i = 0; i < RADEON_NUM_RINGS; ++i)
++			cancel_delayed_work_sync(&rdev->fence_drv[i].lockup_work);
++		msleep(1);
++		dev_err(rdev->dev, "parked: draining dynpm idle work (sync)\n");
++		cancel_delayed_work_sync(&rdev->pm.dynpm_idle_work);
++		msleep(1);
++		dev_err(rdev->dev, "parked: draining hotplug work (sync)\n");
++		cancel_delayed_work_sync(&rdev->hotplug_work);
++		msleep(1);
++		dev_err(rdev->dev, "parked: disabling KMS output poll worker (sync)\n");
++		drm_kms_helper_poll_disable(rdev_to_drm(rdev));
++		msleep(1);
++		dev_err(rdev->dev, "parked: async agents quiesced, entering quiet epoch\n");
++		rdev->in_reset = true;
++		rdev->needs_reset = false;
++		msleep(1);
++		dev_err(rdev->dev, "parked: downgrading exclusive lock\n");
++		downgrade_write(&rdev->exclusive_lock);
++		msleep(1);
++		dev_info(rdev->dev, "GPU reset failed, GPU parked, host kept alive\n");
++		rdev->in_reset = false;
++		up_read(&rdev->exclusive_lock);
++		msleep(1);
++		dev_err(rdev->dev, "parked: radeon_gpu_reset returning %d to caller\n", r);
++		return r;
++	}
++
+ 	if ((rdev->pm.pm_method == PM_METHOD_DPM) && rdev->pm.dpm_enabled) {
+ 		/* do dpm late init */
+ 		r = radeon_pm_late_init(rdev);
+diff --git a/radeon_kms.c b/radeon_kms.c
+index 5855bf2..96ef434 100644
+--- a/radeon_kms.c
++++ b/radeon_kms.c
+@@ -765,6 +765,16 @@ err_suspend:
+ void radeon_driver_postclose_kms(struct drm_device *dev,
+ 				 struct drm_file *file_priv)
+ {
++	{
++		struct radeon_device *bc_rdev = dev->dev_private;
++
++		if (bc_rdev && !bc_rdev->accel_working) {
++			msleep(1);
++			dev_err(bc_rdev->dev, "postclose on parked GPU: begin teardown\n");
++			msleep(1);
++		}
++	}
++
+ 	struct radeon_device *rdev = dev->dev_private;
+ 
+ 	pm_runtime_get_sync(dev->dev);
+@@ -800,6 +810,16 @@ void radeon_driver_postclose_kms(struct drm_device *dev,
+ 	}
+ 	pm_runtime_mark_last_busy(dev->dev);
+ 	pm_runtime_put_autosuspend(dev->dev);
++	{
++		struct radeon_device *bc_rdev = dev->dev_private;
++
++		if (bc_rdev && !bc_rdev->accel_working) {
++			msleep(1);
++			dev_err(bc_rdev->dev, "postclose on parked GPU: teardown complete\n");
++			msleep(1);
++		}
++	}
++
+ }
+ 
+ /*
+diff --git a/rs400.c b/rs400.c
+index b2c6108..6657a11 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -2124,7 +2124,13 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
+ 
+ 	rdev->needs_reset = true;
+ 	r = radeon_gpu_reset(rdev);
+-	post = RREG32(R_000E40_RBBM_STATUS);
++	/* No register read after a failed reset: the parked GPU keeps its MC
++	 * stopped and display requests off, and the first post-park MMIO read
++	 * is the proven host-killer. The r300_asic_reset dmesg ladder carries
++	 * the at-reset and post-soft-reset RBBM values; report those.
++	 */
++	dev_err(rdev->dev, "probe: radeon_gpu_reset returned %d, no post-park register read\n", r);
++	post = r ? 0x5041524B /* "PARK" */ : RREG32(R_000E40_RBBM_STATUS);
+ 
+ 	seq_printf(m,
+ 		   "reset-hang probe wedged-3D(%s): pre RBBM_STATUS=0x%08x (VAP_BUSY=%u GA_BUSY=%u RB3D_BUSY=%u RE_BUSY=%u) "

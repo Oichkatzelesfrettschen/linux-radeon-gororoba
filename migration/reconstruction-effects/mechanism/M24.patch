@@ -1,0 +1,213 @@
+diff --git a/rs400.c b/rs400.c
+index 6657a11..8ae20b5 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -31,8 +31,13 @@
+ #include <linux/seq_file.h>
+ #include <linux/slab.h>
+ #include <linux/pci.h>
++#include <linux/mutex.h>
+ #include <linux/uaccess.h>
+ 
++#if defined(CONFIG_X86)
++#include <asm/pgtable.h>
++#endif
++
+ #include <drm/drm_device.h>
+ #include <drm/drm_file.h>
+ 
+@@ -46,6 +51,8 @@
+ /* This files gather functions specifics to : rs400,rs480 */
+ static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
+ static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev);
++static DEFINE_MUTEX(rs400_gart_page_table_lock);
++
+ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev);
+ 
+ void rs400_gart_adjust_size(struct radeon_device *rdev)
+@@ -226,9 +233,11 @@ void rs400_gart_disable(struct radeon_device *rdev)
+ 
+ void rs400_gart_fini(struct radeon_device *rdev)
+ {
++	mutex_lock(&rs400_gart_page_table_lock);
+ 	radeon_gart_fini(rdev);
+ 	rs400_gart_disable(rdev);
+ 	radeon_gart_table_ram_free(rdev);
++	mutex_unlock(&rs400_gart_page_table_lock);
+ }
+ 
+ #define RS400_PTE_UNSNOOPED (1 << 0)
+@@ -426,6 +435,164 @@ static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
+ }
+ 
+ DEFINE_SHOW_ATTRIBUTE(rs400_debugfs_gart_info);
++
++#define RS400_GART_PAGE_TABLE_ENTRY_LIMIT 64
++
++static u64 rs400_gart_page_dma_address(u32 entry)
++{
++	return (entry & 0xfffff000ULL) | ((entry & 0x00000ff0ULL) << 28);
++}
++
++static bool rs400_gart_cpu_pat_index(u64 raw, unsigned int level,
++				     unsigned int *pat, unsigned int *index)
++{
++#if defined(CONFIG_X86)
++	unsigned int pcd = !!(raw & _PAGE_PCD);
++	unsigned int pwt = !!(raw & _PAGE_PWT);
++
++	if (level == PG_LEVEL_4K)
++		*pat = !!(raw & _PAGE_PAT);
++	else if (level == PG_LEVEL_2M || level == PG_LEVEL_1G)
++		*pat = !!(raw & _PAGE_PAT_LARGE);
++	else
++		return false;
++
++	*index = (*pat << 2) | (pcd << 1) | pwt;
++	return true;
++#else
++	return false;
++#endif
++}
++
++static void rs400_debugfs_gart_cpu_mapping_emit(struct seq_file *m,
++						struct radeon_device *rdev,
++						unsigned int page_index)
++{
++#if defined(CONFIG_X86)
++	unsigned long address = (unsigned long)rdev->gart.ptr +
++				page_index * PAGE_SIZE;
++	unsigned int level = 0;
++	pte_t *pte = lookup_address(address, &level);
++	unsigned int pat;
++	unsigned int pat_index;
++	u64 raw;
++
++	if (!pte) {
++		seq_printf(m,
++			   "cpu-table-map\t%u\t%u\t\t\t\t\t\t\t\t"
++			   "0x%016llx\t%u\t%u\t\t\t\t\t\t\tlookup-failed\n",
++			   page_index, page_index + 1,
++			   (unsigned long long)rdev->gart.table_addr,
++			   rdev->gart.table_size, rdev->gart.num_gpu_pages);
++		return;
++	}
++
++	raw = pte_val(*pte);
++	if (!rs400_gart_cpu_pat_index(raw, level, &pat, &pat_index)) {
++		seq_printf(m,
++			   "cpu-table-map\t%u\t%u\t\t\t\t\t\t\t\t"
++			   "0x%016llx\t%u\t%u\t0x%016llx\t%u\t%u\t%u\t\t\t"
++			   "unsupported-page-level\n",
++			   page_index, page_index + 1,
++			   (unsigned long long)rdev->gart.table_addr,
++			   rdev->gart.table_size, rdev->gart.num_gpu_pages,
++			   (unsigned long long)raw, level,
++			   !!(raw & _PAGE_PWT), !!(raw & _PAGE_PCD));
++		return;
++	}
++
++	seq_printf(m,
++		   "cpu-table-map\t%u\t%u\t\t\t\t\t\t\t\t"
++		   "0x%016llx\t%u\t%u\t0x%016llx\t%u\t%u\t%u\t%u\t%u\tok\n",
++		   page_index, page_index + 1,
++		   (unsigned long long)rdev->gart.table_addr,
++		   rdev->gart.table_size, rdev->gart.num_gpu_pages,
++		   (unsigned long long)raw, level,
++		   !!(raw & _PAGE_PWT), !!(raw & _PAGE_PCD),
++		   pat, pat_index);
++#else
++	seq_printf(m,
++		   "cpu-table-map\t%u\t%u\t\t\t\t\t\t\t\t"
++		   "0x%016llx\t%u\t%u\t\t\t\t\t\t\tnon-x86\n",
++		   page_index, page_index + 1,
++		   (unsigned long long)rdev->gart.table_addr,
++		   rdev->gart.table_size, rdev->gart.num_gpu_pages);
++#endif
++}
++
++static int rs400_debugfs_gart_page_table_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	__le32 *table;
++	u32 dummy_pte;
++	unsigned int entry_count;
++	unsigned int table_pages;
++	unsigned int index;
++
++	seq_puts(m,
++		 "row_type\tstart_index\tend_index_exclusive\tgpu_address\tpte_raw\t"
++		 "page_dma_address\tunsnooped\twriteable\treadable\tbacking_class\t"
++		 "table_dma\ttable_bytes\ttable_entries\tkernel_pte_raw\t"
++		 "kernel_pte_level\tpwt\tpcd\tpat\tpat_index\tstatus\n");
++
++	if (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480) {
++		seq_puts(m, "metadata\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tunsupported-family\n");
++		return 0;
++	}
++
++	if (rdev->gpu_parked) {
++		seq_puts(m, "metadata\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tgpu-parked\n");
++		return 0;
++	}
++
++	mutex_lock(&rs400_gart_page_table_lock);
++	if (!rdev->gart.ready || !rdev->gart.ptr) {
++		seq_puts(m, "metadata\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tgart-not-ready\n");
++		mutex_unlock(&rs400_gart_page_table_lock);
++		return 0;
++	}
++
++	table = rdev->gart.ptr;
++	dummy_pte = lower_32_bits(READ_ONCE(rdev->dummy_page.entry));
++	entry_count = min_t(unsigned int, rdev->gart.num_gpu_pages,
++			    RS400_GART_PAGE_TABLE_ENTRY_LIMIT);
++	table_pages = DIV_ROUND_UP(rdev->gart.table_size, PAGE_SIZE);
++	seq_printf(m,
++		   "metadata\t0\t%u\t\t\t\t\t\t\t\t0x%016llx\t%u\t%u\t"
++		   "\t\t\t\t\t\tready\n",
++		   entry_count, (unsigned long long)rdev->gart.table_addr,
++		   rdev->gart.table_size, rdev->gart.num_gpu_pages);
++
++	rs400_debugfs_gart_cpu_mapping_emit(m, rdev, 0);
++	if (table_pages > 1)
++		rs400_debugfs_gart_cpu_mapping_emit(m, rdev, table_pages - 1);
++
++	for (index = 0; index < entry_count; index++) {
++		u32 pte_raw = le32_to_cpu(READ_ONCE(table[index]));
++
++		seq_printf(m,
++			   "gart-entry\t%u\t%u\t0x%016llx\t0x%08x\t0x%016llx\t"
++			   "%u\t%u\t%u\t%s\t0x%016llx\t%u\t%u\t"
++			   "\t\t\t\t\t\tobserved\n",
++			   index, index + 1,
++			   (unsigned long long)(rdev->mc.gtt_start +
++						index * RADEON_GPU_PAGE_SIZE),
++			   pte_raw,
++			   (unsigned long long)rs400_gart_page_dma_address(pte_raw),
++			   !!(pte_raw & RS400_PTE_UNSNOOPED),
++			   !!(pte_raw & RS400_PTE_WRITEABLE),
++			   !!(pte_raw & RS400_PTE_READABLE),
++			   pte_raw == dummy_pte ?
++			   "dummy-backing" : "non-dummy-backing",
++			   (unsigned long long)rdev->gart.table_addr,
++			   rdev->gart.table_size, rdev->gart.num_gpu_pages);
++	}
++
++	mutex_unlock(&rs400_gart_page_table_lock);
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs400_debugfs_gart_page_table);
+ #endif
+ 
+ 
+@@ -2231,6 +2398,8 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
+ 
+ 	rs480_safe_regs_debugfs_init(rdev);
+ 	rs480_candidate_regs_debugfs_init(rdev);
++	debugfs_create_file("radeon_rs480_gart_page_table", 0400,
++			    minor->debugfs_root, rdev, &rs400_debugfs_gart_page_table_fops);
+ 	if ((rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) &&
+ 	    rdev->accel_working)
+ 		radeon_debugfs_rs480_mc_flush_init(rdev);

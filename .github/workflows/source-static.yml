@@ -164,6 +164,14 @@ jobs:
         run: python3 scripts/check_kernel_build_root.py --self-test
       - name: source manifest calibration
         run: python3 scripts/manifest_source_tree.py --self-test
+      - name: reconstruction plan calibration
+        run: python3 scripts/check_reconstruction_plan.py --self-test
+      - name: reconstruction plan
+        run: python3 scripts/check_reconstruction_plan.py
+      - name: reconstruction prefix calibration
+        run: python3 scripts/materialize_reconstruction_prefixes.py --self-test
+      - name: reconstruction prefixes
+        run: python3 scripts/materialize_reconstruction_prefixes.py
 
       - name: importer calibration
         run: |

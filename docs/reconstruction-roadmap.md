@@ -29,42 +29,44 @@ classes; a closed item names its proof, and an open item names its gate.
   that repository's CI.
 - Per-effect-atom mechanism map, one row per (patch, file), 124 rows, 16
   candidate mechanism buckets: `radeon-custom docs/legacy-patch-mechanism-map.tsv`.
+- Mechanism-bucket ratification closed with 24 approved native boundaries:
+  `docs/reconstruction-commit-plan.tsv`.
+- Every one of the 124 legacy effect atoms has one approved allocation:
+  `docs/reconstruction-effect-assignments.tsv`.
+- Every approved base and mechanism prefix has an exact driver tree and source
+  manifest: `migration/expected-prefixes/`.
+- Prefix composition and plan policy are calibrated and enforced:
+  `scripts/check_reconstruction_plan.py` and
+  `scripts/materialize_reconstruction_prefixes.py`.
 - Migration input frozen by packaging commit and content hashes:
   `MIGRATION_INPUT.toml`, completeness- and base-agreement-checked in CI.
 - Governing rules made self-contained in this repository's `AGENTS.md`, so a
   source commit's rules are pinned by the commit that carries them.
-- Module build gate against the retained 6.18 root:
-  `scripts/build_radeon_module.sh` plus the `module-build` CI job, calibrated
-  and passing on 6.18.38-2-cachyos-lts.
+- The 6.18 module-build gate passes. The retained 7.1 root carries a complete
+  file, directory, and symlink manifest plus separate host-policy and
+  package-signature provenance checks. B09 activates the 7.1 source lane after
+  its compatibility frontier exists.
 
 ## Open, in dependency order
 
-1. Mechanism-bucket ratification. The 16 groups in the mechanism map are
-   review buckets, not approved commit boundaries; each bucket is judged on
-   mechanism identity rather than patch-number adjacency, and the coarse
-   `depends_on` edges tighten during the same review. Output: an approved
-   commit-boundary column or companion table. This is the one open Step 6
-   judgment and it gates every mechanism commit below.
-2. Mainline build target. `scripts/build_radeon_module.sh` gains a 7.1 root
-   alongside 6.18; both targets are load-bearing because the version-compat
-   class is itself a source delta. Output: a second module-build lane.
-3. Per-commit reconstruction CI. Every reconstruction commit builds against
-   7.1; a commit touching the version-compat class also builds against 6.18.
-   Output: a workflow that walks the PR's commit range.
-4. Base reconstruction commits: the two exact upstream backports preserving
+1. Per-commit reconstruction CI. Trusted control code from the protected base
+   evaluates the exact subject commit range. B01 through B08 build on 6.18.
+   B09 through B14 and every mechanism commit build on 6.18 and 7.1.
+2. Base reconstruction commits: the two exact upstream backports preserving
    their original authors, the six version-compat adaptations grouped by API
    transition, the Palm bounded reset, the RS48X safe-register exposure, the
    source-form SMX_DC_CTL0 change, and the unproven-authorship helpers
    carrying `Authorship-status: unproven`. Ends at the 212-entry checkpoint:
    `source_export == normalized_source_reference` and
    `generate(source_export) == legacy_generated_outputs`.
-5. Final-safe mechanism commits from the ratified buckets, one mechanism per
-   commit, many-to-one from legacy patches. Ends at the 213-entry checkpoint
-   under the same two-statement equivalence contract.
-6. Annotated tag `radeon-unified-0.3-pkgrel91-source-equivalent` on the
-   equivalence checkpoint. Corrections stay on the far side of the tag, so
-   one commit never both reproduces and changes a legacy fact.
-7. Post-tag corrections, each its own reviewed change: the RS485/0x5975
+3. Final-safe mechanism commits follow the exact checker-emitted sequence.
+   Each commit is one mechanism and one expected prefix. M24 closes the
+   213-entry checkpoint.
+4. The reconstruction branch merges into protected `main`. Post-merge source,
+   generated-output, and dual-kernel checks verify the merge commit. The signed
+   annotated tag `radeon-unified-0.3-pkgrel91-source-equivalent` then names that
+   green merge commit.
+5. Post-tag corrections, each its own reviewed change: the RS485/0x5975
    comment correction, the guard-scope audit against
    `policy/rs4xx-guard-scope.tsv`, structural refactoring, and RAD-06
    source changes.
@@ -76,9 +78,8 @@ classes; a closed item names its proof, and an open item names its gate.
   arbitrary command or output path, environment-sanitizing, and the sole
   noninteractive entry in `sudo -l -U eirikr`. Attended sessions run inside
   ssh with tmux.
-- radeon-custom compile-check script passes optimization flags through
-  `KCFLAGS`; the current command-line `EXTRA_CFLAGS` is inert on 6.18 Kbuild.
-  Lands with the script's next functional change.
+- radeon-custom packaging commit `c49eacd8c7857045150705489dc03901efd2a92d`
+  closes the external-module flag transition to `KCFLAGS`.
 - radeon-custom task tracker item 9, the stale RAD-06 cross-check draft
   gate, closes or converts during RAD-06's post-tag work.
 - `options radeon lockup_timeout=0` stays the shipped default until an

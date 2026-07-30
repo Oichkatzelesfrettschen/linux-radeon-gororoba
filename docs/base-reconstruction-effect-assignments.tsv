@@ -1,0 +1,52 @@
+effect_atom	commit_id	allocation	notes
+b072f56800c83878	B04	whole	atombios_crtc.c: atombios_crtc_set_base
+8627d2747302512f	B04	whole	atombios_crtc.c: atombios_crtc_set_base_atomic
+e01b22317102c593	B04	whole	atombios_crtc.c: atombios_helper_funcs
+09e8592847a67759	B04	whole	atombios_crtc.c: atombios_helper_funcs
+76c9a7f11545bd9e	B11	whole	evergreen.c: evergreen_gpu_check_soft_reset
+14ba680e41d7fddc	B11	whole	evergreen.c: evergreen_gpu_soft_reset
+79802d90dc6dddd4	B11	whole	evergreen.c: defines evergreen_gpu_pci_config_reset_safe
+c5055cf858ab3126	B02	whole	pptable.h: _ClockInfoArray
+7f04132e90043646	B01	whole	radeon.h: file scope
+ced9a31a79d7fd20	B03	whole	radeon.h: file scope
+71d8848947f0c762.palm	B11	palm-policy-part	Palm reset gate declaration, state, or parameter surface
+71d8848947f0c762.safe	B13	safe-reader-policy-part	RS48X safe reader declaration, state, or parameter surface
+ef518858e0a6d5fc	B11	whole	radeon_asic.h: defines evergreen_gpu_pci_config_reset_safe
+882955bde23ea734	B05	whole	radeon_device.c: radeon_suspend_kms
+f6fe7d97fe9fa2c5	B05	whole	radeon_device.c: radeon_suspend_kms
+e5e6568dcda313db	B05	whole	radeon_device.c: radeon_resume_kms
+93b44ccc859485c1	B05	whole	radeon_device.c: radeon_resume_kms
+17cac8491f33ea4f	B10	whole	radeon_drv.c: file scope
+aab5dacf202723e8.palm	B11	palm-policy-part	Palm reset gate declaration, state, or parameter surface
+aab5dacf202723e8.safe	B13	safe-reader-policy-part	RS48X safe reader declaration, state, or parameter surface
+ac7fd7e292117e7f.palm	B11	palm-policy-part	Palm reset gate declaration, state, or parameter surface
+ac7fd7e292117e7f.safe	B13	safe-reader-policy-part	RS48X safe reader declaration, state, or parameter surface
+4f864c2df3ef8b16	B10	whole	radeon_drv.c: defines radeon_firmware_installed
+2f32ea9f73adefea	B10	whole	radeon_drv.c: radeon_pci_probe
+701686289193f7d4	B06	whole	radeon_fbdev.c: radeon_fbdev_driver_fbdev_probe
+a9a3c892de303484	B06	whole	radeon_fbdev.c: radeon_fbdev_driver_fbdev_probe
+b07c390e22126d32	B06	whole	radeon_fbdev.c: radeon_fbdev_driver_fbdev_probe
+e259368b09713c85	B06	whole	radeon_fbdev.c: radeon_fbdev_driver_fbdev_probe
+4954e9291a450702	B06	whole	radeon_fbdev.c: radeon_fbdev_driver_fbdev_probe
+581fc9f93b4e44d1	B06	whole	radeon_fbdev.c: radeon_fbdev_driver_fbdev_probe
+386ce5df752f0103	B07	whole	radeon_gem.c: radeon_gem_object_free
+ae6a7bc9ec68ff13	B07	whole	radeon_gem.c: radeon_gem_object_free
+c8bb7aee070d95ca	B08	whole	radeon_irq_kms.c: radeon_msi_ok
+26c0b0abc4a4662b	B08	whole	radeon_irq_kms.c: radeon_msi_ok
+37f4c886bcab2868	B12	whole	radeon_kms.c: file scope
+2d5ce003816982fb	B12	whole	radeon_kms.c: defines radeon_force_pci_reset_safe_fops
+d1fa4c9f44ef525b	B12	whole	radeon_kms.c: radeon_driver_load_kms
+877b66030a86c091	B04	whole	radeon_legacy_crtc.c: radeon_crtc_set_base
+e7f2289270619c0c	B04	whole	radeon_legacy_crtc.c: radeon_crtc_set_base_atomic
+d1a0372123322fa9	B04	whole	radeon_legacy_crtc.c: legacy_helper_funcs
+0c49b34006b23cbb	B04	whole	radeon_legacy_crtc.c: legacy_helper_funcs
+6f5802c3ee783bf2	B04	whole	radeon_mode.h: atombios_crtc_set_base
+b7ec2412229afa93	B04	whole	radeon_mode.h: atombios_crtc_set_base_atomic
+6c18b7f01139cde5	B04	whole	radeon_mode.h: radeon_crtc_set_base
+7ffb64b3e6840a40	B04	whole	radeon_mode.h: radeon_crtc_set_base_atomic
+7329f0e0caf50b32	B09	whole	radeon_ttm.c: radeon_ttm_init
+23c7dcb9c3d62c81	B09	whole	radeon_ttm.c: radeon_ttm_init
+a81e17dce8f4e85e	B14	whole	reg_srcs/evergreen: file scope
+2487b056b005759f	B13	whole	rs400.c: defines rs480_safe_regs_debugfs_init
+bd44bec21e96bc1f	B13	whole	rs400.c: defines rs480_safe_reg..rs480_safe_regs_debugfs_init
+720e717c613d9321	B13	whole	rs400.c: rs400_init

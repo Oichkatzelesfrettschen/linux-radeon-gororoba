@@ -1,0 +1,54 @@
+diff --git a/r300.c b/r300.c
+index 3f6237a..13f42f2 100644
+--- a/r300.c
++++ b/r300.c
+@@ -420,10 +420,24 @@ void r300_gpu_init(struct radeon_device *rdev)
+ 		 rdev->num_gb_pipes, rdev->num_z_pipes);
+ }
+ 
++/* RS480-class IGP soft-reset recovery clock force.  The stock CP soft-reset
++ * below "sometimes ends up hard locking the computer" because the reset runs
++ * with the display quiesced, which can leave the geometry (VAP/GA) and 2D (E2)
++ * clock domains gated when the RBBM_SOFT_RESET write lands.  Force those domains
++ * across the reset writes and restore them after: SCLK_CNTL (PLL 0x0d)
++ * CP(16)/E2(20)/SE(21)/TX(27)/US(28)/SU(30) and SCLK_CNTL2 (PLL 0x1e)
++ * TCL(13)/CBA(14)/GA(15).  Scoped to CHIP_RS400/RS480 so discrete R3xx/R4xx
++ * reset behavior is unchanged. */
++#define R300_RS480_SCLK_CNTL_FORCE_3D  (BIT(16) | BIT(20) | BIT(21) | \
++					BIT(27) | BIT(28) | BIT(30))
++#define R300_RS480_SCLK_CNTL2_FORCE_3D (BIT(13) | BIT(14) | BIT(15))
++
+ int r300_asic_reset(struct radeon_device *rdev, bool hard)
+ {
+ 	struct r100_mc_save save;
+-	u32 status, tmp;
++	bool igp_force_clk = (rdev->family == CHIP_RS400 ||
++			      rdev->family == CHIP_RS480);
++	u32 status, tmp, sclk = 0, sclk2 = 0;
+ 	int ret = 0;
+ 
+ 	status = RREG32(R_000E40_RBBM_STATUS);
+@@ -444,6 +458,12 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
+ 	pci_save_state(rdev->pdev);
+ 	/* disable bus mastering */
+ 	r100_bm_disable(rdev);
++	if (igp_force_clk) {
++		sclk = RREG32_PLL(0x0000000D);
++		sclk2 = RREG32_PLL(0x0000001E);
++		WREG32_PLL(0x0000000D, sclk | R300_RS480_SCLK_CNTL_FORCE_3D);
++		WREG32_PLL(0x0000001E, sclk2 | R300_RS480_SCLK_CNTL2_FORCE_3D);
++	}
+ 	WREG32(R_0000F0_RBBM_SOFT_RESET, S_0000F0_SOFT_RESET_VAP(1) |
+ 					S_0000F0_SOFT_RESET_GA(1));
+ 	RREG32(R_0000F0_RBBM_SOFT_RESET);
+@@ -462,6 +482,10 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
+ 	mdelay(500);
+ 	WREG32(R_0000F0_RBBM_SOFT_RESET, 0);
+ 	mdelay(1);
++	if (igp_force_clk) {
++		WREG32_PLL(0x0000001E, sclk2);
++		WREG32_PLL(0x0000000D, sclk);
++	}
+ 	status = RREG32(R_000E40_RBBM_STATUS);
+ 	dev_info(rdev->dev, "(%s:%d) RBBM_STATUS=0x%08X\n", __func__, __LINE__, status);
+ 	/* restore PCI & busmastering */

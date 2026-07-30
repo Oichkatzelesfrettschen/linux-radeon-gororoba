@@ -1,0 +1,9 @@
+diff --git a/reg_srcs/evergreen b/reg_srcs/evergreen
+index 57745c8..73fb29a 100644
+--- a/reg_srcs/evergreen
++++ b/reg_srcs/evergreen
+@@ -642,3 +642,4 @@ evergreen 0x9400
+ 0x0003FF00 SQ_TEX_SAMPLER_CLEAR
+ 0x0003FF04 SQ_TEX_RESOURCE_CLEAR
+ 0x0003FF08 SQ_LOOP_BOOL_CLEAR
++0x0000A020 SMX_DC_CTL0

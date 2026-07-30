@@ -1,0 +1,14 @@
+path	class	transformation	reason
+cayman_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+evergreen_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+r100_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+r200_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+r300_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+r420_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+r600_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+rn50_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+rs600_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+rv515_reg_safe.h	generated	remove	build product derived from reg_srcs by mkregtable
+mkregtable	prebuilt	remove	stripped host executable of unrecorded provenance
+reg_srcs/evergreen	restored	add from upstream with 0x0000A020 SMX_DC_CTL0	generator input for evergreen_reg_safe.h
+reg_srcs/rs480	retained	preserve	generator input added by the patch series

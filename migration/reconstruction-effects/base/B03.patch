@@ -1,0 +1,12 @@
+diff --git a/radeon.h b/radeon.h
+index 2915d7b..5dd08e8 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -79,6 +79,7 @@
+ 
+ #include <drm/drm_exec.h>
+ #include <drm/drm_gem.h>
++#include <drm/drm_print.h>
+ #include <drm/drm_audio_component.h>
+ #include <drm/drm_suballoc.h>
+ 

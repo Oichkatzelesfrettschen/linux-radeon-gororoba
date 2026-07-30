@@ -1,0 +1,101 @@
+diff --git a/radeon_device.c b/radeon_device.c
+index 84079d1..a843849 100644
+--- a/radeon_device.c
++++ b/radeon_device.c
+@@ -48,6 +48,80 @@
+ #include "radeon.h"
+ #include "r300d.h"
+ #include "atom.h"
++#include <linux/panic_notifier.h>
++
++/*
++ * RS480/RS482 GPU-hang panic breadcrumb.
++ *
++ * A panic on this reset-less K8 IGP is very often a ring wedge -- the
++ * hardware-TCL draw hang, or a fence that never signals -- and the kernel
++ * log tail that would explain it is lost across the reboot unless something
++ * captures it.  This panic notifier writes the SOFTWARE-side ring and fence
++ * state into the panic log for serial or non-kdump panic paths.  Default kdump
++ * jumps to the crash kernel before panic notifiers run, so the vmcore carries
++ * the underlying radeon device memory; the formatted log line appears there
++ * only when crash_kexec_post_notifiers is enabled at boot.
++ *
++ * Registration happens after radeon_init() has initialized ring and fence
++ * state and before radeon_ib_ring_tests() or optional init-time GPU tests can
++ * run.  Because it lives in the module, the breadcrumb does not depend on
++ * kdump-load or any userspace unit.
++ *
++ * It reads ONLY cached driver state, never MMIO: a register read on a wedged
++ * GPU would itself stall the northbridge with no completion timeout and could
++ * prevent the reboot.  Single-GPU assumption: one rdev pointer is tracked,
++ * which this platform satisfies (one radeon device).
++ */
++static struct radeon_device *radeon_rs480_panic_rdev;
++
++static int radeon_rs480_panic_notify(struct notifier_block *nb,
++				     unsigned long action, void *data)
++{
++	struct radeon_device *rdev = radeon_rs480_panic_rdev;
++	int i;
++
++	if (!rdev)
++		return NOTIFY_DONE;
++
++	pr_emerg("radeon: panic GPU breadcrumb (software state, no MMIO): needs_reset=%d in_reset=%d\n",
++		 rdev->needs_reset, rdev->in_reset);
++	for (i = 0; i < RADEON_NUM_RINGS; i++) {
++		struct radeon_ring *ring = &rdev->ring[i];
++		struct radeon_fence_driver *fdrv = &rdev->fence_drv[i];
++
++		if (!ring->ready && !fdrv->initialized)
++			continue;
++		pr_emerg("radeon:  ring %d ready=%d wptr=%u last_rptr=%u fence last_seq=0x%llx sync_seq=0x%llx\n",
++			 i, ring->ready, ring->wptr,
++			 (unsigned int)atomic_read(&ring->last_rptr),
++			 (unsigned long long)atomic64_read(&fdrv->last_seq),
++			 (unsigned long long)fdrv->sync_seq[i]);
++	}
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block radeon_rs480_panic_nb = {
++	.notifier_call = radeon_rs480_panic_notify,
++};
++
++static void radeon_rs480_panic_register(struct radeon_device *rdev)
++{
++	/* Only the first device arms the chain; the breadcrumb tracks it. */
++	if (radeon_rs480_panic_rdev)
++		return;
++	radeon_rs480_panic_rdev = rdev;
++	atomic_notifier_chain_register(&panic_notifier_list,
++				       &radeon_rs480_panic_nb);
++}
++
++static void radeon_rs480_panic_unregister(struct radeon_device *rdev)
++{
++	if (radeon_rs480_panic_rdev != rdev)
++		return;
++	atomic_notifier_chain_unregister(&panic_notifier_list,
++					 &radeon_rs480_panic_nb);
++	radeon_rs480_panic_rdev = NULL;
++}
+ 
+ static const char radeon_family_name[][16] = {
+ 	"R100",
+@@ -1490,6 +1564,7 @@ int radeon_device_init(struct radeon_device *rdev,
+ 		if (r)
+ 			goto failed;
+ 	}
++	radeon_rs480_panic_register(rdev);
+ 
+ 	radeon_audio_component_init(rdev);
+ 
+@@ -1553,6 +1628,7 @@ void radeon_device_fini(struct radeon_device *rdev)
+ {
+ 	DRM_INFO("radeon: finishing device.\n");
+ 	rdev->shutdown = true;
++	radeon_rs480_panic_unregister(rdev);
+ 	/* evict vram memory */
+ 	radeon_bo_evict_vram(rdev);
+ 	radeon_audio_component_fini(rdev);

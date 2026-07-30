@@ -1,0 +1,252 @@
+diff --git a/radeon.h b/radeon.h
+index b440ee0..ab5cc4c 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -118,7 +118,10 @@ extern int radeon_rs480_candidate_regs;
+ extern int radeon_rs480_cp_me_ram_dump;
+ extern int radeon_rs480_cp_me_ram_inject;
+ extern int radeon_rs480_cp_me_oracle;
++extern int radeon_rs480_frontier_index;
++extern int radeon_rs480_vertex_index;
+ extern int radeon_rs480_hazard_index;
++extern int radeon_rs480_gated_read_index;
+ extern int radeon_rs480_hazard_readers_armed;
+ extern int radeon_vm_size;
+ extern int radeon_vm_block_size;
+diff --git a/radeon_drv.c b/radeon_drv.c
+index 2bc0ba2..4714206 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -146,7 +146,10 @@ int radeon_rs480_candidate_regs = 1;
+ int radeon_rs480_cp_me_ram_dump;
+ int radeon_rs480_cp_me_ram_inject;
+ int radeon_rs480_cp_me_oracle;
++int radeon_rs480_frontier_index = -1;
++int radeon_rs480_vertex_index = -1;
+ int radeon_rs480_hazard_index = -1;
++int radeon_rs480_gated_read_index = -1;
+ int radeon_rs480_hazard_readers_armed;
+ int radeon_vm_size = 8;
+ int radeon_vm_block_size = -1;
+@@ -284,6 +287,16 @@ MODULE_PARM_DESC(rs480_cp_me_oracle,
+ 	"poll fail cleanly; root-only, run with the display quiesced."
+ );
+ module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
++MODULE_PARM_DESC(rs480_frontier_index,
++	"RS480 attended frontier probe: residual frontier exhausted; no valid "
++	"index performs an MMIO read.  -1 (default) remains disarmed."
++);
++module_param_named(rs480_frontier_index, radeon_rs480_frontier_index, int, 0644);
++MODULE_PARM_DESC(rs480_vertex_index,
++	"RS480 attended vertex-engine probe: hold the VAP_PVS/SE_TCL engine clocked "
++	"with a continuous HB-TCL draw loop, then set N (0..6) to perform one RREG32.  "
++	"-1 (default) remains disarmed.");
++module_param_named(rs480_vertex_index, radeon_rs480_vertex_index, int, 0644);
+ MODULE_PARM_DESC(rs480_hazard_index,
+ 	"RS480 hazard-tier first-observation read: index (0..21) that "
+ 	"radeon_rs480_hazard_read reads per open.  The list is read-safe "
+@@ -292,6 +305,13 @@ MODULE_PARM_DESC(rs480_hazard_index,
+ );
+ module_param_named(rs480_hazard_index, radeon_rs480_hazard_index, int, 0644);
+ 
++MODULE_PARM_DESC(rs480_gated_read_index,
++	"RS480 gated-state plain-read probe (HAZARD): index into the inactive-DISP2 "
++	"CRTC2 table; clears FORCE_DISP2, plain-reads, restores, to test whether a "
++	"read stalls when the clock is gated.  A stall needs a physical power cycle.  "
++	"-1 (default) disarmed.");
++module_param_named(rs480_gated_read_index, radeon_rs480_gated_read_index, int, 0644);
++
+ MODULE_PARM_DESC(rs480_hazard_readers_armed,
+ 	"RS480 hazard-reader arm gate: 0 (default) makes the wedge-prone "
+ 	"radeon_rs480_candidate_vap_regs and radeon_rs480_candidate_firmware_read_regs "
+diff --git a/rs400.c b/rs400.c
+index 440ca25..b258e85 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -1502,6 +1502,166 @@ static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
+ }
+ 
+ DEFINE_SHOW_ATTRIBUTE(rs480_cp_me_oracle);
++
++/* Attended single-step frontier probe.  The residual frontier is exhausted:
++ * the selected CAP0/CAP1 VIP video-capture registers and the IDCT video-decode
++ * registers have all been read directly (0x00000000, no wedge) and are retired.
++ * Keep the debugfs node inert so stale operators see the exhausted state instead
++ * of arming a historical hazardous MMIO read. */
++static const struct rs480_candidate_reg rs480_frontier_probe_reg_list[] = {
++};
++
++static int rs480_frontier_probe_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	int idx = radeon_rs480_frontier_index;
++	const struct rs480_candidate_reg *reg;
++	u32 value;
++
++	if (!ARRAY_SIZE(rs480_frontier_probe_reg_list)) {
++		seq_puts(m, "frontier probe exhausted: no residual registers\n");
++		return 0;
++	}
++
++	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_frontier_probe_reg_list)) {
++		seq_printf(m,
++			   "frontier probe disarmed: set rs480_frontier_index=N (0..%zu)\n",
++			   ARRAY_SIZE(rs480_frontier_probe_reg_list) - 1);
++		return 0;
++	}
++
++	reg = &rs480_frontier_probe_reg_list[idx];
++	value = rs480_candidate_reg_read(rdev, reg);
++	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
++		   idx, reg->name, reg->offset, value);
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_frontier_probe);
++
++/* Attended vertex-engine probe.  The VAP_PVS/SE_TCL vertex engine (0x2200-0x2504)
++ * gates its clock at rest, so a passive RREG32 stalls the reset-less K8
++ * northbridge -- confirmed wedges at 0x220c (PVS vector-port shadow) and 0x2280,
++ * each a physical recovery.  This node tests whether a read COMPLETES while the
++ * engine is held clocked by a continuous HB-TCL draw loop (the open falsification
++ * of the clock-gating ceiling).  The two confirmed-wedge offsets and the
++ * write-only FIFO ports (0x2200, 0x2208) are excluded so they cannot be armed;
++ * only the named control registers are reachable.  Disarmed at index -1. */
++static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
++	{ 0x221C, "VAP_CLIP_CNTL", 0 },
++	{ 0x2284, "VAP_PVS_STATE_FLUSH_REG", 0 },
++	{ 0x2288, "VAP_PVS_VTX_TIMEOUT_REG", 0 },
++	{ 0x22D0, "VAP_PVS_CODE_CNTL_0", 0 },
++	{ 0x22D4, "VAP_PVS_CONST_CNTL", 0 },
++	{ 0x22D8, "VAP_PVS_CODE_CNTL_1", 0 },
++	{ 0x22DC, "VAP_PVS_FLOW_CNTL_OPC", 0 },
++};
++
++static int rs480_vertex_probe_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	int idx = radeon_rs480_vertex_index;
++	const struct rs480_candidate_reg *reg;
++	u32 value;
++
++	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_vertex_engine_reg_list)) {
++		seq_printf(m,
++			   "vertex probe disarmed: hold the engine clocked (HB-TCL draw loop), then set rs480_vertex_index=N (0..%zu)\n",
++			   ARRAY_SIZE(rs480_vertex_engine_reg_list) - 1);
++		return 0;
++	}
++
++	reg = &rs480_vertex_engine_reg_list[idx];
++	value = rs480_candidate_reg_read(rdev, reg);
++	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
++		   idx, reg->name, reg->offset, value);
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_vertex_probe);
++
++/* Single-register first-observation read of the BAR0 hazard tier.
++ *
++ * The 471-register vet flagged 62 registers hazard_exclude_by_name with a name
++ * regex.  Re-reading the match basis (the matched_pattern column of
++ * rs482_unreferenced_430_name_class_vet.tsv) shows the registers below are regex
++ * FALSE POSITIVES, not wedge hazards: SCRATCH matched the BIOS_8..15 and GUI
++ * scratch registers, PORT_ matched SE_VPORT_* (the viewport transform, not an
++ * I/O port), and SEMAPHORE and WAIT_UNTIL matched two engine-status words.  A
++ * plain RREG32 of any of them is read-safe -- scratch and viewport are ordinary
++ * registers, the SE block is always clocked on an R300-class part, and a read
++ * neither acquires the semaphore nor advances any index or FIFO pointer.  They
++ * stayed unpromoted only because the regex parked them, and most still carry no
++ * per-register observed value.
++ *
++ * This node takes that first observation under discipline: one register per
++ * open, selected by radeon_rs480_hazard_index (default -1 disarmed), so each
++ * value is captured deliberately before the register is promoted into the
++ * read-only safe-regs list.  It is NOT a wedge-hazard probe and shares no
++ * mechanism with the attended frontier_probe node above.
++ *
++ * Kept out of the list at compile time:
++ *   - CRTC8_IDX (0x03b4) and BIF_SLAVE_CNTL (0x180c): the two genuine
++ *     northbridge-stall registers.  A 32-bit read can stall the K8 northbridge,
++ *     which has no MMIO completion timeout, wedging both cores past the
++ *     single-core-only software autoreboot net (physical power cycle only).
++ *   - the index/data/FIFO/aperture ports (PALETTE_INDEX/DATA, FOG_TABLE_INDEX/
++ *     DATA, PCIE_PORT_INDEX/DATA, DVI_I2C_DATA, CRC_CMDFIFO_*, CP_CSQ_APER_*,
++ *     VIPH_CH*, CP_ME_RAM_RADDR, HOST_DATA_LAST): a read without the matching
++ *     index write desyncs the live driver's pointer state and returns only a
++ *     transient word.
++ *   - the CP command-engine and VIP/CAP capture registers (CP_GUI_COMMAND,
++ *     CP_IB*, CP_RESYNC_*, CP_CSQ*, CP_ME_CNTL, CP_VID_*, FCP_CNTL,
++ *     CAP0/CAP1_PORT_MODE_CNTL): a read races the running CP or touches a
++ *     possibly-unclocked capture block, so they belong on the attended frontier
++ *     lane, not this first-observation lane.
++ */
++static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
++	{ 0x00c0, "BIOS_8_SCRATCH", 0 },
++	{ 0x00c4, "BIOS_9_SCRATCH", 0 },
++	{ 0x00c8, "BIOS_10_SCRATCH", 0 },
++	{ 0x00cc, "BIOS_11_SCRATCH", 0 },
++	{ 0x00d0, "BIOS_12_SCRATCH", 0 },
++	{ 0x00d4, "BIOS_13_SCRATCH", 0 },
++	{ 0x00d8, "BIOS_14_SCRATCH", 0 },
++	{ 0x00dc, "BIOS_15_SCRATCH", 0 },
++	{ 0x013c, "SW_SEMAPHORE", 0 },
++	{ 0x15e0, "GUI_SCRATCH_REG0", 0 },
++	{ 0x15e4, "GUI_SCRATCH_REG1", 0 },
++	{ 0x15e8, "GUI_SCRATCH_REG2", 0 },
++	{ 0x15ec, "GUI_SCRATCH_REG3", 0 },
++	{ 0x15f0, "GUI_SCRATCH_REG4", 0 },
++	{ 0x15f4, "GUI_SCRATCH_REG5", 0 },
++	{ 0x1720, "WAIT_UNTIL", 0 },
++	{ 0x1d98, "SE_VPORT_XSCALE", 0 },
++	{ 0x1d9c, "SE_VPORT_XOFFSET", 0 },
++	{ 0x1da0, "SE_VPORT_YSCALE", 0 },
++	{ 0x1da4, "SE_VPORT_YOFFSET", 0 },
++	{ 0x1da8, "SE_VPORT_ZSCALE", 0 },
++	{ 0x1dac, "SE_VPORT_ZOFFSET", 0 },
++};
++
++static int rs480_hazard_read_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	int idx = radeon_rs480_hazard_index;
++	const struct rs480_candidate_reg *reg;
++
++	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_hazard_read_reg_list)) {
++		seq_printf(m,
++			   "hazard read disarmed: set rs480_hazard_index=N (0..%zu)\n",
++			   ARRAY_SIZE(rs480_hazard_read_reg_list) - 1);
++		return 0;
++	}
++
++	reg = &rs480_hazard_read_reg_list[idx];
++	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
++		   idx, reg->name, reg->offset,
++		   rs480_candidate_reg_read(rdev, reg));
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
+ #endif /* CONFIG_DEBUG_FS */
+ 
+ /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
+@@ -1620,6 +1780,19 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
+ 	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
+ 	debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root, rdev,
+ 			    &rs480_cp_me_oracle_fops);
++	/* Retained exhausted-state frontier probe.  The active list is empty, so
++	 * reads report exhaustion rather than performing an MMIO read.  Any
++	 * reinstated nonempty table requires an attended harness to gate physical
++	 * presence before opening the node. */
++	debugfs_create_file("radeon_rs480_frontier_probe", 0400, root, rdev,
++			    &rs480_frontier_probe_fops);
++	debugfs_create_file("radeon_rs480_gated_read", 0400, root, rdev,
++			    &rs480_gated_read_fops);
++	/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
++	 * of the vertex control register radeon_rs480_vertex_index selects, which
++	 * the operator must hold clocked via a concurrent HB-TCL draw loop. */
++	debugfs_create_file("radeon_rs480_vertex_probe", 0400, root, rdev,
++			    &rs480_vertex_probe_fops);
+ 	/* PLL-indirect clock-tree read-out.  Read-only and low hazard: the PLL
+ 	 * aperture is always clocked and r100_pll_rreg serializes the index/data
+ 	 * dance under pll_idx_lock. */

@@ -1,0 +1,58 @@
+diff --git a/rs400.c b/rs400.c
+index 5523d0b..3f670be 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -475,6 +475,53 @@ static const struct rs480_safe_reg rs480_safe_reg_list[] = {
+ 	{ 0x006c, "GPIO_DVI_DDC" },
+ 	{ 0x0064, "GPIO_CRT2_DDC" },
+ 	{ 0x0068, "GPIO_VGA_DDC" },
++	/* Config aperture/base registers, read-only in the public register
++	 * text (no documented write side-effect on read).  Promoted from the
++	 * candidate config cohort after a clean RREG32 read confirmed them
++	 * readable with no hang on the RS480 IGP. */
++	{ 0x010c, "CONFIG_REG_1_BASE" },
++	{ 0x0110, "CONFIG_REG_APER_SIZE" },
++	{ 0x0114, "CONFIG_MEMSIZE_EMBEDDED" },
++	/* RS400 secondary display-output path, observed northbridge-safe on the
++	 * real RS480 IGP through the attended frontier probe (the three reads
++	 * returned values with the heartbeat advancing and no wedge).  FP2_2 and
++	 * TMDS2 carry live secondary-output state; reading them has no documented
++	 * write side-effect. */
++	{ 0x0388, "RS400_FP2_2_GEN_CNTL" },
++	{ 0x0394, "RS400_TMDS2_CNTL" },
++	{ 0x03a4, "RS400_TMDS2_TRANSMITTER_CNTL" },
++	/* Hazard-tier read-safe registers, each read clean on the real RS480 IGP
++	 * through the radeon_rs480_hazard_read node (every read returned, no
++	 * core wedge; the SE_VPORT reads are verified against SCLK_CNTL FORCE_CP=1).
++	 * They were parked only by a name-pattern regex (SCRATCH / PORT_ matching
++	 * VPORT_ / SEMAPHORE), not a measured hazard, so they promote to the
++	 * read-only safe-regs list; radeon_rs480_hazard_read is retained as the
++	 * observation provenance. */
++	{ 0x00c0, "BIOS_8_SCRATCH" },
++	{ 0x00c4, "BIOS_9_SCRATCH" },
++	{ 0x00c8, "BIOS_10_SCRATCH" },
++	{ 0x00cc, "BIOS_11_SCRATCH" },
++	{ 0x00d0, "BIOS_12_SCRATCH" },
++	{ 0x00d4, "BIOS_13_SCRATCH" },
++	{ 0x00d8, "BIOS_14_SCRATCH" },
++	{ 0x00dc, "BIOS_15_SCRATCH" },
++	{ 0x013c, "SW_SEMAPHORE" },
++	{ 0x15e0, "GUI_SCRATCH_REG0" },
++	{ 0x15e4, "GUI_SCRATCH_REG1" },
++	{ 0x15e8, "GUI_SCRATCH_REG2" },
++	{ 0x15ec, "GUI_SCRATCH_REG3" },
++	{ 0x15f0, "GUI_SCRATCH_REG4" },
++	{ 0x15f4, "GUI_SCRATCH_REG5" },
++	{ 0x1720, "WAIT_UNTIL" },
++	{ 0x1d98, "SE_VPORT_XSCALE" },
++	{ 0x1d9c, "SE_VPORT_XOFFSET" },
++	{ 0x1da0, "SE_VPORT_YSCALE" },
++	{ 0x1da4, "SE_VPORT_YOFFSET" },
++	{ 0x1da8, "SE_VPORT_ZSCALE" },
++	{ 0x1dac, "SE_VPORT_ZOFFSET" },
++	{ 0x02f0, "GRPH_BUFFER_CNTL" },
++	{ 0x03f0, "GRPH2_BUFFER_CNTL" },
++	{ 0x0e38, "RS400_DMIF_MEM_CNTL1" },
+ };
+ 
+ static int rs480_safe_regs_show(struct seq_file *m, void *unused)

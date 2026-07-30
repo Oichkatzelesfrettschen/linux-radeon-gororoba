@@ -1,0 +1,58 @@
+diff --git a/radeon.h b/radeon.h
+index b6d828e..90deb11 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -2483,6 +2483,9 @@ static inline struct drm_device *rdev_to_drm(struct radeon_device *rdev)
+ 	return &rdev->ddev;
+ }
+ 
++struct drm_minor;
++void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
++
+ /*
+  * Cast helper
+  */
+diff --git a/radeon_drv.c b/radeon_drv.c
+index 1db3218..82cd6d3 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -621,6 +621,7 @@ static const struct drm_ioctl_desc radeon_ioctls_kms[] = {
+ static const struct drm_driver kms_driver = {
+ 	.driver_features =
+ 	    DRIVER_GEM | DRIVER_RENDER | DRIVER_MODESET,
++	.debugfs_init = radeon_rs480_re_debugfs_register,
+ 	.open = radeon_driver_open_kms,
+ 	.postclose = radeon_driver_postclose_kms,
+ 	.unload = radeon_driver_unload_kms,
+diff --git a/rs400.c b/rs400.c
+index 6296f99..1ac44ec 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -493,6 +493,20 @@ static int rs480_safe_regs_show(struct seq_file *m, void *unused)
+ DEFINE_SHOW_ATTRIBUTE(rs480_safe_regs);
+ #endif /* CONFIG_DEBUG_FS */
+ 
++void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
++{
++	struct radeon_device *rdev;
++
++	if (!minor || minor->type != DRM_MINOR_PRIMARY || !minor->dev ||
++	    !minor->debugfs_root)
++		return;
++	rdev = minor->dev->dev_private;
++	if (!rdev)
++		return;
++
++	rs480_safe_regs_debugfs_init(rdev);
++}
++
+ static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
+ {
+ #if defined(CONFIG_DEBUG_FS)
+@@ -717,6 +731,5 @@ int rs400_init(struct radeon_device *rdev)
+ 		radeon_irq_kms_fini(rdev);
+ 		rdev->accel_working = false;
+ 	}
+-	rs480_safe_regs_debugfs_init(rdev);
+ 	return 0;
+ }

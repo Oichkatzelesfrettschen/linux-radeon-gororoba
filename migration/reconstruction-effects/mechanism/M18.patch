@@ -1,0 +1,339 @@
+diff --git a/radeon.h b/radeon.h
+index 488198c..6025673 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -2401,6 +2401,13 @@ struct radeon_device {
+ 	bool				accel_working;
+ 	bool				fastfb_working; /* IGP feature*/
+ 	bool				needs_reset, in_reset;
++	/* Failed RS400/RS480 reset with the GA register bus wedged: every
++	 * MMIO read -- direct 3D space, RBBM after clock gating re-engages,
++	 * MC-indirect GART queries -- is a non-posted HyperTransport black
++	 * hole that hard-locks the CPU. gpu_parked gates all register access
++	 * on paths still reachable from userspace teardown.
++	 */
++	bool				gpu_parked;
+ 	struct radeon_surface_reg surface_regs[RADEON_GEM_MAX_SURFACES];
+ 	const struct firmware *me_fw;	/* all family ME firmware */
+ 	const struct firmware *pfp_fw;	/* r6/700 PFP firmware */
+diff --git a/radeon_drv.c b/radeon_drv.c
+index aba173a..2a27484 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -564,7 +564,16 @@ radeon_pci_shutdown(struct pci_dev *pdev)
+ 	 * Make this power and Loongson specific because
+ 	 * it breaks some other boards.
+ 	 */
+-	radeon_suspend_kms(pci_get_drvdata(pdev), true, true, false);
++	struct drm_device *ddev = pci_get_drvdata(pdev);
++	struct radeon_device *rdev = ddev->dev_private;
++
++	/* A parked RS400/RS480 cannot take a hardware suspend -- its register bus
++	 * is wedged; skip it and let the platform reset reclaim the GPU on the
++	 * shutdown/reboot.  (On x86 this whole block is compiled out, so the
++	 * Vostro RS480 shutdown path is already hardware-free.) */
++	if (!(rdev->gpu_parked &&
++	      (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)))
++		radeon_suspend_kms(ddev, true, true, false);
+ #endif
+ }
+ 
+diff --git a/radeon_fence.c b/radeon_fence.c
+index 167d6f1..f64fd3f 100644
+--- a/radeon_fence.c
++++ b/radeon_fence.c
+@@ -275,6 +275,16 @@ static void radeon_fence_check_lockup(struct work_struct *work)
+ 	rdev = fence_drv->rdev;
+ 	ring = fence_drv - &rdev->fence_drv[0];
+ 
++	/* The lockup check reads ring pointers and RBBM_STATUS; on a parked
++	 * RS480 those are non-posted black holes, the fences are already
++	 * force-completed, and a "lockup" verdict here would re-arm
++	 * needs_reset into a reset cascade against the dead frontend. The
++	 * queued instance from the pre-park waiters lands ~300ms after the
++	 * park; it exits here instead.
++	 */
++	if (rdev->gpu_parked)
++		return;
++
+ 	if (!down_read_trylock(&rdev->exclusive_lock)) {
+ 		/* just reschedule the check if a reset is going on */
+ 		radeon_fence_schedule_check(rdev, ring);
+diff --git a/radeon_kms.c b/radeon_kms.c
+index 1616101..7e6c0df 100644
+--- a/radeon_kms.c
++++ b/radeon_kms.c
+@@ -104,6 +104,21 @@ void radeon_driver_unload_kms(struct drm_device *dev)
+ 	if (rdev->rmmio == NULL)
+ 		goto done_free;
+ 
++	/* A parked RS400/RS480 holds a wedged, GA-routed register bus that never
++	 * grants a non-posted read; the normal unload teardown
++	 * (radeon_modeset_fini / radeon_device_fini, plus the PM-runtime and ACPI
++	 * paths) issues GPU MMIO that black-holes the K8 northbridge and
++	 * sync-floods the box.  Leave the hardware parked and drop straight to the
++	 * software free -- reboot reclaims the GPU.  This mirrors the parked
++	 * leak-by-design teardown and the rmmio == NULL early-out above; the
++	 * module is part of the parked containment boundary, not a recovery path. */
++	if (rdev->gpu_parked &&
++	    (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)) {
++		dev_err(rdev->dev,
++			"parked: bypassing hardware teardown on unload, leaking to reboot\n");
++		goto done_free;
++	}
++
+ 	if (radeon_is_px(dev)) {
+ 		pm_runtime_get_sync(dev->dev);
+ 		pm_runtime_forbid(dev->dev);
+diff --git a/rs400.c b/rs400.c
+index dafa8e0..b2c6108 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -30,6 +30,7 @@
+ #include <linux/mutex.h>
+ #include <linux/seq_file.h>
+ #include <linux/slab.h>
++#include <linux/pci.h>
+ #include <linux/uaccess.h>
+ 
+ #include <drm/drm_device.h>
+@@ -74,6 +75,17 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
+ 	uint32_t tmp;
+ 	unsigned int timeout = rdev->usec_timeout;
+ 
++	/* The GART cache serves the 3D engine's fetch path, and the MC
++	 * indirect data read polls a block held by the wedged GA client: on a
++	 * parked GPU the RREG32_MC below is a non-posted black hole. Teardown
++	 * still rewrites the PTEs in system RAM; nothing fetches through
++	 * these TLBs again before a reboot, so the flush is skippable.
++	 */
++	if (rdev->gpu_parked) {
++		dev_err_once(rdev->dev, "parked: skipping GART tlb flush (MC indirect unreadable)\n");
++		return;
++	}
++
+ 	WREG32_MC(RS480_GART_CACHE_CNTRL, RS480_GART_CACHE_INVALIDATE);
+ 	do {
+ 		tmp = RREG32_MC(RS480_GART_CACHE_CNTRL);
+@@ -327,9 +339,28 @@ void rs400_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
+ }
+ 
+ #if defined(CONFIG_DEBUG_FS)
++/* rs480_debugfs_refuse_if_parked -- after a failed RS480 reset the GA-routed
++ * register bus never grants a non-posted read, so a debugfs register read
++ * black-holes the K8 northbridge and sync-floods the box (cold cycle only).
++ * Every RS480 RE debugfs reader refuses hardware access once gpu_parked is
++ * set; the node reports the parked state instead of touching MMIO. */
++static bool rs480_debugfs_refuse_if_parked(struct seq_file *m,
++					   struct radeon_device *rdev)
++{
++	if (!rdev->gpu_parked)
++		return false;
++	/* seq_file iterators call .show per position; emit once per open. */
++	if (m->count == 0)
++		seq_puts(m,
++			 "gpu parked: RS480 register read disabled to avoid non-posted MMIO black hole\n");
++	return true;
++}
++
+ static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	uint32_t tmp;
+ 
+ 	tmp = RREG32(RADEON_HOST_PATH_CNTL);
+@@ -530,6 +561,8 @@ static const struct rs480_safe_reg rs480_safe_reg_list[] = {
+ static int rs480_safe_regs_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(rs480_safe_reg_list); i++) {
+@@ -577,6 +610,8 @@ static bool rs480_offset_is_read_hazard(u32 offset)
+ static u32 rs480_candidate_reg_read(struct radeon_device *rdev,
+ 				    const struct rs480_candidate_reg *reg)
+ {
++	if (rdev->gpu_parked)
++		return RS480_READ_HAZARD_SENTINEL;
+ 	if (rs480_offset_is_read_hazard(reg->offset))
+ 		return RS480_READ_HAZARD_SENTINEL;
+ 	if (reg->access)
+@@ -638,6 +673,8 @@ static const struct rs480_candidate_reg rs480_candidate_zb_reg_list[] = {
+ static int rs480_candidate_config_regs_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(rs480_candidate_config_reg_list); i++) {
+@@ -656,6 +693,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_config_regs);
+ static int rs480_candidate_gart_mc_regs_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(rs480_candidate_gart_mc_reg_list); i++) {
+@@ -676,6 +715,8 @@ static int rs480_candidate_regs_emit(struct seq_file *m,
+ 				     const struct rs480_candidate_reg *list,
+ 				     unsigned int count)
+ {
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < count; i++) {
+@@ -901,6 +942,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_gart_status_regs);
+ static int rs480_uma_status_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	u32 tom = RREG32(RADEON_NB_TOM);
+ 	u32 base = tom & 0xffff;
+ 	u32 top = tom >> 16;
+@@ -954,6 +997,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_uma_status);
+ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	/* PLL index 0x0d == R_00000D_SCLK_CNTL (r300d.h / r100d.h). */
+ 	u32 sclk = RREG32_PLL(0x0000000D);
+ 	/* PLL index 0x1e == R300_SCLK_CNTL2.  It holds the R300 3D-engine force
+@@ -1045,6 +1090,8 @@ static const struct rs480_pll_reg rs480_pll_reg_list[] = {
+ static int rs480_pll_regs_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	unsigned int i;
+ 	u32 ppll_ref, ppll_div3, m_spll, vclk;
+ 
+@@ -1125,6 +1172,8 @@ static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
+ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	unsigned int addr = (unsigned int)*(loff_t *)v;
+ 	u32 datah, datal;
+ 
+@@ -1272,6 +1321,8 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
+ {
+ 	struct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;
+ 	struct radeon_device *rdev = ctx->rdev;
++	if (rdev->gpu_parked)
++		return -EIO;
+ 	u32 addr, new_h, new_l, rb_h, rb_l, rs_h, rs_l;
+ 	char kbuf[64];
+ 	int ret;
+@@ -1394,6 +1445,8 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
+ static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 
+ 	if (radeon_rs480_cp_me_oracle != RS480_CP_ME_ORACLE_ARM_TOKEN) {
+ 		seq_printf(m, "oracle disarmed: set rs480_cp_me_oracle=0x%08x\n",
+@@ -1531,6 +1584,8 @@ static const struct rs480_candidate_reg rs480_frontier_probe_reg_list[] = {
+ static int rs480_frontier_probe_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	int idx = radeon_rs480_frontier_index;
+ 	const struct rs480_candidate_reg *reg;
+ 	u32 value;
+@@ -1577,6 +1632,8 @@ static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
+ static int rs480_vertex_probe_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	int idx = radeon_rs480_vertex_index;
+ 	const struct rs480_candidate_reg *reg;
+ 	u32 value;
+@@ -1661,6 +1718,8 @@ static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
+ static int rs480_hazard_read_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	int idx = radeon_rs480_hazard_index;
+ 	const struct rs480_candidate_reg *reg;
+ 
+@@ -1703,6 +1762,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
+ static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
+ 	int r;
+ 
+@@ -1770,6 +1831,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_cp_ib_scratch_oracle);
+ static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
+ 	u32 status;
+ 	int r;
+@@ -1805,6 +1868,12 @@ static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
+ 	 * exclusive_lock is held here; radeon_gpu_reset takes its own down_write. */
+ 	rdev->needs_reset = true;
+ 	r = radeon_gpu_reset(rdev);
++	if (rdev->gpu_parked) {
++		seq_printf(m,
++			   "gpu-reset recovery probe: parked after reset (r=%d); skipping post RBBM_STATUS\n",
++			   r);
++		return 0;
++	}
+ 
+ 	status = RREG32(R_000E40_RBBM_STATUS);
+ 	seq_printf(m,
+@@ -2075,6 +2144,8 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
+ static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
+ 	struct rs480_soft_reset_result res;
+ 	u32 pre;
+@@ -2361,6 +2432,8 @@ static const struct rs480_force_clock_reg rs480_force_clock_list[] = {
+ static int rs480_force_clock_read_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	const struct rs480_force_clock_reg *e;
+ 	u32 sclk_orig, value;
+ 	int idx = radeon_rs480_force_clock_index;
+@@ -2665,6 +2738,8 @@ static const struct rs480_force_clock_3d_reg rs480_force_clock_3d_list[] = {
+ static int rs480_force_clock_3d_read_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	const struct rs480_force_clock_3d_reg *e;
+ 	u32 sclk_orig, sclk2_orig, value;
+ 	int idx = radeon_rs480_force_clock_3d_index;
+@@ -2725,6 +2800,8 @@ static const struct rs480_gated_read_reg rs480_gated_read_list[] = {
+ static int rs480_gated_read_show(struct seq_file *m, void *unused)
+ {
+ 	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
+ 	const struct rs480_gated_read_reg *e;
+ 	u32 sclk_orig, value;
+ 	int idx = radeon_rs480_gated_read_index;

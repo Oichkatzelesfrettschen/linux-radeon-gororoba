@@ -1,0 +1,186 @@
+diff --git a/radeon.h b/radeon.h
+index bebd7e6..b6d828e 100644
+--- a/radeon.h
++++ b/radeon.h
+@@ -113,6 +113,7 @@ extern int radeon_aspm;
+ extern int radeon_runtime_pm;
+ extern int radeon_hard_reset;
+ extern int radeon_palm_pci_reset_unsafe;
++extern int radeon_rs480_safe_regs;
+ extern int radeon_vm_size;
+ extern int radeon_vm_block_size;
+ extern int radeon_deep_color;
+diff --git a/radeon_drv.c b/radeon_drv.c
+index fa76cfc..1db3218 100644
+--- a/radeon_drv.c
++++ b/radeon_drv.c
+@@ -141,6 +141,7 @@ int radeon_aspm = -1;
+ int radeon_runtime_pm = -1;
+ int radeon_hard_reset;
+ int radeon_palm_pci_reset_unsafe;
++int radeon_rs480_safe_regs = 1;
+ int radeon_vm_size = 8;
+ int radeon_vm_block_size = -1;
+ int radeon_deep_color;
+@@ -225,6 +226,14 @@ MODULE_PARM_DESC(palm_pci_reset_unsafe,
+ );
+ module_param_named(palm_pci_reset_unsafe, radeon_palm_pci_reset_unsafe, int, 0644);
+ 
++MODULE_PARM_DESC(rs480_safe_regs,
++	"Expose the read-only RS480/RS482/RS485 curated MMIO snapshot in debugfs. "
++	"Default 1: create radeon_rs480_safe_regs. Set to 0 to keep the DKMS "
++	"radeon module active but suppress the extra reverse-engineering debugfs file."
++);
++module_param_named(rs480_safe_regs, radeon_rs480_safe_regs, int, 0444);
++
++
+ MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
+ module_param_named(vm_size, radeon_vm_size, int, 0444);
+ 
+diff --git a/rs400.c b/rs400.c
+index 13cd0a6..6296f99 100644
+--- a/rs400.c
++++ b/rs400.c
+@@ -39,6 +39,7 @@
+ 
+ /* This files gather functions specifics to : rs400,rs480 */
+ static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
++static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev);
+ 
+ void rs400_gart_adjust_size(struct radeon_device *rdev)
+ {
+@@ -390,6 +391,127 @@ static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
+ DEFINE_SHOW_ATTRIBUTE(rs400_debugfs_gart_info);
+ #endif
+ 
++
++/* rs480_safe_regs_show -- seq_file iterator for radeon_rs480_safe_regs.
++ *
++ * Each line: "NAME (0xOFFSET) = 0xVALUE\n"
++ *
++ * Register selection policy: read-only status and identity registers only.
++ * No command-processor, DMA, or power-management control registers.  The
++ * list is pinned to the set empirically confirmed on RS482 (1002:5974)
++ * via radeontool on 6.18.26-1-cachyos-lts; SAFE_REGS.tsv in the DKMS
++ * package is the canonical source of truth.
++ */
++#if defined(CONFIG_DEBUG_FS)
++struct rs480_safe_reg {
++	u32 offset;
++	const char *name;
++};
++
++static const struct rs480_safe_reg rs480_safe_reg_list[] = {
++	/* PCI shadow / identity */
++	{ 0x0f2c, "ADAPTER_ID" },
++	{ 0x0f04, "COMMAND" },
++	{ 0x0f08, "STATUS" },
++	{ 0x0f0c, "CACHE_LINE" },
++	{ 0x0f50, "CAPABILITIES_ID" },
++	{ 0x0f5c, "AGP_STATUS" },
++	/* BIOS scratch: power/connector/display/PLL state written by BIOS init */
++	{ 0x0010, "BIOS_0_SCRATCH" },
++	{ 0x0014, "BIOS_1_SCRATCH" },
++	{ 0x0018, "BIOS_2_SCRATCH" },
++	{ 0x001c, "BIOS_3_SCRATCH" },
++	{ 0x0020, "BIOS_4_SCRATCH" },
++	{ 0x0024, "BIOS_5_SCRATCH" },
++	{ 0x0028, "BIOS_6_SCRATCH" },
++	{ 0x002c, "BIOS_7_SCRATCH" },
++	/* Memory configuration */
++	{ 0x0140, "CONFIG_MEMSIZE" },
++	{ 0x0100, "CONFIG_APER_0_BASE" },
++	{ 0x0104, "CONFIG_APER_1_BASE" },
++	{ 0x0108, "CONFIG_APER_SIZE" },
++	{ 0x015c, "NB_TOM" },
++	{ 0x0148, "MC_FB_LOCATION" },
++	{ 0x014c, "MC_AGP_LOCATION" },
++	{ 0x0170, "AGP_BASE" },
++	{ 0x0174, "AGP_CNTL" },
++	/* Bus configuration */
++	{ 0x0030, "BUS_CNTL" },
++	{ 0x0034, "BUS_CNTL1" },
++	/* GPU status (RBBM busy bits, read-only) */
++	{ 0x0e40, "RBBM_STATUS" },
++	/* Pixel clock readback */
++	{ 0x01e4, "PIXCLKS_CNTL" },
++	/* Display geometry -- CRTC1 */
++	{ 0x0200, "CRTC_GEN_CNTL" },
++	{ 0x01c8, "CRTC_EXT_CNTL" },
++	{ 0x0250, "CRTC_H_TOTAL_DISP" },
++	{ 0x0260, "CRTC_H_SYNC_STRT_WID" },
++	{ 0x0280, "CRTC_V_TOTAL_DISP" },
++	{ 0x0284, "CRTC_V_SYNC_STRT_WID" },
++	/* Display geometry -- CRTC2 */
++	{ 0x0300, "CRTC2_GEN_CNTL" },
++	/* Display geometry -- FP shadow */
++	{ 0x0400, "FP_CRTC_H_TOTAL_DISP" },
++	{ 0x0404, "FP_CRTC_V_TOTAL_DISP" },
++	{ 0x0408, "FP_H_SYNC_STRT_WID" },
++	{ 0x040c, "FP_V_SYNC_STRT_WID" },
++	{ 0x0430, "FP_HORZ_STRETCH" },
++	{ 0x0434, "FP_VERT_STRETCH" },
++	/* Display output routing */
++	{ 0x0180, "DISP_OUTPUT_CNTL" },
++	{ 0x0d00, "DAC_CNTL" },
++	{ 0x0d04, "DAC_EXT_CNTL" },
++	/* LVDS / FP transmitter state */
++	{ 0x0210, "LVDS_GEN_CNTL" },
++	{ 0x02cc, "LVDS_PLL_CNTL" },
++	{ 0x0204, "FP_GEN_CNTL" },
++	{ 0x0208, "FP2_GEN_CNTL" },
++	/* GPIO / DDC idle state */
++	{ 0x0060, "GPIO_MONID" },
++	{ 0x006c, "GPIO_DVI_DDC" },
++	{ 0x0064, "GPIO_CRT2_DDC" },
++	{ 0x0068, "GPIO_VGA_DDC" },
++};
++
++static int rs480_safe_regs_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(rs480_safe_reg_list); i++) {
++		u32 val = RREG32(rs480_safe_reg_list[i].offset);
++
++		seq_printf(m, "%-24s (0x%04x) = 0x%08x\n",
++			   rs480_safe_reg_list[i].name,
++			   rs480_safe_reg_list[i].offset,
++			   val);
++	}
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_safe_regs);
++#endif /* CONFIG_DEBUG_FS */
++
++static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
++{
++#if defined(CONFIG_DEBUG_FS)
++	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
++
++	if (!radeon_rs480_safe_regs)
++		return;
++
++	/* RS482 (1002:5974) and RS485 (1002:5975) both enumerate as
++	 * CHIP_RS480 in the radeon family table.
++	 */
++	if (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)
++		return;
++
++	debugfs_create_file("radeon_rs480_safe_regs", 0444, root, rdev,
++			    &rs480_safe_regs_fops);
++#endif
++}
++
+ static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
+ {
+ #if defined(CONFIG_DEBUG_FS)
+@@ -595,5 +717,6 @@ int rs400_init(struct radeon_device *rdev)
+ 		radeon_irq_kms_fini(rdev);
+ 		rdev->accel_working = false;
+ 	}
++	rs480_safe_regs_debugfs_init(rdev);
+ 	return 0;
+ }
