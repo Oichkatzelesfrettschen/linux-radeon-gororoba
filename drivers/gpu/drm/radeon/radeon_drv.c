@@ -145,6 +145,7 @@ int radeon_rs480_safe_regs = 1;
 int radeon_rs480_candidate_regs = 1;
 int radeon_rs480_cp_me_ram_dump;
 int radeon_rs480_cp_me_ram_inject;
+int radeon_rs480_cp_me_oracle;
 int radeon_rs480_hazard_readers_armed;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
@@ -269,6 +270,28 @@ MODULE_PARM_DESC(rs480_cp_me_ram_inject,
 );
 module_param_named(rs480_cp_me_ram_inject, radeon_rs480_cp_me_ram_inject, int, 0644);
 
+MODULE_PARM_DESC(rs480_cp_me_oracle,
+	"Arm the CP MicroEngine oracle debugfs node radeon_rs480_cp_me_oracle. "
+	"Default 0 (OFF); arm with the exact token 0x4f524331 ('ORC1'), a stray "
+	"nonzero value does nothing. On an IGP the live-fire is EXCLUDED: reading "
+	"the node prints an exclusion notice, because the CSQ stop/restart + gfx "
+	"ring test scratch poll hard-locks the K8 northbridge (no MMIO completion "
+	"timeout). Use radeon_rs480_cp_me_ram_inject for safe CP_ME_RAM "
+	"read/verify/restore. The live-fire (inject a sentinel into dead microword "
+	"0xff, stop/restart the command queue, ring test, restore) is retained for a "
+	"future discrete Radeon, where the PCIe completion timeout makes a wedged "
+	"poll fail cleanly; root-only, run with the display quiesced."
+);
+module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
+
+MODULE_PARM_DESC(rs480_hazard_readers_armed,
+	"RS480 hazard-reader arm gate: 0 (default) makes the wedge-prone "
+	"radeon_rs480_candidate_vap_regs and radeon_rs480_candidate_firmware_read_regs "
+	"nodes refuse the MMIO read.  VAP/PVS clock-gates at rest and a read can "
+	"stall the reset-less K8 northbridge; the firmware_read cohort includes "
+	"HOST_PATH_CNTL (0x0130), which gates the HyperTransport host path.  Set 1 "
+	"to arm an attended read.");
+module_param_named(rs480_hazard_readers_armed, radeon_rs480_hazard_readers_armed, int, 0644);
 
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
 module_param_named(vm_size, radeon_vm_size, int, 0444);

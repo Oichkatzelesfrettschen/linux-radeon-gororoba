@@ -117,6 +117,7 @@ extern int radeon_rs480_safe_regs;
 extern int radeon_rs480_candidate_regs;
 extern int radeon_rs480_cp_me_ram_dump;
 extern int radeon_rs480_cp_me_ram_inject;
+extern int radeon_rs480_cp_me_oracle;
 extern int radeon_rs480_hazard_readers_armed;
 extern int radeon_vm_size;
 extern int radeon_vm_block_size;
