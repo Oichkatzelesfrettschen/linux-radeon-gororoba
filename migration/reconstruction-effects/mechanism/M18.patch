@@ -1,8 +1,8 @@
 diff --git a/radeon.h b/radeon.h
-index 488198c..6025673 100644
+index 2c66fed..01424bd 100644
 --- a/radeon.h
 +++ b/radeon.h
-@@ -2401,6 +2401,13 @@ struct radeon_device {
+@@ -2399,6 +2399,13 @@ struct radeon_device {
  	bool				accel_working;
  	bool				fastfb_working; /* IGP feature*/
  	bool				needs_reset, in_reset;
@@ -17,10 +17,10 @@ index 488198c..6025673 100644
  	const struct firmware *me_fw;	/* all family ME firmware */
  	const struct firmware *pfp_fw;	/* r6/700 PFP firmware */
 diff --git a/radeon_drv.c b/radeon_drv.c
-index aba173a..2a27484 100644
+index 88917f1..2bec67e 100644
 --- a/radeon_drv.c
 +++ b/radeon_drv.c
-@@ -564,7 +564,16 @@ radeon_pci_shutdown(struct pci_dev *pdev)
+@@ -528,7 +528,16 @@ radeon_pci_shutdown(struct pci_dev *pdev)
  	 * Make this power and Loongson specific because
  	 * it breaks some other boards.
  	 */
@@ -86,7 +86,7 @@ index 1616101..7e6c0df 100644
  		pm_runtime_get_sync(dev->dev);
  		pm_runtime_forbid(dev->dev);
 diff --git a/rs400.c b/rs400.c
-index dafa8e0..b2c6108 100644
+index ec48a6e..9d91392 100644
 --- a/rs400.c
 +++ b/rs400.c
 @@ -30,6 +30,7 @@
@@ -97,7 +97,7 @@ index dafa8e0..b2c6108 100644
  #include <linux/uaccess.h>
  
  #include <drm/drm_device.h>
-@@ -74,6 +75,17 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
+@@ -73,6 +74,17 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
  	uint32_t tmp;
  	unsigned int timeout = rdev->usec_timeout;
  
@@ -115,7 +115,7 @@ index dafa8e0..b2c6108 100644
  	WREG32_MC(RS480_GART_CACHE_CNTRL, RS480_GART_CACHE_INVALIDATE);
  	do {
  		tmp = RREG32_MC(RS480_GART_CACHE_CNTRL);
-@@ -327,9 +339,28 @@ void rs400_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
+@@ -326,9 +338,28 @@ void rs400_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
  }
  
  #if defined(CONFIG_DEBUG_FS)
@@ -144,7 +144,7 @@ index dafa8e0..b2c6108 100644
  	uint32_t tmp;
  
  	tmp = RREG32(RADEON_HOST_PATH_CNTL);
-@@ -530,6 +561,8 @@ static const struct rs480_safe_reg rs480_safe_reg_list[] = {
+@@ -529,6 +560,8 @@ static const struct rs480_safe_reg rs480_safe_reg_list[] = {
  static int rs480_safe_regs_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -153,7 +153,7 @@ index dafa8e0..b2c6108 100644
  	unsigned int i;
  
  	for (i = 0; i < ARRAY_SIZE(rs480_safe_reg_list); i++) {
-@@ -577,6 +610,8 @@ static bool rs480_offset_is_read_hazard(u32 offset)
+@@ -576,6 +609,8 @@ static bool rs480_offset_is_read_hazard(u32 offset)
  static u32 rs480_candidate_reg_read(struct radeon_device *rdev,
  				    const struct rs480_candidate_reg *reg)
  {
@@ -162,7 +162,7 @@ index dafa8e0..b2c6108 100644
  	if (rs480_offset_is_read_hazard(reg->offset))
  		return RS480_READ_HAZARD_SENTINEL;
  	if (reg->access)
-@@ -638,6 +673,8 @@ static const struct rs480_candidate_reg rs480_candidate_zb_reg_list[] = {
+@@ -637,6 +672,8 @@ static const struct rs480_candidate_reg rs480_candidate_zb_reg_list[] = {
  static int rs480_candidate_config_regs_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -171,7 +171,7 @@ index dafa8e0..b2c6108 100644
  	unsigned int i;
  
  	for (i = 0; i < ARRAY_SIZE(rs480_candidate_config_reg_list); i++) {
-@@ -656,6 +693,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_config_regs);
+@@ -655,6 +692,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_config_regs);
  static int rs480_candidate_gart_mc_regs_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -180,7 +180,7 @@ index dafa8e0..b2c6108 100644
  	unsigned int i;
  
  	for (i = 0; i < ARRAY_SIZE(rs480_candidate_gart_mc_reg_list); i++) {
-@@ -676,6 +715,8 @@ static int rs480_candidate_regs_emit(struct seq_file *m,
+@@ -675,6 +714,8 @@ static int rs480_candidate_regs_emit(struct seq_file *m,
  				     const struct rs480_candidate_reg *list,
  				     unsigned int count)
  {
@@ -189,7 +189,7 @@ index dafa8e0..b2c6108 100644
  	unsigned int i;
  
  	for (i = 0; i < count; i++) {
-@@ -901,6 +942,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_gart_status_regs);
+@@ -900,6 +941,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_gart_status_regs);
  static int rs480_uma_status_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -198,7 +198,7 @@ index dafa8e0..b2c6108 100644
  	u32 tom = RREG32(RADEON_NB_TOM);
  	u32 base = tom & 0xffff;
  	u32 top = tom >> 16;
-@@ -954,6 +997,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_uma_status);
+@@ -953,6 +996,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_uma_status);
  static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -207,7 +207,7 @@ index dafa8e0..b2c6108 100644
  	/* PLL index 0x0d == R_00000D_SCLK_CNTL (r300d.h / r100d.h). */
  	u32 sclk = RREG32_PLL(0x0000000D);
  	/* PLL index 0x1e == R300_SCLK_CNTL2.  It holds the R300 3D-engine force
-@@ -1045,6 +1090,8 @@ static const struct rs480_pll_reg rs480_pll_reg_list[] = {
+@@ -1044,6 +1089,8 @@ static const struct rs480_pll_reg rs480_pll_reg_list[] = {
  static int rs480_pll_regs_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -216,7 +216,7 @@ index dafa8e0..b2c6108 100644
  	unsigned int i;
  	u32 ppll_ref, ppll_div3, m_spll, vclk;
  
-@@ -1125,6 +1172,8 @@ static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
+@@ -1124,6 +1171,8 @@ static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
  static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
  {
  	struct radeon_device *rdev = m->private;
@@ -225,7 +225,7 @@ index dafa8e0..b2c6108 100644
  	unsigned int addr = (unsigned int)*(loff_t *)v;
  	u32 datah, datal;
  
-@@ -1272,6 +1321,8 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
+@@ -1271,6 +1320,8 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
  {
  	struct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;
  	struct radeon_device *rdev = ctx->rdev;
@@ -234,7 +234,7 @@ index dafa8e0..b2c6108 100644
  	u32 addr, new_h, new_l, rb_h, rb_l, rs_h, rs_l;
  	char kbuf[64];
  	int ret;
-@@ -1394,6 +1445,8 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
+@@ -1393,6 +1444,8 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
  static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -243,7 +243,7 @@ index dafa8e0..b2c6108 100644
  
  	if (radeon_rs480_cp_me_oracle != RS480_CP_ME_ORACLE_ARM_TOKEN) {
  		seq_printf(m, "oracle disarmed: set rs480_cp_me_oracle=0x%08x\n",
-@@ -1531,6 +1584,8 @@ static const struct rs480_candidate_reg rs480_frontier_probe_reg_list[] = {
+@@ -1530,6 +1583,8 @@ static const struct rs480_candidate_reg rs480_frontier_probe_reg_list[] = {
  static int rs480_frontier_probe_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -252,7 +252,7 @@ index dafa8e0..b2c6108 100644
  	int idx = radeon_rs480_frontier_index;
  	const struct rs480_candidate_reg *reg;
  	u32 value;
-@@ -1577,6 +1632,8 @@ static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
+@@ -1576,6 +1631,8 @@ static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
  static int rs480_vertex_probe_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -261,7 +261,7 @@ index dafa8e0..b2c6108 100644
  	int idx = radeon_rs480_vertex_index;
  	const struct rs480_candidate_reg *reg;
  	u32 value;
-@@ -1661,6 +1718,8 @@ static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
+@@ -1660,6 +1717,8 @@ static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
  static int rs480_hazard_read_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -270,7 +270,7 @@ index dafa8e0..b2c6108 100644
  	int idx = radeon_rs480_hazard_index;
  	const struct rs480_candidate_reg *reg;
  
-@@ -1703,6 +1762,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
+@@ -1702,6 +1761,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
  static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -279,38 +279,7 @@ index dafa8e0..b2c6108 100644
  	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
  	int r;
  
-@@ -1770,6 +1831,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_cp_ib_scratch_oracle);
- static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
- {
- 	struct radeon_device *rdev = m->private;
-+	if (rs480_debugfs_refuse_if_parked(m, rdev))
-+		return 0;
- 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
- 	u32 status;
- 	int r;
-@@ -1805,6 +1868,12 @@ static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
- 	 * exclusive_lock is held here; radeon_gpu_reset takes its own down_write. */
- 	rdev->needs_reset = true;
- 	r = radeon_gpu_reset(rdev);
-+	if (rdev->gpu_parked) {
-+		seq_printf(m,
-+			   "gpu-reset recovery probe: parked after reset (r=%d); skipping post RBBM_STATUS\n",
-+			   r);
-+		return 0;
-+	}
- 
- 	status = RREG32(R_000E40_RBBM_STATUS);
- 	seq_printf(m,
-@@ -2075,6 +2144,8 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
- static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
- {
- 	struct radeon_device *rdev = m->private;
-+	if (rs480_debugfs_refuse_if_parked(m, rdev))
-+		return 0;
- 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
- 	struct rs480_soft_reset_result res;
- 	u32 pre;
-@@ -2361,6 +2432,8 @@ static const struct rs480_force_clock_reg rs480_force_clock_list[] = {
+@@ -1967,6 +2028,8 @@ static const struct rs480_force_clock_reg rs480_force_clock_list[] = {
  static int rs480_force_clock_read_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -319,7 +288,7 @@ index dafa8e0..b2c6108 100644
  	const struct rs480_force_clock_reg *e;
  	u32 sclk_orig, value;
  	int idx = radeon_rs480_force_clock_index;
-@@ -2665,6 +2738,8 @@ static const struct rs480_force_clock_3d_reg rs480_force_clock_3d_list[] = {
+@@ -2271,6 +2334,8 @@ static const struct rs480_force_clock_3d_reg rs480_force_clock_3d_list[] = {
  static int rs480_force_clock_3d_read_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;
@@ -328,7 +297,7 @@ index dafa8e0..b2c6108 100644
  	const struct rs480_force_clock_3d_reg *e;
  	u32 sclk_orig, sclk2_orig, value;
  	int idx = radeon_rs480_force_clock_3d_index;
-@@ -2725,6 +2800,8 @@ static const struct rs480_gated_read_reg rs480_gated_read_list[] = {
+@@ -2331,6 +2396,8 @@ static const struct rs480_gated_read_reg rs480_gated_read_list[] = {
  static int rs480_gated_read_show(struct seq_file *m, void *unused)
  {
  	struct radeon_device *rdev = m->private;

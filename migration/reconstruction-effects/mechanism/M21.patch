@@ -240,22 +240,3 @@ index 5855bf2..96ef434 100644
  }
  
  /*
-diff --git a/rs400.c b/rs400.c
-index b2c6108..6657a11 100644
---- a/rs400.c
-+++ b/rs400.c
-@@ -2124,7 +2124,13 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
- 
- 	rdev->needs_reset = true;
- 	r = radeon_gpu_reset(rdev);
--	post = RREG32(R_000E40_RBBM_STATUS);
-+	/* No register read after a failed reset: the parked GPU keeps its MC
-+	 * stopped and display requests off, and the first post-park MMIO read
-+	 * is the proven host-killer. The r300_asic_reset dmesg ladder carries
-+	 * the at-reset and post-soft-reset RBBM values; report those.
-+	 */
-+	dev_err(rdev->dev, "probe: radeon_gpu_reset returned %d, no post-park register read\n", r);
-+	post = r ? 0x5041524B /* "PARK" */ : RREG32(R_000E40_RBBM_STATUS);
- 
- 	seq_printf(m,
- 		   "reset-hang probe wedged-3D(%s): pre RBBM_STATUS=0x%08x (VAP_BUSY=%u GA_BUSY=%u RB3D_BUSY=%u RE_BUSY=%u) "
