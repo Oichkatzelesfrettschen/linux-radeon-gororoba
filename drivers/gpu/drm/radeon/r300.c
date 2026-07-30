@@ -482,10 +482,6 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
 	mdelay(500);
 	WREG32(R_0000F0_RBBM_SOFT_RESET, 0);
 	mdelay(1);
-	if (igp_force_clk) {
-		WREG32_PLL(0x0000001E, sclk2);
-		WREG32_PLL(0x0000000D, sclk);
-	}
 	status = RREG32(R_000E40_RBBM_STATUS);
 	dev_info(rdev->dev, "(%s:%d) RBBM_STATUS=0x%08X\n", __func__, __LINE__, status);
 	/* restore PCI & busmastering */
@@ -497,7 +493,34 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
 		ret = -1;
 	} else
 		dev_info(rdev->dev, "GPU reset succeed\n");
-	r100_mc_resume(rdev, &save);
+	/* The register-bus readback grant dies with dynamic clock gating when
+	 * the GA frontend stays wedged: the RBBM_STATUS read lands while the
+	 * restored clocks still spin, and the next read some milliseconds
+	 * later hangs the CPU as a non-posted HyperTransport black hole.
+	 * A failed reset therefore keeps SCLK_CNTL/SCLK_CNTL2 forced so the
+	 * RBBM, CP, and MC domains stay readable on the parked GPU; only a
+	 * successful reset restores the saved gating.
+	 */
+	if (igp_force_clk) {
+		if (ret) {
+			dev_err(rdev->dev, "failed reset: leaving 3D clocks forced, register bus stays readable\n");
+		} else {
+			WREG32_PLL(0x0000001E, sclk2);
+			WREG32_PLL(0x0000000D, sclk);
+		}
+	}
+	/* Re-enabling display memory requests against the wedge-held MC client
+	 * arbiter deadlocks the host interface within one or two vblank
+	 * periods: the next CPU MMIO read from any domain -- probe, vblank IRQ
+	 * handler -- never completes, force-clock notwithstanding. A failed
+	 * reset leaves the MC stopped and the display parked; the console goes
+	 * dark and the host stays alive.
+	 */
+	if (ret) {
+		dev_err(rdev->dev, "failed reset: leaving MC/display requests parked\n");
+	} else {
+		r100_mc_resume(rdev, &save);
+	}
 	return ret;
 }
 

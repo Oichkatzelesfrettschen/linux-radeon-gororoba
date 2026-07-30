@@ -765,6 +765,16 @@ err_suspend:
 void radeon_driver_postclose_kms(struct drm_device *dev,
 				 struct drm_file *file_priv)
 {
+	{
+		struct radeon_device *bc_rdev = dev->dev_private;
+
+		if (bc_rdev && !bc_rdev->accel_working) {
+			msleep(1);
+			dev_err(bc_rdev->dev, "postclose on parked GPU: begin teardown\n");
+			msleep(1);
+		}
+	}
+
 	struct radeon_device *rdev = dev->dev_private;
 
 	pm_runtime_get_sync(dev->dev);
@@ -800,6 +810,16 @@ void radeon_driver_postclose_kms(struct drm_device *dev,
 	}
 	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
+	{
+		struct radeon_device *bc_rdev = dev->dev_private;
+
+		if (bc_rdev && !bc_rdev->accel_working) {
+			msleep(1);
+			dev_err(bc_rdev->dev, "postclose on parked GPU: teardown complete\n");
+			msleep(1);
+		}
+	}
+
 }
 
 /*
