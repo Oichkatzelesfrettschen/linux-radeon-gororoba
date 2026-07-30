@@ -953,13 +953,27 @@ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
 	struct radeon_device *rdev = m->private;
 	/* PLL index 0x0d == R_00000D_SCLK_CNTL (r300d.h / r100d.h). */
 	u32 sclk = RREG32_PLL(0x0000000D);
+	/* PLL index 0x1e == R300_SCLK_CNTL2.  It holds the R300 3D-engine force
+	 * bits TCL (bit 13), CBA (bit 14) and GA (bit 15) that the first PLL
+	 * register does not carry.  This read resolves whether those domains gate
+	 * at rest before any 3D MMIO read is attempted; the read itself is
+	 * driver-mediated (r100_pll_rreg) and does not touch the 3D MMIO aperture. */
+	u32 sclk2 = RREG32_PLL(0x0000001E);
 
 	seq_printf(m, "SCLK_CNTL (PLL 0x0d) = 0x%08x\n", sclk);
 	seq_printf(m, "  FORCE_CP   (bit 16) = %u\n", (sclk >> 16) & 0x1);
 	seq_printf(m, "  FORCE_IDCT (bit 22) = %u\n", (sclk >> 22) & 0x1);
 	seq_printf(m, "  FORCE_VIP  (bit 23) = %u\n", (sclk >> 23) & 0x1);
+	seq_printf(m, "  FORCE_VAP  (bit 21) = %u\n", (sclk >> 21) & 0x1);
+	seq_printf(m, "  FORCE_TX   (bit 27) = %u\n", (sclk >> 27) & 0x1);
+	seq_printf(m, "  FORCE_US   (bit 28) = %u\n", (sclk >> 28) & 0x1);
+	seq_printf(m, "  FORCE_SU   (bit 30) = %u\n", (sclk >> 30) & 0x1);
 	seq_printf(m, "  FORCEON region (bits 15-31) = 0x%05x\n",
 		   (sclk >> 15) & 0x1ffff);
+	seq_printf(m, "SCLK_CNTL2 (PLL 0x1e) = 0x%08x\n", sclk2);
+	seq_printf(m, "  FORCE_TCL  (bit 13) = %u\n", (sclk2 >> 13) & 0x1);
+	seq_printf(m, "  FORCE_CBA  (bit 14) = %u\n", (sclk2 >> 14) & 0x1);
+	seq_printf(m, "  FORCE_GA   (bit 15) = %u\n", (sclk2 >> 15) & 0x1);
 	seq_printf(m, "  note: a near-all-ones read is ambiguous (force-on vs"
 		      " unimplemented-reads-one); a set FORCE_IDCT/FORCE_VIP here"
 		      " does NOT de-risk the gated CAP/IDCT MMIO read.\n");
@@ -1692,6 +1706,597 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 		radeon_debugfs_rs480_mc_flush_init(rdev);
 }
 
+/* Per-domain force-clock-then-read.  A register in a clock-gated engine block
+ * stalls the reset-less K8 if its clock is gated.  For a domain whose SCLK_CNTL
+ * FORCE bit provably gates the clock, forcing the bit on before the read makes
+ * the access complete; restoring SCLK_CNTL after leaves clock policy intact.
+ * Validated per domain: FORCE_VIP gates the VIP/CAP block (the CAP read
+ * completes); FORCE_IDCT does NOT de-risk IDCT, so IDCT is not listed.
+ * The DISP1/DISP2 display-controller entries are a hypothesis under test, not
+ * yet validated: a display-config read that stalls with the FORCE bit clear
+ * and completes with it set confirms the bit gates that domain; completion in
+ * both states means the domain does not gate and the entry is plainly safe.
+ * Disarmed by default (radeon_rs480_force_clock_index == -1). */
+#define RS480_SCLK_CNTL_PLL_INDEX 0x0000000Du
+#define RS480_SCLK_FORCE_VIP      (1u << 23)
+#define RS480_SCLK_FORCE_DISP1    (1u << 18)
+#define RS480_SCLK_FORCE_DISP2    (1u << 15)
+#define RS480_SCLK_FORCE_OV0      (1u << 31)
+#define RS480_SCLK_FORCE_TV_SCLK  (1u << 29)
+
+struct rs480_force_clock_reg {
+	u32 force_bit;
+	u32 offset;
+	const char *name;
+	const char *domain;
+};
+
+static const struct rs480_force_clock_reg rs480_force_clock_list[] = {
+	{ RS480_SCLK_FORCE_VIP, 0x0958, "RADEON_CAP0_CONFIG",       "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0970, "RADEON_CAP0_BUF_STATUS",   "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09c8, "RADEON_CAP1_CONFIG",       "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09e0, "RADEON_CAP1_BUF_STATUS",   "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09e8, "RADEON_CAP1_DWNSC_XRATIO", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0920, "RADEON_CAP0_BUF0_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0924, "RADEON_CAP0_BUF1_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0928, "RADEON_CAP0_BUF0_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x092c, "RADEON_CAP0_BUF1_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0930, "RADEON_CAP0_BUF_PITCH", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0934, "RADEON_CAP0_V_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0938, "RADEON_CAP0_H_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x093c, "RADEON_CAP0_VBI0_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0940, "RADEON_CAP0_VBI1_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0944, "RADEON_CAP0_VBI_V_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0948, "RADEON_CAP0_VBI_H_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x094c, "RADEON_CAP0_PORT_MODE_CNTL", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0950, "RADEON_CAP0_TRIG_CNTL", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0954, "RADEON_CAP0_DEBUG", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x095c, "RADEON_CAP0_ANC_ODD_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0960, "RADEON_CAP0_ANC_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0964, "RADEON_CAP0_ANC_H_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0968, "RADEON_CAP0_VIDEO_SYNC_TEST", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x096c, "RADEON_CAP0_ONESHOT_BUF_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0980, "RADEON_CAP0_VBI2_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0984, "RADEON_CAP0_VBI3_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0988, "RADEON_CAP0_ANC2_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x098c, "RADEON_CAP0_ANC3_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0990, "RADEON_CAP1_BUF0_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0994, "RADEON_CAP1_BUF1_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x0998, "RADEON_CAP1_BUF0_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x099c, "RADEON_CAP1_BUF1_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09a0, "RADEON_CAP1_BUF_PITCH", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09a4, "RADEON_CAP1_V_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09a8, "RADEON_CAP1_H_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09ac, "RADEON_CAP1_VBI_ODD_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09b0, "RADEON_CAP1_VBI_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09b4, "RADEON_CAP1_VBI_V_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09b8, "RADEON_CAP1_VBI_H_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09bc, "RADEON_CAP1_PORT_MODE_CNTL", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09c0, "RADEON_CAP1_TRIG_CNTL", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09c4, "RADEON_CAP1_DEBUG", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09cc, "RADEON_CAP1_ANC_ODD_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09d0, "RADEON_CAP1_ANC_EVEN_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09d4, "RADEON_CAP1_ANC_H_WINDOW", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09d8, "RADEON_CAP1_VIDEO_SYNC_TEST", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09dc, "RADEON_CAP1_ONESHOT_BUF_OFFSET", "VIP" },
+	{ RS480_SCLK_FORCE_VIP, 0x09ec, "RADEON_CAP1_XSHARPNESS", "VIP" },
+	/* Display-controller domains.  In RADEON_SCLK_CNTL (PLL 0x0d) bit 18 is
+	 * FORCE_DISP1 and bit 15 is FORCE_DISP2.  The R300 GA/TCL/CBA force bits
+	 * occupy the separate R300_SCLK_CNTL2 register, so bit 15 here selects
+	 * DISP2, not GA.  FORCE_VAP (bit 21) is deliberately absent: it gates the
+	 * vertex block whose VAP_CLIP_CNTL read stalls the reset-less K8.  These
+	 * config registers carry no read-to-clear or index/data side effect. */
+	{ RS480_SCLK_FORCE_DISP1, 0x0050, "RADEON_CRTC_GEN_CNTL",   "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x0224, "RADEON_CRTC_OFFSET",     "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x022c, "RADEON_CRTC_PITCH",      "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x02d0, "RADEON_LVDS_GEN_CNTL",   "DISP1" },
+	{ RS480_SCLK_FORCE_DISP2, 0x03f8, "RADEON_CRTC2_GEN_CNTL",  "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x0324, "RADEON_CRTC2_OFFSET",    "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x032c, "RADEON_CRTC2_PITCH",     "DISP2" },
+	/* Remaining DISP1 timing/panel config (bit 18) and DISP2 timing (bit 15).
+	 * Same domains as the validated CRTC/CRTC2/LVDS rows above. */
+	{ RS480_SCLK_FORCE_DISP1, 0x020c, "RADEON_CRTC_V_SYNC_STRT_WID", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x0214, "RADEON_CRTC_CRNT_FRAME",      "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x023c, "RADEON_DISPLAY_BASE_ADDR",    "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x027c, "RADEON_CRTC_MORE_CNTL",       "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x028c, "RADEON_FP_HORZ_STRETCH",      "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x0290, "RADEON_FP_VERT_STRETCH",      "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x02c4, "RADEON_FP_H_SYNC_STRT_WID",   "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x02c8, "RADEON_FP_V_SYNC_STRT_WID",   "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1, 0x02d4, "RADEON_LVDS_PLL_CNTL",        "DISP1" },
+	{ RS480_SCLK_FORCE_DISP2, 0x0304, "RADEON_CRTC2_H_SYNC_STRT_WID","DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x0308, "RADEON_CRTC2_V_TOTAL_DISP",   "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x030c, "RADEON_CRTC2_V_SYNC_STRT_WID","DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x033c, "RADEON_DISPLAY2_BASE_ADDR",   "DISP2" },
+	/* Overlay scaler config.  FORCE_OV0 (bit 31) is unambiguous in SCLK_CNTL.
+	 * The OV0 block is powered only when an overlay is active, so these reads
+	 * are a hypothesis under test: a stall with the pipe idle that resolves
+	 * under FORCE_OV0 confirms the bit gates the block; completion in both
+	 * states means the block stays clocked. */
+	{ RS480_SCLK_FORCE_OV0,   0x0420, "RADEON_OV0_SCALE_CNTL",       "OV0" },
+	{ RS480_SCLK_FORCE_OV0,   0x04dc, "RADEON_OV0_FLAG_CNTL",        "OV0" },
+	{ RS480_SCLK_FORCE_OV0,   0x04e0, "RADEON_OV0_COLOUR_CNTL",      "OV0" },
+	/* Remaining DISP1 display config (validated domain). */
+	{ RS480_SCLK_FORCE_DISP1,    0x0058, "DAC_CNTL", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0218, "RADEON_CRTC_GUI_TRIG_VLINE", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0228, "RADEON_CRTC_OFFSET_CNTL", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0254, "RADEON_FP_CRTC_V_TOTAL_DISP", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0350, "R300_CRTC_TILE_X0_Y0", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0d14, "RADEON_DISP_HW_DEBUG", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0d64, "RADEON_DISP_OUTPUT_CNTL", "DISP1" },
+	{ RS480_SCLK_FORCE_DISP1,    0x0e3c, "RS400_DISP1_REQ_CNTL1", "DISP1" },
+	/* Remaining DISP2 display config (validated domain). */
+	{ RS480_SCLK_FORCE_DISP2,    0x0318, "RADEON_CRTC2_GUI_TRIG_VLINE", "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2,    0x0328, "RADEON_CRTC2_OFFSET_CNTL", "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2,    0x038c, "RADEON_FP_HORZ2_STRETCH", "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2,    0x0390, "RADEON_FP_VERT2_STRETCH", "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2,    0x03c4, "RADEON_FP_H2_SYNC_STRT_WID", "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2,    0x0e30, "RS400_DISP2_REQ_CNTL1", "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2,    0x0e34, "RS400_DISP2_REQ_CNTL2", "DISP2" },
+	/* Remaining OV0 overlay config (validated domain). */
+	{ RS480_SCLK_FORCE_OV0,      0x0410, "RADEON_OV0_REG_LOAD_CNTL", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0424, "RADEON_OV0_V_INC", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0428, "RADEON_OV0_P1_V_ACCUM_INIT", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x042c, "RADEON_OV0_P23_V_ACCUM_INIT", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0440, "RADEON_OV0_VID_BUF0_BASE_ADRS", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0444, "RADEON_OV0_VID_BUF1_BASE_ADRS", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0448, "RADEON_OV0_VID_BUF2_BASE_ADRS", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x044c, "RADEON_OV0_VID_BUF3_BASE_ADRS", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0450, "RADEON_OV0_VID_BUF4_BASE_ADRS", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0454, "RADEON_OV0_VID_BUF5_BASE_ADRS", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0460, "RADEON_OV0_VID_BUF_PITCH0_VALUE", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0464, "RADEON_OV0_VID_BUF_PITCH1_VALUE", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0470, "RADEON_OV0_AUTO_FLIP_CNTL", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0474, "RADEON_OV0_DEINTERLACE_PATTERN", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0480, "RADEON_OV0_H_INC", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0484, "RADEON_OV0_STEP_BY", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0488, "RADEON_OV0_P1_H_ACCUM_INIT", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x048c, "RADEON_OV0_P23_H_ACCUM_INIT", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0494, "RADEON_OV0_P1_X_START_END", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x0498, "RADEON_OV0_P2_X_START_END", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x049c, "RADEON_OV0_P3_X_START_END", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04a0, "RADEON_OV0_FILTER_CNTL", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04b0, "RADEON_OV0_FOUR_TAP_COEF_0", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04b4, "RADEON_OV0_FOUR_TAP_COEF_1", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04b8, "RADEON_OV0_FOUR_TAP_COEF_2", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04bc, "RADEON_OV0_FOUR_TAP_COEF_3", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04c0, "RADEON_OV0_FOUR_TAP_COEF_4", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04e4, "RADEON_OV0_VIDEO_KEY_CLR_LOW", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04e8, "RADEON_OV0_VIDEO_KEY_CLR_HIGH", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04ec, "RADEON_OV0_GRAPHICS_KEY_CLR_LOW", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04f0, "RADEON_OV0_GRAPHICS_KEY_CLR_HIGH", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04f4, "RADEON_OV0_KEY_CNTL", "OV0" },
+	{ RS480_SCLK_FORCE_OV0,      0x04f8, "RADEON_OV0_TEST", "OV0" },
+	/* VIP control stragglers (validated FORCE_VIP domain). */
+	{ RS480_SCLK_FORCE_VIP,      0x0900, "RADEON_VID_BUFFER_CONTROL", "VIP" },
+	{ RS480_SCLK_FORCE_VIP,      0x0910, "RADEON_FCP_CNTL", "VIP" },
+	/* TV-out config under FORCE_TV_SCLK (bit 29).  Hypothesis under
+	 * test: the TV encoder block is powered only with TV-out active, so a
+	 * forced-clock read may still stall if the block is unpowered. */
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0800, "RADEON_TV_MASTER_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0804, "RADEON_TV_RGB_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0808, "RADEON_TV_SYNC_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x080c, "RADEON_TV_HTOTAL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0810, "RADEON_TV_HDISP", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0818, "RADEON_TV_HSTART", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x081c, "RADEON_TV_HCOUNT", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0820, "RADEON_TV_VTOTAL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0824, "RADEON_TV_VDISP", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0828, "RADEON_TV_VCOUNT", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x082c, "RADEON_TV_FTOTAL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0830, "RADEON_TV_FCOUNT", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0834, "RADEON_TV_FRESTART", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0838, "RADEON_TV_HRESTART", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x083c, "RADEON_TV_VRESTART", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x084c, "RADEON_TV_VSCALER_CNTL1", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0850, "RADEON_TV_TIMING_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0854, "RADEON_TV_VSCALER_CNTL2", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0858, "RADEON_TV_Y_FALL_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x085c, "RADEON_TV_Y_RISE_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0860, "RADEON_TV_Y_SAW_TOOTH_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0864, "RADEON_TV_UPSAMP_AND_GAIN_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0868, "RADEON_TV_GAIN_LIMIT_SETTINGS", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x086c, "RADEON_TV_LINEAR_GAIN_SETTINGS", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0870, "RADEON_TV_MODULATOR_CNTL1", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0874, "RADEON_TV_MODULATOR_CNTL2", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0888, "RADEON_TV_PRE_DAC_MUX_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x088c, "RADEON_TV_DAC_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x0890, "RADEON_TV_CRC_CNTL", "TV" },
+	{ RS480_SCLK_FORCE_TV_SCLK,  0x08ac, "RADEON_TV_UV_ADR", "TV" },
+};
+
+static int rs480_force_clock_read_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	const struct rs480_force_clock_reg *e;
+	u32 sclk_orig, value;
+	int idx = radeon_rs480_force_clock_index;
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_force_clock_list)) {
+		seq_printf(m, "disarmed (radeon_rs480_force_clock_index = %d)\n", idx);
+		return 0;
+	}
+	e = &rs480_force_clock_list[idx];
+	sclk_orig = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, sclk_orig | e->force_bit);
+	value = RREG32(e->offset);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, sclk_orig);
+	seq_printf(m, "index %d: %s (0x%04x) domain=%s force_bit=0x%08x = 0x%08x\n",
+		   idx, e->name, e->offset, e->domain, e->force_bit, value);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_read);
+
+/* 3D-engine force-clock-then-read.  The display force-clock node forces ONE
+ * domain bit in SCLK_CNTL (PLL 0x0d); that does not reach the 3D engine,
+ * because the R300 vertex/geometry/clip force bits TCL/CBA/GA live in the
+ * separate R300_SCLK_CNTL2 (PLL 0x1e) register, and the 3D blocks feed each
+ * other (VAP -> GA -> SU -> RB).  This node forces the WHOLE 3D clock set in
+ * both PLL registers before the read, so no 3D block is gated when its
+ * control register is sampled, then restores both registers.
+ *
+ * Force set, grounded in radeon_reg.h and radeon_clocks.c r300_set_clock_gating:
+ *   SCLK_CNTL  (0x0d): VAP (bit 21), TX (bit 27), US (bit 28), SU (bit 30),
+ *                      RB (bit 28, shared with US).
+ *   SCLK_CNTL2 (0x1e): TCL (bit 13), CBA (bit 14), GA (bit 15).
+ *
+ * HAZARD: this is the 3D execution engine, the block class whose VAP write to
+ * VAP_CLIP_CNTL wedged the reset-less K8.  Forcing the clock before a READ is
+ * the mechanism the display cohort proved safe, but a stalled 3D read leaves
+ * the restore WREG32_PLL unrun and freezes both cores -- a physical power
+ * cycle.  The table holds only 3D CONTROL and STATUS registers (no instruction
+ * or parameter memory), the VAP entries are ordered last, and the node is
+ * disarmed by default (radeon_rs480_force_clock_3d_index == -1). */
+#define RS480_SCLK_CNTL2_PLL_INDEX 0x0000001Eu
+#define RS480_SCLK_3D_FORCE_ALL    ((1u << 21) | (1u << 27) | (1u << 28) | \
+				    (1u << 30))
+#define RS480_SCLK2_3D_FORCE_ALL   ((1u << 13) | (1u << 14) | (1u << 15))
+
+struct rs480_force_clock_3d_reg {
+	u32 offset;
+	const char *name;
+	const char *domain;
+};
+
+static const struct rs480_force_clock_3d_reg rs480_force_clock_3d_list[] = {
+	/* GA/GB geometry-assembly control (GA domain).  GA_IDLE and GB_Z_PEQ_CONFIG
+	 * are already driver-read (candidate_reader_validated), so they anchor the
+	 * sweep: a clean read here confirms the node forces the 3D clock correctly. */
+	{ 0x425c, "R500_GA_IDLE",            "GA" },
+	{ 0x4274, "R300_GA_ENHANCE",         "GA" },
+	{ 0x4278, "R300_GA_COLOR_CONTROL",   "GA" },
+	{ 0x4234, "R300_GA_LINE_CNTL",       "GA" },
+	{ 0x4008, "R300_GB_ENABLE",          "GA" },
+	{ 0x4018, "R300_GB_TILE_CONFIG",     "GA" },
+	{ 0x4028, "R300_GB_Z_PEQ_CONFIG",    "GA" },
+	/* RB3D color/Z backend control (RB domain). */
+	{ 0x4e00, "R300_RB3D_CCTL",          "RB" },
+	{ 0x4f00, "R300_ZB_CNTL",            "RB" },
+	{ 0x4f10, "R300_ZB_FORMAT",          "RB" },
+	{ 0x4f1c, "R300_ZB_BW_CNTL",         "RB" },
+	/* US fragment-shader config (US domain). */
+	{ 0x4600, "R300_US_CONFIG",          "US" },
+	/* VAP vertex control (VAP domain) -- ordered last: VAP is the block whose
+	 * write wedged the northbridge, so it is the highest-risk read. */
+	{ 0x2140, "R300_VAP_CNTL_STATUS",    "VAP" },
+	{ 0x2080, "R300_VAP_CNTL",           "VAP" },
+	/* Expanded GA/SU geometry-setup, raster, blend, fog, and stencil control
+	 * (the whole 3D clock set is forced regardless of which block owns the
+	 * register, so the domain tag is informational). */
+	{ 0x401c, "R300_GB_SELECT",              "GA" },
+	{ 0x4020, "R300_GB_AA_CONFIG",           "GA" },
+	{ 0x402c, "R300_GB_PIPE_SELECT",         "GA" },
+	{ 0x4238, "R300_GA_LINE_STIPPLE_CONFIG", "GA" },
+	{ 0x4270, "R500_GA_FIFO_CNTL",           "GA" },
+	{ 0x428c, "R300_GA_ROUND_MODE",          "GA" },
+	{ 0x4294, "R300_GA_FOG_SCALE",           "GA" },
+	{ 0x42b4, "R300_SU_POLY_OFFSET_ENABLE",  "SU" },
+	{ 0x4300, "R300_RS_COUNT",               "RS" },
+	{ 0x4bc0, "R300_FG_FOG_BLEND",           "RB" },
+	{ 0x4bd4, "R300_FG_ALPHA_FUNC",          "RB" },
+	{ 0x4e04, "R300_RB3D_CBLEND",            "RB" },
+	{ 0x4e08, "R300_RB3D_ABLEND",            "RB" },
+	{ 0x4e0c, "RB3D_COLOR_CHANNEL_MASK",     "RB" },
+	{ 0x4f08, "R300_ZB_STENCILREFMASK",      "RB" },
+	/* Further VAP/SU/SC/FG/RB3D control and config (whole 3D clock set forced). */
+	{ 0x2084, "R300_VAP_VF_CNTL",            "VAP" },
+	{ 0x2098, "R300_VAP_VPORT_XSCALE",       "VAP" },
+	{ 0x20a0, "R300_VAP_VPORT_YSCALE",       "VAP" },
+	{ 0x20a8, "R300_VAP_VPORT_ZSCALE",       "VAP" },
+	{ 0x2180, "R300_VAP_VTX_STATE_CNTL",     "VAP" },
+	{ 0x21dc, "R300_VAP_PSC_SGN_NORM_CNTL",  "VAP" },
+	{ 0x42a4, "R300_SU_POLY_OFFSET_FRONT_SCALE", "SU" },
+	{ 0x42ac, "R300_SU_POLY_OFFSET_BACK_SCALE",  "SU" },
+	{ 0x42c0, "R300_SU_DEPTH_SCALE",         "SU" },
+	{ 0x43e8, "R300_SC_SCREENDOOR",          "SC" },
+	{ 0x4bc4, "R300_FG_FOG_FACTOR",          "RB" },
+	{ 0x4ea0, "RB3D_DISCARD_SRC_PIXEL_LTE_THRESHOLD", "RB" },
+	{ 0x4ea4, "RB3D_DISCARD_SRC_PIXEL_GTE_THRESHOLD", "RB" },
+	/* Fieldless 0x4xxx UNDOC 3D-pipe registers (census-driven, indices 42+).
+	 * The mesa r300 driver emits none of these; they are read here under the
+	 * forced 3D clock, one at a time and boot_id-guarded, so draw-correlation
+	 * can separate hardware-updated status registers from reserved/write-only
+	 * offsets.  Ordered GA/GB/SU, then SC/RS, then RB3D/ZB/FG, then US/TX,
+	 * then PIPE3D last (least characterized). */
+	{ 0x400c, "R300_GB_UNDOC_400C", "GB" },
+	{ 0x4030, "R300_GB_UNDOC_4030", "GB" },
+	{ 0x4034, "R300_GB_UNDOC_4034", "GB" },
+	{ 0x4038, "R300_GB_UNDOC_4038", "GB" },
+	{ 0x403c, "R300_GB_UNDOC_403C", "GB" },
+	{ 0x4040, "R300_GB_UNDOC_4040", "GB" },
+	{ 0x4044, "R300_GB_UNDOC_4044", "GB" },
+	{ 0x4048, "R300_GB_UNDOC_4048", "GB" },
+	{ 0x404c, "R300_GB_UNDOC_404C", "GB" },
+	{ 0x4050, "R300_GB_UNDOC_4050", "GB" },
+	{ 0x4054, "R300_GB_UNDOC_4054", "GB" },
+	{ 0x4058, "R300_GB_UNDOC_4058", "GB" },
+	{ 0x405c, "R300_GB_UNDOC_405C", "GB" },
+	{ 0x4060, "R300_GB_UNDOC_4060", "GB" },
+	{ 0x4064, "R300_GB_UNDOC_4064", "GB" },
+	{ 0x4068, "R300_GB_UNDOC_4068", "GB" },
+	{ 0x406c, "R300_GB_UNDOC_406C", "GB" },
+	{ 0x4124, "R300_GB_UNDOC_4124", "GB" },
+	{ 0x4128, "R300_GB_UNDOC_4128", "GB" },
+	{ 0x412c, "R300_GB_UNDOC_412C", "GB" },
+	{ 0x4130, "R300_GB_UNDOC_4130", "GB" },
+	{ 0x4134, "R300_GB_UNDOC_4134", "GB" },
+	{ 0x4138, "R300_GB_UNDOC_4138", "GB" },
+	{ 0x413c, "R300_GB_UNDOC_413C", "GB" },
+	{ 0x4140, "R300_GB_UNDOC_4140", "GB" },
+	{ 0x4144, "R300_GB_UNDOC_4144", "GB" },
+	{ 0x4148, "R300_GB_UNDOC_4148", "GB" },
+	{ 0x414c, "R300_GB_UNDOC_414C", "GB" },
+	{ 0x4150, "R300_GB_UNDOC_4150", "GB" },
+	{ 0x4154, "R300_GB_UNDOC_4154", "GB" },
+	{ 0x4158, "R300_GB_UNDOC_4158", "GB" },
+	{ 0x415c, "R300_GB_UNDOC_415C", "GB" },
+	{ 0x4160, "R300_GB_UNDOC_4160", "GB" },
+	{ 0x4164, "R300_GB_UNDOC_4164", "GB" },
+	{ 0x4168, "R300_GB_UNDOC_4168", "GB" },
+	{ 0x416c, "R300_GB_UNDOC_416C", "GB" },
+	{ 0x4170, "R300_GB_UNDOC_4170", "GB" },
+	{ 0x4174, "R300_GB_UNDOC_4174", "GB" },
+	{ 0x4178, "R300_GB_UNDOC_4178", "GB" },
+	{ 0x417c, "R300_GB_UNDOC_417C", "GB" },
+	{ 0x4180, "R300_GB_UNDOC_4180", "GB" },
+	{ 0x4184, "R300_GB_UNDOC_4184", "GB" },
+	{ 0x4188, "R300_GB_UNDOC_4188", "GB" },
+	{ 0x418c, "R300_GB_UNDOC_418C", "GB" },
+	{ 0x4190, "R300_GB_UNDOC_4190", "GB" },
+	{ 0x4194, "R300_GB_UNDOC_4194", "GB" },
+	{ 0x4198, "R300_GB_UNDOC_4198", "GB" },
+	{ 0x419c, "R300_GB_UNDOC_419C", "GB" },
+	{ 0x41a0, "R300_GB_UNDOC_41A0", "GB" },
+	{ 0x41a4, "R300_GB_UNDOC_41A4", "GB" },
+	{ 0x41a8, "R300_GB_UNDOC_41A8", "GB" },
+	{ 0x41ac, "R300_GB_UNDOC_41AC", "GB" },
+	{ 0x41b0, "R300_GB_UNDOC_41B0", "GB" },
+	{ 0x41b4, "R300_GB_UNDOC_41B4", "GB" },
+	{ 0x41b8, "R300_GB_UNDOC_41B8", "GB" },
+	{ 0x41bc, "R300_GB_UNDOC_41BC", "GB" },
+	{ 0x41c0, "R300_GB_UNDOC_41C0", "GB" },
+	{ 0x41c4, "R300_GB_UNDOC_41C4", "GB" },
+	{ 0x41c8, "R300_GB_UNDOC_41C8", "GB" },
+	{ 0x41cc, "R300_GB_UNDOC_41CC", "GB" },
+	{ 0x41d0, "R300_GB_UNDOC_41D0", "GB" },
+	{ 0x41d4, "R300_GB_UNDOC_41D4", "GB" },
+	{ 0x41d8, "R300_GB_UNDOC_41D8", "GB" },
+	{ 0x41dc, "R300_GB_UNDOC_41DC", "GB" },
+	{ 0x41e0, "R300_GB_UNDOC_41E0", "GB" },
+	{ 0x41e4, "R300_GB_UNDOC_41E4", "GB" },
+	{ 0x41e8, "R300_GB_UNDOC_41E8", "GB" },
+	{ 0x41ec, "R300_GB_UNDOC_41EC", "GB" },
+	{ 0x41f0, "R300_GB_UNDOC_41F0", "GB" },
+	{ 0x41f4, "R300_GB_UNDOC_41F4", "GB" },
+	{ 0x41f8, "R300_GB_UNDOC_41F8", "GB" },
+	{ 0x41fc, "R300_GB_UNDOC_41FC", "GB" },
+	{ 0x4210, "R300_GA_UNDOC_4210", "GA" },
+	{ 0x4218, "R300_GA_UNDOC_4218", "GA" },
+	{ 0x423c, "R300_GA_UNDOC_423C", "GA" },
+	{ 0x426c, "R300_GA_UNDOC_426C", "GA" },
+	{ 0x4284, "R300_GA_UNDOC_4284", "GA" },
+	{ 0x42bc, "R300_SU_UNDOC_42BC", "SU" },
+	{ 0x42cc, "R300_SU_UNDOC_42CC", "SU" },
+	{ 0x4308, "R300_RS_UNDOC_4308", "RS" },
+	{ 0x430c, "R300_RS_UNDOC_430C", "RS" },
+	{ 0x4370, "R300_RS_UNDOC_4370", "RS" },
+	{ 0x4374, "R300_RS_UNDOC_4374", "RS" },
+	{ 0x4378, "R300_RS_UNDOC_4378", "RS" },
+	{ 0x437c, "R300_RS_UNDOC_437C", "RS" },
+	{ 0x4380, "R300_RS_UNDOC_4380", "RS" },
+	{ 0x4384, "R300_RS_UNDOC_4384", "RS" },
+	{ 0x4388, "R300_RS_UNDOC_4388", "RS" },
+	{ 0x438c, "R300_RS_UNDOC_438C", "RS" },
+	{ 0x4390, "R300_RS_UNDOC_4390", "RS" },
+	{ 0x4394, "R300_RS_UNDOC_4394", "RS" },
+	{ 0x4398, "R300_RS_UNDOC_4398", "RS" },
+	{ 0x439c, "R300_RS_UNDOC_439C", "RS" },
+	{ 0x43a0, "R300_RS_UNDOC_43A0", "RS" },
+	{ 0x43ac, "R300_SC_UNDOC_43AC", "SC" },
+	{ 0x43d4, "R300_SC_UNDOC_43D4", "SC" },
+	{ 0x43d8, "R300_SC_UNDOC_43D8", "SC" },
+	{ 0x43dc, "R300_SC_UNDOC_43DC", "SC" },
+	{ 0x43ec, "R300_SC_UNDOC_43EC", "SC" },
+	{ 0x43f0, "R300_SC_UNDOC_43F0", "SC" },
+	{ 0x43f4, "R300_SC_UNDOC_43F4", "SC" },
+	{ 0x43f8, "R300_SC_UNDOC_43F8", "SC" },
+	{ 0x43fc, "R300_SC_UNDOC_43FC", "SC" },
+	{ 0x4bdc, "R300_FG_UNDOC_4BDC", "FG" },
+	{ 0x4e8c, "R300_RB3D_UNDOC_4E8C", "RB3D" },
+	{ 0x4e90, "R300_RB3D_UNDOC_4E90", "RB3D" },
+	{ 0x4e94, "R300_RB3D_UNDOC_4E94", "RB3D" },
+	{ 0x4e98, "R300_RB3D_UNDOC_4E98", "RB3D" },
+	{ 0x4e9c, "R300_RB3D_UNDOC_4E9C", "RB3D" },
+	{ 0x4ea8, "R300_RB3D_UNDOC_4EA8", "RB3D" },
+	{ 0x4eac, "R300_RB3D_UNDOC_4EAC", "RB3D" },
+	{ 0x4eb0, "R300_RB3D_UNDOC_4EB0", "RB3D" },
+	{ 0x4eb4, "R300_RB3D_UNDOC_4EB4", "RB3D" },
+	{ 0x4eb8, "R300_RB3D_UNDOC_4EB8", "RB3D" },
+	{ 0x4ebc, "R300_RB3D_UNDOC_4EBC", "RB3D" },
+	{ 0x4ec0, "R300_RB3D_UNDOC_4EC0", "RB3D" },
+	{ 0x4ec4, "R300_RB3D_UNDOC_4EC4", "RB3D" },
+	{ 0x4ec8, "R300_RB3D_UNDOC_4EC8", "RB3D" },
+	{ 0x4ecc, "R300_RB3D_UNDOC_4ECC", "RB3D" },
+	{ 0x4ed0, "R300_RB3D_UNDOC_4ED0", "RB3D" },
+	{ 0x4ed4, "R300_RB3D_UNDOC_4ED4", "RB3D" },
+	{ 0x4ed8, "R300_RB3D_UNDOC_4ED8", "RB3D" },
+	{ 0x4edc, "R300_RB3D_UNDOC_4EDC", "RB3D" },
+	{ 0x4ee0, "R300_RB3D_UNDOC_4EE0", "RB3D" },
+	{ 0x4ee4, "R300_RB3D_UNDOC_4EE4", "RB3D" },
+	{ 0x4ee8, "R300_RB3D_UNDOC_4EE8", "RB3D" },
+	{ 0x4eec, "R300_RB3D_UNDOC_4EEC", "RB3D" },
+	{ 0x4ef0, "R300_RB3D_UNDOC_4EF0", "RB3D" },
+	{ 0x4f0c, "R300_ZB_UNDOC_4F0C", "ZB" },
+	{ 0x4f2c, "R300_ZB_UNDOC_4F2C", "ZB" },
+	{ 0x4f64, "R300_ZB_UNDOC_4F64", "ZB" },
+	{ 0x4f78, "R300_ZB_UNDOC_4F78", "ZB" },
+	{ 0x4f7c, "R300_ZB_UNDOC_4F7C", "ZB" },
+	{ 0x4f80, "R300_ZB_UNDOC_4F80", "ZB" },
+	{ 0x4f84, "R300_ZB_UNDOC_4F84", "ZB" },
+	{ 0x4f88, "R300_ZB_UNDOC_4F88", "ZB" },
+	{ 0x4f8c, "R300_ZB_UNDOC_4F8C", "ZB" },
+	{ 0x4f90, "R300_ZB_UNDOC_4F90", "ZB" },
+	{ 0x4f94, "R300_ZB_UNDOC_4F94", "ZB" },
+	{ 0x4f98, "R300_ZB_UNDOC_4F98", "ZB" },
+	{ 0x4f9c, "R300_ZB_UNDOC_4F9C", "ZB" },
+	{ 0x4fa0, "R300_ZB_UNDOC_4FA0", "ZB" },
+	{ 0x4fa4, "R300_ZB_UNDOC_4FA4", "ZB" },
+	{ 0x4fa8, "R300_ZB_UNDOC_4FA8", "ZB" },
+	{ 0x4fac, "R300_ZB_UNDOC_4FAC", "ZB" },
+	{ 0x4fb0, "R300_ZB_UNDOC_4FB0", "ZB" },
+	{ 0x4fb4, "R300_ZB_UNDOC_4FB4", "ZB" },
+	{ 0x4fb8, "R300_ZB_UNDOC_4FB8", "ZB" },
+	{ 0x4fbc, "R300_ZB_UNDOC_4FBC", "ZB" },
+	{ 0x4fc0, "R300_ZB_UNDOC_4FC0", "ZB" },
+	{ 0x4fc4, "R300_ZB_UNDOC_4FC4", "ZB" },
+	{ 0x4fc8, "R300_ZB_UNDOC_4FC8", "ZB" },
+	{ 0x4fcc, "R300_ZB_UNDOC_4FCC", "ZB" },
+	{ 0x4108, "R300_TX_UNDOC_4108", "TX" },
+	{ 0x410c, "R300_TX_UNDOC_410C", "TX" },
+	{ 0x46a0, "R300_US_UNDOC_46A0", "US" },
+	{ 0x40b4, "R300_PIPE3D_UNDOC_40B4", "PIPE3D" },
+	{ 0x40b8, "R300_PIPE3D_UNDOC_40B8", "PIPE3D" },
+	{ 0x40bc, "R300_PIPE3D_UNDOC_40BC", "PIPE3D" },
+	{ 0x40c0, "R300_PIPE3D_UNDOC_40C0", "PIPE3D" },
+	{ 0x40c4, "R300_PIPE3D_UNDOC_40C4", "PIPE3D" },
+	{ 0x40c8, "R300_PIPE3D_UNDOC_40C8", "PIPE3D" },
+	{ 0x40cc, "R300_PIPE3D_UNDOC_40CC", "PIPE3D" },
+	{ 0x40d0, "R300_PIPE3D_UNDOC_40D0", "PIPE3D" },
+	{ 0x40d4, "R300_PIPE3D_UNDOC_40D4", "PIPE3D" },
+	{ 0x40d8, "R300_PIPE3D_UNDOC_40D8", "PIPE3D" },
+	{ 0x40dc, "R300_PIPE3D_UNDOC_40DC", "PIPE3D" },
+	{ 0x40e0, "R300_PIPE3D_UNDOC_40E0", "PIPE3D" },
+	{ 0x40e4, "R300_PIPE3D_UNDOC_40E4", "PIPE3D" },
+	{ 0x40e8, "R300_PIPE3D_UNDOC_40E8", "PIPE3D" },
+	{ 0x40ec, "R300_PIPE3D_UNDOC_40EC", "PIPE3D" },
+	{ 0x40f0, "R300_PIPE3D_UNDOC_40F0", "PIPE3D" },
+	{ 0x40f4, "R300_PIPE3D_UNDOC_40F4", "PIPE3D" },
+	{ 0x40f8, "R300_PIPE3D_UNDOC_40F8", "PIPE3D" },
+	{ 0x40fc, "R300_PIPE3D_UNDOC_40FC", "PIPE3D" },
+	{ 0x4be4, "R300_PIPE3D_UNDOC_4BE4", "PIPE3D" },
+	{ 0x4bec, "R300_PIPE3D_UNDOC_4BEC", "PIPE3D" },
+	{ 0x4bf0, "R300_PIPE3D_UNDOC_4BF0", "PIPE3D" },
+	{ 0x4bf4, "R300_PIPE3D_UNDOC_4BF4", "PIPE3D" },
+	{ 0x4bf8, "R300_PIPE3D_UNDOC_4BF8", "PIPE3D" },
+	{ 0x4bfc, "R300_PIPE3D_UNDOC_4BFC", "PIPE3D" },
+	{ 0x4fd8, "R300_PIPE3D_UNDOC_4FD8", "PIPE3D" },
+	{ 0x4fdc, "R300_PIPE3D_UNDOC_4FDC", "PIPE3D" },
+	{ 0x4fe0, "R300_PIPE3D_UNDOC_4FE0", "PIPE3D" },
+	{ 0x4fe4, "R300_PIPE3D_UNDOC_4FE4", "PIPE3D" },
+	{ 0x4fe8, "R300_PIPE3D_UNDOC_4FE8", "PIPE3D" },
+	{ 0x4fec, "R300_PIPE3D_UNDOC_4FEC", "PIPE3D" },
+	{ 0x4ff0, "R300_PIPE3D_UNDOC_4FF0", "PIPE3D" },
+	{ 0x4ff4, "R300_PIPE3D_UNDOC_4FF4", "PIPE3D" },
+};
+
+static int rs480_force_clock_3d_read_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	const struct rs480_force_clock_3d_reg *e;
+	u32 sclk_orig, sclk2_orig, value;
+	int idx = radeon_rs480_force_clock_3d_index;
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_force_clock_3d_list)) {
+		seq_printf(m, "disarmed (radeon_rs480_force_clock_3d_index = %d): "
+			   "forces the whole 3D clock set and reads one 3D control "
+			   "register; arm 0..%d for an attended probe.  HAZARD: a "
+			   "stalled 3D read needs a physical power cycle.\n",
+			   idx, (int)ARRAY_SIZE(rs480_force_clock_3d_list) - 1);
+		return 0;
+	}
+	e = &rs480_force_clock_3d_list[idx];
+	sclk_orig  = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	sclk2_orig = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX,  sclk_orig  | RS480_SCLK_3D_FORCE_ALL);
+	WREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX, sclk2_orig | RS480_SCLK2_3D_FORCE_ALL);
+	/* Let the forced 3D clock domains settle before the MMIO read. */
+	udelay(10);
+	value = RREG32(e->offset);
+	WREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX, sclk2_orig);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX,  sclk_orig);
+	seq_printf(m, "index %d: %s (0x%04x) domain=%s sclk2_was=0x%08x = 0x%08x\n",
+		   idx, e->name, e->offset, e->domain, sclk2_orig, value);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_3d_read);
+
+/* Gated-state plain-read probe.  The force_clock_validated tier asserts a
+ * register is safe to read ONLY with its domain SCLK_CNTL FORCE bit set; the
+ * open question is whether a PLAIN read stalls when the clock is genuinely
+ * gated.  This node answers it by CLEARING the FORCE bit, plain-reading, then
+ * restoring -- the inverse of the force-clock node.
+ *
+ * HAZARD: reset-less K8.  If the plain read stalls while the FORCE bit is
+ * clear, the restore WREG32_PLL never runs and both cores freeze -- a physical
+ * power cycle.  The table holds only inactive-DISP2 CRTC2 registers (the second
+ * pipe drives no display on this board, so clearing FORCE_DISP2 cannot blank
+ * the visible panel), and the node is disarmed by default
+ * (radeon_rs480_gated_read_index == -1).  Caveat: with dynamic clock gating
+ * disabled (BIOS forces all clocks), clearing one FORCE bit may not gate the
+ * clock at all, in which case the read simply completes. */
+struct rs480_gated_read_reg {
+	u32 clear_bit;
+	u32 offset;
+	const char *name;
+	const char *domain;
+};
+
+static const struct rs480_gated_read_reg rs480_gated_read_list[] = {
+	{ RS480_SCLK_FORCE_DISP2, 0x03f8, "RADEON_CRTC2_GEN_CNTL",       "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x0324, "RADEON_CRTC2_OFFSET",         "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x032c, "RADEON_CRTC2_PITCH",          "DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x0304, "RADEON_CRTC2_H_SYNC_STRT_WID","DISP2" },
+	{ RS480_SCLK_FORCE_DISP2, 0x0308, "RADEON_CRTC2_V_TOTAL_DISP",   "DISP2" },
+};
+
+static int rs480_gated_read_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	const struct rs480_gated_read_reg *e;
+	u32 sclk_orig, value;
+	int idx = radeon_rs480_gated_read_index;
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_gated_read_list)) {
+		seq_printf(m, "disarmed (radeon_rs480_gated_read_index = %d): clears a "
+			   "DISP2 SCLK_CNTL FORCE bit and PLAIN-reads an inactive CRTC2 "
+			   "register to test gated-state read safety.  Set "
+			   "radeon_rs480_gated_read_index=0..%d for an attended probe; a "
+			   "stall needs a physical power cycle.\n",
+			   idx, (int)ARRAY_SIZE(rs480_gated_read_list) - 1);
+		return 0;
+	}
+	e = &rs480_gated_read_list[idx];
+	sclk_orig = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, sclk_orig & ~e->clear_bit);
+	mdelay(1);
+	value = RREG32(e->offset);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, sclk_orig);
+	seq_printf(m, "index %d: %s (0x%04x) domain=%s cleared_bit=0x%08x plain_read=0x%08x\n",
+		   idx, e->name, e->offset, e->domain, e->clear_bit, value);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(rs480_gated_read);
+
 static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
@@ -1786,6 +2391,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 * presence before opening the node. */
 	debugfs_create_file("radeon_rs480_frontier_probe", 0400, root, rdev,
 			    &rs480_frontier_probe_fops);
+	debugfs_create_file("radeon_rs480_force_clock_read", 0400, root, rdev,
+			    &rs480_force_clock_read_fops);
+	debugfs_create_file("radeon_rs480_force_clock_3d_read", 0400, root, rdev,
+			    &rs480_force_clock_3d_read_fops);
+	debugfs_create_file("radeon_rs480_gated_read", 0400, root, rdev,
+			    &rs480_gated_read_fops);
 	/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
 	 * of the vertex control register radeon_rs480_vertex_index selects, which
 	 * the operator must hold clocked via a concurrent HB-TCL draw loop. */

@@ -149,6 +149,8 @@ int radeon_rs480_cp_me_oracle;
 int radeon_rs480_frontier_index = -1;
 int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
+int radeon_rs480_force_clock_index = -1;
+int radeon_rs480_force_clock_3d_index = -1;
 int radeon_rs480_gated_read_index = -1;
 int radeon_rs480_hazard_readers_armed;
 int radeon_vm_size = 8;
@@ -305,6 +307,21 @@ MODULE_PARM_DESC(rs480_hazard_index,
 );
 module_param_named(rs480_hazard_index, radeon_rs480_hazard_index, int, 0644);
 
+MODULE_PARM_DESC(rs480_force_clock_index,
+	"RS480 per-domain force-clock-then-read: index (0..4) into the VIP/CAP "
+	"force-clock table read per open; the domain SCLK_CNTL FORCE bit is set, "
+	"the register read, and SCLK_CNTL restored.  -1 (default) disarmed.");
+module_param_named(rs480_force_clock_index, radeon_rs480_force_clock_index, int, 0644);
+
+MODULE_PARM_DESC(rs480_force_clock_3d_index,
+	"RS480 3D-engine force-clock-then-read (HAZARD): index into the 3D "
+	"control-register table.  Forces the whole 3D clock set -- VAP/TX/US/SU/RB "
+	"in SCLK_CNTL (PLL 0x0d) and TCL/CBA/GA in SCLK_CNTL2 (PLL 0x1e) -- reads "
+	"the register, then restores both PLL registers.  The 3D engine is the "
+	"block class whose VAP write wedged the reset-less K8; a stalled read needs "
+	"a physical power cycle.  -1 (default) disarmed.");
+module_param_named(rs480_force_clock_3d_index, radeon_rs480_force_clock_3d_index, int, 0644);
+
 MODULE_PARM_DESC(rs480_gated_read_index,
 	"RS480 gated-state plain-read probe (HAZARD): index into the inactive-DISP2 "
 	"CRTC2 table; clears FORCE_DISP2, plain-reads, restores, to test whether a "
@@ -320,6 +337,7 @@ MODULE_PARM_DESC(rs480_hazard_readers_armed,
 	"HOST_PATH_CNTL (0x0130), which gates the HyperTransport host path.  Set 1 "
 	"to arm an attended read.");
 module_param_named(rs480_hazard_readers_armed, radeon_rs480_hazard_readers_armed, int, 0644);
+
 
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
 module_param_named(vm_size, radeon_vm_size, int, 0444);

@@ -121,6 +121,8 @@ extern int radeon_rs480_cp_me_oracle;
 extern int radeon_rs480_frontier_index;
 extern int radeon_rs480_vertex_index;
 extern int radeon_rs480_hazard_index;
+extern int radeon_rs480_force_clock_index;
+extern int radeon_rs480_force_clock_3d_index;
 extern int radeon_rs480_gated_read_index;
 extern int radeon_rs480_hazard_readers_armed;
 extern int radeon_vm_size;
