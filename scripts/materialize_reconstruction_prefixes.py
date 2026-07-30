@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-import shutil
+import io
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -127,13 +128,19 @@ def materialize(
     corrupt_first_expected_tree: bool = False,
     quiet: bool = False,
 ) -> None:
-    driver_source = root / "drivers/gpu/drm/radeon"
-    if not driver_source.is_dir():
-        raise PrefixError(f"missing pristine driver source: {driver_source}")
+    upstream = __import__("tomllib").loads(
+        (root / "UPSTREAM_BASE.toml").read_text(encoding="ascii")
+    )
+    archive = run(
+        ["git", "archive", upstream["subtree_tree"]],
+        cwd=root,
+    )
 
     with tempfile.TemporaryDirectory(prefix="radeon-prefixes.") as temporary:
         repository = Path(temporary) / "radeon"
-        shutil.copytree(driver_source, repository, symlinks=True)
+        repository.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+            source.extractall(repository, filter="data")
         run(["git", "init", "-q"], cwd=repository)
         run(["git", "config", "user.name", "Radeon Prefix Verifier"], cwd=repository)
         run(
@@ -142,9 +149,6 @@ def materialize(
         )
         run(["git", "add", "-A"], cwd=repository)
 
-        upstream = __import__("tomllib").loads(
-            (root / "UPSTREAM_BASE.toml").read_text(encoding="ascii")
-        )
         initial_tree = git_tree(repository)
         if initial_tree != upstream["subtree_tree"]:
             raise PrefixError(
