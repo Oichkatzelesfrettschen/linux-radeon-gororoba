@@ -265,6 +265,14 @@ def validate_assignments(
             assignment_owners[effect_atom] == "M11",
             f"{effect_atom}: gated control-state read must belong to M11",
         )
+    parked_rs400 = next(
+        row for row in mechanism_assignments if row["effect_atom"] == "0049.2"
+    )
+    require(
+        parked_rs400["commit_id"] == "M18"
+        and parked_rs400["allocation"] == "final-effect",
+        "0049.2: M18 must own the final parked-entry policy",
+    )
 
     base_counts = Counter(row["commit_id"] for row in base_assignments)
     mechanism_counts = Counter(row["commit_id"] for row in mechanism_assignments)
@@ -309,6 +317,7 @@ def validate_semantics(plans: dict[str, dict[str, str]]) -> None:
         "M24": {"M20"},
         "M19": {"M16", "M17"},
         "M18": {"M01", "M16", "M17"},
+        "M22": {"M18", "M21"},
         "M07": {"M06"},
         "M01": {"M04"},
         "M03": {"M04"},
@@ -332,6 +341,10 @@ def validate_semantics(plans: dict[str, dict[str, str]]) -> None:
     require(
         dependencies(plans["M10"]) == {"M03", "M04"},
         "M10 must depend on candidate-read helpers and debugfs registration",
+    )
+    require(
+        dependencies(plans["M22"]) == {"M04", "M16", "M17", "M18", "M21"},
+        "M22 must follow containment activation and bind every probe to it",
     )
     require(
         "devm_drm_dev_alloc" in plans["M18"]["exception_basis"]
@@ -514,6 +527,23 @@ def self_test(root: Path) -> int:
                    if item["commit_id"] == "M11")
         row["legacy_patches"] = "0025,0029,0030,0032,0033,0034,0035,0037"
         cases.append(("gated read ownership", gated_read))
+
+        parked_policy = copy.deepcopy(state)
+        row = next(
+            item
+            for item in parked_policy["mechanism_assignments"]
+            if item["effect_atom"] == "0049.2"
+        )
+        row["allocation"] = "whole"
+        cases.append(("parked policy ownership", parked_policy))
+
+        probe_order = copy.deepcopy(state)
+        row = next(
+            item for item in probe_order["mechanism_plan"]
+            if item["commit_id"] == "M22"
+        )
+        row["depends_on"] = "M04,M16,M17,M18"
+        cases.append(("reset probe containment dependency", probe_order))
 
         for label, broken in cases:
             try:

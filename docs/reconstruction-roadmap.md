@@ -37,6 +37,10 @@ classes; a closed item names its proof, and an open item names its gate.
   three effect atoms with the other force-clock operations. M10 defines its
   first-read file operations before registration, and M09 contains only its
   direct indexed probe interfaces.
+- M18 through M20 install latent parked containment before M21 activates
+  parking. M22 then introduces reset recovery probes with the established
+  parked refusal on every hardware path. This ordering keeps each prefix
+  declared and buildable without a temporary unguarded interface.
 - Every approved base and mechanism prefix has an exact driver tree and source
   manifest: `migration/expected-prefixes/`.
 - Prefix composition and plan policy are calibrated and enforced:
@@ -51,6 +55,9 @@ classes; a closed item names its proof, and an open item names its gate.
 - B14 and M24 regenerate every safe-register target from source. The ten
   outputs shipped by the legacy payload must match its pinned size and
   SHA-256 identities: `scripts/check_generated_register_outputs.py`.
+- B01 through B14 preserve the approved authorship and kernel-lane contracts.
+  B14 closes the exact 212-entry base checkpoint with driver tree
+  `11598d3db07ac5d230ea0e3b8d42668fe80fd270`.
 - Migration input frozen by packaging commit and content hashes:
   `MIGRATION_INPUT.toml`, completeness- and base-agreement-checked in CI.
 - Governing rules made self-contained in this repository's `AGENTS.md`, so a
@@ -62,21 +69,14 @@ classes; a closed item names its proof, and an open item names its gate.
 
 ## Open, in dependency order
 
-1. Base reconstruction commits: the two exact upstream backports preserving
-   their original authors, the six version-compat adaptations grouped by API
-   transition, the Palm bounded reset, the RS48X safe-register exposure, the
-   source-form SMX_DC_CTL0 change, and the unproven-authorship helpers
-   carrying `Authorship-status: unproven`. Ends at the 212-entry checkpoint:
-   `source_export == normalized_source_reference` and
-   `generate(source_export) == legacy_generated_outputs`.
-2. Final-safe mechanism commits follow the exact checker-emitted sequence.
+1. Final-safe mechanism commits follow the exact checker-emitted sequence.
    Each commit is one mechanism and one expected prefix. M24 closes the
    213-entry checkpoint.
-3. The reconstruction branch merges into protected `main`. Post-merge source,
+2. The reconstruction branch merges into protected `main`. Post-merge source,
    generated-output, and dual-kernel checks verify the merge commit. The signed
    annotated tag `radeon-unified-0.3-pkgrel91-source-equivalent` then names that
    green merge commit.
-4. Post-tag corrections, each its own reviewed change: the RS485/0x5975
+3. Post-tag corrections, each its own reviewed change: the RS485/0x5975
    comment correction, the guard-scope audit against
    `policy/rs4xx-guard-scope.tsv`, structural refactoring, and RAD-06
    source changes.

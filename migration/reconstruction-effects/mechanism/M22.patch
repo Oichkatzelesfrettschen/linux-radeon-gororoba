@@ -1,5 +1,5 @@
 diff --git a/radeon.h b/radeon.h
-index 2c66fed..488198c 100644
+index 01424bd..6025673 100644
 --- a/radeon.h
 +++ b/radeon.h
 @@ -119,6 +119,8 @@ extern int radeon_rs480_cp_me_ram_dump;
@@ -12,7 +12,7 @@ index 2c66fed..488198c 100644
  extern int radeon_rs480_frontier_index;
  extern int radeon_rs480_vertex_index;
 diff --git a/radeon_drv.c b/radeon_drv.c
-index 88917f1..aba173a 100644
+index 2bec67e..2a27484 100644
 --- a/radeon_drv.c
 +++ b/radeon_drv.c
 @@ -147,6 +147,8 @@ int radeon_rs480_cp_me_ram_dump;
@@ -66,10 +66,10 @@ index 88917f1..aba173a 100644
  	"RS480 R400-US CS-checker allowlist: 0 (default) keeps the stock R300 "
  	"bitmap.  Set 1 at module load for an attended R300_HB_R400_US run; this "
 diff --git a/rs400.c b/rs400.c
-index ec48a6e..dafa8e0 100644
+index 9d91392..6657a11 100644
 --- a/rs400.c
 +++ b/rs400.c
-@@ -38,6 +38,7 @@
+@@ -39,6 +39,7 @@
  #include "radeon.h"
  #include "radeon_asic.h"
  #include "rs400d.h"
@@ -77,7 +77,7 @@ index ec48a6e..dafa8e0 100644
  
  #include "rs480_reg_safe.h"
  
-@@ -1735,6 +1736,399 @@ static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
+@@ -1796,6 +1797,415 @@ static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
  }
  
  DEFINE_SHOW_ATTRIBUTE(rs480_cp_ib_scratch_oracle);
@@ -115,6 +115,8 @@ index ec48a6e..dafa8e0 100644
 +static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
 +{
 +	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
 +	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 +	u32 status;
 +	int r;
@@ -150,6 +152,12 @@ index ec48a6e..dafa8e0 100644
 +	 * exclusive_lock is held here; radeon_gpu_reset takes its own down_write. */
 +	rdev->needs_reset = true;
 +	r = radeon_gpu_reset(rdev);
++	if (rdev->gpu_parked) {
++		seq_printf(m,
++			   "gpu-reset recovery probe: parked after reset (r=%d); skipping post RBBM_STATUS\n",
++			   r);
++		return 0;
++	}
 +
 +	status = RREG32(R_000E40_RBBM_STATUS);
 +	seq_printf(m,
@@ -400,7 +408,13 @@ index ec48a6e..dafa8e0 100644
 +
 +	rdev->needs_reset = true;
 +	r = radeon_gpu_reset(rdev);
-+	post = RREG32(R_000E40_RBBM_STATUS);
++	/* No register read after a failed reset: the parked GPU keeps its MC
++	 * stopped and display requests off, and the first post-park MMIO read
++	 * is the proven host-killer. The r300_asic_reset dmesg ladder carries
++	 * the at-reset and post-soft-reset RBBM values; report those.
++	 */
++	dev_err(rdev->dev, "probe: radeon_gpu_reset returned %d, no post-park register read\n", r);
++	post = r ? 0x5041524B /* "PARK" */ : RREG32(R_000E40_RBBM_STATUS);
 +
 +	seq_printf(m,
 +		   "reset-hang probe wedged-3D(%s): pre RBBM_STATUS=0x%08x (VAP_BUSY=%u GA_BUSY=%u RB3D_BUSY=%u RE_BUSY=%u) "
@@ -420,6 +434,8 @@ index ec48a6e..dafa8e0 100644
 +static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
 +{
 +	struct radeon_device *rdev = m->private;
++	if (rs480_debugfs_refuse_if_parked(m, rdev))
++		return 0;
 +	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 +	struct rs480_soft_reset_result res;
 +	u32 pre;
@@ -477,7 +493,7 @@ index ec48a6e..dafa8e0 100644
  #endif /* CONFIG_DEBUG_FS */
  
  /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
-@@ -2478,6 +2872,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
+@@ -2545,6 +2955,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
  	 * the IB fences through the live ring, no CSQ stop/restart. */
  	debugfs_create_file("radeon_rs480_cp_ib_scratch_oracle", 0400, root, rdev,
  			    &rs480_cp_ib_scratch_oracle_fops);

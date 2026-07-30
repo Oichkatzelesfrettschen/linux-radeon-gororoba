@@ -88,7 +88,7 @@ effect_atom	commit_id	allocation	notes
 0048.1	M21	whole	radeon/rs400.c: parked-state-classification
 0049.0	M18	whole	radeon/radeon.h: parked-driver-entry-gates
 0049.1	M21	whole	radeon/radeon_device.c: parked-driver-entry-gates
-0049.2	M18	whole	radeon/rs400.c: parked-driver-entry-gates
+0049.2	M18	final-effect	radeon/rs400.c: parked-entry policy enters before activation; later interfaces bind to the established refusal
 0050.0	M19	whole	radeon/radeon_display.c: parked-driver-entry-gates
 0050.1	M19	whole	radeon/radeon_kms.c: parked-driver-entry-gates
 0051.0	M18	whole	radeon/radeon_fence.c: parked-driver-entry-gates
