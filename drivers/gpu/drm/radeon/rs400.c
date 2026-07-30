@@ -1678,6 +1678,63 @@ static int rs480_hazard_read_show(struct seq_file *m, void *unused)
 }
 
 DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
+
+/* CP IB scratch-write baseline oracle.
+ *
+ * Submits one fence-bearing IB that writes a sentinel to a scratch register and
+ * reads it back -- the r100_ib_test() path the driver already runs at every
+ * resume.  It is the calibrated control for a later CP-ME differential probe: a
+ * plain command-stream scratch write with no microcode injection, no
+ * CP_CSQ_CNTL stop/restart, and no r100_ring_test poll.  The injection-bearing
+ * step adds only an idle-gated CP_ME_RAM write before the same submission, so a
+ * baseline captured here isolates the microword effect from the harness.
+ *
+ * SAFE on the K8 IGP, unlike radeon_rs480_cp_me_oracle: r100_ib_test fences a
+ * write through the live ring instead of toggling the command queue, so it never
+ * desyncs the CP or polls a register the wedged northbridge would never return.
+ * The RS480 CP-ME oracle CSQ-toggle ring_test safety RCA is the boundary this
+ * node stays inside.  Armed only when radeon_rs480_cp_ib_scratch_oracle equals
+ * the token; refuses unless the gfx ring is initialized (accel_working and
+ * ring->ready) rather than touch an uninitialized ring.
+ */
+#define RS480_CP_IB_SCRATCH_ORACLE_ARM_TOKEN 0x49425343u	/* "IBSC" */
+
+static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
+	int r;
+
+	if (radeon_rs480_cp_ib_scratch_oracle !=
+	    RS480_CP_IB_SCRATCH_ORACLE_ARM_TOKEN) {
+		seq_printf(m,
+			   "ib scratch oracle disarmed: set rs480_cp_ib_scratch_oracle=0x%08x\n",
+			   RS480_CP_IB_SCRATCH_ORACLE_ARM_TOKEN);
+		return 0;
+	}
+
+	if (!rdev->accel_working || !ring->ready) {
+		seq_puts(m,
+			 "ib scratch oracle requires an initialized gfx ring "
+			 "(accel_working and ring->ready)\n");
+		return 0;
+	}
+
+	/* r100_ib_test preseeds the scratch register with 0xCAFEDEAD, submits an
+	 * IB whose PACKET0 stores 0xDEADBEEF to it, waits the IB fence, and returns
+	 * 0 only when the read-back equals 0xDEADBEEF.  The preseed proves the
+	 * value came from the IB, not a stale register.  The scratch offset, value,
+	 * and completion time are logged to dmesg by the driver. */
+	r = r100_ib_test(rdev, ring);
+	seq_printf(m,
+		   "ib scratch oracle: r100_ib_test => %s (r=%d)\n"
+		   "fence-bearing CS scratch write; no inject, no CSQ toggle, no "
+		   "ring_test poll; scratch offset/value/usecs in dmesg\n",
+		   r ? "FAIL" : "PASS", r);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_cp_ib_scratch_oracle);
 #endif /* CONFIG_DEBUG_FS */
 
 /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
@@ -2415,6 +2472,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 * is captured deliberately before promotion to the safe-regs list. */
 	debugfs_create_file("radeon_rs480_hazard_read", 0444, root, rdev,
 			    &rs480_hazard_read_fops);
+	/* CP IB scratch-write baseline oracle.  Mode 0400: reading it submits a
+	 * fence-bearing IB scratch write (the r100_ib_test path), root-only, inert
+	 * until radeon_rs480_cp_ib_scratch_oracle equals the arm token.  IGP-safe:
+	 * the IB fences through the live ring, no CSQ stop/restart. */
+	debugfs_create_file("radeon_rs480_cp_ib_scratch_oracle", 0400, root, rdev,
+			    &rs480_cp_ib_scratch_oracle_fops);
 #endif
 }
 

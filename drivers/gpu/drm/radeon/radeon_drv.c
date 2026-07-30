@@ -146,6 +146,7 @@ int radeon_rs480_candidate_regs = 1;
 int radeon_rs480_cp_me_ram_dump;
 int radeon_rs480_cp_me_ram_inject;
 int radeon_rs480_cp_me_oracle;
+int radeon_rs480_cp_ib_scratch_oracle;
 int radeon_rs480_r400_us_cs;
 int radeon_rs480_frontier_index = -1;
 int radeon_rs480_vertex_index = -1;
@@ -290,6 +291,19 @@ MODULE_PARM_DESC(rs480_cp_me_oracle,
 	"poll fail cleanly; root-only, run with the display quiesced."
 );
 module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
+
+MODULE_PARM_DESC(rs480_cp_ib_scratch_oracle,
+	"Arm the CP IB scratch-write baseline oracle debugfs node "
+	"radeon_rs480_cp_ib_scratch_oracle. Default 0 (OFF); arm with the exact "
+	"token 0x49425343 ('IBSC'). Reading the armed node submits one "
+	"fence-bearing IB that writes a sentinel to a scratch register and reads "
+	"it back (the r100_ib_test path the driver runs at every resume): a plain "
+	"CS scratch write with NO microcode inject, NO CP_CSQ_CNTL toggle, and NO "
+	"r100_ring_test poll. SAFE on the K8 IGP because the IB fences through the "
+	"live ring instead of stopping and restarting the command queue, unlike "
+	"radeon_rs480_cp_me_oracle. Requires an initialized gfx ring; root-only.");
+module_param_named(rs480_cp_ib_scratch_oracle, radeon_rs480_cp_ib_scratch_oracle, int, 0644);
+
 MODULE_PARM_DESC(rs480_r400_us_cs,
 	"RS480 R400-US CS-checker allowlist: 0 (default) keeps the stock R300 "
 	"bitmap.  Set 1 at module load for an attended R300_HB_R400_US run; this "
