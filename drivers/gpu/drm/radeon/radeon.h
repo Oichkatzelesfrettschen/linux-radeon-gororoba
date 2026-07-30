@@ -2483,6 +2483,9 @@ static inline struct drm_device *rdev_to_drm(struct radeon_device *rdev)
 	return &rdev->ddev;
 }
 
+struct drm_minor;
+void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
+
 /*
  * Cast helper
  */

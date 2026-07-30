@@ -493,6 +493,20 @@ static int rs480_safe_regs_show(struct seq_file *m, void *unused)
 DEFINE_SHOW_ATTRIBUTE(rs480_safe_regs);
 #endif /* CONFIG_DEBUG_FS */
 
+void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
+{
+	struct radeon_device *rdev;
+
+	if (!minor || minor->type != DRM_MINOR_PRIMARY || !minor->dev ||
+	    !minor->debugfs_root)
+		return;
+	rdev = minor->dev->dev_private;
+	if (!rdev)
+		return;
+
+	rs480_safe_regs_debugfs_init(rdev);
+}
+
 static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
@@ -717,6 +731,5 @@ int rs400_init(struct radeon_device *rdev)
 		radeon_irq_kms_fini(rdev);
 		rdev->accel_working = false;
 	}
-	rs480_safe_regs_debugfs_init(rdev);
 	return 0;
 }
