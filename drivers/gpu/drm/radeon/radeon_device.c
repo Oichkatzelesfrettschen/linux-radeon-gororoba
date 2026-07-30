@@ -1895,6 +1895,34 @@ int radeon_gpu_reset(struct radeon_device *rdev)
 
 	atomic_inc(&rdev->gpu_reset_counter);
 
+	/* Log RS400/RS480 queue and cache state before GPU reset.
+	 *
+	 * Register readback on RS480 is a non-posted HyperTransport
+	 * transaction: the CPU core stalls until the register bus answers.
+	 * The CP (0x07xx), MC (0x0150), and RBBM (0x0E40) domains answer
+	 * even while the 3D frontend is wedged, but the 3D pipe space at
+	 * 0x4000 and above is served through the GA-domain register-bus
+	 * client. With VAP/GA latched busy that client never grants the
+	 * read and the CPU hard-locks with no fault. RB3D_DSTCACHE_CTLSTAT
+	 * (0x4E4C) therefore reads only behind an RBBM_STATUS gate showing
+	 * the 3D frontend idle; a wedged frontend logs the skip instead.
+	 */
+	if (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) {
+		u32 rbbm_status = RREG32(RADEON_RBBM_STATUS);
+
+		DRM_ERROR("=== RS482 CRASH SHIM TRIGGERED ===\n");
+		DRM_ERROR("RBBM_STATUS: 0x%08X\n", rbbm_status);
+		DRM_ERROR("CP_RB_CNTL: 0x%08X\n", RREG32(RADEON_CP_RB_CNTL));
+		DRM_ERROR("CP_RB_RPTR: 0x%08X\n", RREG32(RADEON_CP_RB_RPTR));
+		DRM_ERROR("CP_RB_WPTR: 0x%08X\n", RREG32(RADEON_CP_RB_WPTR));
+		DRM_ERROR("MC_STATUS: 0x%08X\n", RREG32(RADEON_MC_STATUS));
+		if (rbbm_status & RADEON_RBBM_ACTIVE)
+			DRM_ERROR("RB3D_DSTCACHE_CTLSTAT: skipped, 3D register bus wedged\n");
+		else
+			DRM_ERROR("RB3D_DSTCACHE_CTLSTAT: 0x%08X\n", RREG32(0x4E4C));
+		DRM_ERROR("==================================\n");
+	}
+
 	radeon_save_bios_scratch_regs(rdev);
 	radeon_suspend(rdev);
 	radeon_hpd_fini(rdev);
