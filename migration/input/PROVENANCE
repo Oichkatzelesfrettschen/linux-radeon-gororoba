@@ -17,6 +17,10 @@ source_path=docs/legacy-patch-transitions.tsv
 copied_path=migration/input/legacy-patch-transitions.tsv
 sha256=9f63e84e7c82b4db5e7251ad7a3dc79454bc017a1f22256b9b2d2dca75e97e20
 
+source_path=docs/legacy-payload-0.3-91-exact-context-manifest.tsv
+copied_path=migration/input/legacy-payload-0.3-91-exact-context-manifest.tsv
+sha256=7bd427b834bccaed7c170347d76619a216de6121fd3423ab58f83899b13f0b46
+
 source_path=docs/migration-oracle-0.3-91-exact-context-manifest.tsv
 copied_path=migration/input/migration-oracle-0.3-91-exact-context-manifest.tsv
 sha256=71ae424fc8af1828200ec98e9233b646c6483c11ecfb778d91ec64ef6bf9f5dc

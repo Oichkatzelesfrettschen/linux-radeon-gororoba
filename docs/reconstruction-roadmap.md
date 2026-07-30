@@ -44,6 +44,9 @@ classes; a closed item names its proof, and an open item names its gate.
 - A repository-scoped read-only deploy key materializes the pinned private
   packaging input in a credential-bearing setup job. Source builds receive
   only the sanitized, hash-verified oracle artifact.
+- B14 and M24 regenerate every safe-register target from source. The ten
+  outputs shipped by the legacy payload must match its pinned size and
+  SHA-256 identities: `scripts/check_generated_register_outputs.py`.
 - Migration input frozen by packaging commit and content hashes:
   `MIGRATION_INPUT.toml`, completeness- and base-agreement-checked in CI.
 - Governing rules made self-contained in this repository's `AGENTS.md`, so a
