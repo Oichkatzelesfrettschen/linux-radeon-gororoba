@@ -18,6 +18,8 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
+from check_generated_register_outputs import OutputError
+from check_generated_register_outputs import verify_outputs
 from check_kernel_build_root import VerificationError as KernelRootError
 from check_kernel_build_root import verify as verify_kernel_root
 from manifest_source_tree import load_policy, manifest
@@ -27,6 +29,7 @@ CONTROL_PATTERNS = (
     ".github/workflows/reconstruction-history.yml",
     "scripts/check_reconstruction_history.py",
     "scripts/check_reconstruction_plan.py",
+    "scripts/check_generated_register_outputs.py",
     "scripts/materialize_migration_input.py",
     "MIGRATION_INPUT.toml",
     "migration/**",
@@ -546,6 +549,16 @@ def build_one(
         if actual != plan["expected_driver_tree"]:
             raise HistoryError(f"{commit_id}: detached worktree tree differs")
         verify_worktree_manifest(worktree, control_root, plan)
+        if commit_id in {"B14", "M24"}:
+            legacy_count, target_count, compiler = verify_outputs(
+                worktree / "drivers/gpu/drm/radeon",
+                oracle_root
+                / "legacy-payload-0.3-91-exact-context-manifest.tsv",
+            )
+            print(
+                f"{commit_id}: {legacy_count} legacy generated outputs match; "
+                f"{target_count} targets generate with {compiler}"
+            )
 
         lock_path = Path.home() / ".cache/gororoba-ci/radeon-build.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -675,6 +688,7 @@ def main() -> int:
         HistoryError,
         KeyError,
         KernelRootError,
+        OutputError,
         OSError,
         UnicodeDecodeError,
         ValueError,

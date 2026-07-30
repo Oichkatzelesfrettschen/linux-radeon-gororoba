@@ -28,8 +28,8 @@ def inventory(control_root: Path) -> list[dict[str, str]]:
     path = control_root / "docs/reconstruction-input-inventory.tsv"
     with path.open(encoding="ascii", newline="") as source:
         rows = list(csv.DictReader(source, delimiter="\t"))
-    if len(rows) != 6:
-        raise InputError("reconstruction input inventory must contain six rows")
+    if len(rows) != 7:
+        raise InputError("reconstruction input inventory must contain seven rows")
     return rows
 
 

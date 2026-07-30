@@ -66,13 +66,13 @@ jobs:
                    upstream_commit upstream_subtree base_manifest_sha256 \
                    migration_manifest_sha256 generated_output_proof_sha256 \
                    base_delta_map_sha256 patch_transitions_sha256 \
-                   mechanism_map_sha256; do
+                   mechanism_map_sha256 legacy_payload_manifest_sha256; do
             grep -qE "^$k[[:space:]]*=" MIGRATION_INPUT.toml || {
               echo "MIGRATION_INPUT.toml is missing $k" >&2; exit 1; }
           done
           grep -qE '^packaging_commit[[:space:]]*=[[:space:]]*"[0-9a-f]{40}"' MIGRATION_INPUT.toml || {
             echo "packaging_commit must be a full 40-character object ID" >&2; exit 1; }
-          if grep -cE '_sha256[[:space:]]*=[[:space:]]*"[0-9a-f]{64}"' MIGRATION_INPUT.toml | grep -qx 6; then
+          if grep -cE '_sha256[[:space:]]*=[[:space:]]*"[0-9a-f]{64}"' MIGRATION_INPUT.toml | grep -qx 7; then
             echo "migration input declaration complete"
           else
             echo "every *_sha256 value must be a full 64-character hash" >&2; exit 1
@@ -177,6 +177,8 @@ jobs:
         run: python3 scripts/materialize_migration_input.py --self-test
       - name: reconstruction history calibration
         run: python3 scripts/check_reconstruction_history.py --self-test
+      - name: generated register output calibration
+        run: python3 scripts/check_generated_register_outputs.py --self-test
 
       - name: importer calibration
         run: |

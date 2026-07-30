@@ -367,7 +367,7 @@ def validate_prefix_artifacts(
 
 def validate_input_inventory(root: Path) -> None:
     inventory = read_tsv(root / "docs/reconstruction-input-inventory.tsv")
-    require(len(inventory) == 6, "input inventory must contain six frozen files")
+    require(len(inventory) == 7, "input inventory must contain seven frozen files")
     migration = tomllib.loads(
         (root / "MIGRATION_INPUT.toml").read_text(encoding="ascii")
     )
@@ -376,6 +376,8 @@ def validate_input_inventory(root: Path) -> None:
         "legacy-base-source-manifest.tsv": migration["base_manifest_sha256"],
         "legacy-patch-mechanism-map.tsv": migration["mechanism_map_sha256"],
         "legacy-patch-transitions.tsv": migration["patch_transitions_sha256"],
+        "legacy-payload-0.3-91-exact-context-manifest.tsv":
+            migration["legacy_payload_manifest_sha256"],
         "migration-oracle-0.3-91-exact-context-manifest.tsv":
             migration["migration_manifest_sha256"],
         "migration-oracle-0.3-91-exact-context-normalization.tsv":

@@ -25,6 +25,7 @@ generated_output_proof_sha256 = "1efe8d77577c8c9173093d5c47a8df2905fd487471a22c5
 base_delta_map_sha256 = "0b2921790e86de5f70e17c94767ae2c2f1ad1963ef15c56a85563caaabbcb9d1"
 patch_transitions_sha256 = "9f63e84e7c82b4db5e7251ad7a3dc79454bc017a1f22256b9b2d2dca75e97e20"
 mechanism_map_sha256 = "a9832203e53a918caa302ca311ffa11399e115d280afdbac3555ae987ac1ee6b"
+legacy_payload_manifest_sha256 = "7bd427b834bccaed7c170347d76619a216de6121fd3423ab58f83899b13f0b46"
 
 [files]
 base_manifest = "docs/legacy-base-source-manifest.tsv"
@@ -33,3 +34,4 @@ generated_output_proof = "docs/migration-oracle-0.3-91-exact-context-normalizati
 base_delta_map = "docs/base-delta-map.tsv"
 patch_transitions = "docs/legacy-patch-transitions.tsv"
 mechanism_map = "docs/legacy-patch-mechanism-map.tsv"
+legacy_payload_manifest = "docs/legacy-payload-0.3-91-exact-context-manifest.tsv"
