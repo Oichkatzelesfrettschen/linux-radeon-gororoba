@@ -257,6 +257,14 @@ def validate_assignments(
             row["allocation"] in ALLOCATIONS,
             f"{row['effect_atom']}: invalid allocation",
         )
+    assignment_owners = {
+        row["effect_atom"]: row["commit_id"] for row in mechanism_assignments
+    }
+    for effect_atom in ("0031.0", "0031.1", "0031.2"):
+        require(
+            assignment_owners[effect_atom] == "M11",
+            f"{effect_atom}: gated control-state read must belong to M11",
+        )
 
     base_counts = Counter(row["commit_id"] for row in base_assignments)
     mechanism_counts = Counter(row["commit_id"] for row in mechanism_assignments)
@@ -320,6 +328,10 @@ def validate_semantics(plans: dict[str, dict[str, str]]) -> None:
     require(
         set(split_list(plans["M08"]["evidence_depends_on"])) == {"M03"},
         "M08 must record M03 as its evidence dependency",
+    )
+    require(
+        dependencies(plans["M10"]) == {"M03", "M04"},
+        "M10 must depend on candidate-read helpers and debugfs registration",
     )
     require(
         "devm_drm_dev_alloc" in plans["M18"]["exception_basis"]
@@ -490,6 +502,18 @@ def self_test(root: Path) -> int:
                    if item["commit_id"] == "M16")
         row["profile_exception"] = "none"
         cases.append(("production exception", exception))
+
+        gated_read = copy.deepcopy(state)
+        for assignment in gated_read["mechanism_assignments"]:
+            if assignment["effect_atom"].startswith("0031."):
+                assignment["commit_id"] = "M09"
+        row = next(item for item in gated_read["mechanism_plan"]
+                   if item["commit_id"] == "M09")
+        row["legacy_patches"] = "0015,0022,0031"
+        row = next(item for item in gated_read["mechanism_plan"]
+                   if item["commit_id"] == "M11")
+        row["legacy_patches"] = "0025,0029,0030,0032,0033,0034,0035,0037"
+        cases.append(("gated read ownership", gated_read))
 
         for label, broken in cases:
             try:

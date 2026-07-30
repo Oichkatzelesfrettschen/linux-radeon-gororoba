@@ -33,6 +33,10 @@ classes; a closed item names its proof, and an open item names its gate.
   `docs/reconstruction-commit-plan.tsv`.
 - Every one of the 124 legacy effect atoms has one approved allocation:
   `docs/reconstruction-effect-assignments.tsv`.
+- Patch 0031 writes and restores SCLK control around a plain read. M11 owns its
+  three effect atoms with the other force-clock operations. M10 defines its
+  first-read file operations before registration, and M09 contains only its
+  direct indexed probe interfaces.
 - Every approved base and mechanism prefix has an exact driver tree and source
   manifest: `migration/expected-prefixes/`.
 - Prefix composition and plan policy are calibrated and enforced:
