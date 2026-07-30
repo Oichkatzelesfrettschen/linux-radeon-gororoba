@@ -3010,8 +3010,8 @@ static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
 	if (!radeon_rs480_safe_regs)
 		return;
 
-	/* RS482 (1002:5974) and RS485 (1002:5975) both enumerate as
-	 * CHIP_RS480 in the radeon family table.
+	/* CHIP_RS480 covers 1002:5954, 1002:5955, 1002:5974, and 1002:5975.
+	 * The curated register evidence covers RS482 (1002:5974).
 	 */
 	if (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)
 		return;

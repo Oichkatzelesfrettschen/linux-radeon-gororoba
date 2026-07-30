@@ -87,13 +87,15 @@ classes; a closed item names its proof, and an open item names its gate.
   file, directory, and symlink manifest plus separate host-policy and
   package-signature provenance checks. B09 activates the 7.1 source lane after
   its compatibility frontier exists.
+- The CHIP_RS480 device comment names the four PCI IDs without assigning a
+  chipset name to 1002:5975. `policy/rs4xx-guard-scope.tsv` records the
+  execution and evidence scope of every reconstructed mechanism without
+  narrowing its guard.
 
 ## Open, after the equivalence tag
 
-- Post-tag corrections land as separate reviewed changes: the RS485/0x5975
-  comment correction, the guard-scope audit against
-  `policy/rs4xx-guard-scope.tsv`, structural refactoring, and RAD-06 source
-  changes.
+- Structural refactoring and RAD-06 source changes remain separate reviewed
+  work.
 
 ## Open, outside the tag ordering
 
