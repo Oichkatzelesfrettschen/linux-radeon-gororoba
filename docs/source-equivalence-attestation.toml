@@ -1,0 +1,19 @@
+# Reproducible identity and local verification for the source-equivalence tag.
+
+schema = 1
+tag_name = "radeon-unified-0.3-pkgrel91-source-equivalent"
+tag_object = "81a2510e34d1d62f5486683bcd6e240db8223b7d"
+peeled_commit = "9079be562eebd184da9cf891fbc6a72d5ac0d9f3"
+driver_tree = "b0f40a1970f57d00b690890120ad1ba8fd1e474c"
+
+signing_format = "ssh"
+signer_principal = "151315375+Oichkatzelesfrettschen@users.noreply.github.com"
+signer_fingerprint = "SHA256:wD1s3tsUVHvjrLUruNtYVv/K1/4b7sJA4W7DTdMn8SA"
+# This hash covers the key type, one space, the base64 key, and one newline.
+public_key_sha256 = "37d2f8b4dadfb96c7de0fce8d7a905737db53d3d9e490d8128e7f3641004ac67"
+allowed_signers_file = "docs/source-equivalence-allowed-signers"
+allowed_signers_entry_sha256 = "04552a96f0afd439acf80d2b899ccb4057173575b0d4a0dd2d086d6fc87088bb"
+local_verification_command = "git -c gpg.ssh.allowedSignersFile=docs/source-equivalence-allowed-signers verify-tag radeon-unified-0.3-pkgrel91-source-equivalent"
+
+equivalence_source_workflow_run = 30546146534
+closure_documentation_workflow_run = 30547154024
