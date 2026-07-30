@@ -58,6 +58,22 @@ classes; a closed item names its proof, and an open item names its gate.
 - B01 through B14 preserve the approved authorship and kernel-lane contracts.
   B14 closes the exact 212-entry base checkpoint with driver tree
   `11598d3db07ac5d230ea0e3b8d42668fe80fd270`.
+- The 24 mechanism commits follow the checker-emitted sequence and pass both
+  kernel lanes at every prefix. M24 source commit
+  `552b6976cf85a7421cfba3faa6dfffa3a5bce934` closes the exact 213-entry
+  checkpoint with driver tree
+  `b0f40a1970f57d00b690890120ad1ba8fd1e474c`. Trusted history run
+  `30541547484` carries the per-commit logs.
+- Protected-main merge commit
+  `9079be562eebd184da9cf891fbc6a72d5ac0d9f3` retains the M24 driver tree.
+  Source-static run `30546146534` passes the 6.18 and 7.1 module lanes. The
+  source manifest matches the migration oracle at SHA-256
+  `71ae424fc8af1828200ec98e9233b646c6483c11ecfb778d91ec64ef6bf9f5dc`,
+  and all ten legacy generated outputs match the frozen proof.
+- SSH-signed annotated tag
+  `radeon-unified-0.3-pkgrel91-source-equivalent` has tag object
+  `81a2510e34d1d62f5486683bcd6e240db8223b7d` and peels to the protected-main
+  merge commit.
 - Migration input frozen by packaging commit and content hashes:
   `MIGRATION_INPUT.toml`, completeness- and base-agreement-checked in CI.
 - Governing rules made self-contained in this repository's `AGENTS.md`, so a
@@ -67,19 +83,12 @@ classes; a closed item names its proof, and an open item names its gate.
   package-signature provenance checks. B09 activates the 7.1 source lane after
   its compatibility frontier exists.
 
-## Open, in dependency order
+## Open, after the equivalence tag
 
-1. Final-safe mechanism commits follow the exact checker-emitted sequence.
-   Each commit is one mechanism and one expected prefix. M24 closes the
-   213-entry checkpoint.
-2. The reconstruction branch merges into protected `main`. Post-merge source,
-   generated-output, and dual-kernel checks verify the merge commit. The signed
-   annotated tag `radeon-unified-0.3-pkgrel91-source-equivalent` then names that
-   green merge commit.
-3. Post-tag corrections, each its own reviewed change: the RS485/0x5975
-   comment correction, the guard-scope audit against
-   `policy/rs4xx-guard-scope.tsv`, structural refactoring, and RAD-06
-   source changes.
+- Post-tag corrections land as separate reviewed changes: the RS485/0x5975
+  comment correction, the guard-scope audit against
+  `policy/rs4xx-guard-scope.tsv`, structural refactoring, and RAD-06 source
+  changes.
 
 ## Open, outside the tag ordering
 
