@@ -53,9 +53,9 @@ effect_atom	commit_id	allocation	notes
 0028.1	M03	hazard-reader-part	radeon/rs400.c: gated-hazard-readers
 0029.0	M11	whole	radeon/rs400.c: gated-hazard-readers
 0030.0	M11	whole	radeon/rs400.c: gated-hazard-readers
-0031.0	M09	whole	radeon/radeon.h: gated-hazard-readers
-0031.1	M09	whole	radeon/radeon_drv.c: gated-hazard-readers
-0031.2	M09	whole	radeon/rs400.c: gated-hazard-readers
+0031.0	M11	whole	radeon/radeon.h: gated-hazard-readers
+0031.1	M11	whole	radeon/radeon_drv.c: gated-hazard-readers
+0031.2	M11	whole	radeon/rs400.c: gated-hazard-readers
 0032.0	M11	whole	radeon/rs400.c: gated-hazard-readers
 0033.0	M11	whole	radeon/radeon_drv.c: gated-hazard-readers
 0033.1	M11	whole	radeon/radeon.h: gated-hazard-readers

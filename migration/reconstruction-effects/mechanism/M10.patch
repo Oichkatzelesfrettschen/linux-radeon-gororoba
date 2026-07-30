@@ -37,7 +37,7 @@ index 920141d..2bc0ba2 100644
  MODULE_PARM_DESC(rs480_hazard_readers_armed,
  	"RS480 hazard-reader arm gate: 0 (default) makes the wedge-prone "
 diff --git a/rs400.c b/rs400.c
-index 3f670be..440ca25 100644
+index 3f670be..ce006a9 100644
 --- a/rs400.c
 +++ b/rs400.c
 @@ -968,6 +968,99 @@ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
@@ -140,7 +140,97 @@ index 3f670be..440ca25 100644
  /* CP MicroEngine instruction-memory read-back dump.
   *
   * The loaded R300_cp.bin is the entire CP-ME instruction memory: a 256-microword
-@@ -1527,6 +1620,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
+@@ -1409,6 +1502,89 @@ static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
+ }
+ 
+ DEFINE_SHOW_ATTRIBUTE(rs480_cp_me_oracle);
++
++/* Single-register first-observation read of the BAR0 hazard tier.
++ *
++ * The 471-register vet flagged 62 registers hazard_exclude_by_name with a name
++ * regex.  Re-reading the match basis (the matched_pattern column of
++ * rs482_unreferenced_430_name_class_vet.tsv) shows the registers below are regex
++ * FALSE POSITIVES, not wedge hazards: SCRATCH matched the BIOS_8..15 and GUI
++ * scratch registers, PORT_ matched SE_VPORT_* (the viewport transform, not an
++ * I/O port), and SEMAPHORE and WAIT_UNTIL matched two engine-status words.  A
++ * plain RREG32 of any of them is read-safe -- scratch and viewport are ordinary
++ * registers, the SE block is always clocked on an R300-class part, and a read
++ * neither acquires the semaphore nor advances any index or FIFO pointer.  They
++ * stayed unpromoted only because the regex parked them, and most still carry no
++ * per-register observed value.
++ *
++ * This node takes that first observation under discipline: one register per
++ * open, selected by radeon_rs480_hazard_index (default -1 disarmed), so each
++ * value is captured deliberately before the register is promoted into the
++ * read-only safe-regs list.  It is NOT a wedge-hazard probe and shares no
++ * mechanism with the attended frontier_probe node above.
++ *
++ * Kept out of the list at compile time:
++ *   - CRTC8_IDX (0x03b4) and BIF_SLAVE_CNTL (0x180c): the two genuine
++ *     northbridge-stall registers.  A 32-bit read can stall the K8 northbridge,
++ *     which has no MMIO completion timeout, wedging both cores past the
++ *     single-core-only software autoreboot net (physical power cycle only).
++ *   - the index/data/FIFO/aperture ports (PALETTE_INDEX/DATA, FOG_TABLE_INDEX/
++ *     DATA, PCIE_PORT_INDEX/DATA, DVI_I2C_DATA, CRC_CMDFIFO_*, CP_CSQ_APER_*,
++ *     VIPH_CH*, CP_ME_RAM_RADDR, HOST_DATA_LAST): a read without the matching
++ *     index write desyncs the live driver's pointer state and returns only a
++ *     transient word.
++ *   - the CP command-engine and VIP/CAP capture registers (CP_GUI_COMMAND,
++ *     CP_IB*, CP_RESYNC_*, CP_CSQ*, CP_ME_CNTL, CP_VID_*, FCP_CNTL,
++ *     CAP0/CAP1_PORT_MODE_CNTL): a read races the running CP or touches a
++ *     possibly-unclocked capture block, so they belong on the attended frontier
++ *     lane, not this first-observation lane.
++ */
++static const struct rs480_candidate_reg rs480_hazard_read_reg_list[] = {
++	{ 0x00c0, "BIOS_8_SCRATCH", 0 },
++	{ 0x00c4, "BIOS_9_SCRATCH", 0 },
++	{ 0x00c8, "BIOS_10_SCRATCH", 0 },
++	{ 0x00cc, "BIOS_11_SCRATCH", 0 },
++	{ 0x00d0, "BIOS_12_SCRATCH", 0 },
++	{ 0x00d4, "BIOS_13_SCRATCH", 0 },
++	{ 0x00d8, "BIOS_14_SCRATCH", 0 },
++	{ 0x00dc, "BIOS_15_SCRATCH", 0 },
++	{ 0x013c, "SW_SEMAPHORE", 0 },
++	{ 0x15e0, "GUI_SCRATCH_REG0", 0 },
++	{ 0x15e4, "GUI_SCRATCH_REG1", 0 },
++	{ 0x15e8, "GUI_SCRATCH_REG2", 0 },
++	{ 0x15ec, "GUI_SCRATCH_REG3", 0 },
++	{ 0x15f0, "GUI_SCRATCH_REG4", 0 },
++	{ 0x15f4, "GUI_SCRATCH_REG5", 0 },
++	{ 0x1720, "WAIT_UNTIL", 0 },
++	{ 0x1d98, "SE_VPORT_XSCALE", 0 },
++	{ 0x1d9c, "SE_VPORT_XOFFSET", 0 },
++	{ 0x1da0, "SE_VPORT_YSCALE", 0 },
++	{ 0x1da4, "SE_VPORT_YOFFSET", 0 },
++	{ 0x1da8, "SE_VPORT_ZSCALE", 0 },
++	{ 0x1dac, "SE_VPORT_ZOFFSET", 0 },
++};
++
++static int rs480_hazard_read_show(struct seq_file *m, void *unused)
++{
++	struct radeon_device *rdev = m->private;
++	int idx = radeon_rs480_hazard_index;
++	const struct rs480_candidate_reg *reg;
++
++	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_hazard_read_reg_list)) {
++		seq_printf(m,
++			   "hazard read disarmed: set rs480_hazard_index=N (0..%zu)\n",
++			   ARRAY_SIZE(rs480_hazard_read_reg_list) - 1);
++		return 0;
++	}
++
++	reg = &rs480_hazard_read_reg_list[idx];
++	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
++		   idx, reg->name, reg->offset,
++		   rs480_candidate_reg_read(rdev, reg));
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
+ #endif /* CONFIG_DEBUG_FS */
+ 
+ /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
+@@ -1527,6 +1703,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
  	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
  	debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root, rdev,
  			    &rs480_cp_me_oracle_fops);

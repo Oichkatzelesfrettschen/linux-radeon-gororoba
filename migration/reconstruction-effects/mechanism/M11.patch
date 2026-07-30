@@ -55,7 +55,7 @@ index 4714206..5e626e6 100644
  module_param_named(vm_size, radeon_vm_size, int, 0444);
  
 diff --git a/rs400.c b/rs400.c
-index b258e85..f626d13 100644
+index 42fde31..f626d13 100644
 --- a/rs400.c
 +++ b/rs400.c
 @@ -953,13 +953,27 @@ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
@@ -684,7 +684,7 @@ index b258e85..f626d13 100644
  static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
  {
  #if defined(CONFIG_DEBUG_FS)
-@@ -1786,6 +2391,10 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
+@@ -1786,6 +2391,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
  	 * presence before opening the node. */
  	debugfs_create_file("radeon_rs480_frontier_probe", 0400, root, rdev,
  			    &rs480_frontier_probe_fops);
@@ -692,6 +692,8 @@ index b258e85..f626d13 100644
 +			    &rs480_force_clock_read_fops);
 +	debugfs_create_file("radeon_rs480_force_clock_3d_read", 0400, root, rdev,
 +			    &rs480_force_clock_3d_read_fops);
- 	debugfs_create_file("radeon_rs480_gated_read", 0400, root, rdev,
- 			    &rs480_gated_read_fops);
++	debugfs_create_file("radeon_rs480_gated_read", 0400, root, rdev,
++			    &rs480_gated_read_fops);
  	/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
+ 	 * of the vertex control register radeon_rs480_vertex_index selects, which
+ 	 * the operator must hold clocked via a concurrent HB-TCL draw loop. */
