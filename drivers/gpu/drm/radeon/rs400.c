@@ -505,6 +505,9 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 		return;
 
 	rs480_safe_regs_debugfs_init(rdev);
+	if ((rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) &&
+	    rdev->accel_working)
+		radeon_debugfs_rs480_mc_flush_init(rdev);
 }
 
 static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
