@@ -26,6 +26,7 @@
  *          Jerome Glisse
  */
 
+#include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -820,6 +821,9 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
 	u32 count;
 	struct radeon_device *rdev = dev->dev_private;
 
+	if (rdev->gpu_parked)
+		return 0;
+
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %u\n", pipe);
 		return -EINVAL;
@@ -889,6 +893,9 @@ int radeon_enable_vblank_kms(struct drm_crtc *crtc)
 	struct radeon_device *rdev = dev->dev_private;
 	unsigned long irqflags;
 	int r;
+
+	if (rdev->gpu_parked)
+		return -ENODEV;
 
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %d\n", pipe);

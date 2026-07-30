@@ -493,6 +493,12 @@ static int radeon_crtc_page_flip_target(struct drm_crtc *crtc,
 	unsigned long flags;
 	int r;
 
+	/* Page flips program display fetch registers; a parked RS480 rejects
+	 * them for the same reason it rejects modesets.
+	 */
+	if (rdev->gpu_parked)
+		return -ENODEV;
+
 	work = kzalloc(sizeof *work, GFP_KERNEL);
 	if (work == NULL)
 		return -ENOMEM;
@@ -631,6 +637,19 @@ radeon_crtc_set_config(struct drm_mode_set *set,
 		return -EINVAL;
 
 	dev = set->crtc->dev;
+
+	/* The DRM core restores the fbdev mode on last close, and any modeset
+	 * against a parked RS480 re-enables display memory requests into the
+	 * wedge-held MC client arbiter -- the host interface deadlocks and
+	 * the next CPU MMIO read hard-locks the machine. A parked GPU accepts
+	 * the modeset as a no-op success; the console stays dark until
+	 * reboot, and the host stays alive.
+	 */
+	rdev = dev->dev_private;
+	if (rdev->gpu_parked) {
+		dev_err_once(rdev->dev, "parked: rejecting modeset, display stays down\n");
+		return 0;
+	}
 
 	ret = pm_runtime_get_sync(dev->dev);
 	if (ret < 0) {

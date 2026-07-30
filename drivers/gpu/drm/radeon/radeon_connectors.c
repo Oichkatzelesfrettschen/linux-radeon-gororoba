@@ -845,6 +845,15 @@ radeon_lvds_detect(struct drm_connector *connector, bool force)
 	enum drm_connector_status ret = connector_status_disconnected;
 	int r;
 
+	/* A parked GPU keeps no readable display registers: connector
+	 * detection walks DDC and load-detect paths straight into the wedged
+	 * register bus, and the drm_kms_helper output-poll worker calls detect
+	 * from a system workqueue outside every radeon-local drained work.
+	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
+	 */
+	if (rdev->gpu_parked)
+		return connector_status_disconnected;
+
 	if (!drm_kms_helper_is_poll_worker()) {
 		r = pm_runtime_get_sync(connector->dev->dev);
 		if (r < 0) {
@@ -993,6 +1002,15 @@ radeon_vga_detect(struct drm_connector *connector, bool force)
 	enum drm_connector_status ret = connector_status_disconnected;
 	int r;
 
+	/* A parked GPU keeps no readable display registers: connector
+	 * detection walks DDC and load-detect paths straight into the wedged
+	 * register bus, and the drm_kms_helper output-poll worker calls detect
+	 * from a system workqueue outside every radeon-local drained work.
+	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
+	 */
+	if (rdev->gpu_parked)
+		return connector_status_disconnected;
+
 	if (!drm_kms_helper_is_poll_worker()) {
 		r = pm_runtime_get_sync(connector->dev->dev);
 		if (r < 0) {
@@ -1126,11 +1144,21 @@ static enum drm_mode_status radeon_tv_mode_valid(struct drm_connector *connector
 static enum drm_connector_status
 radeon_tv_detect(struct drm_connector *connector, bool force)
 {
+	struct radeon_device *rdev = connector->dev->dev_private;
 	struct drm_encoder *encoder;
 	const struct drm_encoder_helper_funcs *encoder_funcs;
 	struct radeon_connector *radeon_connector = to_radeon_connector(connector);
 	enum drm_connector_status ret = connector_status_disconnected;
 	int r;
+
+	/* A parked GPU keeps no readable display registers: connector
+	 * detection walks DDC and load-detect paths straight into the wedged
+	 * register bus, and the drm_kms_helper output-poll worker calls detect
+	 * from a system workqueue outside every radeon-local drained work.
+	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
+	 */
+	if (rdev->gpu_parked)
+		return connector_status_disconnected;
 
 	if (!radeon_connector->dac_load_detect)
 		return ret;
@@ -1220,6 +1248,15 @@ radeon_dvi_detect(struct drm_connector *connector, bool force)
 	int r;
 	enum drm_connector_status ret = connector_status_disconnected;
 	bool dret = false, broken_edid = false;
+
+	/* A parked GPU keeps no readable display registers: connector
+	 * detection walks DDC and load-detect paths straight into the wedged
+	 * register bus, and the drm_kms_helper output-poll worker calls detect
+	 * from a system workqueue outside every radeon-local drained work.
+	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
+	 */
+	if (rdev->gpu_parked)
+		return connector_status_disconnected;
 
 	if (!drm_kms_helper_is_poll_worker()) {
 		r = pm_runtime_get_sync(connector->dev->dev);
@@ -1629,6 +1666,15 @@ radeon_dp_detect(struct drm_connector *connector, bool force)
 	struct radeon_connector_atom_dig *radeon_dig_connector = radeon_connector->con_priv;
 	struct drm_encoder *encoder = radeon_best_single_encoder(connector);
 	int r;
+
+	/* A parked GPU keeps no readable display registers: connector
+	 * detection walks DDC and load-detect paths straight into the wedged
+	 * register bus, and the drm_kms_helper output-poll worker calls detect
+	 * from a system workqueue outside every radeon-local drained work.
+	 * Report disconnected without touching hardware so get_modes does not re-enter DDC/EDID.
+	 */
+	if (rdev->gpu_parked)
+		return connector_status_disconnected;
 
 	if (!drm_kms_helper_is_poll_worker()) {
 		r = pm_runtime_get_sync(connector->dev->dev);

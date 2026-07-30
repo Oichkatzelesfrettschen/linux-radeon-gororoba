@@ -56,6 +56,15 @@ static irqreturn_t radeon_driver_irq_handler_kms(int irq, void *arg)
 	struct radeon_device *rdev = dev->dev_private;
 	irqreturn_t ret;
 
+	/* Shared PCI lines still deliver IRQs after a parked RS480 reset.
+	 * r100_irq_ack starts with RREG32(GEN_INT_STATUS); that MMIO is a
+	 * non-posted black hole once the GA client is wedged. Return without
+	 * touching hardware so an unrelated device on the same line cannot
+	 * re-enter the parked register path.
+	 */
+	if (rdev->gpu_parked)
+		return IRQ_NONE;
+
 	ret = radeon_irq_process(rdev);
 	if (ret == IRQ_HANDLED)
 		pm_runtime_mark_last_busy(dev->dev);
