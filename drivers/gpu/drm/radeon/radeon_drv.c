@@ -140,6 +140,7 @@ int radeon_dpm = -1;
 int radeon_aspm = -1;
 int radeon_runtime_pm = -1;
 int radeon_hard_reset;
+int radeon_palm_pci_reset_unsafe;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
 int radeon_deep_color;
@@ -215,6 +216,14 @@ module_param_named(runpm, radeon_runtime_pm, int, 0444);
 
 MODULE_PARM_DESC(hard_reset, "PCI config reset (1 = force enable, 0 = disable (default))");
 module_param_named(hard_reset, radeon_hard_reset, int, 0444);
+
+MODULE_PARM_DESC(palm_pci_reset_unsafe,
+	"Allow evergreen_gpu_pci_config_reset_safe to fire on CHIP_PALM (Wrestler GPU). "
+	"Default 0: refuse, because the reset propagates a transient PCIe-fabric stall "
+	"to adjacent integrated devices (NIC drops, X session loses output layout). "
+	"Set to 1 only for forensic experimentation on a controlled host."
+);
+module_param_named(palm_pci_reset_unsafe, radeon_palm_pci_reset_unsafe, int, 0644);
 
 MODULE_PARM_DESC(vm_size, "VM address space size in gigabytes (default 4GB)");
 module_param_named(vm_size, radeon_vm_size, int, 0444);

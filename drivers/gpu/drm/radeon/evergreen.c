@@ -3848,6 +3848,12 @@ u32 evergreen_gpu_check_soft_reset(struct radeon_device *rdev)
 	if (!(tmp & DMA_IDLE))
 		reset_mask |= RADEON_RESET_DMA;
 
+	/* W5: DMA_IDLE can under-report latent DMA pipeline state after
+	 * GFX-path lockups. If GFX reset is already required, force DMA
+	 * reset in the same cycle.
+	 */
+	if (reset_mask & RADEON_RESET_GFX)
+		reset_mask |= RADEON_RESET_DMA;
 	/* SRBM_STATUS2 */
 	tmp = RREG32(SRBM_STATUS2);
 	if (tmp & DMA_BUSY)
@@ -3918,7 +3924,14 @@ static void evergreen_gpu_soft_reset(struct radeon_device *rdev, u32 reset_mask)
 
 	evergreen_mc_stop(rdev, &save);
 	if (evergreen_mc_wait_for_idle(rdev)) {
-		dev_warn(rdev->dev, "Wait for MC idle timedout !\n");
+		/* MC engine is mid-transaction; writing GRBM_SOFT_RESET now
+		 * leaves the MC inconsistent on CHIP_PALM-class silicon
+		 * (Wrestler GPU / Evergreen-TeraScale-2 VLIW5). Bail cleanly.
+		 */
+		dev_warn(rdev->dev,
+			"aborting soft reset: MC stayed busy after 100ms\n");
+		evergreen_mc_resume(rdev, &save);
+		return;
 	}
 
 	if (reset_mask & (RADEON_RESET_GFX | RADEON_RESET_COMPUTE)) {
@@ -4045,6 +4058,59 @@ void evergreen_gpu_pci_config_reset(struct radeon_device *rdev)
 			break;
 		udelay(1);
 	}
+}
+
+
+int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)
+{
+	struct evergreen_mc_save save;
+	u32 tmp, i;
+
+	/* CHIP_PALM (Wrestler GPU on Brazos APU, Evergreen / TeraScale-2 VLIW5)
+	 * shares the PCIe root-complex with the embedded GbE controller.
+	 * A pci-config reset propagates a brief link-training stall to
+	 * adjacent devices (the NIC goes offline for ~2 minutes on the
+	 * ThinkPad X130e and X-server loses its dual-output layout state).
+	 * Refuse by default on Palm-class silicon; userspace must set
+	 * radeon.palm_pci_reset_unsafe=1 to override.
+	 */
+	if (rdev->family == CHIP_PALM && !radeon_palm_pci_reset_unsafe) {
+		dev_warn(rdev->dev,
+			"refusing pci-config reset on CHIP_PALM: propagates to PCIe root-complex; set radeon.palm_pci_reset_unsafe=1 to override\n");
+		return -EPERM;
+	}
+
+	dev_info(rdev->dev, "GPU pci config reset (bounded MC-wait safe variant)\n");
+
+	WREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);
+	udelay(50);
+	tmp = RREG32(DMA_RB_CNTL);
+	tmp &= ~DMA_RB_ENABLE;
+	WREG32(DMA_RB_CNTL, tmp);
+	r600_rlc_stop(rdev);
+	udelay(50);
+	rv770_set_clk_bypass_mode(rdev);
+	pci_clear_master(rdev->pdev);
+	evergreen_mc_stop(rdev, &save);
+
+	/* If MC is still busy after the bounded wait, refuse: writing the
+	 * PCI-config reset bits with the MC mid-transaction is the failure
+	 * mode the safe variant exists to prevent.
+	 */
+	if (evergreen_mc_wait_for_idle(rdev)) {
+		dev_warn(rdev->dev,
+			"refusing PCI config reset: MC stuck busy after bounded wait\n");
+		evergreen_mc_resume(rdev, &save);
+		return -EBUSY;
+	}
+
+	radeon_pci_config_reset(rdev);
+	for (i = 0; i < rdev->usec_timeout; i++) {
+		if (RREG32(CONFIG_MEMSIZE) != 0xffffffff)
+			break;
+		udelay(1);
+	}
+	return 0;
 }
 
 int evergreen_asic_reset(struct radeon_device *rdev, bool hard)
