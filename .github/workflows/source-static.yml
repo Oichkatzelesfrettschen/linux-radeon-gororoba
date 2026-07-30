@@ -18,7 +18,7 @@ jobs:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
@@ -108,7 +108,7 @@ jobs:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
@@ -128,15 +128,15 @@ jobs:
             sh scripts/build_radeon_module.sh \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
-  kernel-build-root-7-1:
+  module-build-7-1:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
-      - name: Retained 7.1 build root matches its declaration
+      - name: radeon.ko builds from the tracked subtree
         env:
           KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_71 }}
         run: |
@@ -148,12 +148,17 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/7.1.4-1-cachyos.toml \
             --manifest ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv
+          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh --self-test
+          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   lint:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
