@@ -1,0 +1,35 @@
+# Provenance and identity for the retained CachyOS 7.1 module-build root.
+
+schema = 1
+
+kernel_release = "7.1.4-1-cachyos"
+linux_version_code = 459012
+
+headers_package = "linux-cachyos-headers-7.1.4-1-x86_64_v3.pkg.tar.zst"
+package_sha256 = "45a0cfdb2c74785bcb4a13a0a251fcd715f8bfef4aea6c508840241a0d1c35a7"
+signature_file = "linux-cachyos-headers-7.1.4-1-x86_64_v3.pkg.tar.zst.sig"
+signature_sha256 = "fc267211f037fb99e74d2fb2389ff7f579f0637072cba848c31cb9e9e74d29d9"
+signature_result = "good"
+verified_signer_fingerprint = "882DCFE48E2051D48E2562ABF3B607488DB35A47"
+verification_command = "pacman-key --verify <signature-file> <headers-package>"
+signature_timestamp = "2026-07-19T19:15:34Z"
+verification_timestamp = "2026-07-30T07:49:36Z"
+
+compiler_family = "clang"
+compiler_version = "22.1.8"
+linker_family = "lld"
+linker_version = "22.1.8"
+
+entry_count = 21607
+regular_file_count = 19483
+directory_count = 2116
+symlink_count = 8
+manifest_sha256 = "ee98854a1959cf9b26acc4f625cc1bd9ec94b6666fb498ff40744a214807aab7"
+
+[host_policy]
+uid = 0
+gid = 0
+group_writable = false
+other_writable = false
+runner_directory_write = false
+special_files = false
