@@ -119,6 +119,8 @@ extern int radeon_rs480_cp_me_ram_dump;
 extern int radeon_rs480_cp_me_ram_inject;
 extern int radeon_rs480_cp_me_oracle;
 extern int radeon_rs480_cp_ib_scratch_oracle;
+extern int radeon_rs480_gpu_reset_recover_probe;
+extern int radeon_rs480_reset_hang_probe;
 extern int radeon_rs480_r400_us_cs;
 extern int radeon_rs480_frontier_index;
 extern int radeon_rs480_vertex_index;
