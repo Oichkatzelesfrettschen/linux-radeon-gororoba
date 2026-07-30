@@ -1503,6 +1503,83 @@ static int rs480_cp_me_oracle_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_cp_me_oracle);
 
+/* Attended single-step frontier probe.  The residual frontier is exhausted:
+ * the selected CAP0/CAP1 VIP video-capture registers and the IDCT video-decode
+ * registers have all been read directly (0x00000000, no wedge) and are retired.
+ * Keep the debugfs node inert so stale operators see the exhausted state instead
+ * of arming a historical hazardous MMIO read. */
+static const struct rs480_candidate_reg rs480_frontier_probe_reg_list[] = {
+};
+
+static int rs480_frontier_probe_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	int idx = radeon_rs480_frontier_index;
+	const struct rs480_candidate_reg *reg;
+	u32 value;
+
+	if (!ARRAY_SIZE(rs480_frontier_probe_reg_list)) {
+		seq_puts(m, "frontier probe exhausted: no residual registers\n");
+		return 0;
+	}
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_frontier_probe_reg_list)) {
+		seq_printf(m,
+			   "frontier probe disarmed: set rs480_frontier_index=N (0..%zu)\n",
+			   ARRAY_SIZE(rs480_frontier_probe_reg_list) - 1);
+		return 0;
+	}
+
+	reg = &rs480_frontier_probe_reg_list[idx];
+	value = rs480_candidate_reg_read(rdev, reg);
+	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
+		   idx, reg->name, reg->offset, value);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_frontier_probe);
+
+/* Attended vertex-engine probe.  The VAP_PVS/SE_TCL vertex engine (0x2200-0x2504)
+ * gates its clock at rest, so a passive RREG32 stalls the reset-less K8
+ * northbridge -- confirmed wedges at 0x220c (PVS vector-port shadow) and 0x2280,
+ * each a physical recovery.  This node tests whether a read COMPLETES while the
+ * engine is held clocked by a continuous HB-TCL draw loop (the open falsification
+ * of the clock-gating ceiling).  The two confirmed-wedge offsets and the
+ * write-only FIFO ports (0x2200, 0x2208) are excluded so they cannot be armed;
+ * only the named control registers are reachable.  Disarmed at index -1. */
+static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
+	{ 0x221C, "VAP_CLIP_CNTL", 0 },
+	{ 0x2284, "VAP_PVS_STATE_FLUSH_REG", 0 },
+	{ 0x2288, "VAP_PVS_VTX_TIMEOUT_REG", 0 },
+	{ 0x22D0, "VAP_PVS_CODE_CNTL_0", 0 },
+	{ 0x22D4, "VAP_PVS_CONST_CNTL", 0 },
+	{ 0x22D8, "VAP_PVS_CODE_CNTL_1", 0 },
+	{ 0x22DC, "VAP_PVS_FLOW_CNTL_OPC", 0 },
+};
+
+static int rs480_vertex_probe_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	int idx = radeon_rs480_vertex_index;
+	const struct rs480_candidate_reg *reg;
+	u32 value;
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_vertex_engine_reg_list)) {
+		seq_printf(m,
+			   "vertex probe disarmed: hold the engine clocked (HB-TCL draw loop), then set rs480_vertex_index=N (0..%zu)\n",
+			   ARRAY_SIZE(rs480_vertex_engine_reg_list) - 1);
+		return 0;
+	}
+
+	reg = &rs480_vertex_engine_reg_list[idx];
+	value = rs480_candidate_reg_read(rdev, reg);
+	seq_printf(m, "index %d: %s (0x%04x) = 0x%08x\n",
+		   idx, reg->name, reg->offset, value);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_vertex_probe);
+
 /* Single-register first-observation read of the BAR0 hazard tier.
  *
  * The 471-register vet flagged 62 registers hazard_exclude_by_name with a name
@@ -1703,6 +1780,17 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
 	debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root, rdev,
 			    &rs480_cp_me_oracle_fops);
+	/* Retained exhausted-state frontier probe.  The active list is empty, so
+	 * reads report exhaustion rather than performing an MMIO read.  Any
+	 * reinstated nonempty table requires an attended harness to gate physical
+	 * presence before opening the node. */
+	debugfs_create_file("radeon_rs480_frontier_probe", 0400, root, rdev,
+			    &rs480_frontier_probe_fops);
+	/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
+	 * of the vertex control register radeon_rs480_vertex_index selects, which
+	 * the operator must hold clocked via a concurrent HB-TCL draw loop. */
+	debugfs_create_file("radeon_rs480_vertex_probe", 0400, root, rdev,
+			    &rs480_vertex_probe_fops);
 	/* PLL-indirect clock-tree read-out.  Read-only and low hazard: the PLL
 	 * aperture is always clocked and r100_pll_rreg serializes the index/data
 	 * dance under pll_idx_lock. */

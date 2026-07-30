@@ -146,7 +146,10 @@ int radeon_rs480_candidate_regs = 1;
 int radeon_rs480_cp_me_ram_dump;
 int radeon_rs480_cp_me_ram_inject;
 int radeon_rs480_cp_me_oracle;
+int radeon_rs480_frontier_index = -1;
+int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
+int radeon_rs480_gated_read_index = -1;
 int radeon_rs480_hazard_readers_armed;
 int radeon_vm_size = 8;
 int radeon_vm_block_size = -1;
@@ -284,6 +287,16 @@ MODULE_PARM_DESC(rs480_cp_me_oracle,
 	"poll fail cleanly; root-only, run with the display quiesced."
 );
 module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
+MODULE_PARM_DESC(rs480_frontier_index,
+	"RS480 attended frontier probe: residual frontier exhausted; no valid "
+	"index performs an MMIO read.  -1 (default) remains disarmed."
+);
+module_param_named(rs480_frontier_index, radeon_rs480_frontier_index, int, 0644);
+MODULE_PARM_DESC(rs480_vertex_index,
+	"RS480 attended vertex-engine probe: hold the VAP_PVS/SE_TCL engine clocked "
+	"with a continuous HB-TCL draw loop, then set N (0..6) to perform one RREG32.  "
+	"-1 (default) remains disarmed.");
+module_param_named(rs480_vertex_index, radeon_rs480_vertex_index, int, 0644);
 MODULE_PARM_DESC(rs480_hazard_index,
 	"RS480 hazard-tier first-observation read: index (0..21) that "
 	"radeon_rs480_hazard_read reads per open.  The list is read-safe "
@@ -291,6 +304,13 @@ MODULE_PARM_DESC(rs480_hazard_index,
 	"SW_SEMAPHORE, WAIT_UNTIL), NOT wedge hazards.  -1 (default) disarmed."
 );
 module_param_named(rs480_hazard_index, radeon_rs480_hazard_index, int, 0644);
+
+MODULE_PARM_DESC(rs480_gated_read_index,
+	"RS480 gated-state plain-read probe (HAZARD): index into the inactive-DISP2 "
+	"CRTC2 table; clears FORCE_DISP2, plain-reads, restores, to test whether a "
+	"read stalls when the clock is gated.  A stall needs a physical power cycle.  "
+	"-1 (default) disarmed.");
+module_param_named(rs480_gated_read_index, radeon_rs480_gated_read_index, int, 0644);
 
 MODULE_PARM_DESC(rs480_hazard_readers_armed,
 	"RS480 hazard-reader arm gate: 0 (default) makes the wedge-prone "
