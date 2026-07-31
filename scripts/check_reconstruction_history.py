@@ -200,6 +200,56 @@ def is_control_path(path: str) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in CONTROL_PATTERNS)
 
 
+def is_reconstruction_range(
+    commits: list[str],
+    trailers_by_commit: list[dict[str, list[str]]],
+) -> bool:
+    marked = [
+        bool(trailers.get("Reconstruction-id"))
+        for trailers in trailers_by_commit
+    ]
+    if any(marked) and not all(marked):
+        raise HistoryError(
+            "one range cannot mix reconstruction and post-tag commits"
+        )
+    if not any(marked):
+        return False
+    for commit, trailers in zip(commits, trailers_by_commit, strict=True):
+        if len(trailers["Reconstruction-id"]) != 1:
+            raise HistoryError(
+                f"{commit[:12]}: requires exactly one Reconstruction-id trailer"
+            )
+    return True
+
+
+def verify_post_tag_commit(repository: Path, commit: str) -> None:
+    parents = git(repository, "rev-list", "--parents", "-n", "1", commit).split()
+    if len(parents) != 2:
+        raise HistoryError(
+            f"{commit[:12]}: post-tag source ranges contain no merge commits"
+        )
+    paths = changed_paths(repository, commit)
+    forbidden = [path for path in paths if is_control_path(path)]
+    if forbidden:
+        raise HistoryError(
+            f"{commit[:12]}: post-tag source commit changes control files: "
+            + ", ".join(forbidden)
+        )
+    generated = [
+        path
+        for path in paths
+        if path == "drivers/gpu/drm/radeon/mkregtable"
+        or path.endswith("_reg_safe.h")
+    ]
+    if generated:
+        raise HistoryError(
+            f"{commit[:12]}: generated source is tracked: "
+            + ", ".join(generated)
+        )
+    parent = git(repository, "rev-parse", f"{commit}^").decode("ascii").strip()
+    run(["git", "diff", "--check", parent, commit], cwd=repository)
+
+
 def verify_commit_metadata(
     repository: Path,
     commit: str,
@@ -393,15 +443,20 @@ def prepare(
     }
 
     commits = range_commits(repository, base, head)
+    trailers_by_commit = [
+        commit_trailers(repository, commit)
+        for commit in commits
+    ]
+    if not is_reconstruction_range(commits, trailers_by_commit):
+        for commit in commits:
+            verify_post_tag_commit(repository, commit)
+        print("post-tag source range: no reconstruction matrix")
+        return []
+
     prepared: list[tuple[str, str]] = []
     commit_ids: list[str] = []
-    for commit in commits:
-        trailers = commit_trailers(repository, commit)
+    for commit, trailers in zip(commits, trailers_by_commit, strict=True):
         values = trailers.get("Reconstruction-id", [])
-        if len(values) != 1:
-            raise HistoryError(
-                f"{commit[:12]}: requires exactly one Reconstruction-id trailer"
-            )
         commit_id = values[0]
         if commit_id not in plans:
             raise HistoryError(f"{commit[:12]}: unknown Reconstruction-id {commit_id}")
@@ -610,10 +665,38 @@ def self_test() -> int:
             pass
         else:
             raise HistoryError("phase checker accepted an out-of-order prefix")
+        if is_reconstruction_range(["a"], [{}]):
+            raise HistoryError("range classifier rejected a post-tag commit")
+        if not is_reconstruction_range(
+            ["a"],
+            [{"Reconstruction-id": ["B01"]}],
+        ):
+            raise HistoryError("range classifier missed a reconstruction commit")
+        try:
+            is_reconstruction_range(
+                ["a", "b"],
+                [{}, {"Reconstruction-id": ["B01"]}],
+            )
+        except HistoryError:
+            pass
+        else:
+            raise HistoryError("range classifier accepted a mixed range")
+        try:
+            is_reconstruction_range(
+                ["a"],
+                [{"Reconstruction-id": ["B01", "B02"]}],
+            )
+        except HistoryError:
+            pass
+        else:
+            raise HistoryError("range classifier accepted duplicate IDs")
     except HistoryError as exc:
         print(f"reconstruction-history calibration: FAIL: {exc}", file=sys.stderr)
         return 1
-    print("reconstruction-history calibration: trailers, control paths, and order pass")
+    print(
+        "reconstruction-history calibration: trailers, range classes, "
+        "control paths, and order pass"
+    )
     return 0
 
 

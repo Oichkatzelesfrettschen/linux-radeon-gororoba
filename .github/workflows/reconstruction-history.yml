@@ -109,6 +109,7 @@ jobs:
 
   history-build:
     needs: [trusted-oracle, history-plan]
+    if: needs.history-plan.outputs.matrix != '[]'
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 45
     strategy:
