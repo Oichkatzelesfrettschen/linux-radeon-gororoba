@@ -1,0 +1,23 @@
+# Reproducible identity and local verification for the profiled-source tag.
+
+schema = 1
+tag_name = "radeon-unified-0.4-profiled-source"
+tag_object = "a2a4c2cc66bdb8cfd56a0538365d94ba13677cd5"
+peeled_commit = "9f74840dcc542f84bf396247ee4aba6de52e24f4"
+repository_tree = "eaf29987f8ea814044ed154876736a51b07baf6c"
+driver_tree = "c0ccf1097a8e7900f1c41b49199ea0e330fc4eae"
+feature_policy_tree = "a8afcce68414566836ada84adfada8cde5362ea8"
+feature_policy_sha256 = "1cc57d53a5493ad79d61463960632a3a3ecdbd2b1836e228fc4e74f22421669f"
+upstream_base = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+equivalence_tag_object = "81a2510e34d1d62f5486683bcd6e240db8223b7d"
+equivalence_commit = "9079be562eebd184da9cf891fbc6a72d5ac0d9f3"
+
+signing_format = "ssh"
+signer_principal = "151315375+Oichkatzelesfrettschen@users.noreply.github.com"
+signer_fingerprint = "SHA256:wD1s3tsUVHvjrLUruNtYVv/K1/4b7sJA4W7DTdMn8SA"
+allowed_signers_file = "docs/source-equivalence-allowed-signers"
+allowed_signers_entry_sha256 = "04552a96f0afd439acf80d2b899ccb4057173575b0d4a0dd2d086d6fc87088bb"
+local_verification_command = "git -c gpg.ssh.allowedSignersFile=docs/source-equivalence-allowed-signers verify-tag radeon-unified-0.4-profiled-source"
+
+profile_qualification_workflow_run = 30603229515
+profile_qualification_workflow_run_second = 30603633123
