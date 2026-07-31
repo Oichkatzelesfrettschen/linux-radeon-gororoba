@@ -134,6 +134,7 @@ jobs:
             sh scripts/build_radeon_module.sh --self-test
           flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh \
+              --all-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   module-build-7-1:
@@ -160,6 +161,7 @@ jobs:
             sh scripts/build_radeon_module.sh --self-test
           flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh \
+              --all-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   lint:
@@ -192,6 +194,10 @@ jobs:
         run: python3 scripts/check_build_features.py --self-test
       - name: build feature policy
         run: python3 scripts/check_build_features.py
+      - name: all-dev interface calibration
+        run: python3 scripts/check_all_dev_interfaces.py --self-test
+      - name: all-dev interface inventory
+        run: python3 scripts/check_all_dev_interfaces.py
       - name: reconstruction prefix calibration
         run: python3 scripts/materialize_reconstruction_prefixes.py --self-test
       - name: reconstruction prefixes
