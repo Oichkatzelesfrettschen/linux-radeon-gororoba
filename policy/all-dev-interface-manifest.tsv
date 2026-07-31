@@ -5,7 +5,7 @@ rs4xx-debugfs	source-symbol	radeon_rs480_re_debugfs_register	drivers/gpu/drm/rad
 safe-registers	module-parameter	rs480_safe_regs	drivers/gpu/drm/radeon/radeon_dev.c	B13
 safe-registers	debugfs-file	radeon_rs480_safe_regs	drivers/gpu/drm/radeon/rs400.c	B13
 smx-dc-ctl0-policy	generated-input	0x0000A020 SMX_DC_CTL0	drivers/gpu/drm/radeon/reg_srcs/evergreen	B14
-cache-drain	debugfs-file	radeon_rs480_mc_flush	drivers/gpu/drm/radeon/radeon_device.c	M01
+cache-drain	debugfs-file	radeon_rs480_mc_flush	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M01
 reset-recovery-probes	module-parameter	rs480_gpu_reset_recover_probe	drivers/gpu/drm/radeon/radeon_dev.c	M22
 reset-recovery-probes	module-parameter	rs480_reset_hang_probe	drivers/gpu/drm/radeon/radeon_dev.c	M22
 reset-recovery-probes	debugfs-file	radeon_rs480_gpu_reset_recover_probe	drivers/gpu/drm/radeon/rs400.c	M22

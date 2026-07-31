@@ -308,7 +308,8 @@ setting = "mc-flush-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_device.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M01"]

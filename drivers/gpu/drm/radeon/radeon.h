@@ -2489,12 +2489,6 @@ static inline struct drm_device *rdev_to_drm(struct radeon_device *rdev)
 	return &rdev->ddev;
 }
 
-/* RS400/RS480 RE debugfs registration, deferred to the drm_driver.debugfs_init
- * hook so the nodes land under dri/N/ once minor->debugfs_root is valid. */
-struct drm_minor;
-void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
-void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev);
-
 /*
  * Cast helper
  */
