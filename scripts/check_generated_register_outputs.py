@@ -69,6 +69,22 @@ def targets(tree: Path) -> list[str]:
     return names
 
 
+def target_source(tree: Path, target: str) -> Path:
+    makefile = (tree / "Makefile").read_text(encoding="ascii")
+    pattern = re.compile(
+        rf"^\$\(obj\)/{re.escape(target)}: "
+        rf"\$\(src\)/reg_srcs/([A-Za-z0-9_.-]+)(?:\s|$)",
+        re.MULTILINE,
+    )
+    match = pattern.search(makefile)
+    source_name = (
+        match.group(1)
+        if match
+        else target.removesuffix("_reg_safe.h")
+    )
+    return tree / "reg_srcs" / source_name
+
+
 def generate(generator: Path, source: Path) -> bytes:
     result = subprocess.run(
         [str(generator), str(source)],
@@ -112,8 +128,7 @@ def verify_outputs(
         compiler = build_generator(tree, generator)
         target_names = targets(tree)
         for target in target_names:
-            source_name = target.removesuffix("_reg_safe.h")
-            source = tree / "reg_srcs" / source_name
+            source = target_source(tree, target)
             if not source.is_file():
                 raise OutputError(f"generated target lacks source: {target}")
             content = generate(generator, source)
@@ -141,6 +156,22 @@ def self_test(root: Path) -> int:
             work = Path(temporary)
             generator = work / "mkregtable"
             build_generator(tree, generator)
+            mapping_tree = work / "mapping"
+            mapping_tree.mkdir()
+            (mapping_tree / "Makefile").write_text(
+                "targets := evergreen_dev_reg_safe.h\n"
+                "$(obj)/evergreen_dev_reg_safe.h: "
+                "$(src)/reg_srcs/evergreen $(obj)/mkregtable FORCE\n",
+                encoding="ascii",
+            )
+            if target_source(
+                mapping_tree, "evergreen_dev_reg_safe.h"
+            ).name != "evergreen":
+                raise OutputError("explicit generated source mapping was ignored")
+            if target_source(
+                mapping_tree, "r100_reg_safe.h"
+            ).name != "r100":
+                raise OutputError("pattern generated source mapping was ignored")
             content = generate(generator, tree / "reg_srcs/r100")
             digest = hashlib.sha256(content).hexdigest()
             good = work / "good.tsv"
