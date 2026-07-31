@@ -74,6 +74,17 @@ verifies those fields, the exact module parameter and debugfs projection, the
 linked development symbols, and the generated safe-register tables before
 reporting success. Production builds omit every development interface.
 
+Development builds default to runtime profile `off`. The load-time, read-only
+parameter `profile_dev` accepts `off`, `observe-dev`, `probe-dev`, or
+`mutate-dev`. A selection above the compiled profile rejects module loading,
+and `all-dev` remains a build alias rather than a runtime value. Runtime
+selection controls development interface registration and command-policy
+selection. Operation-specific tokens, selectors, family checks, and
+parked-state refusals remain independent gates. The first mutation-capable
+operation that passes its final gate logs once per device and adds
+`TAINT_USER`. Compiling a development profile and selecting a runtime profile
+do not taint the kernel.
+
 ## Equivalence contract
 
 The migration proof is not raw equality against the legacy payload, because the

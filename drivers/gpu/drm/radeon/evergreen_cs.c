@@ -31,6 +31,11 @@
 #include "r600.h"
 #include "evergreend.h"
 #include "evergreen_reg_safe.h"
+#if RADEON_MUTATE_DEV
+#define evergreen_reg_safe_bm evergreen_dev_reg_safe_bm
+#include "evergreen_dev_reg_safe.h"
+#undef evergreen_reg_safe_bm
+#endif
 #include "cayman_reg_safe.h"
 
 #ifndef MIN
@@ -2779,9 +2784,22 @@ int evergreen_cs_parse(struct radeon_cs_parser *p)
 		} else {
 			tmp = p->rdev->config.evergreen.tile_config;
 			track->reg_safe_bm = evergreen_reg_safe_bm;
+#if RADEON_MUTATE_DEV
+			if (radeon_dev_profile_enabled(
+				    p->rdev, RADEON_DEV_PROFILE_MUTATE)) {
+				radeon_dev_mark_mutation(
+					p->rdev,
+					"Evergreen SMX_DC_CTL0 command policy");
+				track->reg_safe_bm = evergreen_dev_reg_safe_bm;
+			}
+#endif
 		}
 		BUILD_BUG_ON(ARRAY_SIZE(cayman_reg_safe_bm) != REG_SAFE_BM_SIZE);
 		BUILD_BUG_ON(ARRAY_SIZE(evergreen_reg_safe_bm) != REG_SAFE_BM_SIZE);
+#if RADEON_MUTATE_DEV
+		BUILD_BUG_ON(ARRAY_SIZE(evergreen_dev_reg_safe_bm) !=
+			     REG_SAFE_BM_SIZE);
+#endif
 		switch (tmp & 0xf) {
 		case 0:
 			track->npipes = 1;

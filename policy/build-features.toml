@@ -189,6 +189,7 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
   "drivers/gpu/drm/radeon/radeon_dev.c",
   "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
   "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
 ]
 source_mechanisms = ["M04"]
@@ -271,6 +272,7 @@ setting = "smx-dc-ctl0-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/Makefile",
+  "drivers/gpu/drm/radeon/evergreen_cs.c",
   "drivers/gpu/drm/radeon/reg_srcs/evergreen",
   "drivers/gpu/drm/radeon/reg_srcs/evergreen_prod",
 ]

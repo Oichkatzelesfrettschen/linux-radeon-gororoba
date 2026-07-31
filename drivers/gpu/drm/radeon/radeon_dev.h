@@ -3,6 +3,7 @@
 #ifndef __RADEON_DEV_H__
 #define __RADEON_DEV_H__
 
+#include <linux/atomic.h>
 #include <linux/types.h>
 
 #ifndef RADEON_OBSERVE_DEV
@@ -25,9 +26,43 @@
 struct drm_minor;
 struct radeon_device;
 
+enum radeon_dev_profile {
+	RADEON_DEV_PROFILE_OFF,
+	RADEON_DEV_PROFILE_OBSERVE,
+	RADEON_DEV_PROFILE_PROBE,
+	RADEON_DEV_PROFILE_MUTATE,
+};
+
+struct radeon_dev_context {
+	enum radeon_dev_profile profile;
+	atomic_t mutation_tainted;
+};
+
 #if RADEON_OBSERVE_DEV
+void radeon_dev_context_init(struct radeon_device *rdev);
+bool radeon_dev_profile_enabled(struct radeon_device *rdev,
+				enum radeon_dev_profile required);
+void radeon_dev_mark_mutation(struct radeon_device *rdev,
+			      const char *operation);
+
 extern int radeon_rs480_candidate_regs;
 extern int radeon_rs480_safe_regs;
+#else
+static inline void radeon_dev_context_init(struct radeon_device *rdev)
+{
+}
+
+static inline bool
+radeon_dev_profile_enabled(struct radeon_device *rdev,
+			   enum radeon_dev_profile required)
+{
+	return false;
+}
+
+static inline void
+radeon_dev_mark_mutation(struct radeon_device *rdev, const char *operation)
+{
+}
 #endif
 
 #if RADEON_PROBE_DEV
@@ -54,12 +89,10 @@ extern int radeon_rs480_reset_hang_probe;
 
 void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev);
 bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev);
-u32 radeon_rs4xx_dev_reset_mask(u32 baseline_mask, const char **name_out);
+u32 radeon_rs4xx_dev_reset_mask(struct radeon_device *rdev,
+				u32 baseline_mask, const char **name_out);
 void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev);
-static inline bool radeon_palm_dev_pci_reset_unsafe(void)
-{
-	return radeon_palm_pci_reset_unsafe != 0;
-}
+bool radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev);
 #else
 static inline void
 radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev)
@@ -73,13 +106,15 @@ radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
 }
 
 static inline u32
-radeon_rs4xx_dev_reset_mask(u32 baseline_mask, const char **name_out)
+radeon_rs4xx_dev_reset_mask(struct radeon_device *rdev,
+			    u32 baseline_mask, const char **name_out)
 {
 	*name_out = "baseline(VAP|GA)";
 	return baseline_mask;
 }
 
-static inline bool radeon_palm_dev_pci_reset_unsafe(void)
+static inline bool
+radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev)
 {
 	return false;
 }

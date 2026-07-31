@@ -339,6 +339,7 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 
 	rdev->dev = &pdev->dev;
 	rdev->pdev = pdev;
+	radeon_dev_context_init(rdev);
 	ddev = rdev_to_drm(rdev);
 	ddev->dev_private = rdev;
 

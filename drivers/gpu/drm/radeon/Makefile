@@ -4,7 +4,7 @@
 # Direct Rendering Infrastructure (DRI) in XFree86 4.1.0 and higher.
 
 hostprogs := mkregtable
-targets := rn50_reg_safe.h r100_reg_safe.h r200_reg_safe.h rv515_reg_safe.h r300_reg_safe.h r420_reg_safe.h rs480_reg_safe.h rs600_reg_safe.h r600_reg_safe.h evergreen_reg_safe.h cayman_reg_safe.h
+targets := rn50_reg_safe.h r100_reg_safe.h r200_reg_safe.h rv515_reg_safe.h r300_reg_safe.h r420_reg_safe.h rs480_reg_safe.h rs600_reg_safe.h r600_reg_safe.h evergreen_reg_safe.h evergreen_dev_reg_safe.h cayman_reg_safe.h
 
 RADEON_BUILD_PROFILE ?= prod
 radeon_observe_dev := 0
@@ -12,19 +12,15 @@ radeon_probe_dev := 0
 radeon_mutate_dev := 0
 
 ifeq ($(RADEON_BUILD_PROFILE),prod)
-evergreen_reg_source := evergreen_prod
 else ifeq ($(RADEON_BUILD_PROFILE),observe-dev)
 radeon_observe_dev := 1
-evergreen_reg_source := evergreen_prod
 else ifeq ($(RADEON_BUILD_PROFILE),probe-dev)
 radeon_observe_dev := 1
 radeon_probe_dev := 1
-evergreen_reg_source := evergreen_prod
 else ifeq ($(RADEON_BUILD_PROFILE),mutate-dev)
 radeon_observe_dev := 1
 radeon_probe_dev := 1
 radeon_mutate_dev := 1
-evergreen_reg_source := evergreen
 else
 $(error RADEON_BUILD_PROFILE must be prod, observe-dev, probe-dev, or mutate-dev)
 endif
@@ -35,7 +31,10 @@ quiet_cmd_mkregtable = MKREG   $@
 $(obj)/%_reg_safe.h: $(src)/reg_srcs/% $(obj)/mkregtable FORCE
 	$(call if_changed,mkregtable)
 
-$(obj)/evergreen_reg_safe.h: $(src)/reg_srcs/$(evergreen_reg_source) $(obj)/mkregtable FORCE
+$(obj)/evergreen_reg_safe.h: $(src)/reg_srcs/evergreen_prod $(obj)/mkregtable FORCE
+	$(call if_changed,mkregtable)
+
+$(obj)/evergreen_dev_reg_safe.h: $(src)/reg_srcs/evergreen $(obj)/mkregtable FORCE
 	$(call if_changed,mkregtable)
 
 $(obj)/r100.o: $(obj)/r100_reg_safe.h $(obj)/rn50_reg_safe.h
@@ -53,6 +52,10 @@ $(obj)/rs600.o: $(obj)/rs600_reg_safe.h
 $(obj)/r600_cs.o: $(obj)/r600_reg_safe.h
 
 $(obj)/evergreen_cs.o: $(obj)/evergreen_reg_safe.h $(obj)/cayman_reg_safe.h
+
+ifneq ($(radeon_mutate_dev),0)
+$(obj)/evergreen_cs.o: $(obj)/evergreen_dev_reg_safe.h
+endif
 
 radeon-y := radeon_drv.o
 
