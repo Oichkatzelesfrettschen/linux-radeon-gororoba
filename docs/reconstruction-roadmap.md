@@ -108,11 +108,17 @@ classes; a closed item names its proof, and an open item names its gate.
   exact parameter, debugfs, linked-symbol, and generated-table projections.
   Production and all-development builds pass on 6.18 and 7.1. The intermediate
   development projections pass on 7.1.
+- Development builds default to runtime profile `off`. The read-only
+  `profile_dev` load-time parameter selects `observe-dev`, `probe-dev`, or
+  `mutate-dev` up to the compiled ceiling. Registration and command-policy
+  selection follow the resolved per-device profile. Operation-specific gates
+  remain authoritative. The first mutation-capable operation that passes its
+  final gate logs once per device and adds `TAINT_USER`.
 
 ## Open, after the equivalence tag
 
-- Runtime profile selection must gate each compiled development tier at module
-  load and retain the default-off policy.
+- Production and development packaging must select deterministic build
+  profiles and preserve distinct package identities.
 - RAD-06 source changes remain separate reviewed work.
 
 ## Open, outside the tag ordering

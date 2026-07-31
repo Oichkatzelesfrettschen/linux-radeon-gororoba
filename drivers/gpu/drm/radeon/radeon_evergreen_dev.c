@@ -32,6 +32,8 @@ radeon_force_pci_reset_safe_write(struct file *file,
 	if (input[0] != '1')
 		return -EINVAL;
 
+	if (rdev->family != CHIP_PALM)
+		radeon_dev_mark_mutation(rdev, "Evergreen debugfs PCI reset");
 	rc = evergreen_gpu_pci_config_reset_safe(rdev);
 	return rc ? rc : (ssize_t)count;
 }

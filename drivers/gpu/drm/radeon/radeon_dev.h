@@ -42,6 +42,8 @@ struct radeon_dev_context {
 void radeon_dev_context_init(struct radeon_device *rdev);
 bool radeon_dev_profile_enabled(struct radeon_device *rdev,
 				enum radeon_dev_profile required);
+void radeon_dev_mark_mutation(struct radeon_device *rdev,
+			      const char *operation);
 
 extern int radeon_rs480_candidate_regs;
 extern int radeon_rs480_safe_regs;
@@ -55,6 +57,11 @@ radeon_dev_profile_enabled(struct radeon_device *rdev,
 			   enum radeon_dev_profile required)
 {
 	return false;
+}
+
+static inline void
+radeon_dev_mark_mutation(struct radeon_device *rdev, const char *operation)
+{
 }
 #endif
 

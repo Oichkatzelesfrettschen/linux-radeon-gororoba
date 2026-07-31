@@ -2786,8 +2786,12 @@ int evergreen_cs_parse(struct radeon_cs_parser *p)
 			track->reg_safe_bm = evergreen_reg_safe_bm;
 #if RADEON_MUTATE_DEV
 			if (radeon_dev_profile_enabled(
-				    p->rdev, RADEON_DEV_PROFILE_MUTATE))
+				    p->rdev, RADEON_DEV_PROFILE_MUTATE)) {
+				radeon_dev_mark_mutation(
+					p->rdev,
+					"Evergreen SMX_DC_CTL0 command policy");
 				track->reg_safe_bm = evergreen_dev_reg_safe_bm;
+			}
 #endif
 		}
 		BUILD_BUG_ON(ARRAY_SIZE(cayman_reg_safe_bm) != REG_SAFE_BM_SIZE);
