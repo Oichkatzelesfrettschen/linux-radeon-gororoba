@@ -30,7 +30,7 @@ $(obj)/r600_cs.o: $(obj)/r600_reg_safe.h
 
 $(obj)/evergreen_cs.o: $(obj)/evergreen_reg_safe.h $(obj)/cayman_reg_safe.h
 
-radeon-y := radeon_drv.o
+radeon-y := radeon_drv.o radeon_dev.o
 
 ifneq ($(strip $(RADEON_BUILD_PROFILE)),mutate-dev)
 $(error RADEON_BUILD_PROFILE must resolve to mutate-dev before profile extraction)
