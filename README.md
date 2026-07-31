@@ -80,7 +80,10 @@ parameter `profile_dev` accepts `off`, `observe-dev`, `probe-dev`, or
 and `all-dev` remains a build alias rather than a runtime value. Runtime
 selection controls development interface registration and command-policy
 selection. Operation-specific tokens, selectors, family checks, and
-parked-state refusals remain independent gates.
+parked-state refusals remain independent gates. The first mutation-capable
+operation that passes its final gate logs once per device and adds
+`TAINT_USER`. Compiling a development profile and selecting a runtime profile
+do not taint the kernel.
 
 ## Equivalence contract
 

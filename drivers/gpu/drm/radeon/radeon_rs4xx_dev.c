@@ -126,8 +126,10 @@ u32 radeon_rs4xx_dev_reset_mask(struct radeon_device *rdev,
 	 * the read and the consume is preserved rather than clobbered (lost-update
 	 * race a plain WRITE_ONCE would have).  The clamped out-of-range case is not
 	 * consumed -- it re-clamps to BASELINE on every read until fixed. */
-	if (sel != RS480_RESET_MASK_BASELINE)
+	if (sel != RS480_RESET_MASK_BASELINE) {
+		radeon_dev_mark_mutation(rdev, "RS4xx nonbaseline reset mask");
 		cmpxchg(&rs480_reset_mask, sel, RS480_RESET_MASK_BASELINE);
+	}
 	*name_out = rs480_reset_mask_tbl[sel].name;
 	if (sel == RS480_RESET_MASK_BASELINE)
 		return baseline_mask;
@@ -154,6 +156,7 @@ bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
 	    rdev->family != CHIP_RS480 || radeon_rs480_r400_us_cs != 1)
 		return false;
 
+	radeon_dev_mark_mutation(rdev, "RS4xx R400-US command policy");
 	rdev->config.r300.reg_safe_bm = rs480_reg_safe_bm;
 	rdev->config.r300.reg_safe_bm_size = ARRAY_SIZE(rs480_reg_safe_bm);
 	dev_info(rdev->dev,
@@ -1269,6 +1272,7 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
 				     addr, ret);
 		return ret;
 	}
+	radeon_dev_mark_mutation(rdev, "RS4xx CP-ME RAM injection");
 	ret = rs480_cp_me_ram_inject_one(rdev, addr, new_h, new_l,
 					 &rb_h, &rb_l, &rs_h, &rs_l);
 	snprintf(ctx->result, sizeof(ctx->result),
@@ -1699,6 +1703,7 @@ static int rs480_cp_ib_scratch_oracle_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 
+	radeon_dev_mark_mutation(rdev, "RS4xx CP scratch oracle");
 	/* r100_ib_test preseeds the scratch register with 0xCAFEDEAD, submits an
 	 * IB whose PACKET0 stores 0xDEADBEEF to it, waits the IB fence, and returns
 	 * 0 only when the read-back equals 0xDEADBEEF.  The preseed proves the
@@ -1780,6 +1785,7 @@ static int rs480_gpu_reset_recover_probe_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 
+	radeon_dev_mark_mutation(rdev, "RS4xx GPU reset recovery probe");
 	/* Force the deterministic reset: set needs_reset (the unlocked store the
 	 * stock node makes) and drive radeon_gpu_reset() ourselves.  No
 	 * exclusive_lock is held here; radeon_gpu_reset takes its own down_write. */
@@ -1953,6 +1959,7 @@ static int rs480_blit_busy_reset(struct radeon_device *rdev, struct seq_file *m)
 		goto unref;
 	}
 
+	radeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");
 	fence = r100_copy_blit(rdev, gpu_addr, gpu_addr + (sz / 2), pages, NULL);
 	if (IS_ERR(fence)) {
 		seq_printf(m, "blit-reset: BITBLT emit failed (%ld)\n", PTR_ERR(fence));
@@ -2039,6 +2046,7 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
 		return 0;
 	}
 
+	radeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");
 	rdev->needs_reset = true;
 	r = radeon_gpu_reset(rdev);
 	/* No register read after a failed reset: the parked GPU keeps its MC
@@ -2095,14 +2103,20 @@ static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 
-	if (radeon_rs480_reset_hang_probe == RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN)
+	if (radeon_rs480_reset_hang_probe ==
+	    RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN) {
 		return rs480_blit_busy_reset(rdev, m);
+	}
 
-	if (radeon_rs480_reset_hang_probe == RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN)
+	if (radeon_rs480_reset_hang_probe ==
+	    RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN) {
 		return rs480_wedged_3d_reset(rdev, m, false);
+	}
 
-	if (radeon_rs480_reset_hang_probe == RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN)
+	if (radeon_rs480_reset_hang_probe ==
+	    RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN) {
 		return rs480_wedged_3d_reset(rdev, m, true);
+	}
 
 	pre = RREG32(R_000E40_RBBM_STATUS);
 	if (G_000E40_GUI_ACTIVE(pre)) {
@@ -2112,6 +2126,7 @@ static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 
+	radeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");
 	rs480_soft_reset(rdev, &res);
 	seq_printf(m,
 		   "reset-hang probe soft-reset(idle): at-reset RBBM_STATUS=0x%08x post=0x%08x ib_test=%s(%d) %s\n"
@@ -2373,6 +2388,7 @@ static int rs480_force_clock_read_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 	e = &rs480_force_clock_list[idx];
+	radeon_dev_mark_mutation(rdev, "RS4xx force-clock read");
 	sclk_orig = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
 	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, sclk_orig | e->force_bit);
 	value = RREG32(e->offset);
@@ -2683,6 +2699,7 @@ static int rs480_force_clock_3d_read_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 	e = &rs480_force_clock_3d_list[idx];
+	radeon_dev_mark_mutation(rdev, "RS4xx force-clock 3D read");
 	sclk_orig  = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
 	sclk2_orig = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
 	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX,  sclk_orig  | RS480_SCLK_3D_FORCE_ALL);
@@ -2746,6 +2763,7 @@ static int rs480_gated_read_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 	e = &rs480_gated_read_list[idx];
+	radeon_dev_mark_mutation(rdev, "RS4xx gated-state read");
 	sclk_orig = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
 	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, sclk_orig & ~e->clear_bit);
 	mdelay(1);
@@ -2943,6 +2961,7 @@ static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
 	if (r)
 		return r;
 
+	radeon_dev_mark_mutation(rdev, "RS4xx CP cache drain");
 	/* Flush and invalidate the RB3D color and Z caches. */
 	radeon_ring_write(ring, PACKET0(0x4E4C, 0));
 	radeon_ring_write(ring, 0x0000000A); /* R300_RB3D_DC_FLUSH | R300_RB3D_DC_FREE */

@@ -75,6 +75,92 @@ RUNTIME_SOURCE_PATTERNS = {
         r"RADEON_DEV_PROFILE_MUTATE",
     ),
 }
+MUTATION_AUDIT_PATTERNS = {
+    "palm-reset-controls": (
+        (
+            "drivers/gpu/drm/radeon/radeon_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "Palm unsafe PCI reset override"\)',
+            1,
+        ),
+        (
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "Evergreen debugfs PCI reset"\)',
+            1,
+        ),
+    ),
+    "smx-dc-ctl0-policy": (
+        (
+            "drivers/gpu/drm/radeon/evergreen_cs.c",
+            r'radeon_dev_mark_mutation\(.*?p->rdev,.*?'
+            r'"Evergreen SMX_DC_CTL0 command policy"\)',
+            1,
+        ),
+    ),
+    "cache-drain": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx CP cache drain"\)',
+            1,
+        ),
+    ),
+    "reset-recovery-probes": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx GPU reset recovery probe"\)',
+            1,
+        ),
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx reset hang probe"\)',
+            3,
+        ),
+    ),
+    "reset-mask-selector": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx nonbaseline reset mask"\)',
+            1,
+        ),
+    ),
+    "cp-me-write": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx CP-ME RAM injection"\)',
+            1,
+        ),
+    ),
+    "force-clock": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx force-clock read"\)',
+            1,
+        ),
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx force-clock 3D read"\)',
+            1,
+        ),
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx gated-state read"\)',
+            1,
+        ),
+    ),
+    "r400-us-allowlist": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx R400-US command policy"\)',
+            1,
+        ),
+    ),
+    "scratch-oracle": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx CP scratch oracle"\)',
+            1,
+        ),
+    ),
+}
 
 
 class InterfaceError(Exception):
@@ -212,6 +298,39 @@ def validate_runtime_sources(texts: dict[str, str]) -> None:
             require(
                 re.search(pattern, texts[path], re.DOTALL) is not None,
                 f"runtime gate is absent from {path}: {pattern}",
+            )
+
+
+def validate_mutation_audit(
+    texts: dict[str, str],
+    features: dict[str, dict[str, object]],
+) -> None:
+    source = texts["drivers/gpu/drm/radeon/radeon_dev.c"]
+    for pattern in (
+        r"atomic_cmpxchg\(&rdev->dev_context\.mutation_tainted, 0, 1\)",
+        r"add_taint\(TAINT_USER, LOCKDEP_STILL_OK\)",
+    ):
+        require(
+            re.search(pattern, source) is not None,
+            f"mutation audit primitive is absent: {pattern}",
+        )
+
+    mutating_features = {
+        feature_id
+        for feature_id, feature in features.items()
+        if feature["tier"] == "mutate-dev"
+    }
+    require(
+        set(MUTATION_AUDIT_PATTERNS) == mutating_features,
+        "mutation audit feature coverage differs: "
+        + ",".join(sorted(set(MUTATION_AUDIT_PATTERNS) ^ mutating_features)),
+    )
+    for feature_id, audit_sites in MUTATION_AUDIT_PATTERNS.items():
+        for path, pattern, expected_count in audit_sites:
+            require(path in texts, f"{feature_id}: mutation audit source is absent")
+            require(
+                len(re.findall(pattern, texts[path], re.DOTALL)) >= expected_count,
+                f"{feature_id}: mutation audit call is absent",
             )
 
 
@@ -457,7 +576,9 @@ def validate(
     actual_debugfs = custom_debugfs_files(root / "drivers/gpu/drm/radeon")
     require(declared_debugfs == actual_debugfs, "custom debugfs inventory differs")
     if files:
-        validate_runtime_sources(runtime_source_texts(root))
+        source_texts = runtime_source_texts(root)
+        validate_runtime_sources(source_texts)
+        validate_mutation_audit(source_texts, features)
 
     if module is not None:
         validate_module(
@@ -616,6 +737,7 @@ def self_test(root: Path) -> int:
 
     source_texts = runtime_source_texts(root)
     validate_runtime_sources(source_texts)
+    validate_mutation_audit(source_texts, features)
     missing_gate = copy.deepcopy(source_texts)
     missing_gate["drivers/gpu/drm/radeon/evergreen_cs.c"] = re.sub(
         r"radeon_dev_profile_enabled",
@@ -628,6 +750,32 @@ def self_test(root: Path) -> int:
         pass
     else:
         raise InterfaceError("self-test accepted a missing runtime source gate")
+
+    missing_mutation_audit = copy.deepcopy(source_texts)
+    missing_mutation_audit["drivers/gpu/drm/radeon/radeon_dev.c"] = re.sub(
+        r"add_taint\(TAINT_USER, LOCKDEP_STILL_OK\)",
+        "removed_mutation_taint",
+        missing_mutation_audit["drivers/gpu/drm/radeon/radeon_dev.c"],
+    )
+    try:
+        validate_mutation_audit(missing_mutation_audit, features)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a missing mutation audit")
+
+    missing_mutation_call = copy.deepcopy(source_texts)
+    missing_mutation_call["drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"] = re.sub(
+        r'radeon_dev_mark_mutation\(rdev, "RS4xx CP cache drain"\)',
+        "removed_mutation_call",
+        missing_mutation_call["drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"],
+    )
+    try:
+        validate_mutation_audit(missing_mutation_call, features)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a missing mutation call")
 
     require(
         carries_symbol({"reader_fops"}, "reader_fops"),
@@ -644,7 +792,7 @@ def self_test(root: Path) -> int:
 
     print(
         "all-dev interface self-test: 9 manifest rejection, "
-        "6 build-profile, 12 runtime-profile, and "
+        "6 build-profile, 12 runtime-profile, 2 mutation-audit, and "
         "3 compiler-symbol cases"
     )
     return 0

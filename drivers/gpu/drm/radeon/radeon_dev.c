@@ -2,6 +2,7 @@
 
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
+#include <linux/panic.h>
 
 #include "radeon.h"
 
@@ -89,6 +90,20 @@ bool radeon_dev_profile_enabled(struct radeon_device *rdev,
 	return rdev && rdev->dev_context.profile >= required;
 }
 
+void radeon_dev_mark_mutation(struct radeon_device *rdev,
+			      const char *operation)
+{
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE))
+		return;
+	if (atomic_cmpxchg(&rdev->dev_context.mutation_tainted, 0, 1))
+		return;
+
+	dev_warn(rdev->dev,
+		 "development mutation executed: %s; tainting kernel\n",
+		 operation);
+	add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+}
+
 #if RADEON_OBSERVE_DEV
 int radeon_rs480_safe_regs = 1;
 int radeon_rs480_candidate_regs = 1;
@@ -118,8 +133,12 @@ int radeon_rs480_r400_us_cs;
 #if RADEON_MUTATE_DEV
 bool radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev)
 {
-	return radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&
-	       radeon_palm_pci_reset_unsafe == 1;
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) ||
+	    radeon_palm_pci_reset_unsafe != 1)
+		return false;
+
+	radeon_dev_mark_mutation(rdev, "Palm unsafe PCI reset override");
+	return true;
 }
 #endif
 
