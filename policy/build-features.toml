@@ -269,7 +269,11 @@ rollback = "select prod or disable the runtime development profile"
 id = "smx-dc-ctl0-policy"
 setting = "smx-dc-ctl0-dev"
 tier = "mutate-dev"
-source_objects = ["drivers/gpu/drm/radeon/reg_srcs/evergreen"]
+source_objects = [
+  "drivers/gpu/drm/radeon/Makefile",
+  "drivers/gpu/drm/radeon/reg_srcs/evergreen",
+  "drivers/gpu/drm/radeon/reg_srcs/evergreen_prod",
+]
 source_mechanisms = ["B14"]
 dependencies = ["kernel-compatibility"]
 evidence_dependencies = []

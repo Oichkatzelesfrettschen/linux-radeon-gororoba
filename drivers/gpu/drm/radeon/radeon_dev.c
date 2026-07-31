@@ -4,24 +4,33 @@
 
 #include "radeon_dev.h"
 
-int radeon_palm_pci_reset_unsafe;
+#if RADEON_OBSERVE_DEV
 int radeon_rs480_safe_regs = 1;
 int radeon_rs480_candidate_regs = 1;
+#endif
+
+#if RADEON_PROBE_DEV
 int radeon_rs480_cp_me_ram_dump;
-int radeon_rs480_cp_me_ram_inject;
 int radeon_rs480_cp_me_oracle;
-int radeon_rs480_cp_ib_scratch_oracle;
-int radeon_rs480_gpu_reset_recover_probe;
-int radeon_rs480_reset_hang_probe;
-int radeon_rs480_r400_us_cs;
 int radeon_rs480_frontier_index = -1;
 int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
+int radeon_rs480_hazard_readers_armed;
+#endif
+
+#if RADEON_MUTATE_DEV
+int radeon_palm_pci_reset_unsafe;
+int radeon_rs480_cp_me_ram_inject;
+int radeon_rs480_cp_ib_scratch_oracle;
 int radeon_rs480_force_clock_index = -1;
 int radeon_rs480_force_clock_3d_index = -1;
 int radeon_rs480_gated_read_index = -1;
-int radeon_rs480_hazard_readers_armed;
+int radeon_rs480_gpu_reset_recover_probe;
+int radeon_rs480_reset_hang_probe;
+int radeon_rs480_r400_us_cs;
+#endif
 
+#if RADEON_MUTATE_DEV
 MODULE_PARM_DESC(palm_pci_reset_unsafe,
 	"Allow evergreen_gpu_pci_config_reset_safe to fire on CHIP_PALM (Wrestler GPU). "
 	"Default 0: refuse, because the reset propagates a transient PCIe-fabric stall "
@@ -29,7 +38,9 @@ MODULE_PARM_DESC(palm_pci_reset_unsafe,
 	"Set to 1 only for forensic experimentation on a controlled host."
 );
 module_param_named(palm_pci_reset_unsafe, radeon_palm_pci_reset_unsafe, int, 0644);
+#endif
 
+#if RADEON_OBSERVE_DEV
 MODULE_PARM_DESC(rs480_safe_regs,
 	"Expose the read-only RS480/RS482/RS485 curated MMIO snapshot in debugfs. "
 	"Default 1: create radeon_rs480_safe_regs. Set to 0 to keep the DKMS "
@@ -43,7 +54,9 @@ MODULE_PARM_DESC(rs480_candidate_regs,
 	"candidate files for bounded register validation."
 );
 module_param_named(rs480_candidate_regs, radeon_rs480_candidate_regs, int, 0444);
+#endif
 
+#if RADEON_PROBE_DEV
 MODULE_PARM_DESC(rs480_cp_me_ram_dump,
 	"Dump the RS480/RS482/RS485 CP MicroEngine instruction memory through the "
 	"CP_ME_RAM_RADDR read-back port in debugfs. Default 0 (OFF): this writes a CP "
@@ -54,7 +67,9 @@ MODULE_PARM_DESC(rs480_cp_me_ram_dump,
 	"calibration) and there is no separately-addressable ROM through this port."
 );
 module_param_named(rs480_cp_me_ram_dump, radeon_rs480_cp_me_ram_dump, int, 0644);
+#endif
 
+#if RADEON_MUTATE_DEV
 MODULE_PARM_DESC(rs480_cp_me_ram_inject,
 	"Arm the RS480/RS482/RS485 CP MicroEngine instruction-memory injection "
 	"increment 1 (write a microword through CP_ME_RAM_ADDR, read it back, "
@@ -68,7 +83,9 @@ MODULE_PARM_DESC(rs480_cp_me_ram_inject,
 	"absent from this build."
 );
 module_param_named(rs480_cp_me_ram_inject, radeon_rs480_cp_me_ram_inject, int, 0644);
+#endif
 
+#if RADEON_PROBE_DEV
 MODULE_PARM_DESC(rs480_cp_me_oracle,
 	"Arm the CP MicroEngine oracle debugfs node radeon_rs480_cp_me_oracle. "
 	"Default 0 (OFF); arm with the exact token 0x4f524331 ('ORC1'), a stray "
@@ -82,7 +99,9 @@ MODULE_PARM_DESC(rs480_cp_me_oracle,
 	"poll fail cleanly; root-only, run with the display quiesced."
 );
 module_param_named(rs480_cp_me_oracle, radeon_rs480_cp_me_oracle, int, 0644);
+#endif
 
+#if RADEON_MUTATE_DEV
 MODULE_PARM_DESC(rs480_cp_ib_scratch_oracle,
 	"Arm the CP IB scratch-write baseline oracle debugfs node "
 	"radeon_rs480_cp_ib_scratch_oracle. Default 0 (OFF); arm with the exact "
@@ -135,7 +154,9 @@ MODULE_PARM_DESC(rs480_r400_us_cs,
 	"admits PACKET0 writes to US_CODE_BANK, US_CODE_EXT, and "
 	"US_ALU_EXT_ADDR_0..63 on CHIP_RS480.");
 module_param_named(rs480_r400_us_cs, radeon_rs480_r400_us_cs, int, 0644);
+#endif
 
+#if RADEON_PROBE_DEV
 MODULE_PARM_DESC(rs480_frontier_index,
 	"RS480 attended frontier probe: residual frontier exhausted; no valid "
 	"index performs an MMIO read.  -1 (default) remains disarmed."
@@ -155,7 +176,9 @@ MODULE_PARM_DESC(rs480_hazard_index,
 	"SW_SEMAPHORE, WAIT_UNTIL), NOT wedge hazards.  -1 (default) disarmed."
 );
 module_param_named(rs480_hazard_index, radeon_rs480_hazard_index, int, 0644);
+#endif
 
+#if RADEON_MUTATE_DEV
 MODULE_PARM_DESC(rs480_force_clock_index,
 	"RS480 per-domain force-clock-then-read: index (0..4) into the VIP/CAP "
 	"force-clock table read per open; the domain SCLK_CNTL FORCE bit is set, "
@@ -177,7 +200,9 @@ MODULE_PARM_DESC(rs480_gated_read_index,
 	"read stalls when the clock is gated.  A stall needs a physical power cycle.  "
 	"-1 (default) disarmed.");
 module_param_named(rs480_gated_read_index, radeon_rs480_gated_read_index, int, 0644);
+#endif
 
+#if RADEON_PROBE_DEV
 MODULE_PARM_DESC(rs480_hazard_readers_armed,
 	"RS480 hazard-reader arm gate: 0 (default) makes the wedge-prone "
 	"radeon_rs480_candidate_vap_regs and radeon_rs480_candidate_firmware_read_regs "
@@ -186,3 +211,4 @@ MODULE_PARM_DESC(rs480_hazard_readers_armed,
 	"HOST_PATH_CNTL (0x0130), which gates the HyperTransport host path.  Set 1 "
 	"to arm an attended read.");
 module_param_named(rs480_hazard_readers_armed, radeon_rs480_hazard_readers_armed, int, 0644);
+#endif

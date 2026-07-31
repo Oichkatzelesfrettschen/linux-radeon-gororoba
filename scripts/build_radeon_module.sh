@@ -15,10 +15,10 @@
 # compiler family is matched (LLVM=1 on a clang-built root), and the log is
 # scanned for warnings: the Kbuild compiler-differs notice on the retained
 # root is the one explained diagnostic, and any other warning fails the run.
-# The transitional source projection resolves the default, --all-dev, and
-# --mutate-dev to mutate-dev. Lower profiles fail closed until their source
-# objects exist. A green run means radeon.ko linked, modpost completed, and
-# the embedded source, profile, policy, and upstream identities match.
+# The no-flag default resolves to prod. Each development profile selects its
+# monotone source ceiling, and all-dev is an alias for mutate-dev. A green run
+# means radeon.ko linked, modpost completed, and the embedded source, profile,
+# policy, upstream, and compiled-interface identities match.
 #
 # Exit: 0 module built and linked, 1 self-test calibration failure,
 #       2 missing or invalid inputs, 4 build failure or unapproved warning.
@@ -32,8 +32,9 @@ profile_flags=0
 
 resolve_profile() {
   case "$1" in
-    default|all-dev|mutate-dev) printf '%s\n' mutate-dev ;;
-    prod|observe-dev|probe-dev) return 1 ;;
+    default|prod) printf '%s\n' prod ;;
+    observe-dev|probe-dev|mutate-dev) printf '%s\n' "$1" ;;
+    all-dev) printf '%s\n' mutate-dev ;;
     *) return 2 ;;
   esac
 }
@@ -82,8 +83,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if ! resolved_profile=$(resolve_profile "$requested_profile"); then
-  echo "build profile $requested_profile has no extracted source projection" >&2
-  echo "use --all-dev or --mutate-dev until profile extraction lands" >&2
+  echo "unknown build profile: $requested_profile" >&2
   exit 2
 fi
 
@@ -122,15 +122,15 @@ if [ "$self_test" -eq 1 ]; then
   else
     echo "  CALIBRATION FAIL: warning scan verdicts" >&2; fails=$((fails + 1))
   fi
-  if [ "$(resolve_profile default)" = mutate-dev ] &&
+  if [ "$(resolve_profile default)" = prod ] &&
+     [ "$(resolve_profile prod)" = prod ] &&
+     [ "$(resolve_profile observe-dev)" = observe-dev ] &&
+     [ "$(resolve_profile probe-dev)" = probe-dev ] &&
      [ "$(resolve_profile all-dev)" = mutate-dev ] &&
-     [ "$(resolve_profile mutate-dev)" = mutate-dev ] &&
-     ! resolve_profile prod >/dev/null 2>&1 &&
-     ! resolve_profile observe-dev >/dev/null 2>&1 &&
-     ! resolve_profile probe-dev >/dev/null 2>&1; then
-    echo "  ok: legacy default and all-dev resolve to mutate-dev; lower profiles fail closed"
+     [ "$(resolve_profile mutate-dev)" = mutate-dev ]; then
+    echo "  ok: default is prod and development profiles resolve monotonically"
   else
-    echo "  CALIBRATION FAIL: transitional profile resolution" >&2
+    echo "  CALIBRATION FAIL: profile resolution" >&2
     fails=$((fails + 1))
   fi
   cat >"$TMP/upstream-base.toml" <<'EOF'
@@ -305,7 +305,9 @@ do
   }
 done
 python3 "$repo_root/scripts/check_all_dev_interfaces.py" \
-  --module "$WORK/$subtree/radeon.ko" || exit 4
+  --module "$WORK/$subtree/radeon.ko" \
+  --profile "$resolved_profile" \
+  --driver-root "$WORK/$subtree" || exit 4
 if [ -n "$(git -C "$repo_root" status --porcelain "$subtree")" ]; then
   echo "BUILD FAIL: the tracked checkout is not clean after the build" >&2
   exit 4

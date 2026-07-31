@@ -114,7 +114,7 @@ jobs:
 
   module-build-6-18:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,16 +130,20 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/6.18.38-2-cachyos-lts.toml \
             --manifest ci/kernel-build-roots/6.18.38-2-cachyos-lts.manifest.tsv
-          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 300 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh --self-test
-          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --prod \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh \
               --all-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   module-build-7-1:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,9 +161,25 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/7.1.4-1-cachyos.toml \
             --manifest ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv
-          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 300 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh --self-test
-          flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --prod \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --observe-dev \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --probe-dev \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --mutate-dev \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh \
               --all-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
