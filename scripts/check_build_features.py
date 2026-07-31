@@ -53,9 +53,16 @@ SCOPE_RELATIONS = {
     "matches-exclusion-evidence",
 }
 SPLIT_MECHANISMS = {
+    "B11": {"production", "unsafe"},
     "M03": {"passive", "hazard"},
     "M10": {"pll", "first-read"},
 }
+SPLIT_TIERS = {
+    "B11": {"production": "prod", "unsafe": "mutate-dev"},
+    "M03": {"passive": "observe-dev", "hazard": "probe-dev"},
+    "M10": {"pll": "probe-dev", "first-read": "probe-dev"},
+}
+SPLIT_PLAN_PART = {"B11": "production", "M03": "hazard", "M10": "pll"}
 KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MECHANISM = re.compile(r"^([BM][0-9]{2})(?:\.([a-z0-9-]+))?$")
 REQUIRED_FIELDS = {
@@ -392,6 +399,9 @@ def validate_plan_coverage(
     owners: dict[str, str] = {}
     tiers: dict[str, list[str]] = {commit_id: [] for commit_id in plans}
     parts: dict[str, set[str | None]] = {commit_id: set() for commit_id in plans}
+    part_tiers: dict[str, dict[str, str]] = {
+        commit_id: {} for commit_id in SPLIT_MECHANISMS
+    }
     for feature_id, feature in features.items():
         for token in string_list(feature, "source_mechanisms"):
             commit_id, part = mechanism_parts(token)
@@ -405,10 +415,23 @@ def validate_plan_coverage(
             owners[token] = feature_id
             tiers[commit_id].append(feature["tier"])
             parts[commit_id].add(part)
+            if part is not None:
+                part_tiers[commit_id][part] = feature["tier"]
 
     for commit_id, plan in plans.items():
         expected_parts = SPLIT_MECHANISMS.get(commit_id, {None})
         require(parts[commit_id] == expected_parts, f"{commit_id}: missing source mechanism")
+        if commit_id in SPLIT_TIERS:
+            require(
+                part_tiers[commit_id] == SPLIT_TIERS[commit_id],
+                f"{commit_id}: split policy tiers are invalid",
+            )
+            require(
+                plan["future_profile"]
+                == SPLIT_TIERS[commit_id][SPLIT_PLAN_PART[commit_id]],
+                f"{commit_id}: plan profile differs from its retained mechanism part",
+            )
+            continue
         actual_tier = max(tiers[commit_id], key=PROFILE_RANK.__getitem__)
         require(
             actual_tier == plan["future_profile"],
@@ -515,6 +538,12 @@ def self_test(root: Path) -> int:
     ))
     add("duplicated source mechanism", lambda value: value["feature"][1].update(
         source_mechanisms=["B10", "B01"]
+    ))
+    add("swapped split tiers", lambda value: (
+        value["feature"][2].update(source_mechanisms=["B11.unsafe"]),
+        value["feature"][3].update(
+            source_mechanisms=["B11.production", "B12"]
+        ),
     ))
     add("missing parked initialization", lambda value: value["feature"][10].update(
         state_initialization=""

@@ -95,6 +95,9 @@ classes; a closed item names its proof, and an open item names its gate.
   its maximum executable side effect: `policy/build-features.toml`. Runtime
   dependencies are profile-monotone, evidence dependencies remain distinct,
   and `scripts/check_build_features.py` calibrates every rejection class.
+- B11 splits after the equivalence tag: bounded Palm reset and default refusal
+  remain production correctness, while `palm_pci_reset_unsafe` joins the
+  root-only B12 reset trigger under `palm-reset-dev`.
 
 ## Open, after the equivalence tag
 
