@@ -25,6 +25,8 @@ extern int radeon_rs480_gated_read_index;
 extern int radeon_rs480_hazard_readers_armed;
 
 void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev);
+void radeon_rs4xx_dev_gart_lock(void);
+void radeon_rs4xx_dev_gart_unlock(void);
 void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
 void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev);
 
