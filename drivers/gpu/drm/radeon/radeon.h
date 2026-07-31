@@ -84,6 +84,7 @@
 #include <drm/drm_suballoc.h>
 
 #include "radeon_family.h"
+#include "radeon_dev.h"
 #include "radeon_mode.h"
 #include "radeon_reg.h"
 
@@ -112,23 +113,6 @@ extern int radeon_dpm;
 extern int radeon_aspm;
 extern int radeon_runtime_pm;
 extern int radeon_hard_reset;
-extern int radeon_palm_pci_reset_unsafe;
-extern int radeon_rs480_safe_regs;
-extern int radeon_rs480_candidate_regs;
-extern int radeon_rs480_cp_me_ram_dump;
-extern int radeon_rs480_cp_me_ram_inject;
-extern int radeon_rs480_cp_me_oracle;
-extern int radeon_rs480_cp_ib_scratch_oracle;
-extern int radeon_rs480_gpu_reset_recover_probe;
-extern int radeon_rs480_reset_hang_probe;
-extern int radeon_rs480_r400_us_cs;
-extern int radeon_rs480_frontier_index;
-extern int radeon_rs480_vertex_index;
-extern int radeon_rs480_hazard_index;
-extern int radeon_rs480_force_clock_index;
-extern int radeon_rs480_force_clock_3d_index;
-extern int radeon_rs480_gated_read_index;
-extern int radeon_rs480_hazard_readers_armed;
 extern int radeon_vm_size;
 extern int radeon_vm_block_size;
 extern int radeon_deep_color;

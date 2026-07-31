@@ -104,7 +104,6 @@ source_objects = [
   "drivers/gpu/drm/radeon/evergreen.c",
   "drivers/gpu/drm/radeon/radeon.h",
   "drivers/gpu/drm/radeon/radeon_asic.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
 ]
 source_mechanisms = ["B11.production"]
 dependencies = ["kernel-compatibility"]
@@ -146,7 +145,8 @@ source_objects = [
   "drivers/gpu/drm/radeon/evergreen.c",
   "drivers/gpu/drm/radeon/radeon.h",
   "drivers/gpu/drm/radeon/radeon_asic.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/radeon_kms.c",
 ]
 source_mechanisms = ["B11.unsafe", "B12"]
@@ -187,7 +187,8 @@ setting = "rs4xx-debugfs-dev"
 tier = "observe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M04"]
@@ -228,7 +229,8 @@ setting = "safe-regs-dev"
 tier = "observe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["B13", "M08"]
@@ -597,7 +599,8 @@ setting = "reset-probes-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M22"]
@@ -755,7 +758,8 @@ setting = "candidate-regs-dev"
 tier = "observe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M03.passive"]
@@ -796,7 +800,8 @@ setting = "hazard-readers-dev"
 tier = "probe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M03.hazard"]
@@ -837,7 +842,8 @@ setting = "cp-me-dump-dev"
 tier = "probe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M05"]
@@ -878,7 +884,8 @@ setting = "cp-me-write-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M06"]
@@ -919,7 +926,8 @@ setting = "cp-me-oracle-dev"
 tier = "probe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M07"]
@@ -960,7 +968,8 @@ setting = "pll-probes-dev"
 tier = "probe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M10.pll"]
@@ -1001,7 +1010,8 @@ setting = "first-read-dev"
 tier = "probe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M10.first-read"]
@@ -1042,7 +1052,8 @@ setting = "indexed-probes-dev"
 tier = "probe-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M09"]
@@ -1083,7 +1094,8 @@ setting = "force-clock-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M11"]
@@ -1125,7 +1137,8 @@ tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/Makefile",
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/reg_srcs/rs480",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
@@ -1241,7 +1254,8 @@ setting = "scratch-oracle-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
-  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M15"]
