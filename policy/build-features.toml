@@ -106,7 +106,7 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon_asic.h",
   "drivers/gpu/drm/radeon/radeon_drv.c",
 ]
-source_mechanisms = ["B11"]
+source_mechanisms = ["B11.production"]
 dependencies = ["kernel-compatibility"]
 evidence_dependencies = []
 runtime_profile = "prod"
@@ -139,19 +139,25 @@ package_projection = "production"
 rollback = "revert only with an equivalent bounded production reset"
 
 [[feature]]
-id = "palm-reset-trigger"
+id = "palm-reset-controls"
 setting = "palm-reset-dev"
 tier = "mutate-dev"
-source_objects = ["drivers/gpu/drm/radeon/radeon_kms.c"]
-source_mechanisms = ["B12"]
+source_objects = [
+  "drivers/gpu/drm/radeon/evergreen.c",
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_asic.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_kms.c",
+]
+source_mechanisms = ["B11.unsafe", "B12"]
 dependencies = ["bounded-palm-reset"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, and explicit root write"
+operation_gate = "compiled mutate profile, runtime mutate profile, and explicit root write or exact unsafe Boolean override"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
-arming_model = "explicit-root-write"
+arming_model = "explicit-root-write-or-boolean"
 privilege = "debugfs-root"
 execution_scope = "Palm and Wrestler devices exposing the reset trigger"
 evidence_scope = "migration source only"
@@ -160,16 +166,16 @@ scope_relation = "equal"
 scope_decision = "the trigger remains a development-only reset interface"
 side_effect_class = "reset-execution"
 interface_class = "raw-hardware-writer"
-resource_bounds = "one nonseekable write consumes one reset request"
+resource_bounds = "one nonseekable write consumes one reset request; the Boolean override is load-time bounded"
 locking = "existing Radeon reset serialization"
-error_contract = "invalid, repeated, or unavailable reset requests fail before reset"
+error_contract = "default refusal and every invalid, repeated, or unavailable request return before reset"
 tests = [
-  "normal: exact root write reaches one reset request",
-  "boundary: maximum accepted input length is consumed once",
-  "failure: malformed input returns an error before reset",
-  "adversarial: production and runtime-off builds expose no trigger",
+  "normal: exact root write reaches one bounded reset request",
+  "boundary: exact unsafe Boolean opens only the named override",
+  "failure: the default refuses unsafe Palm PCI reset",
+  "adversarial: production and runtime-off builds expose neither reset surface",
 ]
-production_promotion_condition = "target-silicon evidence licenses an operator reset ABI"
+production_promotion_condition = "no production promotion for raw reset and unsafe-override interfaces"
 profile_exception = "none"
 exception_basis = "none"
 package_projection = "development"
