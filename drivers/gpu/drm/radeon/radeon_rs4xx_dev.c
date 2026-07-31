@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <linux/debugfs.h>
+#include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/seq_file.h>
@@ -15,6 +16,8 @@
 #include "radeon_asic.h"
 #include "radeon_object.h"
 #include "rs400d.h"
+
+#include "rs480_reg_safe.h"
 
 #if defined(CONFIG_X86)
 #include <asm/pgtable.h>
@@ -37,6 +40,116 @@ void radeon_rs4xx_dev_gart_lock(void)
 void radeon_rs4xx_dev_gart_unlock(void)
 {
 	mutex_unlock(&rs400_gart_page_table_lock);
+}
+
+/* RS480 0x0000F0 soft-reset candidate masks (RAD-05j).  0043 asserts VAP|GA and
+ * GA still holds; the still-open recovery space is host-safe 3D co-masks.  Expose
+ * a small bounded set of NAMED compiled masks, never a raw operator mask -- a
+ * free mask is too easy to point at a host-facing bit and wedge the box.
+ *
+ * The permitted bits are an ALLOW-LIST, not a forbidden list: a candidate may set
+ * only the 3D-domain bits VAP/RE/PP/RB/GA.  Every other 0x0000F0 bit is
+ * compile-rejected -- the host bits HI/HDP/MC/AIC, the display/video/clock bits
+ * VIP/DISP/CG, the 2D engine E2, and the video IDCT -- so no candidate can reset
+ * a host, display, clock, 2D, or video block on a parked RS480.  An allow-list is
+ * safe against a future 0x0000F0 bit being added without re-vetting. */
+#define RS480_RESET_ALLOWED_MASK \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_RE(1) | \
+	 S_0000F0_SOFT_RESET_PP(1) | S_0000F0_SOFT_RESET_RB(1) | \
+	 S_0000F0_SOFT_RESET_GA(1))
+
+#define RS480_RESET_M_GA_RB \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_GA(1) | \
+	 S_0000F0_SOFT_RESET_RB(1))
+#define RS480_RESET_M_GA_RE \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_GA(1) | \
+	 S_0000F0_SOFT_RESET_RE(1))
+/* full_3d drops E2 (2D engine) and IDCT (video): neither is tied to the GA
+ * recovery mechanism.  VAP/RE/PP/RB/GA is the geometry-through-backend cluster. */
+#define RS480_RESET_M_FULL_3D \
+	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_RE(1) | \
+	 S_0000F0_SOFT_RESET_PP(1) | S_0000F0_SOFT_RESET_RB(1) | \
+	 S_0000F0_SOFT_RESET_GA(1))
+
+static_assert((RS480_RESET_M_GA_RB & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 ga_rb reset mask sets a non-allowed 0x00F0 bit");
+static_assert((RS480_RESET_M_GA_RE & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 ga_re reset mask sets a non-allowed 0x00F0 bit");
+static_assert((RS480_RESET_M_FULL_3D & ~RS480_RESET_ALLOWED_MASK) == 0,
+	      "RS480 full_3d reset mask sets a non-allowed 0x00F0 bit");
+
+enum rs480_reset_mask_sel {
+	RS480_RESET_MASK_BASELINE = 0,
+	RS480_RESET_MASK_GA_RB,
+	RS480_RESET_MASK_GA_RE,
+	RS480_RESET_MASK_FULL_3D,
+	RS480_RESET_MASK__COUNT
+};
+
+static const struct {
+	const char *name;
+	u32 mask;
+} rs480_reset_mask_tbl[RS480_RESET_MASK__COUNT] = {
+	[RS480_RESET_MASK_BASELINE] = { "baseline(VAP|GA)", 0 },
+	[RS480_RESET_MASK_GA_RB]    = { "ga_rb(VAP|GA|RB)", RS480_RESET_M_GA_RB },
+	[RS480_RESET_MASK_GA_RE]    = { "ga_re(VAP|GA|RE)", RS480_RESET_M_GA_RE },
+	[RS480_RESET_MASK_FULL_3D]  = { "full_3d",          RS480_RESET_M_FULL_3D },
+};
+
+static unsigned int rs480_reset_mask = RS480_RESET_MASK_BASELINE;
+module_param(rs480_reset_mask, uint, 0644);
+MODULE_PARM_DESC(rs480_reset_mask,
+		 "RS480 0x00F0 soft-reset candidate: 0=baseline(VAP|GA) 1=ga_rb 2=ga_re 3=full_3d (invalid -> baseline)");
+
+/* Bounded, one-shot selector: an out-of-range value never passes through as a
+ * mask, it falls back to the conservative BASELINE (0043) candidate.  A
+ * non-baseline candidate is CONSUMED on read -- rs480_reset_mask reverts to
+ * BASELINE -- so an armed experimental mask fires exactly once and a later,
+ * unrelated GPU reset uses the safe baseline rather than reusing GA_RB. */
+u32 radeon_rs4xx_dev_reset_mask(u32 baseline_mask, const char **name_out)
+{
+	unsigned int sel = READ_ONCE(rs480_reset_mask);
+
+	if (sel >= RS480_RESET_MASK__COUNT)
+		sel = RS480_RESET_MASK_BASELINE;
+	/* Atomic one-shot consume.  rs480_reset_mask is a 0644 sysfs-writable module
+	 * param; cmpxchg reverts it to BASELINE only if it still holds the value we
+	 * read (a valid non-baseline selector), so a concurrent sysfs write between
+	 * the read and the consume is preserved rather than clobbered (lost-update
+	 * race a plain WRITE_ONCE would have).  The clamped out-of-range case is not
+	 * consumed -- it re-clamps to BASELINE on every read until fixed. */
+	if (sel != RS480_RESET_MASK_BASELINE)
+		cmpxchg(&rs480_reset_mask, sel, RS480_RESET_MASK_BASELINE);
+	*name_out = rs480_reset_mask_tbl[sel].name;
+	if (sel == RS480_RESET_MASK_BASELINE)
+		return baseline_mask;
+	return rs480_reset_mask_tbl[sel].mask;
+}
+
+/*
+ * The RS480-family IGP (RS480/RS482/RS485/RC410, all CHIP_RS480 in the
+ * radeon family table) instantiates the R400 fragment-shader (US) extended
+ * register file -- US_CODE_BANK (0x46b8), US_CODE_EXT (0x46bc), and the
+ * 64-entry US_ALU_EXT_ADDR array (0x4ac0-0x4bbc) -- even though the part is
+ * R300-class.  The stock r300_reg_safe_bm omits them, so r300_packet0_check
+ * rejects a command stream that writes them ("Forbidden register"), which is
+ * what blocks the mesa R300_HB_R400_US route from reaching the silicon.  The
+ * widened bitmap is a hardware-facing permission change, so keep the stock
+ * r300 bitmap unless rs480_r400_us_cs=1 is set at module load for an attended
+ * run.  Every other family keeps the stock r300 bitmap.  These are plain value
+ * registers (code-bank index, extended-address bits), not BO offsets, so they
+ * need no relocation handling once the operator arms the route.
+ */
+bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
+{
+	if (rdev->family != CHIP_RS480 || radeon_rs480_r400_us_cs != 1)
+		return false;
+
+	rdev->config.r300.reg_safe_bm = rs480_reg_safe_bm;
+	rdev->config.r300.reg_safe_bm_size = ARRAY_SIZE(rs480_reg_safe_bm);
+	dev_info(rdev->dev,
+		 "RS480 R400-US CS-checker allowlist armed by rs480_r400_us_cs=1\n");
+	return true;
 }
 
 #if defined(CONFIG_DEBUG_FS)

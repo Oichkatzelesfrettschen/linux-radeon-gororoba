@@ -20,7 +20,7 @@ $(obj)/rv515.o: $(obj)/rv515_reg_safe.h
 
 $(obj)/r300.o: $(obj)/r300_reg_safe.h
 
-$(obj)/rs400.o: $(obj)/rs480_reg_safe.h
+$(obj)/radeon_rs4xx_dev.o: $(obj)/rs480_reg_safe.h
 
 $(obj)/r420.o: $(obj)/r420_reg_safe.h
 

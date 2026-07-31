@@ -3,6 +3,8 @@
 #ifndef __RADEON_DEV_H__
 #define __RADEON_DEV_H__
 
+#include <linux/types.h>
+
 struct drm_minor;
 struct radeon_device;
 
@@ -25,8 +27,10 @@ extern int radeon_rs480_gated_read_index;
 extern int radeon_rs480_hazard_readers_armed;
 
 void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev);
+bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev);
 void radeon_rs4xx_dev_gart_lock(void);
 void radeon_rs4xx_dev_gart_unlock(void);
+u32 radeon_rs4xx_dev_reset_mask(u32 baseline_mask, const char **name_out);
 void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
 void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev);
 
