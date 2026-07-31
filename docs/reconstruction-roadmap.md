@@ -98,17 +98,21 @@ classes; a closed item names its proof, and an open item names its gate.
 - B11 splits after the equivalence tag: bounded Palm reset and default refusal
   remain production correctness, while `palm_pci_reset_unsafe` joins the
   root-only B12 reset trigger under `palm-reset-dev`.
-- The transitional build resolves the legacy default, `all-dev`, and
-  `mutate-dev` to the same mutation-capable ceiling. Module metadata binds the
+- The no-flag build selects `prod`. Development builds select the monotone
+  `observe-dev`, `probe-dev`, and `mutate-dev` source projections. `all-dev`
+  remains an alias for the mutation-capable ceiling. Module metadata binds the
   source commit, profile, feature-policy digest, and upstream base.
   `policy/all-dev-interface-manifest.tsv` preserves all 19 development
   capabilities through an exact inventory of 18 module parameters, 33 debugfs
-  files, and their source and generator markers.
+  files, and their source and generator markers. The module build gate verifies
+  exact parameter, debugfs, linked-symbol, and generated-table projections.
+  Production and all-development builds pass on 6.18 and 7.1. The intermediate
+  development projections pass on 7.1.
 
 ## Open, after the equivalence tag
 
-- Development source extraction must make each lower profile a truthful object
-  projection before the build harness accepts it.
+- Runtime profile selection must gate each compiled development tier at module
+  load and retain the default-off policy.
 - RAD-06 source changes remain separate reviewed work.
 
 ## Open, outside the tag ordering

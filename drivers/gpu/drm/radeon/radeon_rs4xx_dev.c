@@ -17,7 +17,9 @@
 #include "radeon_object.h"
 #include "rs400d.h"
 
+#if RADEON_MUTATE_DEV
 #include "rs480_reg_safe.h"
+#endif
 
 #if defined(CONFIG_X86)
 #include <asm/pgtable.h>
@@ -42,6 +44,7 @@ void radeon_rs4xx_dev_gart_unlock(void)
 	mutex_unlock(&rs400_gart_page_table_lock);
 }
 
+#if RADEON_MUTATE_DEV
 /* RS480 0x0000F0 soft-reset candidate masks (RAD-05j).  0043 asserts VAP|GA and
  * GA still holds; the still-open recovery space is host-safe 3D co-masks.  Expose
  * a small bounded set of NAMED compiled masks, never a raw operator mask -- a
@@ -151,6 +154,7 @@ bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
 		 "RS480 R400-US CS-checker allowlist armed by rs480_r400_us_cs=1\n");
 	return true;
 }
+#endif
 
 #if defined(CONFIG_DEBUG_FS)
 /* rs480_debugfs_refuse_if_parked -- after a failed RS480 reset the GA-routed
@@ -930,6 +934,7 @@ static int rs480_sclk_cntl_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_sclk_cntl);
 
+#if RADEON_PROBE_DEV
 /* PLL-indirect clock-tree read-out.
  *
  * The clock generators live in the PLL index space (CLOCK_CNTL_INDEX +
@@ -1108,6 +1113,8 @@ static const struct file_operations rs480_cp_me_ram_dump_fops = {
 	.release = seq_release,
 };
 
+#endif
+#if RADEON_MUTATE_DEV
 /* CP MicroEngine instruction-memory injection -- increment 1: write, verify,
  * restore, NEVER execute.
  *
@@ -1303,6 +1310,8 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
 	.release = single_release,
 };
 
+#endif
+#if RADEON_PROBE_DEV
 /* CP-ME oracle Run #1: inject -> restart -> ring-test -> restore mechanical loop.
  *
  * Increment-1 (the inject node above) proved CP_ME_RAM write-verify-restore with
@@ -1639,6 +1648,8 @@ static int rs480_hazard_read_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
 
+#endif
+#if RADEON_MUTATE_DEV
 /* CP IB scratch-write baseline oracle.
  *
  * Submits one fence-bearing IB that writes a sentinel to a scratch register and
@@ -2106,6 +2117,7 @@ static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
 }
 
 DEFINE_SHOW_ATTRIBUTE(rs480_reset_hang_probe);
+#endif
 #endif /* CONFIG_DEBUG_FS */
 
 /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
@@ -2133,11 +2145,14 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 	rs480_candidate_regs_debugfs_init(rdev);
 	debugfs_create_file("radeon_rs480_gart_page_table", 0400,
 			    minor->debugfs_root, rdev, &rs400_debugfs_gart_page_table_fops);
+#if RADEON_MUTATE_DEV
 	if ((rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) &&
 	    rdev->accel_working)
 		radeon_debugfs_rs480_mc_flush_init(rdev);
+#endif
 }
 
+#if RADEON_MUTATE_DEV
 /* Per-domain force-clock-then-read.  A register in a clock-gated engine block
  * stalls the reset-less K8 if its clock is gated.  For a domain whose SCLK_CNTL
  * FORCE bit provably gates the clock, forcing the bit on before the read makes
@@ -2734,6 +2749,7 @@ static int rs480_gated_read_show(struct seq_file *m, void *unused)
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(rs480_gated_read);
+#endif
 
 static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
 {
@@ -2758,7 +2774,9 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
 	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
+#if RADEON_MUTATE_DEV
 	struct rs480_cp_me_inject_ctx *inject_ctx;
+#endif
 
 	if (!radeon_rs480_candidate_regs)
 		return;
@@ -2799,6 +2817,7 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 			    &rs480_uma_status_fops);
 	debugfs_create_file("radeon_rs480_sclk_cntl", 0444, root, rdev,
 			    &rs480_sclk_cntl_fops);
+#if RADEON_PROBE_DEV
 	/* CP_ME_RAM read-back dump.  Created on RS400/RS480 when the candidate-regs
 	 * group is enabled, but inert until the operator sets
 	 * radeon_rs480_cp_me_ram_dump=1 (the seq start() gate), because the read
@@ -2806,6 +2825,8 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 */
 	debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0444, root, rdev,
 			    &rs480_cp_me_ram_dump_fops);
+#endif
+#if RADEON_MUTATE_DEV
 	/* CP_ME_RAM injection -- increment 1 (write-verify-restore, no execute).
 	 * Mode 0600: a write here pokes a live CP register, so it is root-only and
 	 * additionally inert until radeon_rs480_cp_me_ram_inject equals the exact
@@ -2818,6 +2839,8 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		debugfs_create_file("radeon_rs480_cp_me_ram_inject", 0600, root,
 				    inject_ctx, &rs480_cp_me_ram_inject_fops);
 	}
+#endif
+#if RADEON_PROBE_DEV
 	/* CP-ME oracle Run #1.  Mode 0400: reading it runs a live CP_ME_RAM
 	 * inject/restart/ring-test/restore loop, so it is root-only and inert
 	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
@@ -2829,12 +2852,16 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 * presence before opening the node. */
 	debugfs_create_file("radeon_rs480_frontier_probe", 0400, root, rdev,
 			    &rs480_frontier_probe_fops);
+#endif
+#if RADEON_MUTATE_DEV
 	debugfs_create_file("radeon_rs480_force_clock_read", 0400, root, rdev,
 			    &rs480_force_clock_read_fops);
 	debugfs_create_file("radeon_rs480_force_clock_3d_read", 0400, root, rdev,
 			    &rs480_force_clock_3d_read_fops);
 	debugfs_create_file("radeon_rs480_gated_read", 0400, root, rdev,
 			    &rs480_gated_read_fops);
+#endif
+#if RADEON_PROBE_DEV
 	/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
 	 * of the vertex control register radeon_rs480_vertex_index selects, which
 	 * the operator must hold clocked via a concurrent HB-TCL draw loop. */
@@ -2851,6 +2878,8 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	 * is captured deliberately before promotion to the safe-regs list. */
 	debugfs_create_file("radeon_rs480_hazard_read", 0444, root, rdev,
 			    &rs480_hazard_read_fops);
+#endif
+#if RADEON_MUTATE_DEV
 	/* CP IB scratch-write baseline oracle.  Mode 0400: reading it submits a
 	 * fence-bearing IB scratch write (the r100_ib_test path), root-only, inert
 	 * until radeon_rs480_cp_ib_scratch_oracle equals the arm token.  IGP-safe:
@@ -2869,8 +2898,10 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	debugfs_create_file("radeon_rs480_reset_hang_probe", 0400, root, rdev,
 			    &rs480_reset_hang_probe_fops);
 #endif
+#endif
 }
 
+#if RADEON_MUTATE_DEV
 /* Emit the RS400/RS480 CP cache-drain packet sequence from debugfs. */
 static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
 {
@@ -2912,3 +2943,4 @@ void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev)
 			    &rs480_mc_flush_fops);
 #endif
 }
+#endif

@@ -42,16 +42,26 @@ acceptance the legacy tree expressed only as a bit inside a generated header.
 A clean checkout therefore builds every generated header from source, and no
 tracked file is a build output.
 
-## Transitional build profile
+## Build profiles
 
-The build harness resolves its no-flag default, `--all-dev`, and
-`--mutate-dev` to the legacy-equivalent `mutate-dev` ceiling. Requests for
-`prod`, `observe-dev`, and `probe-dev` fail before compilation until their
-source projections exist. This keeps profile metadata truthful while source
-extraction proceeds.
+The no-flag build selects `prod`. Development builds form one monotone profile
+order: `observe-dev`, `probe-dev`, and `mutate-dev`. The `--all-dev` flag is an
+alias for `--mutate-dev`.
 
 ```sh
 sh scripts/build_radeon_module.sh --self-test
+sh scripts/build_radeon_module.sh \
+  --prod \
+  --kernel-build-root "$KERNEL_BUILD_ROOT"
+sh scripts/build_radeon_module.sh \
+  --observe-dev \
+  --kernel-build-root "$KERNEL_BUILD_ROOT"
+sh scripts/build_radeon_module.sh \
+  --probe-dev \
+  --kernel-build-root "$KERNEL_BUILD_ROOT"
+sh scripts/build_radeon_module.sh \
+  --mutate-dev \
+  --kernel-build-root "$KERNEL_BUILD_ROOT"
 sh scripts/build_radeon_module.sh \
   --all-dev \
   --kernel-build-root "$KERNEL_BUILD_ROOT"
@@ -60,8 +70,9 @@ sh scripts/build_radeon_module.sh \
 The temporary build tree carries `radeon_build_profile.h` and
 `radeon-build-profile.toml`. The linked module records the source commit,
 resolved profile, build-feature policy digest, and upstream base. The harness
-verifies those fields and the exact all-development interface inventory before
-reporting success.
+verifies those fields, the exact module parameter and debugfs projection, the
+linked development symbols, and the generated safe-register tables before
+reporting success. Production builds omit every development interface.
 
 ## Equivalence contract
 

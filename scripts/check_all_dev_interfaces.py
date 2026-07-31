@@ -31,6 +31,12 @@ MODULE_PARAMETER = re.compile(
     r"|\bmodule_param\(\s*([A-Za-z0-9_]+)"
 )
 DEBUGFS_FILE = re.compile(r'debugfs_create_file\(\s*"([^"]+)"')
+PROFILE_RANK = {
+    "prod": 0,
+    "observe-dev": 1,
+    "probe-dev": 2,
+    "mutate-dev": 3,
+}
 
 
 class InterfaceError(Exception):
@@ -112,8 +118,111 @@ def validate_source_marker(root: Path, row: dict[str, str]) -> None:
         require(marker in text, f"{marker}: generated input marker is absent")
 
 
-def validate_module(module: Path, rows: list[dict[str, str]]) -> None:
+def profile_rows(
+    rows: list[dict[str, str]],
+    features: dict[str, dict[str, object]],
+    profile: str,
+) -> list[dict[str, str]]:
+    require(profile in PROFILE_RANK, f"unknown compiled profile: {profile}")
+    ceiling = PROFILE_RANK[profile]
+    selected: list[dict[str, str]] = []
+    for row in rows:
+        tier = str(features[row["feature_id"]]["tier"])
+        require(tier in PROFILE_RANK, f"unknown feature tier: {tier}")
+        if PROFILE_RANK[tier] <= ceiling:
+            selected.append(row)
+    return selected
+
+
+def debugfs_fops_symbol(root: Path, row: dict[str, str]) -> str:
+    source = root / row["source_path"]
+    text = source.read_text(encoding="ascii")
+    pattern = re.compile(
+        rf'debugfs_create_file\(\s*"{re.escape(row["marker"])}"'
+        rf".*?&([A-Za-z0-9_]+)\s*\)",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    require(match is not None, f"{row['marker']}: debugfs fops is absent")
+    return match.group(1)
+
+
+def module_symbols(module: Path) -> set[str]:
+    result = subprocess.run(
+        ["nm", "-a", str(module)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    require(result.returncode == 0, "nm rejected the built module")
+    return {
+        line.split()[-1]
+        for line in result.stdout.splitlines()
+        if len(line.split()) >= 2
+    }
+
+
+def carries_symbol(symbols: set[str], expected: str) -> bool:
+    return expected in symbols or any(
+        symbol.startswith(expected + ".") for symbol in symbols
+    )
+
+
+def validate_generated_outputs(
+    driver_root: Path,
+    profile: str,
+) -> None:
+    generator = driver_root / "mkregtable"
+    require(generator.is_file(), "built mkregtable is absent")
+
+    def expected_header(source_name: str) -> bytes:
+        result = subprocess.run(
+            [str(generator), str(driver_root / "reg_srcs" / source_name)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(
+            result.returncode == 0,
+            f"mkregtable rejected reg_srcs/{source_name}",
+        )
+        return result.stdout
+
+    evergreen_source = (
+        "evergreen" if profile == "mutate-dev" else "evergreen_prod"
+    )
+    evergreen_header = driver_root / "evergreen_reg_safe.h"
+    require(evergreen_header.is_file(), "built evergreen safe table is absent")
+    require(
+        evergreen_header.read_bytes() == expected_header(evergreen_source),
+        "built evergreen safe table differs from the selected profile input",
+    )
+
+    rs480_header = driver_root / "rs480_reg_safe.h"
+    if profile == "mutate-dev":
+        require(rs480_header.is_file(), "mutate-dev RS480 safe table is absent")
+        require(
+            rs480_header.read_bytes() == expected_header("rs480"),
+            "built RS480 safe table differs from its development input",
+        )
+    else:
+        require(
+            not rs480_header.exists(),
+            "lower profile generated the mutate-dev RS480 safe table",
+        )
+
+
+def validate_module(
+    root: Path,
+    module: Path,
+    rows: list[dict[str, str]],
+    features: dict[str, dict[str, object]],
+    profile: str,
+    driver_root: Path | None,
+) -> None:
     require(module.is_file(), f"module is absent: {module}")
+    expected_rows = profile_rows(rows, features, profile)
     result = subprocess.run(
         ["modinfo", "-p", str(module)],
         stdout=subprocess.PIPE,
@@ -126,15 +235,35 @@ def validate_module(module: Path, rows: list[dict[str, str]]) -> None:
         line.split(":", 1)[0]
         for line in result.stdout.splitlines()
         if ":" in line
+        and (
+            line.split(":", 1)[0] == "palm_pci_reset_unsafe"
+            or line.split(":", 1)[0].startswith("rs480_")
+        )
     }
     expected_parameters = {
-        row["marker"] for row in rows if row["marker_type"] == "module-parameter"
+        row["marker"]
+        for row in expected_rows
+        if row["marker_type"] == "module-parameter"
     }
-    missing_parameters = sorted(expected_parameters - parameters)
     require(
-        not missing_parameters,
-        "built module lacks parameters: " + ",".join(missing_parameters),
+        parameters == expected_parameters,
+        "built module parameter projection differs: "
+        + ",".join(sorted(parameters ^ expected_parameters)),
     )
+
+    symbols = module_symbols(module)
+    for row in rows:
+        if row["marker_type"] == "debugfs-file":
+            symbol = debugfs_fops_symbol(root, row)
+        elif row["marker_type"] == "source-symbol":
+            symbol = row["marker"]
+        else:
+            continue
+        expected = row in expected_rows
+        require(
+            carries_symbol(symbols, symbol) == expected,
+            f"{row['marker']}: compiled symbol projection differs for {profile}",
+        )
 
     result = subprocess.run(
         ["strings", str(module)],
@@ -146,13 +275,23 @@ def validate_module(module: Path, rows: list[dict[str, str]]) -> None:
     require(result.returncode == 0, "strings rejected the built module")
     strings = set(result.stdout.splitlines())
     expected_debugfs = {
-        row["marker"] for row in rows if row["marker_type"] == "debugfs-file"
+        row["marker"]
+        for row in expected_rows
+        if row["marker_type"] == "debugfs-file"
     }
-    missing_debugfs = sorted(expected_debugfs - strings)
+    declared_debugfs = {
+        row["marker"]
+        for row in rows
+        if row["marker_type"] == "debugfs-file"
+    }
+    actual_debugfs = declared_debugfs & strings
     require(
-        not missing_debugfs,
-        "built module lacks debugfs names: " + ",".join(missing_debugfs),
+        actual_debugfs == expected_debugfs,
+        "built module debugfs projection differs: "
+        + ",".join(sorted(actual_debugfs ^ expected_debugfs)),
     )
+    if driver_root is not None:
+        validate_generated_outputs(driver_root, profile)
 
 
 def validate(
@@ -161,6 +300,8 @@ def validate(
     features: dict[str, dict[str, object]],
     *,
     module: Path | None = None,
+    profile: str = "mutate-dev",
+    driver_root: Path | None = None,
     files: bool = True,
 ) -> None:
     require(bool(rows), "all-dev interface manifest has no rows")
@@ -218,7 +359,14 @@ def validate(
     require(declared_debugfs == actual_debugfs, "custom debugfs inventory differs")
 
     if module is not None:
-        validate_module(module, rows)
+        validate_module(
+            root,
+            module,
+            rows,
+            features,
+            profile,
+            driver_root,
+        )
 
 
 def self_test(root: Path) -> int:
@@ -286,7 +434,61 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted absent source marker")
 
-    print("all-dev interface self-test: 9 rejection cases")
+    expected_counts = {
+        "prod": (0, 0, 0),
+        "observe-dev": (4, 2, 18),
+        "probe-dev": (10, 8, 24),
+        "mutate-dev": (19, 18, 33),
+    }
+    for profile, expected in expected_counts.items():
+        selected = profile_rows(rows, features, profile)
+        observed = (
+            len({row["feature_id"] for row in selected}),
+            sum(
+                row["marker_type"] == "module-parameter"
+                for row in selected
+            ),
+            sum(row["marker_type"] == "debugfs-file" for row in selected),
+        )
+        require(
+            observed == expected,
+            f"self-test profile count differs for {profile}",
+        )
+
+    try:
+        profile_rows(rows, features, "development")
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unknown profile")
+
+    invalid_tier_features = copy.deepcopy(features)
+    first_feature = rows[0]["feature_id"]
+    invalid_tier_features[first_feature]["tier"] = "development"
+    try:
+        profile_rows(rows, invalid_tier_features, "mutate-dev")
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unknown feature tier")
+
+    require(
+        carries_symbol({"reader_fops"}, "reader_fops"),
+        "self-test rejected an exact compiler symbol",
+    )
+    require(
+        carries_symbol({"reader_fops.llvm.123"}, "reader_fops"),
+        "self-test rejected a compiler-suffixed symbol",
+    )
+    require(
+        not carries_symbol({"reader_fops_extra"}, "reader_fops"),
+        "self-test accepted an unrelated symbol prefix",
+    )
+
+    print(
+        "all-dev interface self-test: 9 manifest rejection, "
+        "6 profile, and 3 compiler-symbol cases"
+    )
     return 0
 
 
@@ -294,6 +496,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--module", type=Path)
+    parser.add_argument(
+        "--profile",
+        choices=tuple(PROFILE_RANK),
+        default="mutate-dev",
+    )
+    parser.add_argument("--driver-root", type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     try:
@@ -301,7 +509,14 @@ def main() -> int:
             return self_test(root)
         rows = read_manifest(root / "policy/all-dev-interface-manifest.tsv")
         features = read_features(root / "policy/build-features.toml")
-        validate(root, rows, features, module=args.module)
+        validate(
+            root,
+            rows,
+            features,
+            module=args.module,
+            profile=args.profile,
+            driver_root=args.driver_root,
+        )
     except (
         OSError,
         UnicodeError,
@@ -312,13 +527,23 @@ def main() -> int:
         print(f"all-dev interfaces: {error}", file=sys.stderr)
         return 1
 
-    parameter_count = sum(
-        row["marker_type"] == "module-parameter" for row in rows
+    reported_rows = (
+        profile_rows(rows, features, args.profile) if args.module else rows
     )
-    debugfs_count = sum(row["marker_type"] == "debugfs-file" for row in rows)
-    feature_count = len({row["feature_id"] for row in rows})
+    parameter_count = sum(
+        row["marker_type"] == "module-parameter" for row in reported_rows
+    )
+    debugfs_count = sum(
+        row["marker_type"] == "debugfs-file" for row in reported_rows
+    )
+    feature_count = len({row["feature_id"] for row in reported_rows})
+    report_name = (
+        f"{args.profile} compiled interfaces"
+        if args.module
+        else "all-dev source interfaces"
+    )
     print(
-        f"all-dev interfaces: {feature_count} development features, "
+        f"{report_name}: {feature_count} development features, "
         f"{parameter_count} module parameters, {debugfs_count} debugfs files"
     )
     return 0
