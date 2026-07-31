@@ -424,40 +424,6 @@ def validate_input_inventory(root: Path) -> None:
         )
 
 
-def validate_feature_policy(root: Path) -> None:
-    policy = tomllib.loads(
-        (root / "docs/post-tag-feature-policy.toml").read_text(encoding="ascii")
-    )
-    seen: set[str] = set()
-    for feature in policy["feature"]:
-        require(feature["id"] not in seen, f"duplicate feature ID {feature['id']}")
-        seen.add(feature["id"])
-        profile = feature["tier"]
-        require(profile in PROFILES, f"{feature['id']}: invalid feature profile")
-        require(
-            profile == "prod" or feature["setting"].endswith("-dev"),
-            f"{feature['id']}: non-production setting lacks -dev",
-        )
-        require(
-            len(feature["setting"].split("-")) <= 4,
-            f"{feature['id']}: setting has more than four profile words",
-        )
-        effect = feature["side_effect_class"]
-        require(effect in SIDE_EFFECTS, f"{feature['id']}: invalid feature side effect")
-        if effect in MUTATING:
-            require(
-                profile == "mutate-dev",
-                f"{feature['id']}: mutating feature below mutate-dev",
-            )
-        for key in (
-            "availability_default",
-            "runtime_profile_default",
-            "operation_arm_default",
-            "arming_model",
-        ):
-            require(bool(feature[key]), f"{feature['id']}: missing {key}")
-
-
 def validate(state: dict[str, object], *, files: bool = True) -> tuple[Counter[str], Counter[str]]:
     root = state["root"]
     base_plan = state["base_plan"]
@@ -472,7 +438,6 @@ def validate(state: dict[str, object], *, files: bool = True) -> tuple[Counter[s
     if files:
         validate_prefix_artifacts(root, base_plan, mechanism_plan)
         validate_input_inventory(root)
-        validate_feature_policy(root)
     return counts
 
 

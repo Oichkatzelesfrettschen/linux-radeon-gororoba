@@ -91,11 +91,17 @@ classes; a closed item names its proof, and an open item names its gate.
   chipset name to 1002:5975. `policy/rs4xx-guard-scope.tsv` records the
   execution and evidence scope of every reconstructed mechanism without
   narrowing its guard.
+- The source-owned build-feature policy classifies every B and M mechanism by
+  its maximum executable side effect: `policy/build-features.toml`. Runtime
+  dependencies are profile-monotone, evidence dependencies remain distinct,
+  and `scripts/check_build_features.py` calibrates every rejection class.
 
 ## Open, after the equivalence tag
 
-- Structural refactoring and RAD-06 source changes remain separate reviewed
-  work.
+- Profile build plumbing must prove that `all-dev` resolves to `mutate-dev`
+  and preserves the tagged mechanism set on both retained kernels.
+- Development source extraction and RAD-06 source changes remain separate
+  reviewed work.
 
 ## Open, outside the tag ordering
 
