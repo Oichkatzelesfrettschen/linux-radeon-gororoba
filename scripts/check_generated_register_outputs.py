@@ -69,6 +69,22 @@ def targets(tree: Path) -> list[str]:
     return names
 
 
+def target_source(tree: Path, target: str) -> Path:
+    makefile = (tree / "Makefile").read_text(encoding="ascii")
+    pattern = re.compile(
+        rf"^\$\(obj\)/{re.escape(target)}: "
+        rf"\$\(src\)/reg_srcs/([A-Za-z0-9_.-]+)(?:\s|$)",
+        re.MULTILINE,
+    )
+    match = pattern.search(makefile)
+    source_name = (
+        match.group(1)
+        if match
+        else target.removesuffix("_reg_safe.h")
+    )
+    return tree / "reg_srcs" / source_name
+
+
 def generate(generator: Path, source: Path) -> bytes:
     result = subprocess.run(
         [str(generator), str(source)],
@@ -112,8 +128,7 @@ def verify_outputs(
         compiler = build_generator(tree, generator)
         target_names = targets(tree)
         for target in target_names:
-            source_name = target.removesuffix("_reg_safe.h")
-            source = tree / "reg_srcs" / source_name
+            source = target_source(tree, target)
             if not source.is_file():
                 raise OutputError(f"generated target lacks source: {target}")
             content = generate(generator, source)

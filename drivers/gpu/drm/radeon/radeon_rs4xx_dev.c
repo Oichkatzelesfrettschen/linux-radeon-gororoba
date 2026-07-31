@@ -109,10 +109,15 @@ MODULE_PARM_DESC(rs480_reset_mask,
  * non-baseline candidate is CONSUMED on read -- rs480_reset_mask reverts to
  * BASELINE -- so an armed experimental mask fires exactly once and a later,
  * unrelated GPU reset uses the safe baseline rather than reusing GA_RB. */
-u32 radeon_rs4xx_dev_reset_mask(u32 baseline_mask, const char **name_out)
+u32 radeon_rs4xx_dev_reset_mask(struct radeon_device *rdev,
+				u32 baseline_mask, const char **name_out)
 {
 	unsigned int sel = READ_ONCE(rs480_reset_mask);
 
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE)) {
+		*name_out = rs480_reset_mask_tbl[RS480_RESET_MASK_BASELINE].name;
+		return baseline_mask;
+	}
 	if (sel >= RS480_RESET_MASK__COUNT)
 		sel = RS480_RESET_MASK_BASELINE;
 	/* Atomic one-shot consume.  rs480_reset_mask is a 0644 sysfs-writable module
@@ -145,7 +150,8 @@ u32 radeon_rs4xx_dev_reset_mask(u32 baseline_mask, const char **name_out)
  */
 bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
 {
-	if (rdev->family != CHIP_RS480 || radeon_rs480_r400_us_cs != 1)
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) ||
+	    rdev->family != CHIP_RS480 || radeon_rs480_r400_us_cs != 1)
 		return false;
 
 	rdev->config.r300.reg_safe_bm = rs480_reg_safe_bm;
@@ -2138,7 +2144,7 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 	    !minor->debugfs_root)
 		return;
 	rdev = minor->dev->dev_private;
-	if (!rdev)
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_OBSERVE))
 		return;
 
 	rs480_safe_regs_debugfs_init(rdev);
@@ -2146,7 +2152,8 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 	debugfs_create_file("radeon_rs480_gart_page_table", 0400,
 			    minor->debugfs_root, rdev, &rs400_debugfs_gart_page_table_fops);
 #if RADEON_MUTATE_DEV
-	if ((rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) &&
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&
+	    (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) &&
 	    rdev->accel_working)
 		radeon_debugfs_rs480_mc_flush_init(rdev);
 #endif
@@ -2818,85 +2825,103 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 	debugfs_create_file("radeon_rs480_sclk_cntl", 0444, root, rdev,
 			    &rs480_sclk_cntl_fops);
 #if RADEON_PROBE_DEV
-	/* CP_ME_RAM read-back dump.  Created on RS400/RS480 when the candidate-regs
-	 * group is enabled, but inert until the operator sets
-	 * radeon_rs480_cp_me_ram_dump=1 (the seq start() gate), because the read
-	 * sweep writes the CP_ME_RAM_RADDR pointer on reset-less silicon.
-	 */
-	debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0444, root, rdev,
-			    &rs480_cp_me_ram_dump_fops);
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_PROBE)) {
+		/* CP_ME_RAM read-back dump.  Created on RS400/RS480 when the candidate-regs
+		 * group is enabled, but inert until the operator sets
+		 * radeon_rs480_cp_me_ram_dump=1 (the seq start() gate), because the read
+		 * sweep writes the CP_ME_RAM_RADDR pointer on reset-less silicon.
+		 */
+		debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0444, root,
+				    rdev, &rs480_cp_me_ram_dump_fops);
+	}
 #endif
 #if RADEON_MUTATE_DEV
-	/* CP_ME_RAM injection -- increment 1 (write-verify-restore, no execute).
-	 * Mode 0600: a write here pokes a live CP register, so it is root-only and
-	 * additionally inert until radeon_rs480_cp_me_ram_inject equals the exact
-	 * arm token and the write payload carries the ARM keyword.
-	 */
-	inject_ctx = devm_kzalloc(rdev->dev, sizeof(*inject_ctx), GFP_KERNEL);
-	if (inject_ctx) {
-		inject_ctx->rdev = rdev;
-		mutex_init(&inject_ctx->lock);
-		debugfs_create_file("radeon_rs480_cp_me_ram_inject", 0600, root,
-				    inject_ctx, &rs480_cp_me_ram_inject_fops);
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE)) {
+		/* CP_ME_RAM injection -- increment 1 (write-verify-restore, no execute).
+		 * Mode 0600: a write here pokes a live CP register, so it is root-only and
+		 * additionally inert until radeon_rs480_cp_me_ram_inject equals the exact
+		 * arm token and the write payload carries the ARM keyword.
+		 */
+		inject_ctx = devm_kzalloc(rdev->dev, sizeof(*inject_ctx),
+					 GFP_KERNEL);
+		if (inject_ctx) {
+			inject_ctx->rdev = rdev;
+			mutex_init(&inject_ctx->lock);
+			debugfs_create_file("radeon_rs480_cp_me_ram_inject",
+					    0600, root, inject_ctx,
+					    &rs480_cp_me_ram_inject_fops);
+		}
 	}
 #endif
 #if RADEON_PROBE_DEV
-	/* CP-ME oracle Run #1.  Mode 0400: reading it runs a live CP_ME_RAM
-	 * inject/restart/ring-test/restore loop, so it is root-only and inert
-	 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
-	debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root, rdev,
-			    &rs480_cp_me_oracle_fops);
-	/* Retained exhausted-state frontier probe.  The active list is empty, so
-	 * reads report exhaustion rather than performing an MMIO read.  Any
-	 * reinstated nonempty table requires an attended harness to gate physical
-	 * presence before opening the node. */
-	debugfs_create_file("radeon_rs480_frontier_probe", 0400, root, rdev,
-			    &rs480_frontier_probe_fops);
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_PROBE)) {
+		/* CP-ME oracle Run #1.  Mode 0400: reading it runs a live CP_ME_RAM
+		 * inject/restart/ring-test/restore loop, so it is root-only and inert
+		 * until radeon_rs480_cp_me_oracle equals the exact arm token. */
+		debugfs_create_file("radeon_rs480_cp_me_oracle", 0400, root,
+				    rdev, &rs480_cp_me_oracle_fops);
+		/* Retained exhausted-state frontier probe.  The active list is empty, so
+		 * reads report exhaustion rather than performing an MMIO read.  Any
+		 * reinstated nonempty table requires an attended harness to gate physical
+		 * presence before opening the node. */
+		debugfs_create_file("radeon_rs480_frontier_probe", 0400, root,
+				    rdev, &rs480_frontier_probe_fops);
+	}
 #endif
 #if RADEON_MUTATE_DEV
-	debugfs_create_file("radeon_rs480_force_clock_read", 0400, root, rdev,
-			    &rs480_force_clock_read_fops);
-	debugfs_create_file("radeon_rs480_force_clock_3d_read", 0400, root, rdev,
-			    &rs480_force_clock_3d_read_fops);
-	debugfs_create_file("radeon_rs480_gated_read", 0400, root, rdev,
-			    &rs480_gated_read_fops);
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE)) {
+		debugfs_create_file("radeon_rs480_force_clock_read", 0400,
+				    root, rdev, &rs480_force_clock_read_fops);
+		debugfs_create_file("radeon_rs480_force_clock_3d_read", 0400,
+				    root, rdev,
+				    &rs480_force_clock_3d_read_fops);
+		debugfs_create_file("radeon_rs480_gated_read", 0400, root,
+				    rdev, &rs480_gated_read_fops);
+	}
 #endif
 #if RADEON_PROBE_DEV
-	/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
-	 * of the vertex control register radeon_rs480_vertex_index selects, which
-	 * the operator must hold clocked via a concurrent HB-TCL draw loop. */
-	debugfs_create_file("radeon_rs480_vertex_probe", 0400, root, rdev,
-			    &rs480_vertex_probe_fops);
-	/* PLL-indirect clock-tree read-out.  Read-only and low hazard: the PLL
-	 * aperture is always clocked and r100_pll_rreg serializes the index/data
-	 * dance under pll_idx_lock. */
-	debugfs_create_file("radeon_rs480_pll_regs", 0444, root, rdev,
-			    &rs480_pll_regs_fops);
-	/* Hazard-tier first-observation read.  Mode 0444: the listed registers
-	 * are read-safe name-pattern false-positives, read one at a time as
-	 * radeon_rs480_hazard_index selects (default -1 disarmed), so each value
-	 * is captured deliberately before promotion to the safe-regs list. */
-	debugfs_create_file("radeon_rs480_hazard_read", 0444, root, rdev,
-			    &rs480_hazard_read_fops);
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_PROBE)) {
+		/* Attended vertex-engine probe.  Mode 0400: reading it performs one RREG32
+		 * of the vertex control register radeon_rs480_vertex_index selects, which
+		 * the operator must hold clocked via a concurrent HB-TCL draw loop. */
+		debugfs_create_file("radeon_rs480_vertex_probe", 0400, root,
+				    rdev, &rs480_vertex_probe_fops);
+		/* PLL-indirect clock-tree read-out.  Read-only and low hazard: the PLL
+		 * aperture is always clocked and r100_pll_rreg serializes the index/data
+		 * dance under pll_idx_lock. */
+		debugfs_create_file("radeon_rs480_pll_regs", 0444, root,
+				    rdev, &rs480_pll_regs_fops);
+		/* Hazard-tier first-observation read.  Mode 0444: the listed registers
+		 * are read-safe name-pattern false-positives, read one at a time as
+		 * radeon_rs480_hazard_index selects (default -1 disarmed), so each value
+		 * is captured deliberately before promotion to the safe-regs list. */
+		debugfs_create_file("radeon_rs480_hazard_read", 0444, root,
+				    rdev, &rs480_hazard_read_fops);
+	}
 #endif
 #if RADEON_MUTATE_DEV
-	/* CP IB scratch-write baseline oracle.  Mode 0400: reading it submits a
-	 * fence-bearing IB scratch write (the r100_ib_test path), root-only, inert
-	 * until radeon_rs480_cp_ib_scratch_oracle equals the arm token.  IGP-safe:
-	 * the IB fences through the live ring, no CSQ stop/restart. */
-	debugfs_create_file("radeon_rs480_cp_ib_scratch_oracle", 0400, root, rdev,
-			    &rs480_cp_ib_scratch_oracle_fops);
-	/* GPU-reset recovery probe.  Mode 0400: reading it forces a deterministic
-	 * radeon_gpu_reset (suspend/resume/cp_init), root-only, inert until
-	 * radeon_rs480_gpu_reset_recover_probe equals the arm token, and refused
-	 * unless the engine is idle so the hard-locking CP soft-reset is skipped. */
-	debugfs_create_file("radeon_rs480_gpu_reset_recover_probe", 0400, root, rdev,
-			    &rs480_gpu_reset_recover_probe_fops);
-	/* RBBM soft-reset recovery probe (idle, stage 1 of hang-recovery).  Mode
-	 * 0400: reading it runs the RBBM_SOFT_RESET sequence on the idle engine,
-	 * root-only, inert until radeon_rs480_reset_hang_probe equals the token. */
-	debugfs_create_file("radeon_rs480_reset_hang_probe", 0400, root, rdev,
-			    &rs480_reset_hang_probe_fops);
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE)) {
+		/* CP IB scratch-write baseline oracle.  Mode 0400: reading it submits a
+		 * fence-bearing IB scratch write (the r100_ib_test path), root-only, inert
+		 * until radeon_rs480_cp_ib_scratch_oracle equals the arm token.  IGP-safe:
+		 * the IB fences through the live ring, no CSQ stop/restart. */
+		debugfs_create_file("radeon_rs480_cp_ib_scratch_oracle", 0400,
+				    root, rdev,
+				    &rs480_cp_ib_scratch_oracle_fops);
+		/* GPU-reset recovery probe.  Mode 0400: reading it forces a deterministic
+		 * radeon_gpu_reset (suspend/resume/cp_init), root-only, inert until
+		 * radeon_rs480_gpu_reset_recover_probe equals the arm token, and refused
+		 * unless the engine is idle so the hard-locking CP soft-reset is skipped. */
+		debugfs_create_file("radeon_rs480_gpu_reset_recover_probe",
+				    0400, root, rdev,
+				    &rs480_gpu_reset_recover_probe_fops);
+		/* RBBM soft-reset recovery probe (idle, stage 1 of hang-recovery).  Mode
+		 * 0400: reading it runs the RBBM_SOFT_RESET sequence on the idle engine,
+		 * root-only, inert until radeon_rs480_reset_hang_probe equals the token. */
+		debugfs_create_file("radeon_rs480_reset_hang_probe", 0400,
+				    root, rdev,
+				    &rs480_reset_hang_probe_fops);
+	}
 #endif
 #endif
 }

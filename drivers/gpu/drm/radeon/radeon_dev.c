@@ -1,8 +1,93 @@
 // SPDX-License-Identifier: MIT
 
+#include <linux/kernel.h>
 #include <linux/moduleparam.h>
 
-#include "radeon_dev.h"
+#include "radeon.h"
+
+struct radeon_dev_profile_name {
+	const char *name;
+	enum radeon_dev_profile profile;
+};
+
+static const struct radeon_dev_profile_name radeon_dev_profile_names[] = {
+	{ "off", RADEON_DEV_PROFILE_OFF },
+	{ "observe-dev", RADEON_DEV_PROFILE_OBSERVE },
+	{ "probe-dev", RADEON_DEV_PROFILE_PROBE },
+	{ "mutate-dev", RADEON_DEV_PROFILE_MUTATE },
+};
+
+#if RADEON_MUTATE_DEV
+#define RADEON_DEV_COMPILED_PROFILE RADEON_DEV_PROFILE_MUTATE
+#elif RADEON_PROBE_DEV
+#define RADEON_DEV_COMPILED_PROFILE RADEON_DEV_PROFILE_PROBE
+#else
+#define RADEON_DEV_COMPILED_PROFILE RADEON_DEV_PROFILE_OBSERVE
+#endif
+
+static enum radeon_dev_profile radeon_dev_selected_profile =
+	RADEON_DEV_PROFILE_OFF;
+static char radeon_profile_dev[sizeof("observe-dev")] = "off";
+
+static int radeon_dev_profile_set(const char *value,
+				  const struct kernel_param *parameter)
+{
+	enum radeon_dev_profile profile = RADEON_DEV_PROFILE_OFF;
+	bool found = false;
+	unsigned int index;
+
+	(void)parameter;
+	for (index = 0; index < ARRAY_SIZE(radeon_dev_profile_names); index++) {
+		if (!strcmp(value, radeon_dev_profile_names[index].name)) {
+			profile = radeon_dev_profile_names[index].profile;
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		pr_err("radeon: profile_dev rejects unknown value \"%s\"\n",
+		       value);
+		return -EINVAL;
+	}
+	if (profile > RADEON_DEV_COMPILED_PROFILE) {
+		pr_err("radeon: profile_dev=%s exceeds the compiled profile\n",
+		       value);
+		return -EINVAL;
+	}
+
+	strscpy(radeon_profile_dev, value, sizeof(radeon_profile_dev));
+	radeon_dev_selected_profile = profile;
+	return 0;
+}
+
+static int radeon_dev_profile_get(char *buffer,
+				  const struct kernel_param *parameter)
+{
+	(void)parameter;
+	return scnprintf(buffer, PAGE_SIZE, "%s", radeon_profile_dev);
+}
+
+static const struct kernel_param_ops radeon_dev_profile_ops = {
+	.set = radeon_dev_profile_set,
+	.get = radeon_dev_profile_get,
+};
+
+MODULE_PARM_DESC(profile_dev,
+	"Development runtime profile: off (default), observe-dev, probe-dev, or mutate-dev. "
+	"The selected profile cannot exceed the compiled build profile.");
+module_param_cb(profile_dev, &radeon_dev_profile_ops, NULL, 0444);
+
+void radeon_dev_context_init(struct radeon_device *rdev)
+{
+	rdev->dev_context.profile = radeon_dev_selected_profile;
+	atomic_set(&rdev->dev_context.mutation_tainted, 0);
+}
+
+bool radeon_dev_profile_enabled(struct radeon_device *rdev,
+				enum radeon_dev_profile required)
+{
+	return rdev && rdev->dev_context.profile >= required;
+}
 
 #if RADEON_OBSERVE_DEV
 int radeon_rs480_safe_regs = 1;
@@ -28,6 +113,14 @@ int radeon_rs480_gated_read_index = -1;
 int radeon_rs480_gpu_reset_recover_probe;
 int radeon_rs480_reset_hang_probe;
 int radeon_rs480_r400_us_cs;
+#endif
+
+#if RADEON_MUTATE_DEV
+bool radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev)
+{
+	return radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&
+	       radeon_palm_pci_reset_unsafe == 1;
+}
 #endif
 
 #if RADEON_MUTATE_DEV

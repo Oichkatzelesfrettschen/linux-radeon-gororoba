@@ -2385,6 +2385,9 @@ struct radeon_device {
 	bool				accel_working;
 	bool				fastfb_working; /* IGP feature*/
 	bool				needs_reset, in_reset;
+#if RADEON_OBSERVE_DEV
+	struct radeon_dev_context	dev_context;
+#endif
 	/* Failed RS400/RS480 reset with the GA register bus wedged: every
 	 * MMIO read -- direct 3D space, RBBM after clock gating re-engages,
 	 * MC-indirect GART queries -- is a non-posted HyperTransport black

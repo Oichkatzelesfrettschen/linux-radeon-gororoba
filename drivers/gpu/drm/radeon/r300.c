@@ -487,7 +487,8 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
 		 * baseline regardless of the module param. */
 		if (igp_force_clk) {
 			rs480_mask = radeon_rs4xx_dev_reset_mask(
-				RS480_RESET_M_BASELINE, &rs480_mask_name);
+				rdev, RS480_RESET_M_BASELINE,
+				&rs480_mask_name);
 		} else {
 			rs480_mask = RS480_RESET_M_BASELINE;
 			rs480_mask_name = "baseline(VAP|GA)";

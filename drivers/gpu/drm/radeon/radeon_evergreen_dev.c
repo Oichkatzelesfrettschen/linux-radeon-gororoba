@@ -43,6 +43,9 @@ static const struct file_operations radeon_force_pci_reset_safe_fops = {
 
 void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev)
 {
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE))
+		return;
+
 	/* Register the debugfs trigger for the bounded-MC-wait safe variant
 	 * of evergreen_gpu_pci_config_reset. The file is created at debugfs
 	 * root because the DRM primary minor is unavailable this early in

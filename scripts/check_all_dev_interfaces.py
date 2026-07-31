@@ -37,6 +37,44 @@ PROFILE_RANK = {
     "probe-dev": 2,
     "mutate-dev": 3,
 }
+RUNTIME_RANK = {
+    "off": -1,
+    "observe-dev": 1,
+    "probe-dev": 2,
+    "mutate-dev": 3,
+}
+RUNTIME_SOURCE_PATTERNS = {
+    "drivers/gpu/drm/radeon/radeon_dev.c": (
+        r'\{ "off", RADEON_DEV_PROFILE_OFF \}',
+        r'\{ "observe-dev", RADEON_DEV_PROFILE_OBSERVE \}',
+        r'\{ "probe-dev", RADEON_DEV_PROFILE_PROBE \}',
+        r'\{ "mutate-dev", RADEON_DEV_PROFILE_MUTATE \}',
+        r"profile > RADEON_DEV_COMPILED_PROFILE",
+        r"module_param_cb\(profile_dev, &radeon_dev_profile_ops, NULL, 0444\)",
+        r"rdev->dev_context\.profile = radeon_dev_selected_profile",
+    ),
+    "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
+        r"void radeon_rs480_re_debugfs_register\(.*?\)\n\{.*?"
+        r"RADEON_DEV_PROFILE_OBSERVE",
+        r"static void rs480_candidate_regs_debugfs_init\(.*?\)\n\{.*?"
+        r"RADEON_DEV_PROFILE_PROBE",
+        r"static void rs480_candidate_regs_debugfs_init\(.*?\)\n\{.*?"
+        r"RADEON_DEV_PROFILE_MUTATE",
+        r"u32 radeon_rs4xx_dev_reset_mask\(.*?\)\n\{.*?"
+        r"RADEON_DEV_PROFILE_MUTATE",
+        r"bool radeon_rs4xx_dev_apply_r400_us_reg_safe\(.*?\)\n\{.*?"
+        r"RADEON_DEV_PROFILE_MUTATE",
+    ),
+    "drivers/gpu/drm/radeon/radeon_evergreen_dev.c": (
+        r"void radeon_evergreen_dev_debugfs_init\(.*?\)\n\{.*?"
+        r"RADEON_DEV_PROFILE_MUTATE",
+    ),
+    "drivers/gpu/drm/radeon/evergreen_cs.c": (
+        r"evergreen_dev_reg_safe_bm",
+        r"radeon_dev_profile_enabled\(.*?"
+        r"RADEON_DEV_PROFILE_MUTATE",
+    ),
+}
 
 
 class InterfaceError(Exception):
@@ -134,6 +172,49 @@ def profile_rows(
     return selected
 
 
+def runtime_rows(
+    rows: list[dict[str, str]],
+    features: dict[str, dict[str, object]],
+    compiled_profile: str,
+    runtime_profile: str,
+) -> list[dict[str, str]]:
+    require(
+        compiled_profile in PROFILE_RANK,
+        f"unknown compiled profile: {compiled_profile}",
+    )
+    require(
+        runtime_profile in RUNTIME_RANK,
+        f"unknown runtime profile: {runtime_profile}",
+    )
+    require(
+        RUNTIME_RANK[runtime_profile] <= PROFILE_RANK[compiled_profile],
+        f"runtime profile {runtime_profile} exceeds {compiled_profile}",
+    )
+    ceiling = RUNTIME_RANK[runtime_profile]
+    return [
+        row
+        for row in profile_rows(rows, features, compiled_profile)
+        if PROFILE_RANK[str(features[row["feature_id"]]["tier"])] <= ceiling
+    ]
+
+
+def runtime_source_texts(root: Path) -> dict[str, str]:
+    return {
+        path: (root / path).read_text(encoding="ascii")
+        for path in RUNTIME_SOURCE_PATTERNS
+    }
+
+
+def validate_runtime_sources(texts: dict[str, str]) -> None:
+    for path, patterns in RUNTIME_SOURCE_PATTERNS.items():
+        require(path in texts, f"runtime gate source is absent: {path}")
+        for pattern in patterns:
+            require(
+                re.search(pattern, texts[path], re.DOTALL) is not None,
+                f"runtime gate is absent from {path}: {pattern}",
+            )
+
+
 def debugfs_fops_symbol(root: Path, row: dict[str, str]) -> str:
     source = root / row["source_path"]
     text = source.read_text(encoding="ascii")
@@ -189,24 +270,34 @@ def validate_generated_outputs(
         )
         return result.stdout
 
-    evergreen_source = (
-        "evergreen" if profile == "mutate-dev" else "evergreen_prod"
-    )
     evergreen_header = driver_root / "evergreen_reg_safe.h"
     require(evergreen_header.is_file(), "built evergreen safe table is absent")
     require(
-        evergreen_header.read_bytes() == expected_header(evergreen_source),
-        "built evergreen safe table differs from the selected profile input",
+        evergreen_header.read_bytes() == expected_header("evergreen_prod"),
+        "built Evergreen production table differs from its input",
     )
 
+    evergreen_dev_header = driver_root / "evergreen_dev_reg_safe.h"
     rs480_header = driver_root / "rs480_reg_safe.h"
     if profile == "mutate-dev":
+        require(
+            evergreen_dev_header.is_file(),
+            "mutate-dev Evergreen development table is absent",
+        )
+        require(
+            evergreen_dev_header.read_bytes() == expected_header("evergreen"),
+            "built Evergreen development table differs from its input",
+        )
         require(rs480_header.is_file(), "mutate-dev RS480 safe table is absent")
         require(
             rs480_header.read_bytes() == expected_header("rs480"),
             "built RS480 safe table differs from its development input",
         )
     else:
+        require(
+            not evergreen_dev_header.exists(),
+            "lower profile generated the mutate-dev Evergreen table",
+        )
         require(
             not rs480_header.exists(),
             "lower profile generated the mutate-dev RS480 safe table",
@@ -231,13 +322,21 @@ def validate_module(
         text=True,
     )
     require(result.returncode == 0, "modinfo rejected the built module")
-    parameters = {
+    module_parameters = {
         line.split(":", 1)[0]
         for line in result.stdout.splitlines()
         if ":" in line
-        and (
-            line.split(":", 1)[0] == "palm_pci_reset_unsafe"
-            or line.split(":", 1)[0].startswith("rs480_")
+    }
+    require(
+        ("profile_dev" in module_parameters) == (profile != "prod"),
+        f"built module runtime-profile parameter differs for {profile}",
+    )
+    parameters = {
+        name
+        for name in module_parameters
+        if (
+            name == "palm_pci_reset_unsafe"
+            or name.startswith("rs480_")
         )
     }
     expected_parameters = {
@@ -357,6 +456,8 @@ def validate(
     }
     actual_debugfs = custom_debugfs_files(root / "drivers/gpu/drm/radeon")
     require(declared_debugfs == actual_debugfs, "custom debugfs inventory differs")
+    if files:
+        validate_runtime_sources(runtime_source_texts(root))
 
     if module is not None:
         validate_module(
@@ -455,6 +556,33 @@ def self_test(root: Path) -> int:
             f"self-test profile count differs for {profile}",
         )
 
+    runtime_counts = {
+        ("observe-dev", "off"): (0, 0, 0),
+        ("observe-dev", "observe-dev"): (4, 2, 18),
+        ("probe-dev", "off"): (0, 0, 0),
+        ("probe-dev", "observe-dev"): (4, 2, 18),
+        ("probe-dev", "probe-dev"): (10, 8, 24),
+        ("mutate-dev", "off"): (0, 0, 0),
+        ("mutate-dev", "observe-dev"): (4, 2, 18),
+        ("mutate-dev", "probe-dev"): (10, 8, 24),
+        ("mutate-dev", "mutate-dev"): (19, 18, 33),
+    }
+    for selection, expected in runtime_counts.items():
+        selected = runtime_rows(rows, features, *selection)
+        observed = (
+            len({row["feature_id"] for row in selected}),
+            sum(
+                row["marker_type"] == "module-parameter"
+                for row in selected
+            ),
+            sum(row["marker_type"] == "debugfs-file" for row in selected),
+        )
+        require(
+            observed == expected,
+            "self-test runtime count differs for "
+            + "/".join(selection),
+        )
+
     try:
         profile_rows(rows, features, "development")
     except InterfaceError:
@@ -472,6 +600,35 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted an unknown feature tier")
 
+    try:
+        runtime_rows(rows, features, "observe-dev", "probe-dev")
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted runtime above compiled ceiling")
+
+    try:
+        runtime_rows(rows, features, "mutate-dev", "all-dev")
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unknown runtime profile")
+
+    source_texts = runtime_source_texts(root)
+    validate_runtime_sources(source_texts)
+    missing_gate = copy.deepcopy(source_texts)
+    missing_gate["drivers/gpu/drm/radeon/evergreen_cs.c"] = re.sub(
+        r"radeon_dev_profile_enabled",
+        "removed_profile_gate",
+        missing_gate["drivers/gpu/drm/radeon/evergreen_cs.c"],
+    )
+    try:
+        validate_runtime_sources(missing_gate)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a missing runtime source gate")
+
     require(
         carries_symbol({"reader_fops"}, "reader_fops"),
         "self-test rejected an exact compiler symbol",
@@ -487,7 +644,8 @@ def self_test(root: Path) -> int:
 
     print(
         "all-dev interface self-test: 9 manifest rejection, "
-        "6 profile, and 3 compiler-symbol cases"
+        "6 build-profile, 12 runtime-profile, and "
+        "3 compiler-symbol cases"
     )
     return 0
 
