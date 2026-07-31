@@ -848,4 +848,9 @@ module_exit(radeon_module_exit);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_INFO(gororoba_build_profile, RADEON_BUILD_PROFILE);
+MODULE_INFO(gororoba_source_commit, RADEON_BUILD_SOURCE_COMMIT);
+MODULE_INFO(gororoba_feature_policy_sha256,
+	    RADEON_BUILD_FEATURE_POLICY_SHA256);
+MODULE_INFO(gororoba_upstream_base, RADEON_BUILD_UPSTREAM_BASE);
 MODULE_LICENSE("GPL and additional rights");

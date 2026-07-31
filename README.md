@@ -42,6 +42,27 @@ acceptance the legacy tree expressed only as a bit inside a generated header.
 A clean checkout therefore builds every generated header from source, and no
 tracked file is a build output.
 
+## Transitional build profile
+
+The build harness resolves its no-flag default, `--all-dev`, and
+`--mutate-dev` to the legacy-equivalent `mutate-dev` ceiling. Requests for
+`prod`, `observe-dev`, and `probe-dev` fail before compilation until their
+source projections exist. This keeps profile metadata truthful while source
+extraction proceeds.
+
+```sh
+sh scripts/build_radeon_module.sh --self-test
+sh scripts/build_radeon_module.sh \
+  --all-dev \
+  --kernel-build-root "$KERNEL_BUILD_ROOT"
+```
+
+The temporary build tree carries `radeon_build_profile.h` and
+`radeon-build-profile.toml`. The linked module records the source commit,
+resolved profile, build-feature policy digest, and upstream base. The harness
+verifies those fields and the exact all-development interface inventory before
+reporting success.
+
 ## Equivalence contract
 
 The migration proof is not raw equality against the legacy payload, because the

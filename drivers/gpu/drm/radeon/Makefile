@@ -32,6 +32,14 @@ $(obj)/evergreen_cs.o: $(obj)/evergreen_reg_safe.h $(obj)/cayman_reg_safe.h
 
 radeon-y := radeon_drv.o
 
+ifneq ($(strip $(RADEON_BUILD_PROFILE)),mutate-dev)
+$(error RADEON_BUILD_PROFILE must resolve to mutate-dev before profile extraction)
+endif
+
+ccflags-y += -DRADEON_OBSERVE_DEV=1
+ccflags-y += -DRADEON_PROBE_DEV=1
+ccflags-y += -DRADEON_MUTATE_DEV=1
+
 # add KMS driver
 radeon-y += radeon_device.o radeon_asic.o radeon_kms.o \
 	radeon_atombios.o radeon_agp.o atombios_crtc.o radeon_combios.o \
