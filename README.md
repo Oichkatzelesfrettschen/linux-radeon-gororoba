@@ -28,8 +28,9 @@ Packaging targets Arch and CachyOS alone.
 
 `radeon-custom` has completed the signed source-pin cutover and remains the
 deployment and packaging authority. Its active package exports this
-repository's signed equivalence checkpoint. Target installation and
-safe-runtime validation of the 0.3-96 package remain pending.
+repository's signed equivalence checkpoint. The 0.3-96 package is installed
+and runtime-accepted on the RS482 target, with the decision-grade bundle
+retained in `steinmarder-r300`.
 
 ## Source closure
 
