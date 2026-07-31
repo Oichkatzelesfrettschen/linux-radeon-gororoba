@@ -4075,7 +4075,7 @@ int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)
 	 * radeon.palm_pci_reset_unsafe=1 to override.
 	 */
 	if (rdev->family == CHIP_PALM &&
-	    !radeon_palm_dev_pci_reset_unsafe()) {
+	    !radeon_palm_dev_pci_reset_unsafe(rdev)) {
 		dev_warn(rdev->dev,
 			"refusing pci-config reset on CHIP_PALM: propagates to PCIe root-complex; set radeon.palm_pci_reset_unsafe=1 to override\n");
 		return -EPERM;
