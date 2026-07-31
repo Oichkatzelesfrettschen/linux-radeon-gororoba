@@ -26,9 +26,10 @@ Packaging targets Arch and CachyOS alone.
 `linux-radeon-gororoba` is the canonical modified-source authority from
 `radeon-unified-0.3-pkgrel91-source-equivalent` onward.
 
-`radeon-custom` remains the deployment and packaging authority until its
-source-pin cutover. Deployments continue to consume `radeon-custom` until that
-cutover is validated.
+`radeon-custom` has completed the signed source-pin cutover and remains the
+deployment and packaging authority. Its active package exports this
+repository's signed equivalence checkpoint. Target installation and
+safe-runtime validation of the 0.3-96 package remain pending.
 
 ## Source closure
 
