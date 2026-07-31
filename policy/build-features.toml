@@ -1,0 +1,1271 @@
+schema = 1
+
+[profile_model]
+ordered = ["prod", "observe-dev", "probe-dev", "mutate-dev"]
+build_alias = "all-dev"
+build_alias_resolves_to = "mutate-dev"
+runtime_default = "off"
+runtime_allowed = ["off", "observe-dev", "probe-dev", "mutate-dev"]
+
+# Runtime dependencies describe the post-tag build projection. Reconstruction
+# ordering and evidence dependencies remain separate because neither licenses
+# a production feature to link a development-only implementation.
+
+[[feature]]
+id = "kernel-compatibility"
+setting = "prod"
+tier = "prod"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/pptable.h",
+  "drivers/gpu/drm/radeon/atombios_crtc.c",
+  "drivers/gpu/drm/radeon/radeon_legacy_crtc.c",
+  "drivers/gpu/drm/radeon/radeon_mode.h",
+  "drivers/gpu/drm/radeon/radeon_device.c",
+  "drivers/gpu/drm/radeon/radeon_fbdev.c",
+  "drivers/gpu/drm/radeon/radeon_gem.c",
+  "drivers/gpu/drm/radeon/radeon_irq_kms.c",
+  "drivers/gpu/drm/radeon/radeon_ttm.c",
+]
+source_mechanisms = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B09"]
+dependencies = []
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "kernel version and callback signature selected at compile time"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "active"
+arming_model = "compile-time-version-selection"
+privilege = "kernel-internal"
+execution_scope = "supported external-module kernel lanes"
+evidence_scope = "retained 6.18 and 7.1 module-build roots"
+scope_refs = []
+scope_relation = "equal"
+scope_decision = "both declared kernel lanes are build requirements after B09"
+side_effect_class = "software-state"
+interface_class = "build"
+resource_bounds = "one compile-time API branch per guarded call site"
+locking = "unchanged subsystem locking"
+error_contract = "compiler or modpost failure rejects the build"
+tests = [
+  "normal: retained 6.18 module build",
+  "boundary: retained 7.1 module build",
+  "failure: unsupported declaration rejects before compilation",
+  "adversarial: contradictory compatibility branch fails warnings-as-errors",
+]
+production_promotion_condition = "already production compatibility"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "revert the individual compatibility mechanism"
+
+[[feature]]
+id = "firmware-presence"
+setting = "prod"
+tier = "prod"
+source_objects = ["drivers/gpu/drm/radeon/radeon_drv.c"]
+source_mechanisms = ["B10"]
+dependencies = []
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "R600 and later probe requires the declared firmware files"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "active"
+arming_model = "automatic-probe-precondition"
+privilege = "kernel-internal"
+execution_scope = "R600 and later Radeon probe path"
+evidence_scope = "migration source and kernel firmware loader contract"
+scope_refs = []
+scope_relation = "equal"
+scope_decision = "probe refusal remains limited to the firmware-requiring ASIC range"
+side_effect_class = "software-state"
+interface_class = "kernel-path"
+resource_bounds = "finite firmware-name table and one probe-time check"
+locking = "probe serialization"
+error_contract = "missing firmware rejects probe before device bring-up"
+tests = [
+  "normal: every declared firmware file is present",
+  "boundary: first firmware-requiring family is checked",
+  "failure: one missing firmware file rejects probe",
+  "adversarial: unknown family cannot bypass the family threshold",
+]
+production_promotion_condition = "already production correctness"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "revert the probe precondition"
+
+[[feature]]
+id = "bounded-palm-reset"
+setting = "prod"
+tier = "prod"
+source_objects = [
+  "drivers/gpu/drm/radeon/evergreen.c",
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_asic.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+]
+source_mechanisms = ["B11"]
+dependencies = ["kernel-compatibility"]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "Palm reset path with default PCI-reset refusal"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "bounded-refusal"
+arming_model = "automatic-reset-path"
+privilege = "kernel-internal"
+execution_scope = "Palm and Wrestler reset path"
+evidence_scope = "migration source and bounded reset behavior"
+scope_refs = []
+scope_relation = "equal"
+scope_decision = "the production path retains bounded waits and default refusal"
+side_effect_class = "reset-execution"
+interface_class = "kernel-path"
+resource_bounds = "bounded MC wait and one reset attempt"
+locking = "existing Radeon reset serialization"
+error_contract = "busy memory controller or refused PCI reset returns an error"
+tests = [
+  "normal: bounded reset reaches the supported completion path",
+  "boundary: MC busy wait reaches its finite limit",
+  "failure: default PCI reset refusal returns an error",
+  "adversarial: unsafe override absent leaves the refusal unchanged",
+]
+production_promotion_condition = "already production correctness"
+profile_exception = "production-correctness"
+exception_basis = "Palm reset must remain bounded and refuse unsupported PCI reset"
+package_projection = "production"
+rollback = "revert only with an equivalent bounded production reset"
+
+[[feature]]
+id = "palm-reset-trigger"
+setting = "palm-reset-dev"
+tier = "mutate-dev"
+source_objects = ["drivers/gpu/drm/radeon/radeon_kms.c"]
+source_mechanisms = ["B12"]
+dependencies = ["bounded-palm-reset"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, and explicit root write"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-root-write"
+privilege = "debugfs-root"
+execution_scope = "Palm and Wrestler devices exposing the reset trigger"
+evidence_scope = "migration source only"
+scope_refs = []
+scope_relation = "equal"
+scope_decision = "the trigger remains a development-only reset interface"
+side_effect_class = "reset-execution"
+interface_class = "raw-hardware-writer"
+resource_bounds = "one nonseekable write consumes one reset request"
+locking = "existing Radeon reset serialization"
+error_contract = "invalid, repeated, or unavailable reset requests fail before reset"
+tests = [
+  "normal: exact root write reaches one reset request",
+  "boundary: maximum accepted input length is consumed once",
+  "failure: malformed input returns an error before reset",
+  "adversarial: production and runtime-off builds expose no trigger",
+]
+production_promotion_condition = "target-silicon evidence licenses an operator reset ABI"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower build profile or remove the development package"
+
+[[feature]]
+id = "rs4xx-debugfs"
+setting = "rs4xx-debugfs-dev"
+tier = "observe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M04"]
+dependencies = []
+evidence_dependencies = []
+runtime_profile = "observe-dev"
+operation_gate = "compiled observe profile and runtime observe profile"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "available"
+arming_model = "profile-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M04"]
+scope_relation = "infrastructure-only"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "debugfs-infrastructure"
+resource_bounds = "finite per-device registration table"
+locking = "DRM primary-minor registration and teardown lifetime"
+error_contract = "registration failure unwinds without leaving a partial table"
+tests = [
+  "normal: observe profile registers the bounded table",
+  "boundary: unsupported family registers no RS4xx table",
+  "failure: one registration error unwinds prior entries",
+  "adversarial: production and runtime-off builds expose no development table",
+]
+production_promotion_condition = "infrastructure remains development-only"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select prod or disable the runtime development profile"
+
+[[feature]]
+id = "safe-registers"
+setting = "safe-regs-dev"
+tier = "observe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["B13", "M08"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = ["candidate-registers", "hazard-readers"]
+runtime_profile = "observe-dev"
+operation_gate = "compiled observe profile, runtime observe profile, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "available"
+arming_model = "profile-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["B13", "M08"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "direct-mmio-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "immutable register list with bounded rows and bytes"
+locking = "device lifetime and parked-state refusal"
+error_contract = "unsupported or parked devices return before MMIO"
+tests = [
+  "normal: every approved register emits one bounded row",
+  "boundary: final register ends output at the declared limit",
+  "failure: parked device returns before the first MMIO read",
+  "adversarial: unlisted register cannot enter generated output",
+]
+production_promotion_condition = "each register has target-silicon read-safety evidence"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select prod or disable the runtime development profile"
+
+[[feature]]
+id = "smx-dc-ctl0-policy"
+setting = "smx-dc-ctl0-dev"
+tier = "mutate-dev"
+source_objects = ["drivers/gpu/drm/radeon/reg_srcs/evergreen"]
+source_mechanisms = ["B14"]
+dependencies = ["kernel-compatibility"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile and runtime mutate profile"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "profile-selection"
+privilege = "render-command-client"
+execution_scope = "Evergreen command validation generated from reg_srcs/evergreen"
+evidence_scope = "Palm and Wrestler migration source"
+scope_refs = []
+scope_relation = "broader-than-evidence"
+scope_decision = "retain only in mutation-capable development policy pending silicon evidence"
+side_effect_class = "command-policy-mutation"
+interface_class = "generated-input"
+resource_bounds = "one generated register permission"
+locking = "existing command-stream validation"
+error_contract = "production and lower development profiles reject the register"
+tests = [
+  "normal: mutate profile generates the declared permission",
+  "boundary: adjacent unlisted register remains rejected",
+  "failure: prod generation omits the permission",
+  "adversarial: stale generated headers are rejected",
+]
+production_promotion_condition = "Palm evidence licenses SMX_DC_CTL0 command submission"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile and regenerate the safe table"
+
+[[feature]]
+id = "cache-drain"
+setting = "mc-flush-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_device.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M01"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, root write, ring ready, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-root-write"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M01"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "command-submission"
+interface_class = "raw-hardware-writer"
+resource_bounds = "one bounded cache-control and idle packet sequence per write"
+locking = "ring lock and device lifecycle"
+error_contract = "unready, parked, or malformed requests return before command submission"
+tests = [
+  "normal: exact write submits one bounded packet sequence",
+  "boundary: ring-space limit rejects oversized submission",
+  "failure: parked device returns before ring access",
+  "adversarial: a read-like filename cannot lower the mutation tier",
+]
+production_promotion_condition = "no production promotion for a raw command trigger"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
+
+[[feature]]
+id = "reset-clock-control"
+setting = "prod"
+tier = "prod"
+source_objects = ["drivers/gpu/drm/radeon/r300.c"]
+source_mechanisms = ["M16"]
+dependencies = ["igp-mc-wait"]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "RS4xx production reset path under reset serialization"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "automatic-reset-only"
+arming_model = "automatic-reset-correctness"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M16"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "hardware-control-write"
+interface_class = "kernel-path"
+resource_bounds = "one bounded save, force, reset, and restore sequence"
+locking = "existing Radeon reset serialization"
+error_contract = "every entered reset path restores clock control before return"
+tests = [
+  "normal: RS4xx reset forces and restores clocks once",
+  "boundary: non-RS4xx family retains the baseline reset path",
+  "failure: reset error restores clock control before propagation",
+  "adversarial: nested failure cannot leave forced clocks enabled",
+]
+production_promotion_condition = "already production correctness"
+profile_exception = "production-correctness"
+exception_basis = "RS4xx reset requires forced clocks for readable engine state"
+package_projection = "production"
+rollback = "revert only with equivalent RS4xx reset clock handling"
+
+[[feature]]
+id = "bounded-reset-readback"
+setting = "prod"
+tier = "prod"
+source_objects = ["drivers/gpu/drm/radeon/radeon_device.c"]
+source_mechanisms = ["M17"]
+dependencies = ["reset-clock-control"]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "RS4xx reset state readback only while RBBM_ACTIVE permits CP access"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "automatic-reset-only"
+arming_model = "automatic-wedge-safe-readback"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M17"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "direct-mmio-read"
+interface_class = "kernel-path"
+resource_bounds = "finite reset-state register set"
+locking = "existing Radeon reset serialization"
+error_contract = "unsafe engine state suppresses CP readback and preserves reset failure"
+tests = [
+  "normal: readable engine state emits the bounded reset snapshot",
+  "boundary: final permitted register is read once",
+  "failure: active engine suppresses CP register access",
+  "adversarial: reset telemetry cannot read through a wedge",
+]
+production_promotion_condition = "already production correctness"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "revert only with equivalent wedge-safe reset telemetry"
+
+[[feature]]
+id = "parked-entry-containment"
+setting = "prod"
+tier = "prod"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/radeon_fence.c",
+  "drivers/gpu/drm/radeon/radeon_kms.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M18"]
+dependencies = ["reset-clock-control", "bounded-reset-readback"]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "gpu_parked initialized false and checked before every guarded hardware entry"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "latent-until-parked"
+arming_model = "automatic-containment-guard"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M18"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "kernel-path"
+resource_bounds = "one Boolean refusal before each guarded entry"
+locking = "device lifetime with false initialization proven by radeon_device allocation"
+error_contract = "parked device returns before MMIO, ring, GART, fence, or teardown access"
+state_initialization = "radeon_pci_probe uses devm_drm_dev_alloc; Linux v6.18 and v7.1 __devm_drm_dev_alloc use kzalloc for the containing radeon_device"
+initialization_source = "drivers/gpu/drm/radeon/radeon_drv.c:radeon_pci_probe;linux-v6.18:drivers/gpu/drm/drm_drv.c:__devm_drm_dev_alloc;linux-v7.1:drivers/gpu/drm/drm_drv.c:__devm_drm_dev_alloc"
+tests = [
+  "normal: initialized false state preserves ordinary entry",
+  "boundary: first parked transition rejects the next guarded entry",
+  "failure: parked debugfs and teardown paths return before hardware access",
+  "adversarial: a development interface cannot bypass the production guard",
+]
+production_promotion_condition = "already production containment"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "retain an equivalent pre-hardware parked refusal"
+
+[[feature]]
+id = "parked-display-containment"
+setting = "prod"
+tier = "prod"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon_connectors.c",
+  "drivers/gpu/drm/radeon/radeon_cursor.c",
+  "drivers/gpu/drm/radeon/radeon_display.c",
+  "drivers/gpu/drm/radeon/radeon_irq_kms.c",
+  "drivers/gpu/drm/radeon/radeon_kms.c",
+]
+source_mechanisms = ["M19"]
+dependencies = ["parked-entry-containment"]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "gpu_parked checked before display, IRQ, cursor, connector, and polling work"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "latent-until-parked"
+arming_model = "automatic-containment-guard"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M19"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "kernel-path"
+resource_bounds = "finite refusal and quiescence at each asynchronous entry"
+locking = "existing display, IRQ, and workqueue lifetimes"
+error_contract = "parked display work returns a stable refusal or inert state"
+tests = [
+  "normal: unparked display work retains baseline behavior",
+  "boundary: parking between scheduling and execution produces refusal",
+  "failure: parked IRQ and connector paths perform no hardware access",
+  "adversarial: queued work cannot outlive the parked transition",
+]
+production_promotion_condition = "already production containment"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "retain equivalent asynchronous parked-state containment"
+
+[[feature]]
+id = "parked-memory-containment"
+setting = "prod"
+tier = "prod"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon_fbdev.c",
+  "drivers/gpu/drm/radeon/radeon_gem.c",
+  "drivers/gpu/drm/radeon/radeon_ttm.c",
+]
+source_mechanisms = ["M20"]
+dependencies = ["parked-entry-containment"]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "gpu_parked checked before GEM, TTM, fbdev, mmap, fault, and placement work"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "latent-until-parked"
+arming_model = "automatic-containment-guard"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M20"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "kernel-path"
+resource_bounds = "finite refusal or system-memory placement per memory entry"
+locking = "existing GEM, TTM, reservation, and fault lifetimes"
+error_contract = "parked memory paths reject GPU placement and hardware-backed faults"
+tests = [
+  "normal: unparked memory paths retain baseline placement",
+  "boundary: parking during a fault selects the contained result",
+  "failure: parked GEM and TTM paths avoid GPU access",
+  "adversarial: mmap cannot reintroduce GPU placement after parking",
+]
+production_promotion_condition = "already production containment"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "retain equivalent memory and fault containment"
+
+[[feature]]
+id = "failed-reset-parking"
+setting = "prod"
+tier = "prod"
+source_objects = [
+  "drivers/gpu/drm/radeon/r300.c",
+  "drivers/gpu/drm/radeon/radeon_device.c",
+  "drivers/gpu/drm/radeon/radeon_kms.c",
+]
+source_mechanisms = ["M21"]
+dependencies = [
+  "reset-clock-control",
+  "bounded-reset-readback",
+  "parked-entry-containment",
+  "parked-display-containment",
+  "parked-memory-containment",
+]
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "failed RS4xx reset activates parking after latent containment is installed"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "error-path-only"
+arming_model = "automatic-failed-reset-containment"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M21"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "hardware-control-write"
+interface_class = "kernel-path"
+resource_bounds = "one parking transition followed by bounded quiescence"
+locking = "reset serialization, device lifetime, IRQ teardown, and workqueue drain"
+error_contract = "failed reset parks once and prevents subsequent hardware entry"
+tests = [
+  "normal: successful reset leaves gpu_parked false",
+  "boundary: first failed reset transitions gpu_parked once",
+  "failure: activation clears readiness and quiesces hardware work",
+  "adversarial: repeated failure cannot reactivate drained hardware paths",
+]
+production_promotion_condition = "already production containment"
+profile_exception = "containment"
+exception_basis = "failed RS4xx reset must quiesce hardware and activate parked guards"
+package_projection = "production"
+rollback = "retain equivalent failed-reset quiescence and activation"
+
+[[feature]]
+id = "reset-recovery-probes"
+setting = "reset-probes-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M22"]
+dependencies = [
+  "rs4xx-debugfs",
+  "reset-clock-control",
+  "bounded-reset-readback",
+  "parked-entry-containment",
+  "failed-reset-parking",
+]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact token, ready engine, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-token"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M22"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "reset-execution"
+interface_class = "raw-hardware-writer"
+resource_bounds = "one bounded reset or wedge operation per exact request"
+locking = "reset serialization, device lifecycle, and parked-state refusal"
+error_contract = "every failed gate returns before reset or wedge execution"
+tests = [
+  "normal: exact token executes one bounded recovery probe",
+  "boundary: one-shot result stays within the fixed schema",
+  "failure: parked device returns before reset access",
+  "adversarial: malformed token cannot reach wedge execution",
+]
+production_promotion_condition = "no production promotion for reset experiment interfaces"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
+
+[[feature]]
+id = "reset-mask-selector"
+setting = "reset-masks-dev"
+tier = "mutate-dev"
+source_objects = ["drivers/gpu/drm/radeon/r300.c"]
+source_mechanisms = ["M23"]
+dependencies = ["reset-clock-control", "failed-reset-parking"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, supported family, and one-shot mask selection"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "baseline"
+arming_model = "one-shot-mask-selection"
+privilege = "module-administrator"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M23"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "reset-execution"
+interface_class = "command-policy"
+resource_bounds = "one atomic selector consumption per reset"
+locking = "atomic compare-exchange under reset serialization"
+error_contract = "invalid selection resolves to the production baseline mask"
+tests = [
+  "normal: named nonbaseline selector is consumed once",
+  "boundary: baseline zero selects the baseline mask",
+  "failure: out-of-range selector collapses to baseline",
+  "adversarial: concurrent resets cannot consume one selector twice",
+]
+production_promotion_condition = "named mask earns target-silicon correctness evidence"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile and retain the production baseline mask"
+
+[[feature]]
+id = "gart-table-reader"
+setting = "gart-reader-dev"
+tier = "observe-dev"
+source_objects = ["drivers/gpu/drm/radeon/rs400.c"]
+source_mechanisms = ["M24"]
+dependencies = ["rs4xx-debugfs", "parked-entry-containment", "failed-reset-parking"]
+evidence_dependencies = []
+runtime_profile = "observe-dev"
+operation_gate = "compiled observe profile, runtime observe profile, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "available"
+arming_model = "profile-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M24"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "cpu-memory-read"
+interface_class = "cpu-memory-reader"
+resource_bounds = "bounded GART table span with fixed row and byte schema"
+locking = "GART CPU mapping lifetime and parked-state refusal"
+error_contract = "unmapped, unsupported, or parked devices return before table access"
+tests = [
+  "normal: mapped GART table emits the bounded schema",
+  "boundary: final declared entry produces the final row",
+  "failure: parked device returns before CPU-memory access",
+  "adversarial: malformed table size cannot exceed the declared output bound",
+]
+production_promotion_condition = "production need and stable bounded schema are demonstrated"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select prod or disable the runtime development profile"
+
+[[feature]]
+id = "cs-parser-telemetry"
+setting = "prod"
+tier = "prod"
+source_objects = ["drivers/gpu/drm/radeon/radeon_cs.c"]
+source_mechanisms = ["M02"]
+dependencies = []
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "RS4xx command-stream parser failure"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "error-path-only"
+arming_model = "automatic-error-telemetry"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M02"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "telemetry"
+interface_class = "error-telemetry"
+resource_bounds = "one bounded diagnostic record per parser failure"
+locking = "existing parser call context"
+error_contract = "telemetry never changes the parser return value"
+tests = [
+  "normal: parser success emits no error record",
+  "boundary: maximum recorded fields stay within the fixed schema",
+  "failure: parser rejection emits one bounded record",
+  "adversarial: malformed command stream cannot disclose unbounded memory",
+]
+production_promotion_condition = "already production telemetry pending rate review"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "revert telemetry without changing parser behavior"
+
+[[feature]]
+id = "candidate-registers"
+setting = "candidate-regs-dev"
+tier = "observe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M03.passive"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = []
+runtime_profile = "observe-dev"
+operation_gate = "compiled observe profile, runtime observe profile, candidate gate, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "cohort-gate"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M03"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "direct-mmio-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "finite passive cohort with bounded rows and bytes"
+locking = "device lifetime and parked-state refusal"
+error_contract = "closed cohort gate or parked state returns before MMIO"
+tests = [
+  "normal: passive cohort emits one row per declared register",
+  "boundary: skipped register ends without a replacement read",
+  "failure: parked device returns before MMIO",
+  "adversarial: hazardous cohort cannot enter observe-dev",
+]
+production_promotion_condition = "each candidate register is promoted through retained evidence"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select prod or disable the runtime development profile"
+
+[[feature]]
+id = "hazard-readers"
+setting = "hazard-readers-dev"
+tier = "probe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M03.hazard"]
+dependencies = ["rs4xx-debugfs", "candidate-registers"]
+evidence_dependencies = []
+runtime_profile = "probe-dev"
+operation_gate = "compiled probe profile, runtime probe profile, exact Boolean arm, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "exact-boolean-token"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M03"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "indirect-selector-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "finite hazardous cohort with one selected transaction at a time"
+locking = "device lifetime, selector serialization, and parked-state refusal"
+error_contract = "every failed gate returns before selector or MMIO access"
+tests = [
+  "normal: exact arm reads one selected hazard entry",
+  "boundary: final table index performs one bounded transaction",
+  "failure: zero arm token returns before hardware access",
+  "adversarial: restored selector state does not lower the probe tier",
+]
+production_promotion_condition = "target-silicon evidence removes the hazard classification"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select observe-dev or disable the runtime development profile"
+
+[[feature]]
+id = "cp-me-dump"
+setting = "cp-me-dump-dev"
+tier = "probe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M05"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = []
+runtime_profile = "probe-dev"
+operation_gate = "compiled probe profile, runtime probe profile, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "available"
+arming_model = "profile-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M05"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "indirect-selector-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "finite CP-ME RAM range with one bounded row per address"
+locking = "selector serialization, device lifetime, and parked-state refusal"
+error_contract = "unsupported or parked devices return before selector writes"
+tests = [
+  "normal: dump emits the complete bounded CP-ME RAM range",
+  "boundary: final address produces the final row",
+  "failure: parked device returns before the selector write",
+  "adversarial: selector restoration does not classify the dump as observe-dev",
+]
+production_promotion_condition = "no production promotion for a raw microcode reader"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select observe-dev or disable the runtime development profile"
+
+[[feature]]
+id = "cp-me-write"
+setting = "cp-me-write-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M06"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = ["cp-me-dump"]
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact token, idle engine, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-token"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M06"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "microcode-write"
+interface_class = "raw-hardware-writer"
+resource_bounds = "finite write set with write, verify, and restore for each word"
+locking = "per-device mutation lock, engine-idle gate, and parked-state refusal"
+error_contract = "any gate, verify, or restore failure aborts and reports the exact stage"
+tests = [
+  "normal: exact token performs bounded write, verify, and restore",
+  "boundary: final writable word restores its original value",
+  "failure: non-idle engine returns before microcode access",
+  "adversarial: mismatched verify value forces restore and failure",
+]
+production_promotion_condition = "no production promotion for microcode injection"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
+
+[[feature]]
+id = "cp-me-oracle"
+setting = "cp-me-oracle-dev"
+tier = "probe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M07"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = ["cp-me-write"]
+runtime_profile = "probe-dev"
+operation_gate = "compiled probe profile, runtime probe profile, and IGP exclusion"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-token"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M07"]
+scope_relation = "matches-exclusion-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "diagnostic-oracle"
+resource_bounds = "one bounded explanatory result on the executable IGP path"
+locking = "device lifetime"
+error_contract = "IGP execution returns without entering the excluded destructive body"
+tests = [
+  "normal: IGP request reports the excluded oracle body",
+  "boundary: exact token changes only the bounded result",
+  "failure: unsupported device returns before oracle evaluation",
+  "adversarial: probe-dev links no CP-ME mutation dependency",
+]
+production_promotion_condition = "executable behavior must become a bounded non-destructive diagnostic"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select observe-dev or disable the runtime development profile"
+
+[[feature]]
+id = "pll-probes"
+setting = "pll-probes-dev"
+tier = "probe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M10.pll"]
+dependencies = ["rs4xx-debugfs", "hazard-readers"]
+evidence_dependencies = []
+runtime_profile = "probe-dev"
+operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-index-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M10"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "indirect-selector-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "one selected PLL transaction from a finite table"
+locking = "PLL selector serialization, device lifetime, and parked-state refusal"
+error_contract = "invalid index or failed lifecycle gate returns before selector access"
+tests = [
+  "normal: selected PLL index emits one bounded row",
+  "boundary: final index performs one selector transaction",
+  "failure: negative sentinel returns before selector access",
+  "adversarial: selector restoration cannot admit observe-dev",
+]
+production_promotion_condition = "upstream-equivalent selector transaction and no new access surface"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select observe-dev or disable the runtime development profile"
+
+[[feature]]
+id = "first-read"
+setting = "first-read-dev"
+tier = "probe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M10.first-read"]
+dependencies = ["rs4xx-debugfs", "hazard-readers"]
+evidence_dependencies = []
+runtime_profile = "probe-dev"
+operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-index-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M10"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "direct-mmio-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "one selected first read from a finite table"
+locking = "device lifetime and parked-state refusal"
+error_contract = "invalid index or failed lifecycle gate returns before MMIO"
+tests = [
+  "normal: selected index performs one first read",
+  "boundary: final index emits one bounded row",
+  "failure: negative sentinel returns before MMIO",
+  "adversarial: repeated file reads cannot bypass one-selection bounds",
+]
+production_promotion_condition = "target-silicon evidence removes the first-read hazard"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select observe-dev or disable the runtime development profile"
+
+[[feature]]
+id = "indexed-probes"
+setting = "indexed-probes-dev"
+tier = "probe-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M09"]
+dependencies = ["rs4xx-debugfs", "hazard-readers"]
+evidence_dependencies = []
+runtime_profile = "probe-dev"
+operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-index-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M09"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "direct-mmio-read"
+interface_class = "raw-hardware-reader"
+resource_bounds = "one selected direct read from each finite probe table"
+locking = "device lifetime and parked-state refusal"
+error_contract = "invalid index or failed lifecycle gate returns before MMIO"
+tests = [
+  "normal: selected probe emits one bounded row",
+  "boundary: final table index performs one read",
+  "failure: negative sentinel returns before MMIO",
+  "adversarial: index zero is treated as armed rather than as a default-off value",
+]
+production_promotion_condition = "selected register graduates to the safe observation list"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select observe-dev or disable the runtime development profile"
+
+[[feature]]
+id = "force-clock"
+setting = "force-clock-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M11"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, selected index, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-index-selection"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M11"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "hardware-control-write"
+interface_class = "raw-hardware-writer"
+resource_bounds = "one selected read bracketed by bounded SCLK save, force, and restore"
+locking = "per-device clock-control lock, lifecycle, and parked-state refusal"
+error_contract = "failed gate returns before control writes and every entered path restores SCLK"
+tests = [
+  "normal: selected index saves, forces, reads, and restores once",
+  "boundary: final index stays within the finite table",
+  "failure: parked device returns before SCLK control",
+  "adversarial: self-restoring writes remain mutation",
+]
+production_promotion_condition = "no production promotion for force-clock register probes"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
+
+[[feature]]
+id = "r400-us-allowlist"
+setting = "r400-us-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/Makefile",
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/reg_srcs/rs480",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M12"]
+dependencies = ["smx-dc-ctl0-policy"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, CHIP_RS480, and exact Boolean arm"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "exact-boolean-token"
+privilege = "render-command-client"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M12"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "command-policy-mutation"
+interface_class = "command-policy"
+resource_bounds = "finite generated allowlist selected at module load"
+locking = "existing command-stream validation"
+error_contract = "closed gate retains the baseline command policy"
+tests = [
+  "normal: exact Boolean arm selects the generated R400-US allowlist",
+  "boundary: final allowed register is accepted only under the gate",
+  "failure: zero gate retains the baseline rejection",
+  "adversarial: non-Boolean values cannot arm the policy",
+]
+production_promotion_condition = "target-silicon command-stream evidence licenses every register"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile and regenerate the safe table"
+
+[[feature]]
+id = "panic-breadcrumb"
+setting = "prod"
+tier = "prod"
+source_objects = ["drivers/gpu/drm/radeon/radeon_device.c"]
+source_mechanisms = ["M13"]
+dependencies = []
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "registered Radeon panic notifier and panic path"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "panic-path-only"
+arming_model = "automatic-error-telemetry"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M13"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "telemetry"
+interface_class = "error-telemetry"
+resource_bounds = "one bounded breadcrumb from the registered device"
+locking = "panic notifier lifetime with no blocking acquisition"
+error_contract = "unavailable device state suppresses the breadcrumb"
+tests = [
+  "normal: registered device supplies one bounded breadcrumb",
+  "boundary: absent device state emits no register access",
+  "failure: notifier registration failure leaves no dangling registration",
+  "adversarial: panic path cannot select an arbitrary Radeon device",
+]
+production_promotion_condition = "already production telemetry pending lifetime review"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "unregister and revert the notifier without changing reset behavior"
+
+[[feature]]
+id = "igp-mc-wait"
+setting = "prod"
+tier = "prod"
+source_objects = ["drivers/gpu/drm/radeon/r300.c"]
+source_mechanisms = ["M14"]
+dependencies = []
+evidence_dependencies = []
+runtime_profile = "prod"
+operation_gate = "R300-era IGP reset path"
+availability_default = "present-in-prod"
+runtime_profile_default = "active"
+operation_arm_default = "automatic"
+arming_model = "automatic-reset-precondition"
+privilege = "kernel-internal"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M14"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "kernel-path"
+resource_bounds = "one family predicate per reset attempt"
+locking = "existing Radeon reset serialization"
+error_contract = "IGP reset omits the discrete-only wait and retains later reset errors"
+tests = [
+  "normal: discrete R300 path retains the MC wait",
+  "boundary: first IGP family skips only the discrete wait",
+  "failure: later reset failure propagates unchanged",
+  "adversarial: unrelated discrete devices cannot satisfy RADEON_IS_IGP",
+]
+production_promotion_condition = "already production correctness"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "production"
+rollback = "revert only with an equivalent IGP reset precondition"
+
+[[feature]]
+id = "scratch-oracle"
+setting = "scratch-oracle-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M15"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact token, acceleration ready, ring ready, supported family, and unparked device"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-token"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M15"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "command-submission"
+interface_class = "diagnostic-oracle"
+resource_bounds = "one bounded IB self-test and one scratch sentinel"
+locking = "ring lock, device lifecycle, and parked-state refusal"
+error_contract = "failed readiness or token gate returns before command submission"
+tests = [
+  "normal: exact token submits one scratch-write IB test",
+  "boundary: sentinel comparison consumes one bounded result",
+  "failure: unready ring returns before command submission",
+  "adversarial: a normal driver self-test remains mutation",
+]
+production_promotion_condition = "no production promotion for an operator command-submission oracle"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
