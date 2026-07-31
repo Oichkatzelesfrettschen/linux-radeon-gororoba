@@ -434,17 +434,6 @@ void r300_gpu_init(struct radeon_device *rdev)
 					BIT(27) | BIT(28) | BIT(30))
 #define R300_RS480_SCLK_CNTL2_FORCE_3D (BIT(13) | BIT(14) | BIT(15))
 
-/* RS480 0x0000F0 soft-reset candidate masks (RAD-05j).  0043 asserts VAP|GA and
- * GA still holds; the still-open recovery space is host-safe 3D co-masks.  Expose
- * a small bounded set of NAMED compiled masks, never a raw operator mask -- a
- * free mask is too easy to point at a host-facing bit and wedge the box.
- *
- * The permitted bits are an ALLOW-LIST, not a forbidden list: a candidate may set
- * only the 3D-domain bits VAP/RE/PP/RB/GA.  Every other 0x0000F0 bit is
- * compile-rejected -- the host bits HI/HDP/MC/AIC, the display/video/clock bits
- * VIP/DISP/CG, the 2D engine E2, and the video IDCT -- so no candidate can reset
- * a host, display, clock, 2D, or video block on a parked RS480.  An allow-list is
- * safe against a future 0x0000F0 bit being added without re-vetting. */
 #define RS480_RESET_ALLOWED_MASK \
 	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_RE(1) | \
 	 S_0000F0_SOFT_RESET_PP(1) | S_0000F0_SOFT_RESET_RB(1) | \
@@ -452,71 +441,9 @@ void r300_gpu_init(struct radeon_device *rdev)
 
 #define RS480_RESET_M_BASELINE \
 	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_GA(1))
-#define RS480_RESET_M_GA_RB \
-	(RS480_RESET_M_BASELINE | S_0000F0_SOFT_RESET_RB(1))
-#define RS480_RESET_M_GA_RE \
-	(RS480_RESET_M_BASELINE | S_0000F0_SOFT_RESET_RE(1))
-/* full_3d drops E2 (2D engine) and IDCT (video): neither is tied to the GA
- * recovery mechanism.  VAP/RE/PP/RB/GA is the geometry-through-backend cluster. */
-#define RS480_RESET_M_FULL_3D \
-	(S_0000F0_SOFT_RESET_VAP(1) | S_0000F0_SOFT_RESET_RE(1) | \
-	 S_0000F0_SOFT_RESET_PP(1) | S_0000F0_SOFT_RESET_RB(1) | \
-	 S_0000F0_SOFT_RESET_GA(1))
 
 static_assert((RS480_RESET_M_BASELINE & ~RS480_RESET_ALLOWED_MASK) == 0,
 	      "RS480 baseline reset mask sets a non-allowed 0x00F0 bit");
-static_assert((RS480_RESET_M_GA_RB & ~RS480_RESET_ALLOWED_MASK) == 0,
-	      "RS480 ga_rb reset mask sets a non-allowed 0x00F0 bit");
-static_assert((RS480_RESET_M_GA_RE & ~RS480_RESET_ALLOWED_MASK) == 0,
-	      "RS480 ga_re reset mask sets a non-allowed 0x00F0 bit");
-static_assert((RS480_RESET_M_FULL_3D & ~RS480_RESET_ALLOWED_MASK) == 0,
-	      "RS480 full_3d reset mask sets a non-allowed 0x00F0 bit");
-
-enum rs480_reset_mask_sel {
-	RS480_RESET_MASK_BASELINE = 0,
-	RS480_RESET_MASK_GA_RB,
-	RS480_RESET_MASK_GA_RE,
-	RS480_RESET_MASK_FULL_3D,
-	RS480_RESET_MASK__COUNT
-};
-
-static const struct {
-	const char *name;
-	u32 mask;
-} rs480_reset_mask_tbl[RS480_RESET_MASK__COUNT] = {
-	[RS480_RESET_MASK_BASELINE] = { "baseline(VAP|GA)", RS480_RESET_M_BASELINE },
-	[RS480_RESET_MASK_GA_RB]    = { "ga_rb(VAP|GA|RB)",  RS480_RESET_M_GA_RB },
-	[RS480_RESET_MASK_GA_RE]    = { "ga_re(VAP|GA|RE)",  RS480_RESET_M_GA_RE },
-	[RS480_RESET_MASK_FULL_3D]  = { "full_3d",           RS480_RESET_M_FULL_3D },
-};
-
-static unsigned int rs480_reset_mask = RS480_RESET_MASK_BASELINE;
-module_param(rs480_reset_mask, uint, 0644);
-MODULE_PARM_DESC(rs480_reset_mask,
-		 "RS480 0x00F0 soft-reset candidate: 0=baseline(VAP|GA) 1=ga_rb 2=ga_re 3=full_3d (invalid -> baseline)");
-
-/* Bounded, one-shot selector: an out-of-range value never passes through as a
- * mask, it falls back to the conservative BASELINE (0043) candidate.  A
- * non-baseline candidate is CONSUMED on read -- rs480_reset_mask reverts to
- * BASELINE -- so an armed experimental mask fires exactly once and a later,
- * unrelated GPU reset uses the safe baseline rather than reusing GA_RB. */
-static u32 rs480_selected_reset_mask(const char **name_out)
-{
-	unsigned int sel = READ_ONCE(rs480_reset_mask);
-
-	if (sel >= RS480_RESET_MASK__COUNT)
-		sel = RS480_RESET_MASK_BASELINE;
-	/* Atomic one-shot consume.  rs480_reset_mask is a 0644 sysfs-writable module
-	 * param; cmpxchg reverts it to BASELINE only if it still holds the value we
-	 * read (a valid non-baseline selector), so a concurrent sysfs write between
-	 * the read and the consume is preserved rather than clobbered (lost-update
-	 * race a plain WRITE_ONCE would have).  The clamped out-of-range case is not
-	 * consumed -- it re-clamps to BASELINE on every read until fixed. */
-	if (sel != RS480_RESET_MASK_BASELINE)
-		cmpxchg(&rs480_reset_mask, sel, RS480_RESET_MASK_BASELINE);
-	*name_out = rs480_reset_mask_tbl[sel].name;
-	return rs480_reset_mask_tbl[sel].mask;
-}
 
 int r300_asic_reset(struct radeon_device *rdev, bool hard)
 {
@@ -559,7 +486,8 @@ int r300_asic_reset(struct radeon_device *rdev, bool hard)
 		 * R3xx/R4xx share r300_asic_reset and must keep the stock VAP|GA
 		 * baseline regardless of the module param. */
 		if (igp_force_clk) {
-			rs480_mask = rs480_selected_reset_mask(&rs480_mask_name);
+			rs480_mask = radeon_rs4xx_dev_reset_mask(
+				RS480_RESET_M_BASELINE, &rs480_mask_name);
 		} else {
 			rs480_mask = RS480_RESET_M_BASELINE;
 			rs480_mask_name = "baseline(VAP|GA)";

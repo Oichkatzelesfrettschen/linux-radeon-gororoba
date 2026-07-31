@@ -10,7 +10,7 @@ reset-recovery-probes	module-parameter	rs480_gpu_reset_recover_probe	drivers/gpu
 reset-recovery-probes	module-parameter	rs480_reset_hang_probe	drivers/gpu/drm/radeon/radeon_dev.c	M22
 reset-recovery-probes	debugfs-file	radeon_rs480_gpu_reset_recover_probe	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M22
 reset-recovery-probes	debugfs-file	radeon_rs480_reset_hang_probe	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M22
-reset-mask-selector	module-parameter	rs480_reset_mask	drivers/gpu/drm/radeon/r300.c	M23
+reset-mask-selector	module-parameter	rs480_reset_mask	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M23
 gart-table-reader	debugfs-file	radeon_rs480_gart_page_table	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M24
 candidate-registers	module-parameter	rs480_candidate_regs	drivers/gpu/drm/radeon/radeon_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_candidate_regs	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive

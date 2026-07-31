@@ -347,7 +347,11 @@ rollback = "select a lower profile or remove the development package"
 id = "reset-clock-control"
 setting = "prod"
 tier = "prod"
-source_objects = ["drivers/gpu/drm/radeon/r300.c"]
+source_objects = [
+  "drivers/gpu/drm/radeon/r300.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+]
 source_mechanisms = ["M16"]
 dependencies = ["igp-mc-wait"]
 evidence_dependencies = []
@@ -1142,6 +1146,7 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
   "drivers/gpu/drm/radeon/radeon_dev.c",
   "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
   "drivers/gpu/drm/radeon/reg_srcs/rs480",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
