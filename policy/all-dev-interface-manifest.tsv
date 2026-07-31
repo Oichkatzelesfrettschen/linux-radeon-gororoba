@@ -1,6 +1,6 @@
 feature_id	marker_type	marker	source_path	source_mechanism
 palm-reset-controls	module-parameter	palm_pci_reset_unsafe	drivers/gpu/drm/radeon/radeon_dev.c	B11.unsafe
-palm-reset-controls	debugfs-file	radeon_force_pci_reset_safe	drivers/gpu/drm/radeon/radeon_kms.c	B12
+palm-reset-controls	debugfs-file	radeon_force_pci_reset_safe	drivers/gpu/drm/radeon/radeon_evergreen_dev.c	B12
 rs4xx-debugfs	source-symbol	radeon_rs480_re_debugfs_register	drivers/gpu/drm/radeon/rs400.c	M04
 safe-registers	module-parameter	rs480_safe_regs	drivers/gpu/drm/radeon/radeon_dev.c	B13
 safe-registers	debugfs-file	radeon_rs480_safe_regs	drivers/gpu/drm/radeon/rs400.c	B13

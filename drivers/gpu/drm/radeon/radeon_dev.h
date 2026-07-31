@@ -3,6 +3,8 @@
 #ifndef __RADEON_DEV_H__
 #define __RADEON_DEV_H__
 
+struct radeon_device;
+
 extern int radeon_palm_pci_reset_unsafe;
 extern int radeon_rs480_safe_regs;
 extern int radeon_rs480_candidate_regs;
@@ -20,5 +22,7 @@ extern int radeon_rs480_force_clock_index;
 extern int radeon_rs480_force_clock_3d_index;
 extern int radeon_rs480_gated_read_index;
 extern int radeon_rs480_hazard_readers_armed;
+
+void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev);
 
 #endif
