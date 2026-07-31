@@ -147,7 +147,7 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon_asic.h",
   "drivers/gpu/drm/radeon/radeon_dev.c",
   "drivers/gpu/drm/radeon/radeon_dev.h",
-  "drivers/gpu/drm/radeon/radeon_kms.c",
+  "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
 ]
 source_mechanisms = ["B11.unsafe", "B12"]
 dependencies = ["bounded-palm-reset"]
