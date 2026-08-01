@@ -69,8 +69,11 @@
  *
  * It reads ONLY cached driver state, never MMIO: a register read on a wedged
  * GPU would itself stall the northbridge with no completion timeout and could
- * prevent the reboot.  Single-GPU assumption: one rdev pointer is tracked,
- * which this platform satisfies (one radeon device).
+ * prevent the reboot.  Registration binds to the first RS4xx IGP
+ * (CHIP_RS400 or CHIP_RS480): the ring-wedge model behind the breadcrumb is
+ * an RS4xx IGP finding,
+ * other families keep the stock panic path, and one rdev pointer carries the
+ * tracked device for the module lifetime.
  */
 static struct radeon_device *radeon_rs480_panic_rdev;
 
@@ -106,8 +109,11 @@ static struct notifier_block radeon_rs480_panic_nb = {
 
 static void radeon_rs480_panic_register(struct radeon_device *rdev)
 {
-	/* Only the first device arms the chain; the breadcrumb tracks it. */
-	if (radeon_rs480_panic_rdev)
+	/* Only the first RS4xx IGP (CHIP_RS400 or CHIP_RS480) arms the chain;
+	 * the breadcrumb tracks it, and every other family keeps the stock
+	 * panic path. */
+	if ((rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480) ||
+	    radeon_rs480_panic_rdev)
 		return;
 	radeon_rs480_panic_rdev = rdev;
 	atomic_notifier_chain_register(&panic_notifier_list,
