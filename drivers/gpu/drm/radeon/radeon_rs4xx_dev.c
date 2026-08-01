@@ -15,6 +15,7 @@
 #include "r300d.h"
 #include "radeon_asic.h"
 #include "radeon_object.h"
+#include "radeon_rs4xx_reset_mask_claim.h"
 #include "rs400d.h"
 
 #if RADEON_MUTATE_DEV
@@ -112,27 +113,20 @@ MODULE_PARM_DESC(rs480_reset_mask,
 u32 radeon_rs4xx_dev_reset_mask(struct radeon_device *rdev,
 				u32 baseline_mask, const char **name_out)
 {
-	unsigned int sel = READ_ONCE(rs480_reset_mask);
+	unsigned int sel;
 
-	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE)) {
-		*name_out = rs480_reset_mask_tbl[RS480_RESET_MASK_BASELINE].name;
+	*name_out = rs480_reset_mask_tbl[RS480_RESET_MASK_BASELINE].name;
+	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE))
 		return baseline_mask;
-	}
-	if (sel >= RS480_RESET_MASK__COUNT)
-		sel = RS480_RESET_MASK_BASELINE;
-	/* Atomic one-shot consume.  rs480_reset_mask is a 0644 sysfs-writable module
-	 * param; cmpxchg reverts it to BASELINE only if it still holds the value we
-	 * read (a valid non-baseline selector), so a concurrent sysfs write between
-	 * the read and the consume is preserved rather than clobbered (lost-update
-	 * race a plain WRITE_ONCE would have).  The clamped out-of-range case is not
-	 * consumed -- it re-clamps to BASELINE on every read until fixed. */
-	if (sel != RS480_RESET_MASK_BASELINE) {
-		radeon_dev_mark_mutation(rdev, "RS4xx nonbaseline reset mask");
-		cmpxchg(&rs480_reset_mask, sel, RS480_RESET_MASK_BASELINE);
-	}
-	*name_out = rs480_reset_mask_tbl[sel].name;
+	sel = rs480_reset_mask_claim(&rs480_reset_mask,
+				     RS480_RESET_MASK_BASELINE,
+				     RS480_RESET_MASK__COUNT);
 	if (sel == RS480_RESET_MASK_BASELINE)
 		return baseline_mask;
+	/* Mutation is marked only after a successful claim, so a caller that
+	 * loses the race fires baseline and leaves the taint untouched. */
+	radeon_dev_mark_mutation(rdev, "RS4xx nonbaseline reset mask");
+	*name_out = rs480_reset_mask_tbl[sel].name;
 	return rs480_reset_mask_tbl[sel].mask;
 }
 
