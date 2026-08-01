@@ -2144,7 +2144,9 @@ DEFINE_SHOW_ATTRIBUTE(rs480_reset_hang_probe);
  * Defensive guards reject malformed minor inputs before dereferencing the DRM
  * device, and debugfs_create_file() is itself non-fatal, so a failure here
  * never blocks radeon from loading.  mc_flush keeps its caller-side family/accel
- * gate. */
+ * gate.  Every node registered here is an unstable development ABI: names,
+ * output columns, modes, and gates change without notice between releases, and
+ * only the retained probe runners in the evidence repository track them. */
 void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 {
 	struct radeon_device *rdev;
@@ -2784,7 +2786,7 @@ static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
 	if (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)
 		return;
 
-	debugfs_create_file("radeon_rs480_safe_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,
 			    &rs480_safe_regs_fops);
 #endif
 }
@@ -2804,37 +2806,37 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		return;
 
 	/* Compatibility alias for the first config-aperture candidate cohort. */
-	debugfs_create_file("radeon_rs480_candidate_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_regs", 0400, root, rdev,
 			    &rs480_candidate_config_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_config_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_config_regs", 0400, root, rdev,
 			    &rs480_candidate_config_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_gart_mc_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_gart_mc_regs", 0400, root, rdev,
 			    &rs480_candidate_gart_mc_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_vap_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_vap_regs", 0400, root, rdev,
 			    &rs480_candidate_vap_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_ga_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_ga_regs", 0400, root, rdev,
 			    &rs480_candidate_ga_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_sc_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_sc_regs", 0400, root, rdev,
 			    &rs480_candidate_sc_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_gb_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_gb_regs", 0400, root, rdev,
 			    &rs480_candidate_gb_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_rb3d_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_rb3d_regs", 0400, root, rdev,
 			    &rs480_candidate_rb3d_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_zb_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_zb_regs", 0400, root, rdev,
 			    &rs480_candidate_zb_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_z_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_z_regs", 0400, root, rdev,
 			    &rs480_candidate_zb_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_firmware_read_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_firmware_read_regs", 0400, root, rdev,
 			    &rs480_candidate_firmware_read_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_vip_straggler_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_vip_straggler_regs", 0400, root, rdev,
 			    &rs480_candidate_vip_straggler_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_mc_benign_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_mc_benign_regs", 0400, root, rdev,
 			    &rs480_candidate_mc_benign_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_gart_status_regs", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_candidate_gart_status_regs", 0400, root, rdev,
 			    &rs480_candidate_gart_status_regs_fops);
-	debugfs_create_file("radeon_rs480_uma_status", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_uma_status", 0400, root, rdev,
 			    &rs480_uma_status_fops);
-	debugfs_create_file("radeon_rs480_sclk_cntl", 0444, root, rdev,
+	debugfs_create_file("radeon_rs480_sclk_cntl", 0400, root, rdev,
 			    &rs480_sclk_cntl_fops);
 #if RADEON_PROBE_DEV
 	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_PROBE)) {
@@ -2843,7 +2845,7 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		 * radeon_rs480_cp_me_ram_dump=1 (the seq start() gate), because the read
 		 * sweep writes the CP_ME_RAM_RADDR pointer on reset-less silicon.
 		 */
-		debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0444, root,
+		debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0400, root,
 				    rdev, &rs480_cp_me_ram_dump_fops);
 	}
 #endif
@@ -2901,13 +2903,13 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		/* PLL-indirect clock-tree read-out.  Read-only and low hazard: the PLL
 		 * aperture is always clocked and r100_pll_rreg serializes the index/data
 		 * dance under pll_idx_lock. */
-		debugfs_create_file("radeon_rs480_pll_regs", 0444, root,
+		debugfs_create_file("radeon_rs480_pll_regs", 0400, root,
 				    rdev, &rs480_pll_regs_fops);
 		/* Hazard-tier first-observation read.  Mode 0444: the listed registers
 		 * are read-safe name-pattern false-positives, read one at a time as
 		 * radeon_rs480_hazard_index selects (default -1 disarmed), so each value
 		 * is captured deliberately before promotion to the safe-regs list. */
-		debugfs_create_file("radeon_rs480_hazard_read", 0444, root,
+		debugfs_create_file("radeon_rs480_hazard_read", 0400, root,
 				    rdev, &rs480_hazard_read_fops);
 	}
 #endif
