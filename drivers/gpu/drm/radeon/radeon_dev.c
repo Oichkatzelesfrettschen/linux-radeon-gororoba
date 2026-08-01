@@ -78,9 +78,29 @@ MODULE_PARM_DESC(profile_dev,
 	"The selected profile cannot exceed the compiled build profile.");
 module_param_cb(profile_dev, &radeon_dev_profile_ops, NULL, 0444);
 
+/* Development arming binds to one device.  The probe-dev and mutate-dev
+ * interfaces read module-global selectors (the reset mask, the force-clock
+ * and hazard indices, the CP-ME arm tokens, the R400-US boolean, the Palm
+ * reset override), so a second bound device would race the first for one
+ * armed selection.  The first device to initialize under probe-dev or
+ * mutate-dev claims the arming through this pointer; every later device
+ * clamps to observe-dev and keeps its read-only surface.  The claim holds
+ * for the module lifetime, so a holder that unbinds fails closed rather
+ * than migrating armed state to the next device. */
+static struct radeon_device *radeon_dev_arm_holder;
+
 void radeon_dev_context_init(struct radeon_device *rdev)
 {
-	rdev->dev_context.profile = radeon_dev_selected_profile;
+	enum radeon_dev_profile profile = radeon_dev_selected_profile;
+
+	if (profile >= RADEON_DEV_PROFILE_PROBE &&
+	    cmpxchg(&radeon_dev_arm_holder, NULL, rdev)) {
+		dev_warn(rdev->dev,
+			 "profile_dev=%s arms one device and another radeon device holds the arming; this device runs observe-dev\n",
+			 radeon_profile_dev);
+		profile = RADEON_DEV_PROFILE_OBSERVE;
+	}
+	rdev->dev_context.profile = profile;
 	atomic_set(&rdev->dev_context.mutation_tainted, 0);
 }
 

@@ -6,6 +6,11 @@ build_alias = "all-dev"
 build_alias_resolves_to = "mutate-dev"
 runtime_default = "off"
 runtime_allowed = ["off", "observe-dev", "probe-dev", "mutate-dev"]
+# Development arming binds to one device: the first device initialized under
+# probe-dev or mutate-dev claims the module-global arming selectors through
+# radeon_dev_arm_holder, and every later device clamps to observe-dev. The
+# claim holds for the module lifetime, so an unbound holder fails closed.
+development_arming = "single-device"
 
 # Runtime dependencies describe the post-tag build projection. Reconstruction
 # ordering and evidence dependencies remain separate because neither licenses

@@ -51,7 +51,8 @@ RUNTIME_SOURCE_PATTERNS = {
         r'\{ "mutate-dev", RADEON_DEV_PROFILE_MUTATE \}',
         r"profile > RADEON_DEV_COMPILED_PROFILE",
         r"module_param_cb\(profile_dev, &radeon_dev_profile_ops, NULL, 0444\)",
-        r"rdev->dev_context\.profile = radeon_dev_selected_profile",
+        r"cmpxchg\(&radeon_dev_arm_holder, NULL, rdev\)",
+        r"rdev->dev_context\.profile = profile",
     ),
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
         r"void radeon_rs480_re_debugfs_register\(.*?\)\n\{.*?"
