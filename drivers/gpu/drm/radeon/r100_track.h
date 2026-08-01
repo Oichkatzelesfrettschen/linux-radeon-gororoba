@@ -66,6 +66,15 @@ struct r100_cs_track {
 	unsigned			num_arrays;
 	unsigned			max_indx;
 	unsigned			color_channel_mask;
+	unsigned			vap_out_vtx_fmt_0;
+	unsigned			vap_out_vtx_fmt_1;
+	unsigned			vap_cntl_status;
+	bool				vap_out_vtx_fmt_0_seen;
+	bool				vap_out_vtx_fmt_1_seen;
+	bool				vap_cntl_status_seen;
+	bool				vap_vtx_size_seen;
+	u8				vap_psc_ext_seen_mask;
+	bool				vap_psc_ext_nonident;
 	struct r100_cs_track_array	arrays[16];
 	struct r100_cs_track_cb 	cb[R300_MAX_CB];
 	struct r100_cs_track_cb 	zb;
