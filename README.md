@@ -27,10 +27,14 @@ Packaging targets Arch and CachyOS alone.
 `radeon-unified-0.3-pkgrel91-source-equivalent` onward.
 
 `radeon-custom` has completed the signed source-pin cutover and remains the
-deployment and packaging authority. Its active package exports this
-repository's signed equivalence checkpoint. The 0.3-96 package is installed
-and runtime-accepted on the RS482 target, with the decision-grade bundle
-retained in `steinmarder-r300`.
+deployment and packaging authority. Its active 0.4 packages export this
+repository's signed profiled-source release (tag
+`radeon-unified-0.4-profiled-source`), split production capability,
+development capability, and RS482 board policy. The signed 0.4-3 production
+and board-policy packages are installed and runtime-accepted on the RS482
+target, with the decision-grade bundle retained in `steinmarder-r300`; the
+0.3-96 legacy-equivalent acceptance remains retained as the rollback
+baseline.
 
 ## Source closure
 
