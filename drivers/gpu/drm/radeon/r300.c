@@ -838,6 +838,42 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 	case 0x20B4:
 		/* VAP_VTX_SIZE */
 		track->vtx_size = idx_value & 0x7F;
+		track->vap_vtx_size_seen = true;
+		break;
+	case 0x2090:
+		/* VAP_OUT_VTX_FMT_0 */
+		track->vap_out_vtx_fmt_0 = idx_value;
+		track->vap_out_vtx_fmt_0_seen = true;
+		break;
+	case 0x2094:
+		/* VAP_OUT_VTX_FMT_1 */
+		track->vap_out_vtx_fmt_1 = idx_value;
+		track->vap_out_vtx_fmt_1_seen = true;
+		break;
+	case 0x2140:
+		/* VAP_CNTL_STATUS */
+		track->vap_cntl_status = idx_value;
+		track->vap_cntl_status_seen = true;
+		break;
+	case 0x21E0:
+	case 0x21E4:
+	case 0x21E8:
+	case 0x21EC:
+	case 0x21F0:
+	case 0x21F4:
+	case 0x21F8:
+	case 0x21FC:
+		/* VAP_PROG_STREAM_CNTL_EXT_0..7 each hold the PSC swizzle
+		 * pair for two vertex elements.  0xF688F688 is the identity
+		 * pair (select X, Y, Z, W with a full write mask in both
+		 * halves); any other value can widen or narrow a fetched
+		 * element, so the TCL-bypass size cross-check declines.
+		 * Bit i of vap_psc_ext_seen_mask records EXT_i written in
+		 * this CS; the draw-time check requires all eight. */
+		if (idx_value != 0xF688F688)
+			track->vap_psc_ext_nonident = true;
+		track->vap_psc_ext_seen_mask |=
+			(u8)(1u << ((reg - 0x21E0) / 4));
 		break;
 	case 0x2134:
 		/* VAP_VF_MAX_VTX_INDX */
@@ -1270,6 +1306,87 @@ fail:
 	return -EINVAL;
 }
 
+/* A TCL-bypass draw streams VAP_VTX_SIZE dwords per vertex through the
+ * PSC into the GA, while VAP_OUT_VTX_FMT_0/1 tells the GA how many dwords
+ * each vertex tuple carries.  A tuple wider than the streamed vertex
+ * leaves the GA waiting forever for dwords that never arrive; the vertex
+ * front end wedges and the ring stalls globally.  Reject that shape at
+ * parse time instead.
+ *
+ * The comparison is sound only when the command stream pins every input:
+ * TCL bypass proven by a VAP_CNTL_STATUS write with R300_VAP_TCL_BYPASS
+ * set, both output-format words written, VAP_VTX_SIZE written, and all
+ * eight VAP_PROG_STREAM_CNTL_EXT_0..7 written as the identity swizzle so
+ * one fetched dword maps to one delivered dword.  When any of those is
+ * missing or undecodable the state is inherited or expanded outside this
+ * command stream and the check declines rather than guesses.
+ *
+ * The proven shape is position (4 dwords) plus texture coordinates (each
+ * its 3-bit component count, 0 to 4), anchored by the retained RS482
+ * capture where VTX_SIZE 12 retired and VTX_SIZE 8 hung the identical
+ * position-plus-two-texcoord tuple.  Color and point-size presence,
+ * PRIM_WALK 3 immediate draws, and any undecoded format bit decline. */
+static int r300_cs_tcl_bypass_vtx_output_check(struct radeon_cs_parser *p,
+					       struct r100_cs_track *track)
+{
+	unsigned required_dwords = 0;
+	unsigned comp_cnt;
+	unsigned i;
+
+	if (!track->vap_cntl_status_seen ||
+	    !(track->vap_cntl_status & R300_VAP_TCL_BYPASS))
+		return 0;
+	if (!track->vap_out_vtx_fmt_0_seen || !track->vap_out_vtx_fmt_1_seen ||
+	    !track->vap_vtx_size_seen)
+		return 0;
+	/* Require the full EXT_0..7 set written identity in this CS. */
+	if (track->vap_psc_ext_nonident ||
+	    track->vap_psc_ext_seen_mask != 0xff)
+		return 0;
+	/* PRIM_WALK 3 embeds vertex data in the IB and its starvation shape
+	 * is unproven; decline immediate draws. */
+	if (((track->vap_vf_cntl >> 4) & 0x3) == 3)
+		return 0;
+	/* The proven shape is position plus texture coordinates.  The color
+	 * and point-size dword weights rest on GUESS-marked defines in
+	 * r300_reg.h, so any format bit beyond POS_PRESENT makes the tuple
+	 * width unproven and the check declines. */
+	if (track->vap_out_vtx_fmt_0 & ~R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
+		return 0;
+	if (track->vap_out_vtx_fmt_1 & ~0x00FFFFFFUL)
+		return 0;
+
+	if (track->vap_out_vtx_fmt_0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
+		required_dwords += 4;
+	for (i = 0; i < 8; i++) {
+		comp_cnt = (track->vap_out_vtx_fmt_1 >> (3 * i)) & 0x7;
+		if (comp_cnt > 4)
+			return 0;
+		required_dwords += comp_cnt;
+	}
+
+	if (track->vtx_size < required_dwords) {
+		dev_warn_once(p->dev,
+			      "TCL-bypass draw: VAP_VTX_SIZE %u dwords < %u dwords required by VAP_OUT_VTX_FMT 0x%08x/0x%08x\n",
+			      track->vtx_size, required_dwords,
+			      track->vap_out_vtx_fmt_0,
+			      track->vap_out_vtx_fmt_1);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int r300_cs_track_check(struct radeon_cs_parser *p)
+{
+	struct r100_cs_track *track = (struct r100_cs_track *)p->track;
+	int r;
+
+	r = r300_cs_tcl_bypass_vtx_output_check(p, track);
+	if (r)
+		return r;
+	return r100_cs_track_check(p->rdev, track);
+}
+
 static int r300_packet3_check(struct radeon_cs_parser *p,
 			      struct radeon_cs_packet *pkt)
 {
@@ -1312,7 +1429,7 @@ static int r300_packet3_check(struct radeon_cs_parser *p,
 		}
 		track->vap_vf_cntl = radeon_get_ib_value(p, idx + 1);
 		track->immd_dwords = pkt->count - 1;
-		r = r100_cs_track_check(p->rdev, track);
+		r = r300_cs_track_check(p);
 		if (r) {
 			return r;
 		}
@@ -1327,35 +1444,35 @@ static int r300_packet3_check(struct radeon_cs_parser *p,
 		}
 		track->vap_vf_cntl = radeon_get_ib_value(p, idx);
 		track->immd_dwords = pkt->count;
-		r = r100_cs_track_check(p->rdev, track);
+		r = r300_cs_track_check(p);
 		if (r) {
 			return r;
 		}
 		break;
 	case PACKET3_3D_DRAW_VBUF:
 		track->vap_vf_cntl = radeon_get_ib_value(p, idx + 1);
-		r = r100_cs_track_check(p->rdev, track);
+		r = r300_cs_track_check(p);
 		if (r) {
 			return r;
 		}
 		break;
 	case PACKET3_3D_DRAW_VBUF_2:
 		track->vap_vf_cntl = radeon_get_ib_value(p, idx);
-		r = r100_cs_track_check(p->rdev, track);
+		r = r300_cs_track_check(p);
 		if (r) {
 			return r;
 		}
 		break;
 	case PACKET3_3D_DRAW_INDX:
 		track->vap_vf_cntl = radeon_get_ib_value(p, idx + 1);
-		r = r100_cs_track_check(p->rdev, track);
+		r = r300_cs_track_check(p);
 		if (r) {
 			return r;
 		}
 		break;
 	case PACKET3_3D_DRAW_INDX_2:
 		track->vap_vf_cntl = radeon_get_ib_value(p, idx);
-		r = r100_cs_track_check(p->rdev, track);
+		r = r300_cs_track_check(p);
 		if (r) {
 			return r;
 		}
