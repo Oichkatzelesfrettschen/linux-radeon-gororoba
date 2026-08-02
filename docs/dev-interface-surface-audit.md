@@ -52,9 +52,9 @@ columns record the gates beyond that shared guard.
 
 | Node | Mode | Tier | Write contract | Mutation marker |
 | --- | --- | --- | --- | --- |
-| radeon_rs480_mc_flush | 0200 | mutate-dev | family check, parked and suspended hard-return, bounded 16-dword CP packet, nonseekable fd | RS4xx CP cache drain |
-| radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | ppos==0 one-shot as a nonseekable fd property, token 0x494e4a31 plus literal ARM keyword, sscanf exactness, address bound 0x100, idle gate, write-verify-restore | RS4xx CP-ME RAM injection |
-| radeon_force_pci_reset_safe | 0200 | mutate-dev | Evergreen debugfs PCI reset path, nonseekable fd | Evergreen debugfs PCI reset |
+| radeon_rs480_mc_flush | 0200 | mutate-dev | family check, exact command val == 1, radeon_dev_hardware_available (shutdown, suspended, parked), bounded 16-dword CP packet, nonseekable fd | RS4xx CP cache drain |
+| radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | one operation per fd (ppos consumed on admission), token 0x494e4a31 plus literal ARM keyword, surplus-rejecting shared parser rs480_cp_me_inject_parse, address bound 0x100, radeon_dev_hardware_available, idle gate, write-verify-restore | RS4xx CP-ME RAM injection |
+| radeon_force_pci_reset_safe | 0200 | mutate-dev | exact command 1 via sysfs_streq, one operation per fd (ppos consumed on admission), radeon_dev_asic_powered (parked engine stays admitted as the forensic target), Evergreen debugfs PCI reset path, nonseekable fd | Evergreen debugfs PCI reset |
 
 Each write node opens through `nonseekable_open`, which clears `FMODE_LSEEK`
 and `FMODE_PWRITE` on the descriptor, so lseek and pwrite fail at the VFS
@@ -95,7 +95,10 @@ names its blocking mechanism.
   runner update land together. Tracking:
   rs480_candidate_regs_emit.
 
-Two former rows are closed in source: `rs480_debugfs_refuse_if_parked` reads
-`asic_suspended` and refuses register access during system suspend, and the
-three write nodes open through `nonseekable_open`, making the one-shot write
-contract an fd property.
+Three former row groups are closed in source: `rs480_debugfs_refuse_if_parked`
+reads `asic_suspended` and refuses register access during system suspend; the
+three write nodes open through `nonseekable_open`; and every write path admits
+an exact command (`rs480_cp_me_inject_parse`, `sysfs_streq`, `val == 1`),
+consumes its descriptor on admission where the operation touches hardware
+once, and routes through `radeon_dev_asic_powered` or
+`radeon_dev_hardware_available` immediately before final arm consumption.
