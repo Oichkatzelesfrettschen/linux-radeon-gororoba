@@ -84,16 +84,17 @@ to one device through `radeon_dev_arm_holder`
 registration root `radeon_rs480_re_debugfs_register` states the surface as an
 unstable development ABI.
 
-## Open hardening rows
+## Output schema versioning
 
-This row from the development-interface hardening scope remains open; it
-names its blocking mechanism.
-
-- Versioned output schema identifiers: no node emits a schema version line,
-  so a parser cannot detect a column change. Closing this changes every
-  consumer in the steinmarder-r300 probe runners, so the schema line and the
-  runner update land together. Tracking:
-  rs480_candidate_regs_emit.
+Every fork-added readable node emits `schema rs480-dev v1` as its first
+line: `rs480_debugfs_refuse_if_parked` emits it once per open for every
+gate-routed reader (including the parked and suspended refusal notices),
+and the GART page-table and CP-ME injection result readers emit it before
+their own output. `RADEON_DEV_OUTPUT_SCHEMA_VERSION` in `radeon_dev.h` is
+the one source of the version, `policy/build-features.toml`
+`profile_model.output_schema_version` pins the value a probe runner may
+accept, and `check_all_dev_interfaces.py` fails on drift between them.
+The version increments whenever any node changes its emitted columns.
 
 Three former row groups are closed in source: `rs480_debugfs_refuse_if_parked`
 reads `asic_suspended` and refuses register access during system suspend; the

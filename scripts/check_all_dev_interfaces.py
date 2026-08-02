@@ -55,6 +55,8 @@ RUNTIME_SOURCE_PATTERNS = {
         r"rdev->dev_context\.profile = profile",
     ),
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
+        r"static bool rs480_debugfs_refuse_if_parked\(.*?\)\n\{.*?"
+        r"RADEON_DEV_OUTPUT_SCHEMA_LINE",
         r"void radeon_rs480_re_debugfs_register\(.*?\)\n\{.*?"
         r"RADEON_DEV_PROFILE_OBSERVE",
         r"static void rs480_candidate_regs_debugfs_init\(.*?\)\n\{.*?"
@@ -290,6 +292,42 @@ def runtime_source_texts(root: Path) -> dict[str, str]:
         path: (root / path).read_text(encoding="ascii")
         for path in RUNTIME_SOURCE_PATTERNS
     }
+
+
+def validate_output_schema_version(root: Path) -> None:
+    """The schema version has one home per artifact class: the macro in
+    radeon_dev.h drives every emitted line, and build-features.toml pins
+    the value a probe runner may accept, so drift between them fails."""
+    header = (root / "drivers/gpu/drm/radeon/radeon_dev.h").read_text(
+        encoding="ascii"
+    )
+    macro = re.search(
+        r"#define RADEON_DEV_OUTPUT_SCHEMA_VERSION (\d+)", header
+    )
+    require(macro is not None, "RADEON_DEV_OUTPUT_SCHEMA_VERSION is absent")
+    line = re.search(
+        r'#define RADEON_DEV_OUTPUT_SCHEMA_LINE "schema rs480-dev v(\d+)'
+        r'\\n"',
+        header,
+    )
+    require(line is not None, "RADEON_DEV_OUTPUT_SCHEMA_LINE is absent")
+    require(
+        macro.group(1) == line.group(1),
+        "schema line version differs from RADEON_DEV_OUTPUT_SCHEMA_VERSION",
+    )
+    features = (root / "policy/build-features.toml").read_text(
+        encoding="ascii"
+    )
+    pinned = re.search(r"^output_schema_version = (\d+)$", features, re.M)
+    require(
+        pinned is not None,
+        "output_schema_version is absent from build-features.toml",
+    )
+    require(
+        pinned.group(1) == macro.group(1),
+        "build-features.toml output_schema_version differs from "
+        "RADEON_DEV_OUTPUT_SCHEMA_VERSION",
+    )
 
 
 def validate_runtime_sources(texts: dict[str, str]) -> None:
@@ -578,6 +616,7 @@ def validate(
     require(declared_debugfs == actual_debugfs, "custom debugfs inventory differs")
     if files:
         source_texts = runtime_source_texts(root)
+        validate_output_schema_version(root)
         validate_runtime_sources(source_texts)
         validate_mutation_audit(source_texts, features)
 

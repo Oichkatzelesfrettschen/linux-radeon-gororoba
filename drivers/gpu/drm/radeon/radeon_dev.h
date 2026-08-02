@@ -23,6 +23,17 @@
 #error RADEON_MUTATE_DEV requires RADEON_PROBE_DEV
 #endif
 
+/* Every fork-added readable development node emits this schema line as
+ * its first output line, so a probe runner binds its column parsing to
+ * an explicit version instead of inferring the layout.  The version
+ * increments whenever any node changes its emitted columns, and
+ * policy/build-features.toml pins the same value under
+ * profile_model.output_schema_version so a manifest drift fails
+ * check_all_dev_interfaces.py.
+ */
+#define RADEON_DEV_OUTPUT_SCHEMA_VERSION 1
+#define RADEON_DEV_OUTPUT_SCHEMA_LINE "schema rs480-dev v1\n"
+
 struct drm_minor;
 struct radeon_device;
 
