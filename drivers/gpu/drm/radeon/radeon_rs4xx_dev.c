@@ -164,17 +164,30 @@ bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
  * register bus never grants a non-posted read, so a debugfs register read
  * black-holes the K8 northbridge and sync-floods the box (cold cycle only).
  * Every RS480 RE debugfs reader refuses hardware access once gpu_parked is
- * set; the node reports the parked state instead of touching MMIO. */
+ * set; the node reports the parked state instead of touching MMIO. The same
+ * gate covers asic_suspended, which radeon_suspend_kms raises before
+ * radeon_suspend() powers the ASIC down, so a read during system suspend
+ * reports the suspended state instead of reaching MMIO on a powered-down
+ * engine. A read already past the gate when suspend starts is ordered only
+ * by the suspend path's own quiescing, so the flag narrows the window
+ * rather than serializing against in-flight reads. */
 static bool rs480_debugfs_refuse_if_parked(struct seq_file *m,
 					   struct radeon_device *rdev)
 {
-	if (!rdev->gpu_parked)
-		return false;
-	/* seq_file iterators call .show per position; emit once per open. */
-	if (m->count == 0)
-		seq_puts(m,
-			 "gpu parked: RS480 register read disabled to avoid non-posted MMIO black hole\n");
-	return true;
+	if (rdev->gpu_parked) {
+		/* seq_file iterators call .show per position; emit once per open. */
+		if (m->count == 0)
+			seq_puts(m,
+				 "gpu parked: RS480 register read disabled to avoid non-posted MMIO black hole\n");
+		return true;
+	}
+	if (READ_ONCE(rdev->asic_suspended)) {
+		if (m->count == 0)
+			seq_puts(m,
+				 "gpu suspended: RS480 register read disabled while the ASIC is powered down\n");
+		return true;
+	}
+	return false;
 }
 
 #define RS400_GART_PAGE_TABLE_ENTRY_LIMIT 64
@@ -1300,9 +1313,14 @@ static int rs480_cp_me_ram_inject_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
+/* nonseekable_open clears FMODE_LSEEK and FMODE_PWRITE on the descriptor, so
+ * the one-shot ppos==0 contract holds as an fd property: pwrite and lseek
+ * fail at the VFS layer instead of relying on the per-write rejection. */
 static int rs480_cp_me_ram_inject_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, rs480_cp_me_ram_inject_show, inode->i_private);
+	int r = single_open(file, rs480_cp_me_ram_inject_show, inode->i_private);
+
+	return r ? r : nonseekable_open(inode, file);
 }
 
 static const struct file_operations rs480_cp_me_ram_inject_fops = {
@@ -1310,7 +1328,6 @@ static const struct file_operations rs480_cp_me_ram_inject_fops = {
 	.open    = rs480_cp_me_ram_inject_open,
 	.read    = seq_read,
 	.write   = rs480_cp_me_ram_inject_write,
-	.llseek  = seq_lseek,
 	.release = single_release,
 };
 
@@ -2950,7 +2967,7 @@ static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
 
 	if (rdev->family != CHIP_RS480 && rdev->family != CHIP_RS400)
 		return -ENODEV;
-	if (rdev->gpu_parked)
+	if (rdev->gpu_parked || READ_ONCE(rdev->asic_suspended))
 		return -EIO;
 
 	r = radeon_ring_lock(rdev, ring, 16);
@@ -2972,8 +2989,23 @@ static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
 	DRM_INFO("RS482 cache drain packet emitted on the CP ring.\n");
 	return 0;
 }
-DEFINE_SIMPLE_ATTRIBUTE(rs480_mc_flush_fops, NULL,
-			radeon_debugfs_rs480_mc_flush_set, "%llu\n");
+/* simple_attr_open wires the "%llu\n" setter and nonseekable_open clears
+ * FMODE_LSEEK and FMODE_PWRITE, so each drain trigger is a fresh
+ * open-write-close and pwrite fails at the VFS layer. */
+static int rs480_mc_flush_open(struct inode *inode, struct file *file)
+{
+	int r = simple_attr_open(inode, file, NULL,
+				 radeon_debugfs_rs480_mc_flush_set, "%llu\n");
+
+	return r ? r : nonseekable_open(inode, file);
+}
+
+static const struct file_operations rs480_mc_flush_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs480_mc_flush_open,
+	.release = simple_attr_release,
+	.write   = simple_attr_write,
+};
 
 void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev)
 {

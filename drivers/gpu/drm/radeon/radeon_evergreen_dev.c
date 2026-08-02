@@ -40,6 +40,9 @@ radeon_force_pci_reset_safe_write(struct file *file,
 
 static const struct file_operations radeon_force_pci_reset_safe_fops = {
 	.owner = THIS_MODULE,
+	/* nonseekable_open clears FMODE_LSEEK and FMODE_PWRITE, so each reset
+	 * trigger is a fresh open-write-close descriptor. */
+	.open = nonseekable_open,
 	.write = radeon_force_pci_reset_safe_write,
 };
 
