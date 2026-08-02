@@ -14,6 +14,40 @@ permissions:
   contents: read
 
 jobs:
+  # Resolve whether a pull request changes anything the module-build jobs must
+  # recompile. A Markdown-only change is documentation and skips those jobs;
+  # every other path builds. module-build-6-18 and module-build-7-1 are
+  # required ruleset contexts, and a required job skipped by a job-level
+  # condition is treated as passing, so a documentation change still merges.
+  # The dependent jobs read this output fail-closed: a failed or empty
+  # classification builds rather than silencing the gate.
+  changes:
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.classify.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Classify changed paths
+        id: classify
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "non-PR event ${{ github.event_name }}: full build"
+            echo "build=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base='${{ github.event.pull_request.base.sha }}'
+          verdict=$(git diff --name-only "$base" HEAD \
+            | sh scripts/classify_build_relevance.sh)
+          echo "classification: $verdict"
+          echo "$verdict" >>"$GITHUB_OUTPUT"
+
   closure:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
@@ -113,6 +147,8 @@ jobs:
         run: python3 scripts/check_source_equivalence_attestation.py
 
   module-build-6-18:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 45
     steps:
@@ -142,6 +178,8 @@ jobs:
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   module-build-7-1:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 60
     steps:
@@ -198,6 +236,8 @@ jobs:
         run: shellcheck -S error scripts/*.sh
       - name: ruff
         run: ruff check scripts/
+      - name: build-relevance classifier calibration
+        run: sh scripts/classify_build_relevance.sh --self-test
       - name: retained kernel root calibration
         run: python3 scripts/check_kernel_build_root.py --self-test
       - name: source manifest calibration
