@@ -1698,6 +1698,7 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 
 	radeon_save_bios_scratch_regs(rdev);
 
+	WRITE_ONCE(rdev->asic_suspended, true);
 	radeon_suspend(rdev);
 	radeon_hpd_fini(rdev);
 	/* evict remaining vram memory
@@ -1755,6 +1756,7 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 	/* resume AGP if in use */
 	radeon_agp_resume(rdev);
 	radeon_resume(rdev);
+	WRITE_ONCE(rdev->asic_suspended, false);
 
 	r = radeon_ib_ring_tests(rdev);
 	if (r)

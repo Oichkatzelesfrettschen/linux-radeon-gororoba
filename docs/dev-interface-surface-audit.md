@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 32 fork-added debugfs nodes and 18 module
+The development surface is 33 fork-added debugfs nodes and 18 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
@@ -24,7 +24,11 @@ modes, because this policy governs the fork-added surface.
 Every RS480 reader routes through `rs480_debugfs_refuse_if_parked` before any
 register access, either directly in its show function or through the shared
 `rs480_candidate_regs_emit` helper, so a parked GPU hard-returns a parked
-notice with zero MMIO. The columns record the gates beyond that shared guard.
+notice with zero MMIO. The same guard reads `asic_suspended`, which
+`radeon_suspend_kms` raises before powering the ASIC down and
+`radeon_resume_kms` clears after restore, so a read during system suspend
+reports the suspended state instead of reaching a powered-down engine. The
+columns record the gates beyond that shared guard.
 
 | Node | Mode | Tier | Gates beyond the parked guard | Mutation marker |
 | --- | --- | --- | --- | --- |
@@ -48,9 +52,13 @@ notice with zero MMIO. The columns record the gates beyond that shared guard.
 
 | Node | Mode | Tier | Write contract | Mutation marker |
 | --- | --- | --- | --- | --- |
-| radeon_rs480_mc_flush | 0200 | mutate-dev | family check, parked hard-return, bounded 16-dword CP packet | RS4xx CP cache drain |
-| radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | ppos==0 one-shot, token 0x494e4a31 plus literal ARM keyword, sscanf exactness, address bound 0x100, idle gate, write-verify-restore | RS4xx CP-ME RAM injection |
-| radeon_force_pci_reset_safe | 0200 | mutate-dev | Evergreen debugfs PCI reset path | Evergreen debugfs PCI reset |
+| radeon_rs480_mc_flush | 0200 | mutate-dev | family check, parked and suspended hard-return, bounded 16-dword CP packet, nonseekable fd | RS4xx CP cache drain |
+| radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | ppos==0 one-shot as a nonseekable fd property, token 0x494e4a31 plus literal ARM keyword, sscanf exactness, address bound 0x100, idle gate, write-verify-restore | RS4xx CP-ME RAM injection |
+| radeon_force_pci_reset_safe | 0200 | mutate-dev | Evergreen debugfs PCI reset path, nonseekable fd | Evergreen debugfs PCI reset |
+
+Each write node opens through `nonseekable_open`, which clears `FMODE_LSEEK`
+and `FMODE_PWRITE` on the descriptor, so lseek and pwrite fail at the VFS
+layer and every trigger is a fresh open-write-close.
 
 The two shared-fops rows are inherited compatibility aliases, reproduced
 byte-identically from the legacy packaging series
@@ -78,7 +86,7 @@ unstable development ABI.
 
 ## Open hardening rows
 
-These rows from the development-interface hardening scope remain open; each
+This row from the development-interface hardening scope remains open; it
 names its blocking mechanism.
 
 - Versioned output schema identifiers: no node emits a schema version line,
@@ -86,12 +94,8 @@ names its blocking mechanism.
   consumer in the steinmarder-r300 probe runners, so the schema line and the
   runner update land together. Tracking:
   rs480_candidate_regs_emit.
-- Suspend and teardown invalidation: the parked classifier covers the wedged
-  case, and no reader distinguishes a suspended device; a read during suspend
-  reaches MMIO on a powered-down engine. Closing this needs a suspend-state
-  check beside rs480_debugfs_refuse_if_parked. Tracking:
-  rs480_debugfs_refuse_if_parked.
-- Nonseekable one-shot writes: rs480_cp_me_ram_inject rejects nonzero ppos
-  and mc_flush is a simple-attribute setter; neither calls
-  nonseekable_open, so the rejection is per-write policy rather than an fd
-  property. Tracking: rs480_cp_me_ram_inject_open.
+
+Two former rows are closed in source: `rs480_debugfs_refuse_if_parked` reads
+`asic_suspended` and refuses register access during system suspend, and the
+three write nodes open through `nonseekable_open`, making the one-shot write
+contract an fd property.

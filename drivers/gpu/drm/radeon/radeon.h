@@ -2395,6 +2395,12 @@ struct radeon_device {
 	 * on paths still reachable from userspace teardown.
 	 */
 	bool				gpu_parked;
+	/* radeon_suspend_kms sets asic_suspended before radeon_suspend()
+	 * powers the ASIC down and radeon_resume_kms clears it after
+	 * radeon_resume() restores it, so a development debugfs reader that
+	 * checks the flag refuses MMIO on a powered-down engine.
+	 */
+	bool				asic_suspended;
 	struct radeon_surface_reg surface_regs[RADEON_GEM_MAX_SURFACES];
 	const struct firmware *me_fw;	/* all family ME firmware */
 	const struct firmware *pfp_fw;	/* r6/700 PFP firmware */
