@@ -12,6 +12,7 @@
 #include <drm/drm_file.h>
 
 #include "radeon.h"
+#include "rs480_cp_me_inject_parse.h"
 #include "r300d.h"
 #include "radeon_asic.h"
 #include "radeon_object.h"
@@ -1244,16 +1245,16 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
 {
 	struct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;
 	struct radeon_device *rdev = ctx->rdev;
-	if (rdev->gpu_parked)
-		return -EIO;
 	u32 addr, new_h, new_l, rb_h, rb_l, rs_h, rs_l;
 	char kbuf[64];
 	int ret;
 
-	/* One self-contained "ARM ..." command per write; reject a continued or
-	 * seeked write so a split payload cannot arm with a truncated address. */
+	/* One self-contained "ARM ..." command per descriptor; a nonzero
+	 * position marks a continued write or an already-consumed descriptor,
+	 * so a split payload cannot arm with a truncated address and a retry
+	 * loop cannot reuse one open fd. */
 	if (*ppos != 0)
-		return -EINVAL;
+		return -ESPIPE;
 	if (radeon_rs480_cp_me_ram_inject != RS480_CP_ME_INJECT_ARM_TOKEN)
 		return -EACCES;
 	if (len >= sizeof(kbuf))
@@ -1262,11 +1263,21 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
 		return -EFAULT;
 	kbuf[len] = '\0';
 
-	/* "ARM <addr> <datah> <datal>" -- the ARM keyword is the second gate */
-	if (sscanf(kbuf, "ARM %x %x %x", &addr, &new_h, &new_l) != 3)
+	/* "ARM <addr> <datah> <datal>" exactly -- the ARM keyword is the
+	 * second gate; the shared parser rejects surplus text after the
+	 * third value. */
+	if (!rs480_cp_me_inject_parse(kbuf, &addr, &new_h, &new_l))
 		return -EINVAL;
 	if (addr >= RS480_CP_ME_INJECT_ADDR_LIMIT)
 		return -ERANGE;
+	ret = radeon_dev_hardware_available(rdev);
+	if (ret)
+		return ret;
+
+	/* The complete command and every arm gate are admitted: consume the
+	 * descriptor before the first hardware access, so the operation's
+	 * own success or failure cannot reopen the write window. */
+	*ppos = 1;
 
 	mutex_lock(&ctx->lock);
 	ret = rs480_cp_me_ram_inject_wait_idle(rdev);
@@ -2967,8 +2978,13 @@ static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
 
 	if (rdev->family != CHIP_RS480 && rdev->family != CHIP_RS400)
 		return -ENODEV;
-	if (rdev->gpu_parked || READ_ONCE(rdev->asic_suspended))
-		return -EIO;
+	/* The drain is an exact command: 1 fires, every other integer
+	 * rejects, so a stray numeric write cannot invoke the CP. */
+	if (val != 1)
+		return -EINVAL;
+	r = radeon_dev_hardware_available(rdev);
+	if (r)
+		return r;
 
 	r = radeon_ring_lock(rdev, ring, 16);
 	if (r)

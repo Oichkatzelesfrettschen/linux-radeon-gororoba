@@ -24,13 +24,26 @@ radeon_force_pci_reset_safe_write(struct file *file,
 	char input[8];
 	int rc;
 
+	/* One reset command per descriptor: a nonzero position marks a
+	 * continued write or an already-consumed descriptor. */
+	if (*ppos != 0)
+		return -ESPIPE;
 	if (count == 0 || count > sizeof(input) - 1)
 		return -EINVAL;
 	if (copy_from_user(input, buf, count))
 		return -EFAULT;
 	input[count] = 0;
-	if (input[0] != '1')
+	/* The trigger is the exact command "1": sysfs_streq admits one
+	 * optional terminal newline and rejects any surplus byte. */
+	if (!sysfs_streq(input, "1"))
 		return -EINVAL;
+	/* The powered check alone gates this node: a parked engine is the
+	 * forensic target of the PCI-config reset, while a suspend-powered
+	 * or torn-down ASIC refuses. */
+	rc = radeon_dev_asic_powered(rdev);
+	if (rc)
+		return rc;
+	*ppos = 1;
 
 	if (rdev->family != CHIP_PALM)
 		radeon_dev_mark_mutation(rdev, "Evergreen debugfs PCI reset");
