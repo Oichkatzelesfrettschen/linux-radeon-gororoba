@@ -112,21 +112,27 @@ static void radeon_rs480_panic_register(struct radeon_device *rdev)
 	/* Only the first RS4xx IGP (CHIP_RS400 or CHIP_RS480) arms the chain;
 	 * the breadcrumb tracks it, and every other family keeps the stock
 	 * panic path. */
-	if ((rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480) ||
-	    radeon_rs480_panic_rdev)
+	if (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)
 		return;
-	radeon_rs480_panic_rdev = rdev;
-	atomic_notifier_chain_register(&panic_notifier_list,
-				       &radeon_rs480_panic_nb);
+	/* cmpxchg claims the tracked-device slot for exactly one probe, so
+	 * two concurrently probing RS4xx devices cannot both observe NULL
+	 * and double-register the notifier.  A register failure releases
+	 * the claim with the matching cmpxchg. */
+	if (cmpxchg(&radeon_rs480_panic_rdev, NULL, rdev))
+		return;
+	if (atomic_notifier_chain_register(&panic_notifier_list,
+					   &radeon_rs480_panic_nb))
+		cmpxchg(&radeon_rs480_panic_rdev, rdev, NULL);
 }
 
 static void radeon_rs480_panic_unregister(struct radeon_device *rdev)
 {
-	if (radeon_rs480_panic_rdev != rdev)
+	/* The tracked device releases its claim before the notifier leaves
+	 * the chain; a device that never held the claim returns. */
+	if (cmpxchg(&radeon_rs480_panic_rdev, rdev, NULL) != rdev)
 		return;
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &radeon_rs480_panic_nb);
-	radeon_rs480_panic_rdev = NULL;
 }
 
 static const char radeon_family_name[][16] = {

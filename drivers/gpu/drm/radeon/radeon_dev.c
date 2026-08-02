@@ -2,6 +2,7 @@
 
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
+#include <linux/pci.h>
 #include <linux/panic.h>
 
 #include "radeon.h"
@@ -93,12 +94,20 @@ void radeon_dev_context_init(struct radeon_device *rdev)
 {
 	enum radeon_dev_profile profile = radeon_dev_selected_profile;
 
-	if (profile >= RADEON_DEV_PROFILE_PROBE &&
-	    cmpxchg(&radeon_dev_arm_holder, NULL, rdev)) {
-		dev_warn(rdev->dev,
-			 "profile_dev=%s arms one device and another radeon device holds the arming; this device runs observe-dev\n",
-			 radeon_profile_dev);
-		profile = RADEON_DEV_PROFILE_OBSERVE;
+	if (profile >= RADEON_DEV_PROFILE_PROBE) {
+		if (cmpxchg(&radeon_dev_arm_holder, NULL, rdev)) {
+			dev_warn(rdev->dev,
+				 "profile_dev=%s arms one device and another radeon device holds the arming; this device runs observe-dev\n",
+				 radeon_profile_dev);
+			profile = RADEON_DEV_PROFILE_OBSERVE;
+		} else {
+			/* The successful claim is the attestation anchor: the
+			 * holder's PCI address in the log ties every armed
+			 * operation in a retained bundle to one device. */
+			dev_info(rdev->dev,
+				 "development arming holder claimed by %s under profile_dev=%s\n",
+				 pci_name(rdev->pdev), radeon_profile_dev);
+		}
 	}
 	rdev->dev_context.profile = profile;
 	atomic_set(&rdev->dev_context.mutation_tainted, 0);
