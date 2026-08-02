@@ -40,6 +40,7 @@
 
 #include "r100_track.h"
 #include "r300_reg_safe.h"
+#include "r300_tcl_bypass_vtx_check.h"
 #include "r300d.h"
 #include "radeon.h"
 #include "radeon_asic.h"
@@ -1321,59 +1322,38 @@ fail:
  * missing or undecodable the state is inherited or expanded outside this
  * command stream and the check declines rather than guesses.
  *
- * The proven shape is position (4 dwords) plus texture coordinates (each
- * its 3-bit component count, 0 to 4), anchored by the retained RS482
- * capture where VTX_SIZE 12 retired and VTX_SIZE 8 hung the identical
- * position-plus-two-texcoord tuple.  Color and point-size presence,
- * PRIM_WALK 3 immediate draws, and any undecoded format bit decline. */
+ * The width decision itself lives in r300_tcl_bypass_vtx_check.h, a pure
+ * function shared verbatim with the userspace calibration harness
+ * scripts/calibrate_r300_tcl_bypass_vtx_check.c, which pins the scope
+ * boundary: position present and nothing beyond it, texcoord component
+ * counts 0 to 4, no undecoded bits, no PRIM_WALK 3 immediate draw. */
 static int r300_cs_tcl_bypass_vtx_output_check(struct radeon_cs_parser *p,
 					       struct r100_cs_track *track)
 {
-	unsigned required_dwords = 0;
-	unsigned comp_cnt;
-	unsigned i;
+	struct r300_tcl_bypass_vtx_inputs in = {
+		.tcl_bypass_seen = track->vap_cntl_status_seen &&
+			(track->vap_cntl_status & R300_VAP_TCL_BYPASS),
+		.fmt0_seen = track->vap_out_vtx_fmt_0_seen,
+		.fmt1_seen = track->vap_out_vtx_fmt_1_seen,
+		.vtx_size_seen = track->vap_vtx_size_seen,
+		.ext_identity_complete = !track->vap_psc_ext_nonident &&
+			track->vap_psc_ext_seen_mask == 0xff,
+		.prim_walk = (track->vap_vf_cntl >> 4) & 0x3,
+		.fmt0 = track->vap_out_vtx_fmt_0,
+		.fmt1 = track->vap_out_vtx_fmt_1,
+		.vtx_size = track->vtx_size,
+	};
+	unsigned int required_dwords = 0;
 
-	if (!track->vap_cntl_status_seen ||
-	    !(track->vap_cntl_status & R300_VAP_TCL_BYPASS))
+	if (r300_tcl_bypass_vtx_check(&in, &required_dwords) !=
+	    R300_TCL_BYPASS_VTX_REJECT)
 		return 0;
-	if (!track->vap_out_vtx_fmt_0_seen || !track->vap_out_vtx_fmt_1_seen ||
-	    !track->vap_vtx_size_seen)
-		return 0;
-	/* Require the full EXT_0..7 set written identity in this CS. */
-	if (track->vap_psc_ext_nonident ||
-	    track->vap_psc_ext_seen_mask != 0xff)
-		return 0;
-	/* PRIM_WALK 3 embeds vertex data in the IB and its starvation shape
-	 * is unproven; decline immediate draws. */
-	if (((track->vap_vf_cntl >> 4) & 0x3) == 3)
-		return 0;
-	/* The proven shape is position plus texture coordinates.  The color
-	 * and point-size dword weights rest on GUESS-marked defines in
-	 * r300_reg.h, so any format bit beyond POS_PRESENT makes the tuple
-	 * width unproven and the check declines. */
-	if (track->vap_out_vtx_fmt_0 & ~R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
-		return 0;
-	if (track->vap_out_vtx_fmt_1 & ~0x00FFFFFFUL)
-		return 0;
-
-	if (track->vap_out_vtx_fmt_0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
-		required_dwords += 4;
-	for (i = 0; i < 8; i++) {
-		comp_cnt = (track->vap_out_vtx_fmt_1 >> (3 * i)) & 0x7;
-		if (comp_cnt > 4)
-			return 0;
-		required_dwords += comp_cnt;
-	}
-
-	if (track->vtx_size < required_dwords) {
-		dev_warn_once(p->dev,
-			      "TCL-bypass draw: VAP_VTX_SIZE %u dwords < %u dwords required by VAP_OUT_VTX_FMT 0x%08x/0x%08x\n",
-			      track->vtx_size, required_dwords,
-			      track->vap_out_vtx_fmt_0,
-			      track->vap_out_vtx_fmt_1);
-		return -EINVAL;
-	}
-	return 0;
+	dev_warn_once(p->dev,
+		      "TCL-bypass draw: VAP_VTX_SIZE %u dwords < %u dwords required by VAP_OUT_VTX_FMT 0x%08x/0x%08x\n",
+		      track->vtx_size, required_dwords,
+		      track->vap_out_vtx_fmt_0,
+		      track->vap_out_vtx_fmt_1);
+	return -EINVAL;
 }
 
 static int r300_cs_track_check(struct radeon_cs_parser *p)
