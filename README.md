@@ -36,6 +36,18 @@ target, with the decision-grade bundle retained in `steinmarder-r300`; the
 0.3-96 legacy-equivalent acceptance remains retained as the rollback
 baseline.
 
+The `0.5` source checkpoint stages the next release. Tag
+`radeon-unified-0.5-profiled-source` (object
+`b6d737acd0a03657bfd60ce0a9ccbe5438a7102d`, peel
+`1b1f515d300f6590eb822c3e8a127e8dfc9a9abb`) is signed and verifies against
+the intended signer, and `docs/profiled-source-attestations/` records that
+verified identity beside the retained `0.4` record. `radeon-custom` pins the
+`0.5-1` package source, and its payload and lifecycle CI pass. The `0.5-1`
+package artifacts are not yet signed, the release is not installed, and no
+target runtime verdict exists; `0.4-3` stays the installed and
+runtime-accepted baseline until the attended `0.5` campaign lands its
+retained bundle.
+
 ## Source closure
 
 `source-closure.toml` declares what the closure carries. Two classes stay out
