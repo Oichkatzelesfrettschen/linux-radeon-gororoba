@@ -175,15 +175,20 @@ bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev)
 static bool rs480_debugfs_refuse_if_parked(struct seq_file *m,
 					   struct radeon_device *rdev)
 {
+	/* seq_file iterators call .show per position; the schema line and a
+	 * refusal notice emit once per open. */
+	bool first = m->count == 0;
+
+	if (first)
+		seq_puts(m, RADEON_DEV_OUTPUT_SCHEMA_LINE);
 	if (rdev->gpu_parked) {
-		/* seq_file iterators call .show per position; emit once per open. */
-		if (m->count == 0)
+		if (first)
 			seq_puts(m,
 				 "gpu parked: RS480 register read disabled to avoid non-posted MMIO black hole\n");
 		return true;
 	}
 	if (READ_ONCE(rdev->asic_suspended)) {
-		if (m->count == 0)
+		if (first)
 			seq_puts(m,
 				 "gpu suspended: RS480 register read disabled while the ASIC is powered down\n");
 		return true;
@@ -284,6 +289,7 @@ static int rs400_debugfs_gart_page_table_show(struct seq_file *m, void *unused)
 	unsigned int table_pages;
 	unsigned int index;
 
+	seq_puts(m, RADEON_DEV_OUTPUT_SCHEMA_LINE);
 	seq_puts(m,
 		 "row_type\tstart_index\tend_index_exclusive\tgpu_address\tpte_raw\t"
 		 "page_dma_address\tunsnooped\twriteable\treadable\tbacking_class\t"
@@ -1317,6 +1323,8 @@ static int rs480_cp_me_ram_inject_show(struct seq_file *m, void *unused)
 {
 	struct rs480_cp_me_inject_ctx *ctx = m->private;
 
+	if (m->count == 0)
+		seq_puts(m, RADEON_DEV_OUTPUT_SCHEMA_LINE);
 	mutex_lock(&ctx->lock);
 	seq_printf(m, "%s", ctx->result[0] ?
 		   ctx->result : "no inject performed\n");
