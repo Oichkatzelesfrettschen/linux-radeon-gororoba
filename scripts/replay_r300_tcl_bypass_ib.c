@@ -78,6 +78,62 @@ static void track_write(struct tracker *t, unsigned int reg,
 	}
 }
 
+/* Emit the full premise vector for one draw, evaluating every decline
+ * condition independently rather than short-circuiting, so a corpus census
+ * can attribute each decline to its cause set.  "first" names the condition
+ * r300_tcl_bypass_vtx_check returns on, in that function's own order. */
+static void emit_reasons(const struct tracker *t, long idx, unsigned int op,
+			 enum r300_tcl_bypass_vtx_verdict v,
+			 unsigned int required)
+{
+	unsigned int pos_bit = R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
+	int tcl = t->cntl_status_seen && (t->cntl_status & R300_VAP_TCL_BYPASS);
+	int ext_complete = t->psc_ext_seen_mask == 0xff && !t->psc_ext_nonident;
+	unsigned int pw = (t->vap_vf_cntl >> 4) & 0x3;
+	int pos = t->fmt0_seen && (t->fmt0 & pos_bit);
+	unsigned int fmt0_extra = t->fmt0_seen ? (t->fmt0 & ~pos_bit) : 0;
+	unsigned int fmt1_undec = t->fmt1_seen ? (t->fmt1 & ~0x00FFFFFFu) : 0;
+	int comp_gt4 = 0;
+	unsigned int i;
+	const char *first = "-";
+
+	if (t->fmt1_seen)
+		for (i = 0; i < 8; i++)
+			if (((t->fmt1 >> (3 * i)) & 0x7) > 4)
+				comp_gt4 = 1;
+
+	if (!tcl)
+		first = "no_tcl_bypass";
+	else if (!t->fmt0_seen)
+		first = "no_fmt0";
+	else if (!t->fmt1_seen)
+		first = "no_fmt1";
+	else if (!t->vtx_size_seen)
+		first = "no_vtx_size";
+	else if (!ext_complete)
+		first = t->psc_ext_seen_mask != 0xff ? "ext_incomplete"
+						     : "ext_nonidentity";
+	else if (pw == 3)
+		first = "prim_walk_immediate";
+	else if (!pos)
+		first = "position_absent";
+	else if (fmt0_extra)
+		first = "fmt0_beyond_position";
+	else if (fmt1_undec)
+		first = "fmt1_undecoded";
+	else if (comp_gt4)
+		first = "component_gt4";
+
+	printf("reason idx=%ld op=0x%02X verdict=%s first=%s pin_tcl=%d "
+	       "pin_fmt0=%u pin_fmt1=%u pin_vtx=%u ext_mask=0x%02x "
+	       "ext_nonident=%u pw_imm=%d pos_present=%d fmt0_extra=0x%08x "
+	       "fmt1_undecoded=0x%08x comp_gt4=%d vtx_size=%u required=%u\n",
+	       idx, op, verdict_name(v), first, tcl, t->fmt0_seen,
+	       t->fmt1_seen, t->vtx_size_seen, t->psc_ext_seen_mask,
+	       t->psc_ext_nonident, pw == 3, pos, fmt0_extra, fmt1_undec,
+	       comp_gt4, t->vtx_size, required);
+}
+
 static enum r300_tcl_bypass_vtx_verdict
 draw_check(const struct tracker *t, unsigned int *required)
 {
@@ -103,20 +159,30 @@ int main(int argc, char **argv)
 	uint32_t *ib;
 	long size, ndw, i;
 	unsigned int forced_vtx_size = 0;
-	int force = 0, arg = 1;
+	int force = 0, reasons = 0, arg = 1;
 	unsigned int draws = 0, pass = 0, reject = 0, decline = 0;
 	struct tracker t;
 	FILE *f;
 
 	setbuf(stdout, NULL);
-	if (argc >= 3 && strcmp(argv[1], "--set-vtx-size") == 0) {
-		forced_vtx_size = (unsigned int)strtoul(argv[2], NULL, 0);
-		force = 1;
-		arg = 3;
+	while (arg < argc && argv[arg][0] == '-') {
+		if (strcmp(argv[arg], "--reasons") == 0) {
+			reasons = 1;
+			arg += 1;
+		} else if (strcmp(argv[arg], "--set-vtx-size") == 0 &&
+			   arg + 1 < argc) {
+			forced_vtx_size =
+				(unsigned int)strtoul(argv[arg + 1], NULL, 0);
+			force = 1;
+			arg += 2;
+		} else {
+			break;
+		}
 	}
 	if (arg != argc - 1) {
 		fprintf(stderr,
-			"usage: %s [--set-vtx-size N] ib.bin\n", argv[0]);
+			"usage: %s [--reasons] [--set-vtx-size N] ib.bin\n",
+			argv[0]);
 		return 2;
 	}
 	f = fopen(argv[arg], "rb");
@@ -238,6 +304,9 @@ int main(int argc, char **argv)
 				       t.fmt0, t.fmt1, t.vtx_size, required,
 				       t.psc_ext_seen_mask,
 				       t.psc_ext_nonident, verdict_name(v));
+				if (reasons)
+					emit_reasons(&t, i, op, v,
+						     required);
 			}
 			i += 2 + count;
 		} else {
