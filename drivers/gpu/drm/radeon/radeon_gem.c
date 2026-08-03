@@ -155,6 +155,20 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 	int r;
 
 	*obj = NULL;
+
+	/* A parked RS480 holds MC aperture requests parked, so radeon_gem_fault
+	 * arms SIGBUS on a mmap touch only when the faulting BO carries
+	 * TTM_PL_VRAM placement. A create issued after the park cannot validate
+	 * into the dead aperture, and the retry: path below ORs
+	 * RADEON_GEM_DOMAIN_GTT onto the failed VRAM request, so the allocation
+	 * succeeds as a non-VRAM BO that never reaches that SIGBUS arm. Refuse
+	 * the allocation at admission so a post-park client creates no such BO;
+	 * -EIO is the parked-device return radeon_dev_hardware_available uses,
+	 * and radeon_gem_handle_lockup forwards it without a reset re-entry.
+	 */
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+
 	/* At least align on page size */
 	if (alignment < PAGE_SIZE) {
 		alignment = PAGE_SIZE;
