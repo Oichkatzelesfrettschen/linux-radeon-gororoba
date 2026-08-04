@@ -914,9 +914,16 @@ int radeon_mode_dumb_create(struct drm_file *file_priv,
 	args->size = (u64)args->pitch * args->height;
 	args->size = ALIGN(args->size, PAGE_SIZE);
 
+	/* The parked-refusal check in radeon_gem_object_create observes
+	 * gpu_parked, which latches under the exclusive_lock writer in
+	 * radeon_gpu_reset; the read lock serializes this creator against
+	 * that latch the same way the GEM create and userptr ioctls do.
+	 */
+	down_read(&rdev->exclusive_lock);
 	r = radeon_gem_object_create(rdev, args->size, 0,
 				     RADEON_GEM_DOMAIN_VRAM, 0,
 				     false, &gobj);
+	up_read(&rdev->exclusive_lock);
 	if (r)
 		return -ENOMEM;
 
