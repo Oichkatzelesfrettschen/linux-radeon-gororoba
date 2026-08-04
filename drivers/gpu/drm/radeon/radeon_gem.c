@@ -156,13 +156,24 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 
 	*obj = NULL;
 
-	/* A parked RS480 holds MC aperture requests parked, so radeon_gem_fault
-	 * arms SIGBUS on a mmap touch only when the faulting BO carries
-	 * TTM_PL_VRAM placement. A create issued after the park cannot validate
-	 * into the dead aperture, and the retry: path below ORs
-	 * RADEON_GEM_DOMAIN_GTT onto the failed VRAM request, so the allocation
-	 * succeeds as a non-VRAM BO that never reaches that SIGBUS arm. Refuse
-	 * the allocation at admission so a post-park client creates no such BO;
+	/* A parked device is an absorbing state for the rest of the boot: reset
+	 * recovery has failed, radeon_gpu_reset clears accel_working and every
+	 * ring's ready flag, and gpu_parked latches under that same
+	 * exclusive_lock writer. This gate ends admission there, refusing a new
+	 * object lifetime for every requested and eventual placement.
+	 *
+	 * Placement and fault resolution belong to radeon_gem_fault, whose
+	 * TTM_PL_VRAM predicate SIGBUSes a parked VRAM mapping and lets a GTT
+	 * or system mapping fault into ordinary system memory. A park frees no
+	 * VRAM, so a post-park request that free VRAM satisfies is placed in
+	 * VRAM and meets that arm; the retry: path below ORs
+	 * RADEON_GEM_DOMAIN_GTT on only after radeon_bo_create fails for a
+	 * VRAM-only request. An RS482 (1002:5974) run measured both halves:
+	 * a 16 MiB post-park VRAM request landed in VRAM and took SIGBUS, and
+	 * a GTT mapping held across the park completed its touch
+	 * (steinmarder-r300 bundle
+	 * rs480_parked_gem_placement_discriminator_rs482_20260804T041115Z).
+	 *
 	 * -EIO is the parked-device return radeon_dev_hardware_available uses,
 	 * and radeon_gem_handle_lockup forwards it without a reset re-entry.
 	 */
