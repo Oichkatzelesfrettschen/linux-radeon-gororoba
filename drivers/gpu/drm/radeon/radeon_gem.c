@@ -622,11 +622,27 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 	else if (ret < 0)
 		r = ret;
 
+	/* gpu_parked latches under the exclusive_lock writer in
+	 * radeon_gpu_reset, so holding the reader across the flag test and the
+	 * flush makes them one critical section: a caller either observes an
+	 * unparked device and completes the flush before the writer runs, or
+	 * observes the parked device and returns. The dma_resv wait above stays
+	 * outside the lock because a 30 * HZ hold would stall that writer for
+	 * the whole timeout on a wedging GPU.
+	 */
+	down_read(&rdev->exclusive_lock);
+	if (READ_ONCE(rdev->gpu_parked)) {
+		up_read(&rdev->exclusive_lock);
+		drm_gem_object_put(gobj);
+		return -EIO;
+	}
+
 	/* Flush HDP cache via MMIO if necessary */
 	cur_placement = READ_ONCE(robj->tbo.resource->mem_type);
 	if (rdev->asic->mmio_hdp_flush &&
 	    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)
 		robj->rdev->asic->mmio_hdp_flush(rdev);
+	up_read(&rdev->exclusive_lock);
 	drm_gem_object_put(gobj);
 	r = radeon_gem_handle_lockup(rdev, r);
 	return r;
