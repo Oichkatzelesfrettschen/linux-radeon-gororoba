@@ -156,13 +156,23 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 
 	*obj = NULL;
 
-	/* A parked RS480 holds MC aperture requests parked, so radeon_gem_fault
-	 * arms SIGBUS on a mmap touch only when the faulting BO carries
-	 * TTM_PL_VRAM placement. A create issued after the park cannot validate
-	 * into the dead aperture, and the retry: path below ORs
-	 * RADEON_GEM_DOMAIN_GTT onto the failed VRAM request, so the allocation
-	 * succeeds as a non-VRAM BO that never reaches that SIGBUS arm. Refuse
-	 * the allocation at admission so a post-park client creates no such BO;
+	/* radeon_gpu_reset latches gpu_parked when reset recovery fails, under
+	 * the exclusive_lock writer that also clears accel_working and every
+	 * ring's ready flag. The device stays parked until reboot, so this
+	 * refusal allocates no buffer object for any requested or final
+	 * placement.
+	 *
+	 * radeon_gem_fault decides placement and fault resolution: its
+	 * TTM_PL_VRAM test returns SIGBUS for a parked VRAM mapping and lets a
+	 * GTT or system mapping fault into ordinary system memory. A park frees
+	 * no VRAM, so a request that free VRAM satisfies is placed in VRAM and
+	 * reaches that test; the retry: path below ORs RADEON_GEM_DOMAIN_GTT on
+	 * only after radeon_bo_create fails for a VRAM-only request. An RS482
+	 * (1002:5974) run measured both: a 16 MiB VRAM request issued after the
+	 * park was placed in VRAM and took SIGBUS, and a GTT mapping held
+	 * across the park completed its touch (steinmarder-r300 bundle
+	 * rs480_parked_gem_placement_discriminator_rs482_20260804T041115Z).
+	 *
 	 * -EIO is the parked-device return radeon_dev_hardware_available uses,
 	 * and radeon_gem_handle_lockup forwards it without a reset re-entry.
 	 */
@@ -611,11 +621,27 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 	else if (ret < 0)
 		r = ret;
 
+	/* gpu_parked latches under the exclusive_lock writer in
+	 * radeon_gpu_reset, so holding the reader across the flag test and the
+	 * flush makes them one critical section: a caller either observes an
+	 * unparked device and completes the flush before the writer runs, or
+	 * observes the parked device and returns. The dma_resv wait above stays
+	 * outside the lock because a 30 * HZ hold would stall that writer for
+	 * the whole timeout on a wedging GPU.
+	 */
+	down_read(&rdev->exclusive_lock);
+	if (READ_ONCE(rdev->gpu_parked)) {
+		up_read(&rdev->exclusive_lock);
+		drm_gem_object_put(gobj);
+		return -EIO;
+	}
+
 	/* Flush HDP cache via MMIO if necessary */
 	cur_placement = READ_ONCE(robj->tbo.resource->mem_type);
 	if (rdev->asic->mmio_hdp_flush &&
 	    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)
 		robj->rdev->asic->mmio_hdp_flush(rdev);
+	up_read(&rdev->exclusive_lock);
 	drm_gem_object_put(gobj);
 	r = radeon_gem_handle_lockup(rdev, r);
 	return r;
