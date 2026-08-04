@@ -128,6 +128,14 @@ asked to both reproduce and change a legacy fact.
   builds against both.
 - A verdict-producing script calibrates on known-good and known-bad inputs
   before it is trusted.
+- A change touching `radeon_gem.c`, `radeon_prime.c`, or the park path in
+  `radeon_device.c` runs `scripts/check_parked_admission_guards.py`, and
+  `--selftest` alongside it. A compile test cannot see a parked refusal break:
+  deleting the guard, moving it after the allocation it precedes, reading
+  `needs_reset` rather than the latching `gpu_parked`, or returning 0 all
+  compile clean and all readmit the traffic the guard stops. The selftest run
+  proves the fixtures still discriminate, so a green tree result means the
+  guards hold rather than that the patterns stopped matching.
 - Hardware verdict language stays out of this repository. A source change earns
   `compile-verified` at most; promotion requires a retained bundle in
   `steinmarder-r300`.
