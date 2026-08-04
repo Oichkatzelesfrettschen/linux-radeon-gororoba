@@ -156,22 +156,21 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 
 	*obj = NULL;
 
-	/* A parked device is an absorbing state for the rest of the boot: reset
-	 * recovery has failed, radeon_gpu_reset clears accel_working and every
-	 * ring's ready flag, and gpu_parked latches under that same
-	 * exclusive_lock writer. This gate ends admission there, refusing a new
-	 * object lifetime for every requested and eventual placement.
+	/* radeon_gpu_reset latches gpu_parked when reset recovery fails, under
+	 * the exclusive_lock writer that also clears accel_working and every
+	 * ring's ready flag. The device stays parked until reboot, so this
+	 * refusal allocates no buffer object for any requested or final
+	 * placement.
 	 *
-	 * Placement and fault resolution belong to radeon_gem_fault, whose
-	 * TTM_PL_VRAM predicate SIGBUSes a parked VRAM mapping and lets a GTT
-	 * or system mapping fault into ordinary system memory. A park frees no
-	 * VRAM, so a post-park request that free VRAM satisfies is placed in
-	 * VRAM and meets that arm; the retry: path below ORs
-	 * RADEON_GEM_DOMAIN_GTT on only after radeon_bo_create fails for a
-	 * VRAM-only request. An RS482 (1002:5974) run measured both halves:
-	 * a 16 MiB post-park VRAM request landed in VRAM and took SIGBUS, and
-	 * a GTT mapping held across the park completed its touch
-	 * (steinmarder-r300 bundle
+	 * radeon_gem_fault decides placement and fault resolution: its
+	 * TTM_PL_VRAM test returns SIGBUS for a parked VRAM mapping and lets a
+	 * GTT or system mapping fault into ordinary system memory. A park frees
+	 * no VRAM, so a request that free VRAM satisfies is placed in VRAM and
+	 * reaches that test; the retry: path below ORs RADEON_GEM_DOMAIN_GTT on
+	 * only after radeon_bo_create fails for a VRAM-only request. An RS482
+	 * (1002:5974) run measured both: a 16 MiB VRAM request issued after the
+	 * park was placed in VRAM and took SIGBUS, and a GTT mapping held
+	 * across the park completed its touch (steinmarder-r300 bundle
 	 * rs480_parked_gem_placement_discriminator_rs482_20260804T041115Z).
 	 *
 	 * -EIO is the parked-device return radeon_dev_hardware_available uses,

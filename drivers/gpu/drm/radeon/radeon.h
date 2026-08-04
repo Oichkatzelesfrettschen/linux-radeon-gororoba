@@ -2457,7 +2457,7 @@ struct radeon_device {
 	u64 gart_pin_size;
 };
 
-/* Development write-path admission, checked immediately before final arm
+/* Development write-path checks, run immediately before final arm
  * consumption.  radeon_dev_asic_powered refuses a torn-down (-ESHUTDOWN)
  * or suspend-powered-down (-EHOSTDOWN) ASIC; radeon_dev_hardware_available
  * adds the parked-engine refusal (-EIO) for operations whose MMIO or ring

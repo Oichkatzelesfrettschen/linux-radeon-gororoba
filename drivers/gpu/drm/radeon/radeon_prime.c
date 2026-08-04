@@ -52,11 +52,11 @@ struct drm_gem_object *radeon_gem_prime_import_sg_table(struct drm_device *dev,
 	int ret;
 
 	/* This importer calls radeon_bo_create directly, so the parked-device
-	 * refusal in radeon_gem_object_create never sees it. A parked device
-	 * admits no new object lifetime, and an imported BO is one, so the same
-	 * refusal applies here. The exclusive_lock reader serializes the flag
-	 * against the writer that latches it in radeon_gpu_reset, and it wraps
-	 * the reservation the way the GEM create ioctls wrap theirs.
+	 * refusal in radeon_gem_object_create never covers it. A parked device
+	 * allocates no buffer object, and a dma-buf import allocates one, so
+	 * the same test gates it here. The exclusive_lock reader serializes the
+	 * flag against the writer that latches it in radeon_gpu_reset, and it
+	 * stays outside dma_resv the way the GEM create ioctls order the two.
 	 */
 	down_read(&rdev->exclusive_lock);
 	if (READ_ONCE(rdev->gpu_parked)) {

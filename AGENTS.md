@@ -60,6 +60,29 @@ the current guard, the device IDs it executes on, the device IDs its evidence
 covers, and the scope decision. A guard broader than its evidence is recorded
 rather than silently narrowed, because narrowing changes behavior.
 
+## Comment vocabulary
+
+A source comment spends only vocabulary its reader already holds. The reader is
+a kernel maintainer arriving with this tree and nothing else, so a term that
+resolves through a project glossary names nothing and the mechanism replaces it.
+
+Three sources supply admissible terms. A symbol grepped from the tree carries
+its own definition: `gpu_parked`, `exclusive_lock`, `TTM_PL_VRAM`, `dma_resv`.
+An established term of art in the surrounding field stays a term: `critical
+section`, `buffer object`, `fence`, `page table entry`. Plain mechanism English
+carries the rest.
+
+Two constructions fail. An analytical frame borrowed from another field prices
+in that field's vocabulary, so `absorbing state` becomes the mechanism it
+describes: reset recovery has failed and the device stays parked until reboot.
+A compression coined for this project reads as standard and is not, so
+`imported BO` becomes `a buffer object created for a dma-buf import` and `new
+object lifetime` becomes `allocates a buffer object`.
+
+Those frames keep their home in findings, commit bodies, and
+`policy/`-adjacent prose that defines them. This rule governs source comments,
+`policy/` table values, and identifiers.
+
 ## History shape
 
 Source history encodes final mechanisms rather than experiment chronology. One
