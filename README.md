@@ -27,31 +27,30 @@ Packaging targets Arch and CachyOS alone.
 `radeon-unified-0.3-pkgrel91-source-equivalent` onward.
 
 `radeon-custom` has completed the signed source-pin cutover and remains the
-deployment and packaging authority. Its active 0.5-1 packages pin this
+deployment and packaging authority. Its active 0.6-1 packages pin this
 repository's signed profiled-source checkpoint (tag
-`radeon-unified-0.5-profiled-source`, object
-b6d737acd0a03657bfd60ce0a9ccbe5438a7102d, driver tree
-20eacccb61205fd1476d3c915f95cbe2b12d272e) across split production capability,
-development capability, and RS482 board policy. The signed 0.5-1 production
+`radeon-unified-0.6-profiled-source`, object
+7a011a561c38258180e1f3083a0e5d8e74f5c1dd, driver tree
+84b3c5c0282bf37236f2c4fda80eb17048bdd1ed) across split production capability,
+development capability, and RS482 board policy. The signed 0.6-1 production
 and board-policy packages are installed and runtime-accepted on the RS482
-target across a reboot, with the loaded module bonded to source commit
-1b1f515d300f6590eb822c3e8a127e8dfc9a9abb and the decision-grade bundle
-`cachyos_vostro1000_rs482_radeon_unified_0.5-1_prod_runtime_20260803T010326Z`
-retained in `steinmarder-r300`. The signed 0.4-3 set is the rollback baseline
-and the 0.3-96 legacy-equivalent acceptance remains the deeper retained
-baseline.
+target across a reboot, with the loaded module srcversion
+EA8E3BBBBA9E5580BDA7553 bonded to source commit
+7a8dfb50cc4861ebd2c33a2d96cd19f961443c8e. The signed 0.5-1 and 0.4-3 sets
+are the rollback authorities, the `0.6-1 -> 0.5-1 -> 0.6-1` rollback path is
+executed against the exact signed archives, and the 0.3-96 legacy-equivalent
+acceptance remains the deeper retained baseline.
 
-The `0.5` source checkpoint stages the next release. Tag
-`radeon-unified-0.5-profiled-source` (object
-`b6d737acd0a03657bfd60ce0a9ccbe5438a7102d`, peel
-`1b1f515d300f6590eb822c3e8a127e8dfc9a9abb`) is signed and verifies against
-the intended signer, and `docs/profiled-source-attestations/` records that
-verified identity beside the retained `0.4` record. `radeon-custom` pins the
-`0.5-1` package source, and its payload and lifecycle CI pass. The `0.5-1`
-package artifacts are not yet signed, the release is not installed, and no
-target runtime verdict exists; `0.4-3` stays the installed and
-runtime-accepted baseline until the attended `0.5` campaign lands its
-retained bundle.
+The parked-device entry contract this tree carries is hardware-pass on
+RS482: an attended park latched `gpu_parked`, after which fresh native GEM
+creates, USERPTR creation, and foreign PRIME import each returned -EIO with
+`radeon_bo_create` counting zero, CS submission returned -EBUSY before
+parser entry, and `WAIT_IDLE` returned -EIO, retained as steinmarder-r300
+bundle `cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z`.
+Two open items ride that verdict: `radeon_mode_dumb_create` masks the parked
+-EIO to -ENOMEM at the ioctl boundary, and an orderly warm reboot failed to
+reclaim the parked host, so a park costs physical power-cycle recovery
+capability.
 
 ## Source closure
 
