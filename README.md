@@ -41,12 +41,13 @@ are the rollback authorities, the `0.6-1 -> 0.5-1 -> 0.6-1` rollback path is
 executed against the exact signed archives, and the 0.3-96 legacy-equivalent
 acceptance remains the deeper retained baseline.
 
-The parked-device entry contract this tree carries is hardware-pass on
-RS482: an attended park latched `gpu_parked`, after which fresh native GEM
+The parked-device entry contract this tree carries is measured on RS482
+silicon: an attended park latched `gpu_parked`, after which fresh native GEM
 creates, USERPTR creation, and foreign PRIME import each returned -EIO with
 `radeon_bo_create` counting zero, CS submission returned -EBUSY before
-parser entry, and `WAIT_IDLE` returned -EIO, retained as steinmarder-r300
-bundle `cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z`.
+parser entry, and `WAIT_IDLE` returned -EIO. The verdict lives in
+steinmarder-r300 as bundle
+`cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z`.
 Two open items ride that verdict: `radeon_mode_dumb_create` masks the parked
 -EIO to -ENOMEM at the ioctl boundary, and an orderly warm reboot failed to
 reclaim the parked host, so a park costs physical power-cycle recovery
