@@ -950,8 +950,12 @@ int radeon_mode_dumb_create(struct drm_file *file_priv,
 				     RADEON_GEM_DOMAIN_VRAM, 0,
 				     false, &gobj);
 	up_read(&rdev->exclusive_lock);
+	/* radeon_gem_object_create returns -EIO for a parked device and
+	 * -ENOMEM for exhaustion; forwarding r keeps those distinguishable
+	 * at the ioctl boundary.
+	 */
 	if (r)
-		return -ENOMEM;
+		return r;
 
 	r = drm_gem_handle_create(file_priv, gobj, &handle);
 	/* drop reference from allocate - handle holds it now */
