@@ -5,7 +5,9 @@ A parked device stays parked until reboot, and three call sites hold that
 contract: radeon_gem_object_create refuses every buffer object allocation
 funnelled through it, radeon_gem_prime_import_sg_table refuses the importer
 that bypasses the funnel, and radeon_gem_wait_idle_ioctl refuses before
-mmio_hdp_flush reaches a wedged engine.
+mmio_hdp_flush reaches a wedged engine. A fourth check holds the errno at the
+dumb-create boundary: radeon_mode_dumb_create forwards the creator's result,
+so the parked -EIO stays distinguishable from -ENOMEM exhaustion.
 
 A compile test cannot see any of these break. Deleting a guard, moving it after
 the allocation it was meant to precede, reading needs_reset instead of
@@ -157,6 +159,49 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
             )
 
 
+def check_dumb_create_propagation(root: Path) -> None:
+    """The dumb-create wrapper forwards the creator's errno unchanged.
+
+    radeon_mode_dumb_create funnels into radeon_gem_object_create, whose
+    parked refusal is -EIO. A wrapper that translates every failure to
+    -ENOMEM still refuses, and the measured RS482 park matrix showed exactly
+    that: refusal before allocation with userspace receiving ENOMEM, so a
+    caller cannot separate a parked device from memory exhaustion. The
+    contract is `if (r) return r;` on the creator's result.
+    """
+    path = root / SUBTREE / "radeon_gem.c"
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise GuardError(f"dumb-create: missing source {path}") from exc
+
+    body = function_body(strip_comments(source), "radeon_mode_dumb_create")
+
+    call_at = [i for i, line in enumerate(body) if "radeon_gem_object_create" in line]
+    if not call_at:
+        raise GuardError(
+            "dumb-create: radeon_gem_object_create absent from radeon_mode_dumb_create"
+        )
+
+    check = re.compile(r"if\s*\(\s*r\s*\)")
+    for index in range(min(call_at) + 1, len(body)):
+        if check.search(body[index]):
+            window = "\n".join(body[index : index + 3])
+            if re.search(r"return\s+r\s*;", window):
+                return
+            translated = re.search(r"return\s+(-\w+|0)\s*;", window)
+            found = translated.group(1) if translated else "no return"
+            raise GuardError(
+                "dumb-create: the wrapper answers the creator's failure with "
+                f"{found} rather than forwarding r, so the parked -EIO is "
+                "masked at the ioctl boundary"
+            )
+    raise GuardError(
+        "dumb-create: the creator's result is never tested, so a failed "
+        "create falls through to handle creation"
+    )
+
+
 FIXTURE_GOOD = """
 int radeon_gem_object_create(struct radeon_device *rdev)
 {
@@ -230,6 +275,57 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 """,
 }
 
+DUMB_FIXTURE_GOOD = """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+\tr = radeon_gem_object_create(rdev, args->size, 0,
+\t\t\t\t     RADEON_GEM_DOMAIN_VRAM, 0,
+\t\t\t\t     false, &gobj);
+\tif (r)
+\t\treturn r;
+\tr = drm_gem_handle_create(file_priv, gobj, &handle);
+\treturn 0;
+}
+"""
+
+DUMB_FIXTURES_BAD = {
+    "failure translated to -ENOMEM": """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+\tr = radeon_gem_object_create(rdev, size, 0, domain, 0, false, &gobj);
+\tif (r)
+\t\treturn -ENOMEM;
+\treturn 0;
+}
+""",
+    "failure translated to another errno": """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+\tr = radeon_gem_object_create(rdev, size, 0, domain, 0, false, &gobj);
+\tif (r)
+\t\treturn -EINVAL;
+\treturn 0;
+}
+""",
+    "failure answered with success": """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+\tr = radeon_gem_object_create(rdev, size, 0, domain, 0, false, &gobj);
+\tif (r)
+\t\treturn 0;
+\treturn 0;
+}
+""",
+    "failure never tested": """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+\tr = radeon_gem_object_create(rdev, size, 0, domain, 0, false, &gobj);
+\tr = drm_gem_handle_create(file_priv, gobj, &handle);
+\treturn 0;
+}
+""",
+}
+
 # A comment naming the guarded call sits above the guard in the real source, so
 # a matcher that reads prose as code reports the guard as following the call it
 # precedes. This fixture is good and must stay accepted.
@@ -281,10 +377,32 @@ def selftest(tmp: Path) -> int:
             print(f"selftest known-bad ACCEPTED: {name}", file=sys.stderr)
             failures += 1
 
+    dumb_dir = tmp / SUBTREE
+    dumb_dir.mkdir(parents=True, exist_ok=True)
+    (dumb_dir / "radeon_gem.c").write_text(DUMB_FIXTURE_GOOD, encoding="utf-8")
+    try:
+        check_dumb_create_propagation(tmp)
+        print("selftest known-good accepted: dumb-create forwards r")
+    except GuardError as exc:
+        print(f"selftest known-good REJECTED: dumb-create: {exc}", file=sys.stderr)
+        failures += 1
+
+    for name, fixture in DUMB_FIXTURES_BAD.items():
+        (dumb_dir / "radeon_gem.c").write_text(fixture, encoding="utf-8")
+        try:
+            check_dumb_create_propagation(tmp)
+        except GuardError:
+            print(f"selftest known-bad rejected: dumb-create {name}")
+        else:
+            print(f"selftest known-bad ACCEPTED: dumb-create {name}", file=sys.stderr)
+            failures += 1
+
     if failures:
         print(f"selftest: {failures} fixture(s) misclassified", file=sys.stderr)
         return 1
-    print(f"selftest: {len(good)} good and {len(FIXTURES_BAD)} bad fixtures classified")
+    good_count = len(good) + 1
+    bad_count = len(FIXTURES_BAD) + len(DUMB_FIXTURES_BAD)
+    print(f"selftest: {good_count} good and {bad_count} bad fixtures classified")
     return 0
 
 
@@ -314,10 +432,18 @@ def main() -> int:
         else:
             print(f"ok {guard['id']}: refuses before {guard['precedes']}")
 
+    try:
+        check_dumb_create_propagation(args.root)
+    except GuardError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        failures += 1
+    else:
+        print("ok dumb-create: forwards the creator's errno unchanged")
+
     if failures:
         print(f"parked admission guards: {failures} failure(s)", file=sys.stderr)
         return 1
-    print(f"parked admission guards: {len(GUARDS)} guards proven")
+    print(f"parked admission guards: {len(GUARDS) + 1} guards proven")
     return 0
 
 
