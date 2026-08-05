@@ -376,6 +376,20 @@ err:
 static void
 radeon_pci_shutdown(struct pci_dev *pdev)
 {
+	/* device_shutdown runs this on every orderly reboot, and on x86 the
+	 * body below compiles out, so a parked device passed through here
+	 * with no trace. A measured RS482 park saw the orderly reboot drop
+	 * the network and never return, leaving driver shutdown, later
+	 * kernel shutdown, and the firmware warm reset undiscriminated.
+	 * The entry and return breadcrumbs bound this driver's stage: a
+	 * netconsole tail carrying the return line clears radeon shutdown
+	 * as the failing stage.
+	 */
+	struct drm_device *bddev = pci_get_drvdata(pdev);
+	struct radeon_device *brdev = bddev ? bddev->dev_private : NULL;
+
+	if (brdev && READ_ONCE(brdev->gpu_parked))
+		dev_err(brdev->dev, "parked: pci shutdown entered\n");
 #if defined(CONFIG_PPC64) || defined(CONFIG_MACH_LOONGSON64)
 	/*
 	 * Some adapters need to be suspended before a
@@ -384,17 +398,16 @@ radeon_pci_shutdown(struct pci_dev *pdev)
 	 * Make this power and Loongson specific because
 	 * it breaks some other boards.
 	 */
-	struct drm_device *ddev = pci_get_drvdata(pdev);
-	struct radeon_device *rdev = ddev->dev_private;
-
 	/* A parked RS400/RS480 cannot take a hardware suspend -- its register bus
 	 * is wedged; skip it and let the platform reset reclaim the GPU on the
 	 * shutdown/reboot.  (On x86 this whole block is compiled out, so the
 	 * Vostro RS480 shutdown path is already hardware-free.) */
-	if (!(rdev->gpu_parked &&
-	      (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)))
-		radeon_suspend_kms(ddev, true, true, false);
+	if (!(brdev && brdev->gpu_parked &&
+	      (brdev->family == CHIP_RS400 || brdev->family == CHIP_RS480)))
+		radeon_suspend_kms(bddev, true, true, false);
 #endif
+	if (brdev && READ_ONCE(brdev->gpu_parked))
+		dev_err(brdev->dev, "parked: pci shutdown returned\n");
 }
 
 static int radeon_pmops_suspend(struct device *dev)
