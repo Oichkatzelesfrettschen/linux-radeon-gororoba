@@ -189,6 +189,7 @@ repo_root=$(git rev-parse --show-toplevel) || { echo "not inside a git repo" >&2
 feature_policy="$repo_root/policy/build-features.toml"
 [ -r "$feature_policy" ] || { echo "missing build-feature policy" >&2; exit 2; }
 source_commit=$(git -C "$repo_root" rev-parse HEAD)
+driver_tree=$(git -C "$repo_root" rev-parse "HEAD:$subtree")
 feature_policy_sha256=$(sha256sum "$feature_policy" | awk '{print $1}')
 upstream_base=$(read_upstream_base "$repo_root/UPSTREAM_BASE.toml") || {
   echo "upstream-base declaration is invalid TOML" >&2
@@ -204,6 +205,10 @@ is_lower_hex_identity "$feature_policy_sha256" 64 || {
 }
 is_lower_hex_identity "$upstream_base" 40 || {
   echo "upstream base is not a full object ID" >&2
+  exit 2
+}
+is_lower_hex_identity "$driver_tree" 40 || {
+  echo "driver tree is not a full object ID" >&2
   exit 2
 }
 
@@ -240,6 +245,7 @@ profile_manifest="$WORK/radeon-build-profile.toml"
   printf '%s\n' '#define RADEON_BUILD_PROFILE_H'
   printf '#define RADEON_BUILD_PROFILE "%s"\n' "$resolved_profile"
   printf '#define RADEON_BUILD_SOURCE_COMMIT "%s"\n' "$source_commit"
+  printf '#define RADEON_BUILD_DRIVER_TREE "%s"\n' "$driver_tree"
   printf '#define RADEON_BUILD_FEATURE_POLICY_SHA256 "%s"\n' \
     "$feature_policy_sha256"
   printf '#define RADEON_BUILD_UPSTREAM_BASE "%s"\n' "$upstream_base"
@@ -250,6 +256,7 @@ profile_manifest="$WORK/radeon-build-profile.toml"
   printf 'requested_profile = "%s"\n' "$requested_profile"
   printf 'resolved_profile = "%s"\n' "$resolved_profile"
   printf 'source_commit = "%s"\n' "$source_commit"
+  printf 'driver_tree = "%s"\n' "$driver_tree"
   printf 'feature_policy_sha256 = "%s"\n' "$feature_policy_sha256"
   printf 'upstream_base = "%s"\n' "$upstream_base"
   printf 'kernel_release = "%s"\n' "$kernel_release"
@@ -293,6 +300,7 @@ scan_build_warnings "$build_log" || exit 4
 for metadata in \
   "gororoba_build_profile:$resolved_profile" \
   "gororoba_source_commit:$source_commit" \
+  "gororoba_driver_tree:$driver_tree" \
   "gororoba_feature_policy_sha256:$feature_policy_sha256" \
   "gororoba_upstream_base:$upstream_base"
 do
