@@ -727,6 +727,25 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	int r;
 
 	down_read(&rdev->exclusive_lock);
+	/* radeon_gpu_reset latches gpu_parked when reset recovery fails, under
+	 * the exclusive_lock writer that also clears accel_working and every
+	 * ring's ready flag.  accel_working alone already refuses most parked
+	 * submissions, but it is cleared and restored around an ordinary
+	 * suspend, so the parked latch is the condition that names a device
+	 * held down until reboot.  Refusing here allocates no parser, resolves
+	 * no relocation, and touches no ring, which keeps a command stream from
+	 * reaching hardware whose reset the driver already gave up on.
+	 *
+	 * -EIO matches the parked return radeon_gem_object_create uses, so a
+	 * client sees one errno for a parked device across buffer creation and
+	 * submission.
+	 */
+	if (READ_ONCE(rdev->gpu_parked)) {
+		up_read(&rdev->exclusive_lock);
+		dev_err_once(rdev->dev,
+			     "parked: refusing command submission\n");
+		return -EIO;
+	}
 	if (!rdev->accel_working) {
 		up_read(&rdev->exclusive_lock);
 		return -EBUSY;
