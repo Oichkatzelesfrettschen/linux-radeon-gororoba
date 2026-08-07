@@ -35,9 +35,15 @@
  * kernel rejection for the same dwords.
  *
  * The controls beside this tool assert its own behavior, so they establish
- * self-consistency rather than kernel fidelity.  A per-register table driven
- * from the kernel's own switch is the control class that would decide
- * fidelity, and it does not exist yet.
+ * self-consistency.  Fidelity to the kernel grammar is decided by
+ * r300_cs_grammar_correspondence, which rebuilds the safe bitmap from
+ * reg_srcs/r300, resolves r300_packet0_check's own case labels, reads the
+ * initial tracking state out of r100_cs_track_clear, and runs every register
+ * the bitmap covers through this tool.  A register number, an admission
+ * class, a relocation count, or an initial bound that drifts from the kernel
+ * sources fails there.  The scope cuts named above are the rows that tool
+ * carries as declared divergences, and it holds each one to the conservative
+ * direction: this tool refusing a stream the kernel admits.
  *
  * Usage: replay_r300_cs_track [options] bundle.txt ib.bin
  *
