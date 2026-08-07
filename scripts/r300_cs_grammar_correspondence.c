@@ -546,8 +546,11 @@ static int kcase_body_has(unsigned int reg, const char *needle)
 
 /* --- running the replay over a constructed stream --- */
 
+/* The run-form controls carry a maximum-count PACKET0, whose payload is
+ * 0x4000 dwords, so the stream holds header + payload + trailing packets.
+ */
 struct stream {
-	uint32_t dw[64];
+	uint32_t dw[16512];
 	unsigned int ndw;
 };
 
@@ -1207,6 +1210,459 @@ static void check_fixtures(void)
 	}
 }
 
+/* --- run-form correspondence --- */
+
+/* The rows and the sweep hold the replay to the kernel's grammar one
+ * register at a time.  These controls hold it to the run forms
+ * r100_cs_parse_packet0 defines over a single PACKET0: the count field
+ * naming count + 1 payload dwords, the register advancing by four per dword
+ * in the normal form, the ONE_REG_WR form holding the register and breaking
+ * at the first unflagged one, the bitmap bound taken over the whole run in
+ * the normal form and over the first register alone in the ONE_REG_WR form,
+ * type-2 advancement, and the chunk-end comparison radeon_cs_packet_parse
+ * applies.  The expectations walk the same derived bitmap and case facts
+ * the rows use, and the loop form itself is anchored to the kernel text.
+ */
+
+static void stream_pkt0_run(struct stream *s, unsigned int reg,
+			    unsigned int count, int one_reg_wr,
+			    uint32_t value)
+{
+	unsigned int i;
+
+	s->dw[s->ndw++] = (uint32_t)(reg >> 2) |
+			  (one_reg_wr ? 1u << 15 : 0) |
+			  ((uint32_t)count << 16);
+	for (i = 0; i <= count; i++)
+		s->dw[s->ndw++] = value;
+}
+
+/* A register a run control may dispatch with value zero: no value override,
+ * no tiling-gated relocation, no vline scope cut.  Its answer is then
+ * decided by the bitmap class and the derived relocation count alone, which
+ * the per-register rows already proved the replay honors.
+ */
+static int run_plain(unsigned int reg, enum admission *adm_out,
+		     unsigned int *nreloc_out)
+{
+	const struct kcase *k;
+	enum admission adm = classify(reg, &k);
+
+	*adm_out = adm;
+	*nreloc_out = k ? k->nreloc : 0;
+	if (override_find(reg))
+		return 0;
+	if (k && (k->nreloc_tiling_gated || k->parses_vline))
+		return 0;
+	return 1;
+}
+
+/* Walk a run the way r100_cs_parse_packet0 walks it, over the derived
+ * classes.  Returns 1 with the relocation total when the kernel accepts the
+ * run, 0 when it rejects it, and -1 when a dispatched register is one these
+ * controls do not model with value zero.
+ */
+static int run_expect(unsigned int reg, unsigned int count, int one_reg_wr,
+		      unsigned int *relocs_out)
+{
+	unsigned int i, relocs = 0;
+
+	if (one_reg_wr) {
+		if ((reg >> 7) > safe_bm_entries)
+			return 0;
+	} else {
+		if (((reg + (count << 2)) >> 7) > safe_bm_entries)
+			return 0;
+	}
+	for (i = 0; i <= count; i++) {
+		enum admission adm;
+		unsigned int nreloc;
+
+		if (run_plain(reg, &adm, &nreloc) == 0)
+			return -1;
+		if (adm == ADM_DEFAULT_REJECT || adm == ADM_RANGE_REJECT)
+			return 0;
+		if (adm == ADM_NAMED)
+			relocs += nreloc;
+		if (one_reg_wr) {
+			if (adm == ADM_UNCHECKED)
+				break;
+		} else {
+			reg += 4;
+		}
+	}
+	*relocs_out = relocs;
+	return 1;
+}
+
+/* One accepted run against the replay: build the packet, append the
+ * relocation NOPs the derivation expects, and compare accept and count.
+ */
+static int run_probe(unsigned int reg, unsigned int count, int one_reg_wr,
+		     unsigned int nops, struct verdict *v)
+{
+	struct stream s;
+	unsigned int i;
+
+	memset(&s, 0, sizeof(s));
+	stream_pkt0_run(&s, reg, count, one_reg_wr, 0);
+	for (i = 0; i < nops; i++)
+		stream_reloc_nop(&s, 0);
+	if (nops == 0) {
+		s.dw[s.ndw++] = 0x80000000u;	/* type 2 filler */
+		s.dw[s.ndw++] = 0x80000000u;
+	}
+	return run_replay(&s, v);
+}
+
+static int text_range_has(const char *text, const char *sig,
+			  const char *needle)
+{
+	size_t start, end;
+	char save;
+	int found;
+
+	if (!text || function_range(text, sig, &start, &end))
+		return 0;
+	save = ((char *)text)[end];
+	((char *)text)[end] = 0;
+	found = strstr(text + start, needle) != NULL;
+	((char *)text)[end] = save;
+	return found;
+}
+
+static void check_run_forms(void)
+{
+	char *r100 = slurp("drivers/gpu/drm/radeon/r100.c");
+	char *rcs = slurp("drivers/gpu/drm/radeon/radeon_cs.c");
+	const char *p0sig = "int r100_cs_parse_packet0(";
+	unsigned int top = safe_bm_entries * 32 * REG_STEP - REG_STEP;
+	unsigned int quad = 0, pair_a = 0, cross_a = 0, defrej_a = 0;
+	unsigned int orw = 0, big = 0;
+	unsigned int reg, e, e2;
+	struct verdict v, v2;
+	int r;
+
+	/* The loop form the expectations mirror, read out of the kernel
+	 * text: count + 1 iterations, advance by four, the ONE_REG_WR break,
+	 * both bound forms, and the chunk-end comparison.
+	 */
+	control(text_range_has(r100, p0sig,
+			       "for (i = 0; i <= pkt->count; i++, idx++)"),
+		AUTH_KERNEL_SOURCE_DERIVED,
+		"r100_cs_parse_packet0 iterates count + 1 payload dwords");
+	control(text_range_has(r100, p0sig, "reg += 4;"),
+		AUTH_KERNEL_SOURCE_DERIVED,
+		"r100_cs_parse_packet0 advances one register per dword");
+	control(text_range_has(r100, p0sig, "if (pkt->one_reg_wr)") &&
+		text_range_has(r100, p0sig, "break;"),
+		AUTH_KERNEL_SOURCE_DERIVED,
+		"r100_cs_parse_packet0 holds the register under ONE_REG_WR "
+		"and breaks at the first unflagged one");
+	control(text_range_has(r100, p0sig, "(reg >> 7) > n") &&
+		text_range_has(r100, p0sig,
+			       "((reg + (pkt->count << 2)) >> 7) > n"),
+		AUTH_KERNEL_SOURCE_DERIVED,
+		"the bitmap bound covers the whole run in the normal form "
+		"and the first register alone under ONE_REG_WR");
+	control(text_range_has(rcs, "int radeon_cs_packet_parse(",
+			       "(pkt->count + 1 + pkt->idx) >= "
+			       "ib_chunk->length_dw"),
+		AUTH_KERNEL_SOURCE_DERIVED,
+		"radeon_cs_packet_parse admits a packet ending on the last "
+		"chunk dword and refuses one past it");
+	free(r100);
+	free(rcs);
+
+	/* Register selection, from the derivation rather than a list: each
+	 * scan names the class shape its control needs.
+	 */
+	for (reg = 0; reg + 12 <= top && !quad; reg += REG_STEP) {
+		enum admission a;
+		unsigned int n, i, ok = 1;
+
+		for (i = 0; i < 4; i++)
+			if (run_plain(reg + 4 * i, &a, &n) != 1 ||
+			    a != ADM_NAMED || n != 1)
+				ok = 0;
+		if (ok)
+			quad = reg;
+	}
+	for (reg = 0; reg + 16 <= top && !pair_a; reg += REG_STEP) {
+		enum admission a0, a1, a4;
+		unsigned int n0, n1, n4;
+
+		if (run_plain(reg, &a0, &n0) != 1 ||
+		    run_plain(reg + 4, &a1, &n1) != 1 ||
+		    run_plain(reg + 16, &a4, &n4) != 1)
+			continue;
+		/* First register contributes nothing, the second one
+		 * relocation; the register four steps on answers
+		 * differently, so a walk advancing four registers per dword
+		 * lands on a different verdict than one advancing one.
+		 */
+		if ((a0 == ADM_UNCHECKED || (a0 == ADM_NAMED && n0 == 0)) &&
+		    a1 == ADM_NAMED && n1 == 1 &&
+		    (a4 == ADM_DEFAULT_REJECT ||
+		     ((a4 == ADM_UNCHECKED || a4 == ADM_NAMED) &&
+		      (a4 == ADM_UNCHECKED ? 0 : n4) != 1)))
+			pair_a = reg;
+	}
+	for (reg = REG_STEP; reg + 4 <= top && !cross_a; reg += REG_STEP) {
+		enum admission a0, a1;
+		unsigned int n0, n1;
+
+		if (run_plain(reg, &a0, &n0) != 1 ||
+		    run_plain(reg + 4, &a1, &n1) != 1)
+			continue;
+		if (a0 == ADM_NAMED && n0 == 1 && a1 == ADM_UNCHECKED)
+			cross_a = reg;
+	}
+	for (reg = 0; reg + 4 <= top && !defrej_a; reg += REG_STEP) {
+		enum admission a0, a1;
+		unsigned int n0, n1;
+
+		if (run_plain(reg, &a0, &n0) != 1 ||
+		    run_plain(reg + 4, &a1, &n1) != 1)
+			continue;
+		if ((a0 == ADM_UNCHECKED || a0 == ADM_NAMED) &&
+		    a1 == ADM_DEFAULT_REJECT)
+			defrej_a = reg;
+	}
+	for (reg = 0; reg + 8 <= top && !orw; reg += REG_STEP) {
+		enum admission a0;
+		unsigned int n0;
+		int rn;
+
+		if (run_plain(reg, &a0, &n0) != 1 || a0 != ADM_NAMED ||
+		    n0 != 1)
+			continue;
+		/* The held-register walk consumes two relocations; the
+		 * normal walk over the same header must answer differently,
+		 * so a decoder ignoring ONE_REG_WR is caught.
+		 */
+		rn = run_expect(reg, 1, 0, &e2);
+		if (rn == 0 || (rn == 1 && e2 != 2))
+			orw = reg;
+	}
+	for (reg = 0; reg <= top && !big; reg += REG_STEP) {
+		enum admission a0;
+		unsigned int n0;
+
+		if (run_plain(reg, &a0, &n0) == 1 && a0 == ADM_NAMED &&
+		    n0 == 0)
+			big = reg;
+	}
+	control(quad && pair_a && cross_a && defrej_a && orw && big,
+		AUTH_KERNEL_SOURCE_DERIVED,
+		"run registers derived: quad 0x%04X, pair 0x%04X, "
+		"cross 0x%04X, default-reject 0x%04X, one-reg-wr 0x%04X, "
+		"max-count 0x%04X", quad, pair_a, cross_a, defrej_a, orw,
+		big);
+	if (!(quad && pair_a && cross_a && defrej_a && orw && big))
+		return;
+
+	/* Four consuming registers under one header: the count field names
+	 * count + 1 dwords and the switch dispatches every register in the
+	 * run, so four relocations are consumed and a stream carrying three
+	 * starves the last register's case.
+	 */
+	r = run_expect(quad, 3, 0, &e);
+	if (r == 1 && !run_probe(quad, 3, 0, e, &v) && !v.tool_error) {
+		control(v.accepted && v.relocs == e,
+			AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+3 normal run consumes %u relocations "
+			"(got %s, %u)", quad, e,
+			v.accepted ? "accept" : "reject", v.relocs);
+	} else {
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+3 normal run: derivation or replay failed",
+			quad);
+	}
+	if (!run_probe(quad, 3, 0, 3, &v) && !v.tool_error)
+		control(!v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+3 with one relocation short starves the "
+			"last register's case (got %s)", quad,
+			v.accepted ? "accept" : "reject");
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+3 short-relocation probe failed", quad);
+
+	/* A non-consuming register followed by a consuming one: one
+	 * relocation, from the second register, so a walk that fails to
+	 * advance, or advances four registers per dword, answers with the
+	 * wrong count or verdict.
+	 */
+	r = run_expect(pair_a, 1, 0, &e);
+	if (r == 1 && !run_probe(pair_a, 1, 0, e, &v) && !v.tool_error)
+		control(v.accepted && v.relocs == e,
+			AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+1 run advances into its consuming neighbor "
+			"(want %u relocations, got %s, %u)", pair_a, e,
+			v.accepted ? "accept" : "reject", v.relocs);
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+1 heterogeneous run: derivation or replay "
+			"failed", pair_a);
+
+	/* A run crossing from a flagged register into unflagged space: the
+	 * flagged register dispatches, the unflagged one passes unchecked,
+	 * and the bitmap is consulted per register rather than once.
+	 */
+	r = run_expect(cross_a, 1, 0, &e);
+	if (r == 1 && !run_probe(cross_a, 1, 0, e, &v) && !v.tool_error)
+		control(v.accepted && v.relocs == e,
+			AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+1 run crosses the safe boundary unchecked "
+			"(want %u relocations, got %s, %u)", cross_a, e,
+			v.accepted ? "accept" : "reject", v.relocs);
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+1 boundary run: derivation or replay failed",
+			cross_a);
+
+	/* A run reaching a flagged-and-unnamed register rejects through the
+	 * default arm, so the switch is consulted for every register in the
+	 * run rather than the first.
+	 */
+	if (!run_probe(defrej_a, 1, 0, 1, &v) && !v.tool_error)
+		control(!v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+1 run rejects at its flagged-and-unnamed "
+			"neighbor (got %s)", defrej_a,
+			v.accepted ? "accept" : "reject");
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X+1 default-arm run probe failed", defrej_a);
+
+	/* ONE_REG_WR holds the register: three payload dwords on one
+	 * consuming register take three relocations, a stream carrying two
+	 * starves the third write, and the normal walk over the same header
+	 * answers differently.
+	 */
+	if (!run_probe(orw, 2, 1, 3, &v) && !v.tool_error)
+		control(v.accepted && v.relocs == 3,
+			AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X ONE_REG_WR count=2 consumes three "
+			"relocations (got %s, %u)", orw,
+			v.accepted ? "accept" : "reject", v.relocs);
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X ONE_REG_WR probe failed", orw);
+	if (!run_probe(orw, 2, 1, 2, &v) && !v.tool_error)
+		control(!v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X ONE_REG_WR with one relocation short "
+			"starves the held register (got %s)", orw,
+			v.accepted ? "accept" : "reject");
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X ONE_REG_WR short probe failed", orw);
+	r = run_expect(orw, 1, 0, &e2);
+	if (!run_probe(orw, 1, 1, 2, &v) && !v.tool_error &&
+	    !run_probe(orw, 1, 0, r == 1 ? e2 : 1, &v2) && !v2.tool_error)
+		control(v.accepted && v.relocs == 2 &&
+			(v2.accepted != v.accepted ||
+			 v2.relocs != v.relocs),
+			AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X count=1: held form (%s, %u) and normal form "
+			"(%s, %u) separate", orw,
+			v.accepted ? "accept" : "reject", v.relocs,
+			v2.accepted ? "accept" : "reject", v2.relocs);
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X held-vs-normal probe failed", orw);
+
+	/* The bound forms at the maximum count field: a normal run of
+	 * 0x4000 registers from zero leaves the bitmap's range and rejects
+	 * before any dispatch; the held form checks its one register alone
+	 * and iterates the full payload.
+	 */
+	if (!run_probe(0, 0x3FFF, 0, 0, &v) && !v.tool_error)
+		control(!v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+			"0x0000+0x3FFF normal run rejects on the whole-run "
+			"bitmap bound (got %s)",
+			v.accepted ? "accept" : "reject");
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"maximum-count normal probe failed");
+	if (!run_probe(big, 0x3FFF, 1, 0, &v) && !v.tool_error)
+		control(v.accepted && v.relocs == 0,
+			AUTH_KERNEL_SOURCE_DERIVED,
+			"0x%04X ONE_REG_WR count=0x3FFF iterates 0x4000 "
+			"payload dwords under the single-register bound "
+			"(got %s, %u)", big,
+			v.accepted ? "accept" : "reject", v.relocs);
+	else
+		control(0, AUTH_KERNEL_SOURCE_DERIVED,
+			"maximum-count held probe failed");
+
+	/* Chunk-end framing: a packet whose last dword is the chunk's last
+	 * dword is admitted, and a header claiming one dword more rejects.
+	 * A maximum-count header over a payload one dword short is the same
+	 * comparison at the far boundary.
+	 */
+	{
+		struct stream s;
+
+		memset(&s, 0, sizeof(s));
+		stream_pkt0_run(&s, big, 0, 0, 0);
+		if (!run_replay(&s, &v) && !v.tool_error)
+			control(v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+				"0x%04X packet ending exactly at the chunk "
+				"end is admitted (got %s)", big,
+				v.accepted ? "accept" : "reject");
+		else
+			control(0, AUTH_KERNEL_SOURCE_DERIVED,
+				"exact-end probe failed");
+
+		memset(&s, 0, sizeof(s));
+		s.dw[s.ndw++] = (uint32_t)(big >> 2) | (1u << 16);
+		s.dw[s.ndw++] = 0;
+		if (!run_replay(&s, &v) && !v.tool_error)
+			control(!v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+				"0x%04X header claiming one dword past the "
+				"chunk end rejects (got %s)", big,
+				v.accepted ? "accept" : "reject");
+		else
+			control(0, AUTH_KERNEL_SOURCE_DERIVED,
+				"past-end probe failed");
+
+		memset(&s, 0, sizeof(s));
+		s.dw[s.ndw++] = (uint32_t)(big >> 2) | (1u << 15) |
+				(0x3FFFu << 16);
+		for (reg = 0; reg < 0x3FFF; reg++)
+			s.dw[s.ndw++] = 0;
+		if (!run_replay(&s, &v) && !v.tool_error)
+			control(!v.accepted, AUTH_KERNEL_SOURCE_DERIVED,
+				"0x%04X maximum-count header over a payload "
+				"one dword short rejects (got %s)", big,
+				v.accepted ? "accept" : "reject");
+		else
+			control(0, AUTH_KERNEL_SOURCE_DERIVED,
+				"short-payload maximum-count probe failed");
+	}
+
+	/* A type-2 packet advances one dword, so the consuming packet after
+	 * it still finds its relocation.
+	 */
+	{
+		struct stream s;
+
+		memset(&s, 0, sizeof(s));
+		s.dw[s.ndw++] = 0x80000000u;
+		stream_pkt0_run(&s, orw, 0, 0, 0);
+		stream_reloc_nop(&s, 0);
+		if (!run_replay(&s, &v) && !v.tool_error)
+			control(v.accepted && v.relocs == 1,
+				AUTH_KERNEL_SOURCE_DERIVED,
+				"type-2 advances one dword ahead of a "
+				"consuming packet (got %s, %u)",
+				v.accepted ? "accept" : "reject", v.relocs);
+		else
+			control(0, AUTH_KERNEL_SOURCE_DERIVED,
+				"type-2 advancement probe failed");
+	}
+}
+
 /* --- the exhaustive sweep --- */
 
 /* Every register the bitmap covers, other than the ones the rows already
@@ -1375,6 +1831,10 @@ int main(int argc, char **argv)
 
 	printf("\nnegative fixtures (wrong register number vs correct):\n");
 	check_fixtures();
+
+	printf("\nrun forms (r100_cs_parse_packet0 over multi-register "
+	       "packets):\n");
+	check_run_forms();
 
 	printf("\n");
 	if (do_sweep)
