@@ -13,17 +13,31 @@
  * type-3 NOP that must follow the consuming packet carries a dword index into
  * the relocation chunk, and the buffer object is entry index/4.
  *
- * The safe bitmap and the register numbers come from the kernel tree this
- * tool is built in, so an acceptance here is the parser's acceptance for the
- * same dwords and the same buffer objects.
+ * The safe bitmap comes from the kernel tree this tool is built in
+ * (r300_reg_safe.h), and the register numbers are taken from that tree's
+ * headers.
  *
- * Scope: the texture path is modeled to the point the fixed cell reaches --
- * TX_ENABLE selects which texture units the check walks, and a unit enabled
- * without a bound texture buffer is rejected.  The mip-level and cube-face
- * size arithmetic of r100_cs_track_texture_check is outside the model, which
- * is sound only for a stream whose TX_ENABLE clause leaves every unit off;
- * the tool reports the enabled mask so a stream that turns one on is visible
- * rather than silently under-checked.
+ * What a verdict here is worth.  An ACCEPT states that this model of the
+ * parser found no violation, for one point in a space the bundle does not
+ * describe.  Five parser inputs are neither IB dwords nor buffer sizes, and
+ * the model fixes each rather than reading it: RADEON_CS_KEEP_TILING_FLAGS
+ * is assumed set, so the relocation COLORPITCH and ZB_DEPTHPITCH consume
+ * when it is clear is not consumed here and a legacy client's whole
+ * relocation cursor would shift; hyperz_filp and cmask_filp ownership are
+ * assumed absent, so the HyperZ registers are accepted at any value and
+ * CMASK is refused at every value; per-buffer tiling flags are absent, so
+ * the microtiled-source refusal in r100_reloc_pitch_offset is unmodeled;
+ * and radeon_rs480_r400_us_cs swaps in a wider safe bitmap this tool does
+ * not carry.  Three validations inside the modeled path are also absent:
+ * the TX_FORMAT1 format enumeration, the pre-RV515 TXFORMAT_MSB refusal,
+ * and r100_cs_packet_parse_vline's two-packet advance.  A REJECT is the
+ * stronger direction: every rejection the model reports corresponds to a
+ * kernel rejection for the same dwords.
+ *
+ * The controls beside this tool assert its own behavior, so they establish
+ * self-consistency rather than kernel fidelity.  A per-register table driven
+ * from the kernel's own switch is the control class that would decide
+ * fidelity, and it does not exist yet.
  *
  * Usage: replay_r300_cs_track [options] bundle.txt ib.bin
  *
@@ -72,7 +86,7 @@
 #define R300_RB3D_COLOROFFSET0		0x4E28
 #define R300_RB3D_COLORPITCH0		0x4E38
 #define R300_RB3D_COLOR_CHANNEL_MASK	0x4E0C
-#define R300_RB3D_ZCACHE_CTLSTAT	0x4F18
+#define R300_ZB_BW_CNTL			0x4f1c
 #define R300_RB3D_BLENDCNTL		0x4E04
 #define R300_ZB_CNTL			0x4F00
 #define R300_ZB_FORMAT			0x4F10
@@ -205,8 +219,10 @@ static void reject(const char *fmt, ...)
 }
 
 /* radeon_cs_packet_parse: frame one packet and bound it against the chunk.
- * The bound is >= rather than >, so a packet whose last dword is the chunk's
- * last dword is rejected; the model keeps that comparison as written.
+ * A packet spans count + 2 dwords ending at idx + count + 1, and the kernel
+ * compares that end against length_dw with >=, which admits a packet ending
+ * on the chunk's last dword and refuses one reaching a dword past it.  The
+ * model keeps the comparison as written.
  */
 static int packet_parse(struct parser *p, struct packet *pkt, unsigned int idx)
 {
@@ -270,6 +286,42 @@ static int next_reloc(struct parser *p, unsigned int *bo_out)
 	*bo_out = idx / 4;
 	note("  reloc -> entry %u (%s)\n", *bo_out, p->bos[*bo_out].role);
 	return 0;
+}
+
+/* r100_cs_track_clear for an r300-class chip.  The kernel starts every parse
+ * from these values, not from zero, and each one is a bound a stream that
+ * never writes the owning register still has to satisfy: four color buffers
+ * at 8192 x 16 bytes over 4096 rows, depth enabled, eleven vertex arrays at
+ * 0x7F elements, and a 0x00FFFFFF maximum index.  A model starting at zero
+ * accepts every one of those streams.
+ */
+static void track_clear(struct track *t)
+{
+	unsigned int i;
+
+	memset(t, 0, sizeof(*t));
+	t->cb_dirty = 1;
+	t->zb_dirty = 1;
+	t->tex_dirty = 1;
+	t->aa_dirty = 1;
+	t->num_cb = 4;
+	t->maxy = 4096;
+	t->aaresolve = 0;
+	for (i = 0; i < R300_MAX_CB; i++) {
+		t->cb[i].bound = 0;
+		t->cb[i].pitch = 8192;
+		t->cb[i].cpp = 16;
+		t->cb[i].offset = 0;
+	}
+	t->z_enabled = 1;
+	t->zb.pitch = 8192;
+	t->zb.cpp = 4;
+	t->vtx_size = 0x7F;
+	t->immd_dwords = 0xFFFFFFFFUL;
+	t->num_arrays = 11;
+	t->max_indx = 0x00FFFFFFUL;
+	for (i = 0; i < R300_MAX_ARRAYS; i++)
+		t->arrays[i].esize = 0x7F;
 }
 
 /* r300_cs_tcl_bypass_vtx_output_check: the TCL-bypass vertex-output width
@@ -489,11 +541,11 @@ static int register_is_accepted_untracked(unsigned int reg)
 static int register_consumes_reloc(unsigned int reg)
 {
 	/* R300_TX_OFFSET_0 .. +60, sixteen texture units. */
-	if (reg >= 0x4C00 && reg <= 0x4C3C)
+	if (reg >= 0x4540 && reg <= 0x457C)
 		return 1;
 	switch (reg) {
-	case 0x4F58:	/* R300_ZB_ZPASS_ADDR */
-	case 0x1420:	/* RADEON_DST_PITCH_OFFSET */
+	case 0x4f5c:	/* R300_ZB_ZPASS_ADDR */
+	case 0x142c:	/* RADEON_DST_PITCH_OFFSET */
 	case 0x1428:	/* RADEON_SRC_PITCH_OFFSET */
 		return 1;
 	default:
@@ -648,7 +700,7 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		t->color_channel_mask = v;
 		t->cb_dirty = 1;
 		break;
-	case R300_RB3D_ZCACHE_CTLSTAT:
+	case R300_ZB_BW_CNTL:
 		t->zb_cb_clear = (v & (1 << 5)) != 0;
 		t->cb_dirty = 1;
 		t->zb_dirty = 1;
@@ -766,6 +818,16 @@ static int load_vbpntr(struct parser *p, struct packet *pkt)
 		reject("only 16 vertex buffers are allowed, %u requested", c);
 		return -EINVAL;
 	}
+	/* The kernel loop bound is (c - 1) over an unsigned c, so a zero count
+	 * wraps and walks past arrays[16] into the rest of the tracking
+	 * structure.  That is a defect in the kernel rather than a verdict, so
+	 * the model refuses the input instead of reproducing the walk.
+	 */
+	if (c == 0) {
+		reject("LOAD_VBPNTR with a zero array count is unmodeled: the "
+		       "kernel loop bound wraps");
+		return -EINVAL;
+	}
 	t->num_arrays = c;
 	for (i = 0; i + 1 < c; i += 2, idx += 3) {
 		r = next_reloc(p, &bo);
@@ -832,7 +894,9 @@ static int packet3_check(struct parser *p, struct packet *pkt,
 			reject("PRIM_WALK must be 3 for IMMD draw");
 			return -EINVAL;
 		}
-		t->vtx_size = p->ib[idx] & 0x7F;
+		/* r300_packet3_check leaves vtx_size to VAP_VTX_SIZE; writing
+		 * it from the packet is r100_packet3_check's behavior.
+		 */
 		t->vap_vf_cntl = p->ib[idx + 1];
 		t->immd_dwords = pkt->count - 1;
 		goto draw;
@@ -994,6 +1058,7 @@ int main(int argc, char **argv)
 
 	setbuf(stdout, NULL);
 	memset(&p, 0, sizeof(p));
+	track_clear(&p.track);
 	memset(dword_mutations, 0, sizeof(dword_mutations));
 	memset(bo_sizes, 0, sizeof(bo_sizes));
 
