@@ -12,12 +12,16 @@ source for blame and commit archaeology.
 
 ## Repository boundary
 
+<!-- markdownlint-disable MD013 -->
+
 | Repository | Authority |
 | --- | --- |
 | `linux-radeon-gororoba` | Modified Radeon kernel source, upstream base mapping, source generators, register policy tables, source tests, RAD-06 |
 | `radeon-custom` | Arch and CachyOS PKGBUILD, DKMS glue, compiler policy, initramfs and modprobe policy, hazard preflight, source pin, package verification |
 | `steinmarder-r300` | Target-silicon probes, retained result bundles, falsifiers, hardware verdicts |
 | `mesa-26-gororoba` | r300g and r3v userspace behavior |
+
+<!-- markdownlint-enable MD013 -->
 
 Packaging targets Arch and CachyOS alone.
 
@@ -34,14 +38,20 @@ repository's signed profiled-source checkpoint (tag
 293a4ae3fe82cd03585ef3157e82b0b59b641b47, and driver tree
 d57a22ad5356637d7075cb2aba83e22af71f7bfb) across split production capability,
 development capability, and RS482 board policy. The package attestation records
-signed artifacts and successful dual-kernel DKMS lifecycles, while target
-contact, installation, module load, and hardware operation remain NOT RUN for
-0.7-1. The peeled source commit carries that exact driver-tree object. Later
-repository commits may supersede source mechanisms without superseding the
-signed deployment pin; they remain unshipped until radeon-custom records a new
-source pin, package attestation, and module lifecycle. The signed 0.6-1
-production and board-policy packages remain the most recent installed and
-runtime-accepted RS482 authority. The signed 0.5-1 and 0.4-3 sets remain deeper
+signed artifacts and successful dual-kernel DKMS lifecycles. That attestation
+itself records target contact, installation, module load, and hardware operation
+as NOT RUN for 0.7-1. A later read-only live cross-check establishes deployment
+identity only. The bound PCI device resolves to `/sys/module/radeon`, and the
+loaded module `srcversion` `A7F72BE636B52D7EED42415` matches the on-disk DKMS
+0.7 module. The on-disk metadata pins source commit
+`293a4ae3fe82cd03585ef3157e82b0b59b641b47` and driver tree
+`d57a22ad5356637d7075cb2aba83e22af71f7bfb`. This cross-check does not amend the
+attestation or establish retained behavioral acceptance. Later repository
+commits may supersede source mechanisms without superseding the signed
+deployment pin; they remain unshipped until radeon-custom records a new source
+pin, package attestation, and module lifecycle. The retained 0.6-1 parked-device
+bundle remains the last retained parked-behavior silicon verdict; it is not a
+general current runtime authority. The signed 0.5-1 and 0.4-3 sets remain deeper
 rollback authorities, and the 0.3-96 legacy-equivalent acceptance remains the
 deeper retained baseline.
 
@@ -54,9 +64,10 @@ The verdict lives in steinmarder-r300 as bundle
 `cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z`.
 The 0.7-1 source now preserves the dumb-create errno and adds a direct
 `gpu_parked` CS refusal with -EIO before parser initialization. Both corrections
-are source- and package-verified but await 0.7-1 target acceptance. The warm
-reboot failure also remains open: the measured parked host required physical
-power-cycle recovery.
+are source- and package-verified. The live 0.7 deployment identity does not
+promote them to retained target behavior; 0.6-1 remains the last retained parked
+silicon verdict. The warm reboot failure also remains open: the measured parked
+host required physical power-cycle recovery.
 
 ## Source closure
 
@@ -94,6 +105,14 @@ sh scripts/build_radeon_module.sh \
   --all-dev \
   --kernel-build-root "$KERNEL_BUILD_ROOT"
 ```
+
+The retained declared build identities are `6.18.38-2-cachyos-lts` and
+`7.1.4-1-cachyos`. Source commit
+`be729bd3f9ab4d2abcbf07c558e16e4655fcdf64` was not replayed against those exact
+roots. Its final compatibility matrix passed `prod`, `observe-dev`,
+`probe-dev`, and `mutate-dev` on the then installed
+`6.18.42-1-cachyos-lts` and `7.1.6-1-cachyos` roots. Those installed roots are
+compatibility evidence, not replacements for the retained declared identities.
 
 The temporary build tree carries `radeon_build_profile.h` and
 `radeon-build-profile.toml`. The linked module records the source commit,

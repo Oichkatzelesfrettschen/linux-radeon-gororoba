@@ -25,18 +25,36 @@ import check_rs4xx_gart_cache_policy as cache_policy
 POLICY = Path("policy/radeon-cs-reservation-fence-contract.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "0542c3392b46196d679948a3c7150670f87afc645418d33e66c7226901cb54de"
+    "043f26f556c60d440b868653825060c687abb062a409c1c0bffdbee133a8197c"
 )
+CS_DIRECT_PREFIX_SHA256 = {
+    "relocs": "bd4645062b4348cbecfb5a1353312a61f20f1e5909401bf2c9cac9717e652ead",
+    "parser_init": "3e13e4a348a49a3343eb3ba83499f57f9af4d135603a2f755ab0eba1c8cd6488",
+    "ioctl": "1ed23bf68d3eb2e5e9e640f556374c6d04a057aec4098698fa3311608d597291",
+    "next_reloc": "bd02f061ab8376685f57aaaf9e108cc2ac1a67bbd90a27abb082442393caaa2e",
+}
+EXPECTED_POLICY_ROW_SHA256 = {
+    "RS482_ASIC_COMMAND_CALLBACK_BINDING": "1584590b09bd2229fbcef9c516b2dfd828018241d7bc79613b814e0af1b9f62b",
+    "CS_PARKED_EARLY_REFUSAL": "39966eb5ded5c02865dbdbf80a128c5a2bb04be08388cb38749c75281ce31364",
+    "CS_RELOCATION_RECORD_GEOMETRY": "8b9a3b46b9eeb3d1f220231321dd11d651c48d353cc2214576c4b4889b57f8c0",
+    "CS_BO_RESERVATION_LOCKS": "f1b5de72d7097b53d3fbf0aecb0fa5d85a0e186eaa5697d7d0e96831310d0626",
+    "CS_RESERVATION_DEPENDENCY_IMPORT": "e3980ff208d5320c64504ae557b94a5360ec46c4274c15a6eda89116af9942a8",
+    "CS_RING_DEPENDENCY_AND_IB_SCHEDULE": "911cf696a10ad7bc9973cc9ae29212bd84dac11129b51f1729e064e35c346eb1",
+    "CS_SUCCESS_FENCE_INVARIANT": "e2ef42bf2a10ade2e90154b39c4454ce1a08cfbf32e0a48c509e7f2e5dd8a799",
+    "R300_FENCE_COMMAND_SEQUENCE": "a2fdd6378417272101f92fd596d2f0bf1309db8e77e2d78d127515ad8eb77184",
+    "CS_RESERVATION_FENCE_PUBLICATION": "cd0354edac2176635adb4533b6d7b2863d43a88978a93b0a6a39111c43821e0d",
+    "CS_RELOCATION_ACCESS_DIRECTION": "00a7666480c9867108a10896c05ce67c3b2170ebfb55bea16b708606d30ee740",
+    "FENCE_FORCE_COMPLETION_PUBLICATION": "cb392679622a03322f1e4c73ee62d0fbd7db6087744da82c8ebf5fab558fa36c",
+    "RS482_RESET_RING_REPLAY_SEMANTICS": "908ab413a611c7c5dc78e3b6790e06d0408adee1a225e04a593e321fa30e0342",
+    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "632195d11b66ae70e39d2478c87f3d49f062da38e2f2241100198bf40d21bf10",
+    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "f439eef616546406773817bd358c12dc055499bc5ea567e595d53e99c87ea938",
+}
 
 EXPECTED_ROWS = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": ("proven", "NONE"),
     "CS_PARKED_EARLY_REFUSAL": ("proven", "NONE"),
     "CS_RELOCATION_RECORD_GEOMETRY": ("repaired", "CS_PARKED_EARLY_REFUSAL"),
-    "CS_SUCCESS_FENCE_INVARIANT": (
-        "repaired",
-        "CS_RELOCATION_RECORD_GEOMETRY",
-    ),
-    "CS_BO_RESERVATION_LOCKS": ("proven", "CS_SUCCESS_FENCE_INVARIANT"),
+    "CS_BO_RESERVATION_LOCKS": ("proven", "CS_RELOCATION_RECORD_GEOMETRY"),
     "CS_RESERVATION_DEPENDENCY_IMPORT": (
         "proven",
         "CS_BO_RESERVATION_LOCKS",
@@ -45,13 +63,17 @@ EXPECTED_ROWS = {
         "proven",
         "CS_RESERVATION_DEPENDENCY_IMPORT;RS482_ASIC_COMMAND_CALLBACK_BINDING",
     ),
+    "CS_SUCCESS_FENCE_INVARIANT": (
+        "repaired",
+        "CS_BO_RESERVATION_LOCKS;CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
+    ),
     "R300_FENCE_COMMAND_SEQUENCE": (
         "proven",
         "RS482_ASIC_COMMAND_CALLBACK_BINDING;CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
     ),
     "CS_RESERVATION_FENCE_PUBLICATION": (
         "proven",
-        "CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
+        "CS_SUCCESS_FENCE_INVARIANT",
     ),
     "CS_RELOCATION_ACCESS_DIRECTION": (
         "open",
@@ -63,7 +85,7 @@ EXPECTED_ROWS = {
     ),
     "RS482_RESET_RING_REPLAY_SEMANTICS": (
         "open",
-        "CS_RING_DEPENDENCY_AND_IB_SCHEDULE;FENCE_FORCE_COMPLETION_PUBLICATION",
+        "CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
     ),
     "CS_SUSPEND_FENCE_LOCK_CONTEXT": (
         "open",
@@ -76,23 +98,45 @@ EXPECTED_ROWS = {
 }
 
 EXPECTED_EXTERNAL = {
-    "CS_PARKED_EARLY_REFUSAL": (
-        "steinmarder-r300",
-        "dfd54caf26cc94f157cd231e0741cc16887ec595",
-        "src/re/r300/corpora/rs482_k8_memory_path_frontier_v1/frontier.jsonl",
-        "NONE",
-    ),
-    "RS482_RESET_RING_REPLAY_SEMANTICS": (
-        "steinmarder-r300",
-        "dfd54caf26cc94f157cd231e0741cc16887ec595",
-        "src/re/r300/corpora/rs482_k8_memory_path_frontier_v1/frontier.jsonl",
-        "NONE",
-    ),
     "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": (
         "steinmarder-r300",
         "dfd54caf26cc94f157cd231e0741cc16887ec595",
         "src/re/r300/corpora/rs482_k8_memory_path_frontier_v1/frontier.jsonl",
         "CPU_GTT_GPU_PUBLICATION;GPU_GTT_CPU_INVALIDATION",
+    ),
+}
+
+EXPECTED_NONCLAIMS = {
+    "RS482_ASIC_COMMAND_CALLBACK_BINDING": "Source binding does not prove live callback execution.",
+    "CS_PARKED_EARLY_REFUSAL": "The source guard does not prove target park or recovery behavior.",
+    "CS_RELOCATION_RECORD_GEOMETRY": "Static admission does not prove every userspace producer emits correct domains.",
+    "CS_BO_RESERVATION_LOCKS": "Reservation locks do not perform payload cache maintenance.",
+    "CS_RESERVATION_DEPENDENCY_IMPORT": "Imported fences prove execution ordering, not cache visibility.",
+    "CS_RING_DEPENDENCY_AND_IB_SCHEDULE": "A successful schedule means committed work, not completed work.",
+    "CS_SUCCESS_FENCE_INVARIANT": "The last-ditch guard does not roll back or make safe work committed without a fence.",
+    "R300_FENCE_COMMAND_SEQUENCE": "Emitted cache commands do not prove RS482 executed them or made payloads coherent.",
+    "CS_RESERVATION_FENCE_PUBLICATION": "Fence publication does not prove fence completion or payload visibility.",
+    "CS_RELOCATION_ACCESS_DIRECTION": "Parser address validation alone does not prove correct reservation usage.",
+    "FENCE_FORCE_COMPLETION_PUBLICATION": "Writing the hardware sequence does not by itself prove generic dma_fence signaling.",
+    "RS482_RESET_RING_REPLAY_SEMANTICS": "Source replay structure does not prove payload idempotence.",
+    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "A comment precondition does not prove the caller holds the lock.",
+    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "Reservations, fences, mb, and emitted GPU cache commands do not prove payload visibility.",
+}
+
+EXPECTED_EVIDENCE_STATUS = {
+    "CS_PARKED_EARLY_REFUSAL": ("not-run", "unproved"),
+    "RS482_RESET_RING_REPLAY_SEMANTICS": ("not-run", "unproved"),
+    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": ("not-run", "peer-open"),
+}
+
+EXPECTED_COMPLETION_GATES = {
+    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": (
+        "Both exact target directions retain raw PTE bytes and decoded bits, "
+        "raw global snoop control, BO and cache mapping, module and target "
+        "identity, command stream, an observed completed fence, maintenance on "
+        "and off arms, and producer and consumer digests. Arm outcomes retain "
+        "the directional completion-gate interpretations rather than proving "
+        "snoop attribution."
     ),
 }
 
@@ -120,7 +164,9 @@ def fail_if_present(label: str, body: str, needles: tuple[str, ...]) -> None:
         raise ContractError(f"{label}: unexpected source tokens {present}")
 
 
-def read_policy(root: Path) -> dict[str, dict[str, str]]:
+def read_policy(
+    root: Path, expected_policy_sha256: str = EXPECTED_POLICY_SHA256
+) -> dict[str, dict[str, str]]:
     path = root / POLICY
     try:
         raw = path.read_bytes()
@@ -129,7 +175,7 @@ def read_policy(root: Path) -> dict[str, dict[str, str]]:
     if not raw.isascii() or b"\r" in raw:
         raise ContractError("policy table must be LF terminated ASCII")
     digest = hashlib.sha256(raw).hexdigest()
-    if digest != EXPECTED_POLICY_SHA256:
+    if digest != expected_policy_sha256:
         raise ContractError(f"policy bytes differ from exact contract: {digest}")
     reader = csv.DictReader(raw.decode("ascii").splitlines(), delimiter="\t")
     if tuple(reader.fieldnames or ()) != lifecycle.HEADER:
@@ -148,6 +194,8 @@ def read_policy(root: Path) -> dict[str, dict[str, str]]:
         raise ContractError(
             f"policy denominator differs: missing={missing} extra={extra}"
         )
+    if tuple(rows) != tuple(EXPECTED_ROWS):
+        raise ContractError("policy row order differs from the causal order")
     return rows
 
 
@@ -202,6 +250,37 @@ def check_external(rows: dict[str, dict[str, str]]) -> None:
             r"[0-9a-f]{40}", row["external_commit"]
         ):
             raise ContractError(f"{row_id}: external commit is not a full object ID")
+
+
+def check_policy_claim_boundaries(rows: dict[str, dict[str, str]]) -> None:
+    if set(EXPECTED_NONCLAIMS) != set(rows):
+        raise ContractError("nonclaim binding denominator differs")
+    for row_id, expected_nonclaim in EXPECTED_NONCLAIMS.items():
+        if rows[row_id]["nonclaim"] != expected_nonclaim:
+            raise ContractError(f"{row_id}: nonclaim identity differs")
+    for row_id, expected_status in EXPECTED_EVIDENCE_STATUS.items():
+        actual_status = (
+            rows[row_id]["runtime_status"],
+            rows[row_id]["silicon_status"],
+        )
+        if actual_status != expected_status:
+            raise ContractError(f"{row_id}: runtime or silicon status differs")
+    for row_id, expected_gate in EXPECTED_COMPLETION_GATES.items():
+        if rows[row_id]["completion_gate"] != expected_gate:
+            raise ContractError(f"{row_id}: completion gate identity differs")
+
+
+def check_policy_row_identities(rows: dict[str, dict[str, str]]) -> None:
+    """Bind all eighteen semantic fields after specific validators run."""
+
+    if set(EXPECTED_POLICY_ROW_SHA256) != set(rows):
+        raise ContractError("policy row identity denominator differs")
+    for row_id, row in rows.items():
+        if (
+            lifecycle.policy_row_identity_sha256(row)
+            != EXPECTED_POLICY_ROW_SHA256[row_id]
+        ):
+            raise ContractError(f"{row_id}: exact policy row identity differs")
 
 
 def function(root: Path, filename: str, name: str) -> str:
@@ -301,6 +380,41 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
     )
 
     relocs = function(root, "radeon_cs.c", "radeon_cs_parser_relocs")
+    try:
+        relocation_statements, relocation_guard_index = (
+            lifecycle.require_exact_if_guard(
+                "relocation chunk length admission guard differs",
+                relocs,
+                "chunk->length_dw % 4",
+                "return -EINVAL;",
+                7,
+                (
+                    'DRM_ERROR("Relocation chunk length %u is not a multiple '
+                    'of 4 dwords\\n", chunk->length_dw);'
+                    "return -EINVAL;"
+                ),
+            )
+        )
+        lifecycle.require_direct_statement_prefix_sha256(
+            "relocation chunk admission dominance",
+            relocation_statements,
+            8,
+            CS_DIRECT_PREFIX_SHA256["relocs"],
+        )
+        lifecycle.require_direct_statement(
+            "relocation chunk length guard predecessor differs",
+            relocation_statements,
+            relocation_guard_index - 1,
+            "chunk = p->chunk_relocs;",
+        )
+        lifecycle.require_direct_statement(
+            "relocation chunk length guard successor differs",
+            relocation_statements,
+            relocation_guard_index + 1,
+            "p->dma_reloc_idx = 0;",
+        )
+    except lifecycle.LifecycleError as exc:
+        raise ContractError(str(exc)) from exc
     require_order(
         "relocation chunk geometry admission",
         relocs,
@@ -314,6 +428,45 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
     )
 
     parser_init = function(root, "radeon_cs.c", "radeon_cs_parser_init")
+    try:
+        parser_statements, parser_guard_index = lifecycle.require_exact_if_guard(
+            "relocation-only submission admission guard differs",
+            parser_init,
+            "p->chunk_relocs && !p->chunk_ib",
+            (
+                "return radeon_rs480_cs_parser_init_fail("
+                'p, "relocs_without_ib", -EINVAL, p->nchunks, '
+                "p->nchunks, 0, 0);"
+            ),
+            25,
+            (
+                "return radeon_rs480_cs_parser_init_fail("
+                'p, "relocs_without_ib", -EINVAL, p->nchunks, '
+                "p->nchunks, 0, 0);"
+            ),
+        )
+        lifecycle.require_direct_statement_prefix_sha256(
+            "relocation-only admission dominance",
+            parser_statements,
+            26,
+            CS_DIRECT_PREFIX_SHA256["parser_init"],
+        )
+        lifecycle.require_direct_statement(
+            "relocation-only guard predecessor differs",
+            parser_statements,
+            parser_guard_index - 1,
+            "for (i = 0; i < p->nchunks; i++)",
+            prefix=True,
+        )
+        lifecycle.require_direct_statement(
+            "relocation-only guard successor differs",
+            parser_statements,
+            parser_guard_index + 1,
+            "if (p->rdev)",
+            prefix=True,
+        )
+    except lifecycle.LifecycleError as exc:
+        raise ContractError(str(exc)) from exc
     require_order(
         "relocation-only submission admission",
         parser_init,
@@ -324,6 +477,46 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
             "if (p->rdev)",
         ),
     )
+
+    try:
+        fence_statements, fence_guard_index = lifecycle.require_exact_if_guard(
+            "validated submission success fence guard differs",
+            ioctl,
+            "!list_empty(&parser.validated) && !parser.ib.fence",
+            "r = -EINVAL;",
+            22,
+            (
+                'DRM_ERROR("Successful command submission has validated BOs '
+                'but no fence !\\n");'
+                "r = -EINVAL;"
+            ),
+        )
+        lifecycle.require_direct_statement_prefix_sha256(
+            "validated submission fence dominance",
+            fence_statements,
+            23,
+            CS_DIRECT_PREFIX_SHA256["ioctl"],
+        )
+        lifecycle.require_direct_statement(
+            "validated submission fence call predecessor differs",
+            fence_statements,
+            fence_guard_index - 2,
+            "r = radeon_cs_ib_vm_chunk(rdev, &parser);",
+        )
+        lifecycle.require_direct_statement(
+            "validated submission fence branch predecessor differs",
+            fence_statements,
+            fence_guard_index - 1,
+            "if (r) { goto out; }",
+        )
+        lifecycle.require_direct_statement(
+            "validated submission fence guard successor differs",
+            fence_statements,
+            fence_guard_index + 1,
+            "out: radeon_cs_parser_fini(&parser, r);",
+        )
+    except lifecycle.LifecycleError as exc:
+        raise ContractError(str(exc)) from exc
 
     require_order(
         "validated submissions require a success fence before cleanup",
@@ -338,6 +531,44 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
     )
 
     next_reloc = function(root, "radeon_cs.c", "radeon_cs_packet_next_reloc")
+    try:
+        index_statements, index_guard_index = lifecycle.require_exact_if_guard(
+            "relocation record index admission guard differs",
+            next_reloc,
+            (
+                "idx >= relocs_chunk->length_dw || idx % 4 || "
+                "relocs_chunk->length_dw - idx < 4"
+            ),
+            "return -EINVAL;",
+            12,
+            (
+                'DRM_ERROR("Relocs at %d do not name one aligned 4-dword '
+                'record in chunk %d !\\n", idx, relocs_chunk->length_dw);'
+                "radeon_cs_dump_packet(p, &p3reloc);"
+                "return -EINVAL;"
+            ),
+        )
+        lifecycle.require_direct_statement_prefix_sha256(
+            "relocation record index dominance",
+            index_statements,
+            13,
+            CS_DIRECT_PREFIX_SHA256["next_reloc"],
+        )
+        lifecycle.require_direct_statement(
+            "relocation record index guard predecessor differs",
+            index_statements,
+            index_guard_index - 1,
+            "idx = radeon_get_ib_value(p, p3reloc.idx + 1);",
+        )
+        lifecycle.require_direct_statement(
+            "relocation record index guard successor differs",
+            index_statements,
+            index_guard_index + 1,
+            "if (nomm)",
+            prefix=True,
+        )
+    except lifecycle.LifecycleError as exc:
+        raise ContractError(str(exc)) from exc
     require_order(
         "relocation record index admission",
         next_reloc,
@@ -523,10 +754,14 @@ def check_open_boundaries(root: Path) -> None:
     )
 
 
-def check_tree(root: Path) -> None:
-    rows = read_policy(root)
+def check_tree(
+    root: Path, expected_policy_sha256: str = EXPECTED_POLICY_SHA256
+) -> None:
+    rows = read_policy(root, expected_policy_sha256)
     check_dependencies(rows)
     check_external(rows)
+    check_policy_claim_boundaries(rows)
+    check_policy_row_identities(rows)
     check_build_and_callbacks(root)
     check_ioctl_and_relocation_admission(root)
     check_reservation_ownership(root)
@@ -598,10 +833,119 @@ SOURCE_MUTATIONS = {
         "\tif (chunk->length_dw % 4) {",
         "\tif (false) {",
     ),
+    "relocation length guard is disabled": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tif (chunk->length_dw % 4) {",
+        "\tif (false && (chunk->length_dw % 4)) {",
+    ),
+    "relocation length guard is negated": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tif (chunk->length_dw % 4) {",
+        "\tif (!(chunk->length_dw % 4)) {",
+    ),
+    "relocation length guard is inside an outer disabled block": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (chunk->length_dw % 4) {\n"
+            '\t\tDRM_ERROR("Relocation chunk length %u is not a multiple of 4 dwords\\n",\n'
+            "\t\t\t  chunk->length_dw);\n"
+            "\t\treturn -EINVAL;\n\t}"
+        ),
+        (
+            "\tif (false) {\n"
+            "\t\tif (chunk->length_dw % 4) {\n"
+            '\t\t\tDRM_ERROR("Relocation chunk length %u is not a multiple of 4 dwords\\n",\n'
+            "\t\t\t\t  chunk->length_dw);\n"
+            "\t\t\treturn -EINVAL;\n\t\t}\n\t}"
+        ),
+    ),
+    "relocation length guard is bypassed by a goto": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tchunk = p->chunk_relocs;\n"
+            "\tif (chunk->length_dw % 4) {\n"
+            '\t\tDRM_ERROR("Relocation chunk length %u is not a multiple of 4 dwords\\n",\n'
+            "\t\t\t  chunk->length_dw);\n"
+            "\t\treturn -EINVAL;\n"
+            "\t}\n"
+            "\tp->dma_reloc_idx = 0;"
+        ),
+        (
+            "\tchunk = p->chunk_relocs;\n"
+            "\tgoto relocation_guard_done;\n"
+            "\tif (chunk->length_dw % 4) {\n"
+            '\t\tDRM_ERROR("Relocation chunk length %u is not a multiple of 4 dwords\\n",\n'
+            "\t\t\t  chunk->length_dw);\n"
+            "\t\treturn -EINVAL;\n"
+            "\t}\n"
+            "relocation_guard_done:\n"
+            "\tp->dma_reloc_idx = 0;"
+        ),
+    ),
+    "relocation parser declaration hides a statement-expression return": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tbool need_mmap_lock = false;\n\tint r;\n\n",
+        ("\tbool need_mmap_lock = false;\n\tint r = ({ return 0; 0; });\n\n"),
+    ),
     "relocation-only submission is admitted": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
         "\tif (p->chunk_relocs && !p->chunk_ib)\n",
         "\tif (false)\n",
+    ),
+    "relocation-only guard is disabled": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "if (p->chunk_relocs && !p->chunk_ib)\n",
+        "if (false && (p->chunk_relocs && !p->chunk_ib))\n",
+    ),
+    "relocation-only guard is negated": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "if (p->chunk_relocs && !p->chunk_ib)\n",
+        "if (!(p->chunk_relocs && !p->chunk_ib))\n",
+    ),
+    "relocation-only guard is inside an outer disabled block": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (p->chunk_relocs && !p->chunk_ib)\n"
+            "\t\treturn radeon_rs480_cs_parser_init_fail("
+            'p, "relocs_without_ib",\n'
+            "\t\t\t\t\t\t\t-EINVAL, p->nchunks,\n"
+            "\t\t\t\t\t\t\tp->nchunks, 0, 0);"
+        ),
+        (
+            "\tif (false) {\n"
+            "\t\tif (p->chunk_relocs && !p->chunk_ib)\n"
+            "\t\t\treturn radeon_rs480_cs_parser_init_fail("
+            'p, "relocs_without_ib",\n'
+            "\t\t\t\t\t\t\t\t-EINVAL, p->nchunks,\n"
+            "\t\t\t\t\t\t\t\tp->nchunks, 0, 0);\n"
+            "\t}"
+        ),
+    ),
+    "relocation-only guard is bypassed by a goto": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (p->chunk_relocs && !p->chunk_ib)\n"
+            "\t\treturn radeon_rs480_cs_parser_init_fail("
+            'p, "relocs_without_ib",\n'
+            "\t\t\t\t\t\t\t-EINVAL, p->nchunks,\n"
+            "\t\t\t\t\t\t\tp->nchunks, 0, 0);\n\n"
+            "\t/* these are KMS only */"
+        ),
+        (
+            "\tgoto relocation_guard_done;\n"
+            "\tif (p->chunk_relocs && !p->chunk_ib)\n"
+            "\t\treturn radeon_rs480_cs_parser_init_fail("
+            'p, "relocs_without_ib",\n'
+            "\t\t\t\t\t\t\t-EINVAL, p->nchunks,\n"
+            "\t\t\t\t\t\t\tp->nchunks, 0, 0);\n"
+            "relocation_guard_done:\n\n"
+            "\t/* these are KMS only */"
+        ),
+    ),
+    "parser init declaration hides a statement-expression return": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tu32 ring = RADEON_CS_RING_GFX;\n\ts32 priority = 0;\n\n",
+        ("\tu32 ring = RADEON_CS_RING_GFX;\n\ts32 priority = ({ return 0; 0; });\n\n"),
     ),
     "validated submission lacks final fence admission": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
@@ -612,6 +956,64 @@ SOURCE_MUTATIONS = {
         ),
         "",
     ),
+    "validated submission fence guard is disabled": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {",
+        ("\tif (false && (!list_empty(&parser.validated) && !parser.ib.fence)) {"),
+    ),
+    "validated submission fence guard is negated": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {",
+        "\tif (!(!list_empty(&parser.validated) && !parser.ib.fence)) {",
+    ),
+    "validated submission fence action is nested under false": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {\n"
+            '\t\tDRM_ERROR("Successful command submission has validated BOs but no fence !\\n");\n'
+            "\t\tr = -EINVAL;\n\t}"
+        ),
+        (
+            "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {\n"
+            "\t\tif (false) {\n"
+            '\t\t\tDRM_ERROR("Successful command submission has validated BOs but no fence !\\n");\n'
+            "\t\t\tr = -EINVAL;\n\t\t}\n\t}"
+        ),
+    ),
+    "validated submission fence action is overridden later": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\t\tr = -EINVAL;\n\t}\nout:",
+        "\t\tr = -EINVAL;\n\t\tr = 0;\n\t}\nout:",
+    ),
+    "validated submission fence action is bypassed inside the guard": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\t\tr = -EINVAL;\n\t}\nout:",
+        "\t\tgoto out;\n\t\tr = -EINVAL;\n\t}\nout:",
+    ),
+    "validated submission fence guard is inside an outer disabled block": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {\n"
+            '\t\tDRM_ERROR("Successful command submission has validated BOs but no fence !\\n");\n'
+            "\t\tr = -EINVAL;\n\t}"
+        ),
+        (
+            "\tif (false) {\n"
+            "\t\tif (!list_empty(&parser.validated) && !parser.ib.fence) {\n"
+            '\t\t\tDRM_ERROR("Successful command submission has validated BOs but no fence !\\n");\n'
+            "\t\t\tr = -EINVAL;\n\t\t}\n\t}"
+        ),
+    ),
+    "validated submission fence guard is bypassed by a goto": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {",
+        ("\tgoto out;\n\tif (!list_empty(&parser.validated) && !parser.ib.fence) {"),
+    ),
+    "CS ioctl declaration hides a statement-expression return": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tstruct radeon_cs_parser parser;\n\tint r;\n\n",
+        ("\tstruct radeon_cs_parser parser;\n\tint r = ({ return 0; 0; });\n\n"),
+    ),
     "relocation index accepts unaligned records": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
         "idx >= relocs_chunk->length_dw || idx % 4 ||",
@@ -621,6 +1023,68 @@ SOURCE_MUTATIONS = {
         "drivers/gpu/drm/radeon/radeon_cs.c",
         "relocs_chunk->length_dw - idx < 4) {",
         "false) {",
+    ),
+    "relocation index guard is disabled": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "if (idx >= relocs_chunk->length_dw || idx % 4 ||\n"
+            "\t    relocs_chunk->length_dw - idx < 4) {"
+        ),
+        (
+            "if (false && (idx >= relocs_chunk->length_dw || idx % 4 ||\n"
+            "\t    relocs_chunk->length_dw - idx < 4)) {"
+        ),
+    ),
+    "relocation index guard is negated": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "if (idx >= relocs_chunk->length_dw || idx % 4 ||\n"
+            "\t    relocs_chunk->length_dw - idx < 4) {"
+        ),
+        (
+            "if (!(idx >= relocs_chunk->length_dw || idx % 4 ||\n"
+            "\t      relocs_chunk->length_dw - idx < 4)) {"
+        ),
+    ),
+    "relocation index guard is inside an outer disabled block": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (idx >= relocs_chunk->length_dw || idx % 4 ||\n"
+            "\t    relocs_chunk->length_dw - idx < 4) {\n"
+            '\t\tDRM_ERROR("Relocs at %d do not name one aligned 4-dword record in chunk %d !\\n",\n'
+            "\t\t\t  idx, relocs_chunk->length_dw);\n"
+            "\t\tradeon_cs_dump_packet(p, &p3reloc);\n"
+            "\t\treturn -EINVAL;\n"
+            "\t}"
+        ),
+        (
+            "\tif (false) {\n"
+            "\t\tif (idx >= relocs_chunk->length_dw || idx % 4 ||\n"
+            "\t\t    relocs_chunk->length_dw - idx < 4) {\n"
+            '\t\t\tDRM_ERROR("Relocs at %d do not name one aligned 4-dword record in chunk %d !\\n",\n'
+            "\t\t\t\t  idx, relocs_chunk->length_dw);\n"
+            "\t\t\tradeon_cs_dump_packet(p, &p3reloc);\n"
+            "\t\t\treturn -EINVAL;\n"
+            "\t\t}\n"
+            "\t}"
+        ),
+    ),
+    "relocation index guard is bypassed by an earlier return": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tidx = radeon_get_ib_value(p, p3reloc.idx + 1);\n"
+            "\tif (idx >= relocs_chunk->length_dw || idx % 4 ||"
+        ),
+        (
+            "\tidx = radeon_get_ib_value(p, p3reloc.idx + 1);\n"
+            "\treturn 0;\n"
+            "\tif (idx >= relocs_chunk->length_dw || idx % 4 ||"
+        ),
+    ),
+    "packet relocation declaration hides a statement-expression return": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        "\tunsigned idx;\n\tint r;\n\n",
+        "\tunsigned idx;\n\tint r = ({ return 0; 0; });\n\n",
     ),
     "BO validation skips reservation preparation": (
         "drivers/gpu/drm/radeon/radeon_object.c",
@@ -673,31 +1137,223 @@ SOURCE_MUTATIONS = {
     ),
 }
 
+SOURCE_EXPECTED_ERRORS = {
+    "relocation chunk accepts a partial record": (
+        "relocation chunk length admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation length guard is disabled": (
+        "relocation chunk length admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation length guard is negated": (
+        "relocation chunk length admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation length guard is inside an outer disabled block": (
+        "relocation chunk length admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation length guard is bypassed by a goto": (
+        "relocation chunk length admission guard differs: direct statement index 8 != 7"
+    ),
+    "relocation parser declaration hides a statement-expression return": (
+        "relocation chunk admission dominance: exact direct statement prefix differs"
+    ),
+    "relocation-only submission is admitted": (
+        "relocation-only submission admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation-only guard is disabled": (
+        "relocation-only submission admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation-only guard is negated": (
+        "relocation-only submission admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation-only guard is inside an outer disabled block": (
+        "relocation-only submission admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation-only guard is bypassed by a goto": (
+        "relocation-only submission admission guard differs: "
+        "direct statement index 26 != 25"
+    ),
+    "parser init declaration hides a statement-expression return": (
+        "relocation-only admission dominance: exact direct statement prefix differs"
+    ),
+    "validated submission lacks final fence admission": (
+        "validated submission success fence guard differs: "
+        "exact condition match count is 0"
+    ),
+    "validated submission fence guard is disabled": (
+        "validated submission success fence guard differs: "
+        "exact condition match count is 0"
+    ),
+    "validated submission fence guard is negated": (
+        "validated submission success fence guard differs: "
+        "exact condition match count is 0"
+    ),
+    "validated submission fence action is nested under false": (
+        "validated submission success fence guard differs: "
+        "guarded action is not the final top-level statement"
+    ),
+    "validated submission fence action is overridden later": (
+        "validated submission success fence guard differs: "
+        "guarded action is not the final top-level statement"
+    ),
+    "validated submission fence action is bypassed inside the guard": (
+        "validated submission success fence guard differs: exact guard body differs"
+    ),
+    "validated submission fence guard is inside an outer disabled block": (
+        "validated submission success fence guard differs: "
+        "exact condition match count is 0"
+    ),
+    "validated submission fence guard is bypassed by a goto": (
+        "validated submission success fence guard differs: "
+        "direct statement index 23 != 22"
+    ),
+    "CS ioctl declaration hides a statement-expression return": (
+        "validated submission fence dominance: exact direct statement prefix differs"
+    ),
+    "relocation index accepts unaligned records": (
+        "relocation record index admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation index accepts truncated tails": (
+        "relocation record index admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation index guard is disabled": (
+        "relocation record index admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation index guard is negated": (
+        "relocation record index admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation index guard is inside an outer disabled block": (
+        "relocation record index admission guard differs: "
+        "exact condition match count is 0"
+    ),
+    "relocation index guard is bypassed by an earlier return": (
+        "relocation record index admission guard differs: "
+        "direct statement index 13 != 12"
+    ),
+    "packet relocation declaration hides a statement-expression return": (
+        "relocation record index dominance: exact direct statement prefix differs"
+    ),
+}
+
 POLICY_MUTATIONS = {
     "repaired relocation row promoted": (
         "CS_RELOCATION_RECORD_GEOMETRY\t",
         6,
         "proven",
+        "CS_RELOCATION_RECORD_GEOMETRY: source status differs",
     ),
     "OPEN payload row promoted": (
         "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
         6,
         "proven",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: source status differs",
+    ),
+    "payload source relation fabricates target proof": (
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
+        7,
+        "Reservations and fence publication prove cached GTT payload visibility.",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: exact policy row identity differs",
+    ),
+    "parked current guard fabricates historical runtime observation": (
+        "CS_PARKED_EARLY_REFUSAL\t",
+        10,
+        "peer-observation",
+        "CS_PARKED_EARLY_REFUSAL: runtime or silicon status differs",
+    ),
+    "payload Mesa effect fabricates cache permission": (
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
+        17,
+        "Mesa may rely on coherent cached GTT payloads without maintenance.",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: exact policy row identity differs",
     ),
     "payload nonclaim polarity inverted": (
         "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
         18,
         "Reservations and fences prove payload visibility.",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: nonclaim identity differs",
+    ),
+    "payload completion gate drops observed fence completion": (
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
+        16,
+        "Both target directions retain an emitted fence and both digests.",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: completion gate identity differs",
     ),
     "external row identity changed": (
         "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
         15,
         "CPU_GTT_GPU_PUBLICATION",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: external authority identity differs",
+    ),
+    "external artifact identity changed": (
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY\t",
+        14,
+        "src/re/r300/corpora/incorrect.jsonl",
+        "RS482_CACHED_GTT_PAYLOAD_VISIBILITY: external authority identity differs",
+    ),
+    "parked row gains external row authority": (
+        "CS_PARKED_EARLY_REFUSAL\t",
+        15,
+        "CS_PARKED_EARLY_REFUSAL",
+        "CS_PARKED_EARLY_REFUSAL: external authority identity differs",
+    ),
+    "parked row claims the historical bundle artifact": (
+        "CS_PARKED_EARLY_REFUSAL\t",
+        14,
+        "src/re/r300/results/cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z",
+        "CS_PARKED_EARLY_REFUSAL: external authority identity differs",
+    ),
+    "reset replay claims an unmaterialized artifact": (
+        "RS482_RESET_RING_REPLAY_SEMANTICS\t",
+        12,
+        "steinmarder-r300",
+        "RS482_RESET_RING_REPLAY_SEMANTICS: external authority identity differs",
+    ),
+    "reset replay regains peer-open authority": (
+        "RS482_RESET_RING_REPLAY_SEMANTICS\t",
+        11,
+        "peer-open",
+        "RS482_RESET_RING_REPLAY_SEMANTICS: runtime or silicon status differs",
+    ),
+    "reset replay claims failed-reset sibling dependency": (
+        "RS482_RESET_RING_REPLAY_SEMANTICS\t",
+        5,
+        "CS_RING_DEPENDENCY_AND_IB_SCHEDULE;FENCE_FORCE_COMPLETION_PUBLICATION",
+        "RS482_RESET_RING_REPLAY_SEMANTICS: dependency edge differs",
     ),
     "ring schedule loses dependency": (
         "CS_RING_DEPENDENCY_AND_IB_SCHEDULE\t",
         5,
         "RS482_ASIC_COMMAND_CALLBACK_BINDING",
+        "CS_RING_DEPENDENCY_AND_IB_SCHEDULE: dependency edge differs",
+    ),
+    "BO reservation depends on post-schedule success": (
+        "CS_BO_RESERVATION_LOCKS\t",
+        5,
+        "CS_SUCCESS_FENCE_INVARIANT",
+        "CS_BO_RESERVATION_LOCKS: dependency edge differs",
+    ),
+    "success fence loses schedule dependency": (
+        "CS_SUCCESS_FENCE_INVARIANT\t",
+        5,
+        "CS_BO_RESERVATION_LOCKS",
+        "CS_SUCCESS_FENCE_INVARIANT: dependency edge differs",
+    ),
+    "fence publication loses success dependency": (
+        "CS_RESERVATION_FENCE_PUBLICATION\t",
+        5,
+        "CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
+        "CS_RESERVATION_FENCE_PUBLICATION: dependency edge differs",
     ),
 }
 
@@ -747,20 +1403,42 @@ def selftest(root: Path) -> int:
             path.write_text(text.replace(old, new, 1), encoding="utf-8")
             try:
                 check_tree(mutant)
-            except ContractError:
-                print(f"selftest known-bad rejected: {label}")
+            except ContractError as exc:
+                expected_error = SOURCE_EXPECTED_ERRORS.get(label)
+                if expected_error is not None and str(exc) != expected_error:
+                    print(
+                        f"selftest known-bad wrong error: {label}: {exc}",
+                        file=sys.stderr,
+                    )
+                    failures += 1
+                    continue
+                suffix = f": {exc}" if expected_error is not None else ""
+                print(f"selftest known-bad rejected: {label}{suffix}")
             else:
                 print(f"selftest known-bad ACCEPTED: {label}", file=sys.stderr)
                 failures += 1
 
-        for label, (row_prefix, field_index, value) in POLICY_MUTATIONS.items():
+        for label, (
+            row_prefix,
+            field_index,
+            value,
+            expected_error,
+        ) in POLICY_MUTATIONS.items():
             mutant = Path(directory) / re.sub(r"[^a-z0-9]+", "-", label.lower())
             copy_inputs(root, mutant)
             mutate_policy(mutant / POLICY, row_prefix, field_index, value)
+            mutant_digest = hashlib.sha256((mutant / POLICY).read_bytes()).hexdigest()
             try:
-                check_tree(mutant)
-            except ContractError:
-                print(f"selftest known-bad rejected: {label}")
+                check_tree(mutant, mutant_digest)
+            except ContractError as exc:
+                if str(exc) != expected_error:
+                    print(
+                        f"selftest known-bad wrong error: {label}: {exc}",
+                        file=sys.stderr,
+                    )
+                    failures += 1
+                    continue
+                print(f"selftest known-bad rejected: {label}: {expected_error}")
             else:
                 print(f"selftest known-bad ACCEPTED: {label}", file=sys.stderr)
                 failures += 1

@@ -12,10 +12,22 @@ and silicon status remain separate fields. A source proof cannot promote a
 runtime or silicon row. The external repository, commit, artifact, and row
 fields identify the exact authority for facts that Linux does not own.
 
-`scripts/check_radeon_gart_lifecycle.py` enforces the complete row set, field
-schema, exact dependencies, acyclic graph, external authority identities, and
-the source relations named by the ledger. Its selftest must reject known bad
-source and policy mutations before a tree result has authority.
+`scripts/check_radeon_gart_lifecycle.py` enforces the complete row set, causal
+row order, field schema, exact dependencies, acyclic graph, every external
+authority identity, every nonclaim, and a length-framed exact identity for all
+18 fields after each `row_id`. Field-specific semantic checks run before the
+full-row identity check so rebound mutants must fail for their declared reason.
+The three repaired range admission guards use exact tokenized `if`
+conditions, fixed direct function-body statement indexes, and a length-framed
+token digest of every direct statement from function entry through the guarded
+successor. The rejection remains the final top-level statement in each exact
+guard body. Common finalization separately requires the exact adjacent direct
+sequence from common GART finalization through hardware disable and table
+release. The selftest rejects disabled, negated, comment-shadowed, inactive
+preprocessor, outer-controlled, nested-action, early-return, declaration-level
+statement-expression, teardown-order, and policy mutations. Each policy mutant
+is rebound to its own test digest and must fail with its declared semantic error
+before a tree result has authority.
 
 ## Mechanism ownership
 
@@ -61,16 +73,19 @@ source and policy mutations before a tree result has authority.
   table lifetime against finalization, but ordinary bind and unbind writers do
   not share its lock. These relations order software access and lifetime; they
   do not perform payload cache maintenance.
-* Common release owns `RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT` and
-  `GART_COMMON_TEARDOWN`. Common GART finalization unbinds the ready aperture
-  before releasing shadows and the dummy page. The RS4xx table release
-  attempts WB restoration before coherent DMA release and ignores the page
-  attribute result. Common GART and RS400 table release are separate owners.
+* Common release owns `GART_COMMON_TEARDOWN` and
+  `RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT`. Common GART finalization unbinds the
+  ready aperture before releasing shadows and the dummy page. RS400
+  finalization then disables GART hardware. Table release then attempts WB
+  restoration before coherent DMA release and ignores the page attribute
+  result. Common GART and RS400 table release are separate owners.
 * Target semantics owns `EFFECTIVE_PER_PTE_SNOOP_SEMANTICS`,
   `CPU_GTT_GPU_PAYLOAD_PUBLICATION`, and
   `GPU_GTT_CPU_PAYLOAD_INVALIDATION`. Steinmarder owns exact target silicon and
-  payload verdicts. Linux records the source controls and order that an
-  admitted trial must retain. No source checker can close these rows.
+  payload verdicts. Both directional rows depend on the bound translation, not
+  on a snoop verdict. Linux records the source controls and order that an
+  admitted trial must retain. No source checker can close these rows or
+  attribute a directional result to snooping.
 * Unresolved Linux lifecycle owns `RS400_TLB_FLUSH_COMPLETION`,
   `GART_SUSPEND_READY_STATE`, `GART_BACKEND_NOT_READY_UNBIND_STATE`, and
   `GART_TTM_TEARDOWN_OWNERSHIP`. Linux owns the missing result and state
@@ -98,7 +113,8 @@ The bounded source path has these ownership transfers:
 7. Backend unbind removes PTEs before it releases userptr DMA and page
    ownership.
 8. Common finalization unbinds the ready aperture before it releases common
-   shadows. RS400 finalization later releases the page table allocation.
+   shadows. RS400 finalization then disables GART hardware and releases the
+   page table allocation through the WB restore attempt.
 
 Every step names a source relation. None of the steps asserts that CPU cache
 lines reached the GPU, that GPU writes reached the CPU, or that RS482 honored
@@ -135,12 +151,24 @@ Mesa sharing ABI, establish payload visibility, or prove a live TLB outcome.
   both controls, the same BO, completed submission, and exact PTE bytes.
 * `CPU_GTT_GPU_PAYLOAD_PUBLICATION` belongs to Steinmarder. The mapped submit
   path has no CPU payload cache maintenance or target digest observation. A
-  CPU producer and GPU consumer trial must retain the cache action, PTE state,
-  submission, completed fence, and both digests.
-* `GPU_GTT_CPU_PAYLOAD_INVALIDATION` belongs to Steinmarder. Fence retirement
-  and GART unbind do not invalidate CPU payload cache lines. A GPU producer and
-  CPU consumer trial must retain the completed fence, cache action, PTE state,
-  and both digests.
+  CPU producer and GPU consumer trial keeps the same BO bound and retains raw
+  PTE bytes and decoded bits, raw global snoop control, BO and cache mapping,
+  module and target identity, command stream, an observed completed fence,
+  maintenance-on and maintenance-off arms, and both digests.
+* `GPU_GTT_CPU_PAYLOAD_INVALIDATION` belongs to Steinmarder. Linux establishes
+  the bound translation but performs no CPU payload invalidation after GPU
+  completion. A GPU producer and CPU consumer trial observes a completed fence
+  before the CPU cache action and digest while the same BO remains bound. It
+  retains the same raw controls, identities, command stream, maintenance arms,
+  and both digests as the CPU-to-GPU direction.
+
+Each directional trial can close visibility only for its exact retained state.
+It cannot establish that snooping caused the result or generalize cache
+coherence to another mapping state. Maintenance off failing while maintenance
+on passes supports maintenance-required visibility only for that exact state.
+Both arms passing supports only that no maintenance effect was observed in the
+tested trials. Both arms failing leaves visibility open.
+
 * `RS400_TLB_FLUSH_COMPLETION` belongs to Linux. The callback issues
   invalidation and polls, but its void signature discards timeout disposition.
   A result channel and calibrated success and timeout paths must account for
@@ -153,10 +181,11 @@ Mesa sharing ABI, establish payload visibility, or prove a live TLB outcome.
   return for not ready while the backend clears `bound` without a disposition
   result. A result and state contract must distinguish global teardown from a
   live mismatch.
-* `GART_TTM_TEARDOWN_OWNERSHIP` belongs to Linux. RS400 and TTM finalization
-  both invoke common GART finalization across separate object and table owners.
-  One owner or an executable ordering invariant must account for every object,
-  callback, table, and common allocation.
+* `GART_TTM_TEARDOWN_OWNERSHIP` belongs to Linux. RS400 finalization owns common
+  finalization, hardware disable, and table release, while TTM finalization
+  invokes common finalization again. One owner or an executable ordering
+  invariant must account for every object, callback, table, and common
+  allocation.
 
 The global snoop enable mutation remains excluded. The retained negative sits
 in Steinmarder and does not authorize another live mutation from this source
@@ -165,10 +194,19 @@ enable and does not close a ledger row.
 
 ## Build priorities
 
+The retained declared build identities remain `6.18.38-2-cachyos-lts` and
+`7.1.4-1-cachyos`. Source commit
+`be729bd3f9ab4d2abcbf07c558e16e4655fcdf64` was not replayed on those exact
+roots. Its final compatibility matrix passed `prod`, `observe-dev`,
+`probe-dev`, and `mutate-dev` against the then installed
+`6.18.42-1-cachyos-lts` and `7.1.6-1-cachyos` roots. That result proves
+cross-version compatibility for those installed roots. It does not satisfy the
+retained declared-root acceptance gate.
+
 1. Admit the repaired source only after the lifecycle checker classifies its
-   good tree and all known bad fixtures, then link `radeon.ko` with zero
-   warnings against both declared kernel roots. Production and relevant
-   development profiles remain load bearing.
+   good tree and all known bad fixtures, then replay `prod`, `observe-dev`,
+   `probe-dev`, and `mutate-dev` against both exact declared kernel roots with
+   zero warnings.
 2. Close Linux owned open rows in dependency order. A TLB completion result, a
    hardware enabled state, a backend unbind disposition, and consolidated
    teardown ownership each require one final safe mechanism and calibrated
@@ -197,7 +235,8 @@ python3 scripts/check_rs4xx_gart_cache_policy.py --selftest
 python3 scripts/check_rs4xx_gart_cache_policy.py
 ```
 
-Then run the module build harness against both declared kernel roots as
-documented in `README.md`. A green checker and two green builds establish a
+Then run the module build harness against both exact declared kernel roots as
+documented in `README.md`. The recorded installed-root compatibility matrix is
+not a substitute. A green checker and exact-root profile matrix establish a
 bounded source and compile result only. They do not establish runtime
 reachability, silicon coherence, performance, or hazard clearance.
