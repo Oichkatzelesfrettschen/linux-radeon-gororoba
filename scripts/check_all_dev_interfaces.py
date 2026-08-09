@@ -798,11 +798,23 @@ def validate_palm_reset_registration(
         r'radeon_dev_mark_mutation\(rdev, "Palm PCI config reset"\);',
         "Palm reset mutation marker",
     )
+    for match, label in (
+        (reset_lock, "Palm reset writer lock assertion"),
+        (reset_available, "Palm reset body availability refusal"),
+        (reset_unsafe, "Palm reset exact unsafe Boolean refusal"),
+        (reset_marker, "Palm reset mutation marker"),
+    ):
+        require_outer_function_match(reset_body, match, label)
     hardware_accesses = list(PALM_RESET_HARDWARE_ACCESS.finditer(reset_body))
     require(
         bool(hardware_accesses), "Palm reset body has no classified hardware access"
     )
     first_hardware = hardware_accesses[0]
+    require_outer_function_match(
+        reset_body,
+        first_hardware,
+        "Palm reset first classified hardware access",
+    )
     require(
         first_hardware.group(0).startswith("WREG32("),
         "Palm reset first classified hardware access is not CP halt",
@@ -918,6 +930,21 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
         < read_unlock_at,
         "wedged reset-probe post-state transaction order differs",
     )
+    marker_depths = (
+        (reset_call, 1),
+        (read_lock, 1),
+        (parked_branch, 1),
+        (parked_sentinel, 2),
+        (else_branch, 2),
+        (status_read, 2),
+        (read_unlock, 1),
+    )
+    for marker, expected_depth in marker_depths:
+        require(
+            brace_depth_at(function_body, function_body.find(marker))
+            == expected_depth,
+            f"wedged reset-probe marker is not at depth {expected_depth}: {marker}",
+        )
 
     before_read_lock = C_LINE_COMMENT.sub(
         "", C_BLOCK_COMMENT.sub("", post_reset[:read_lock_at])
@@ -970,15 +997,25 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         r"int radeon_gpu_reset_forced\(struct radeon_device \*rdev\)\s*"
         r"\{\s*return radeon_gpu_reset_internal\(rdev, true\);\s*\}"
     )
-    require(
-        re.search(transaction_pattern, function_body, re.DOTALL) is not None,
-        "forced GPU-reset request is outside the writer transaction",
+    transaction_match = require_one_match(
+        function_body,
+        transaction_pattern,
+        "forced GPU-reset writer transaction",
+    )
+    require_outer_function_match(
+        function_body,
+        transaction_match,
+        "forced GPU-reset writer transaction",
     )
     reset_counter = "atomic_inc(&rdev->gpu_reset_counter);"
     reset_counter_at = function_body.find(reset_counter)
     require(
         reset_counter_at >= 0,
         "forced GPU-reset counter transition is absent",
+    )
+    require(
+        brace_depth_at(function_body, reset_counter_at) == 1,
+        "forced GPU-reset counter transition is not an outer function statement",
     )
     reset_body = function_body[reset_counter_at + len(reset_counter):]
     require(
@@ -1020,13 +1057,34 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         r"up_read\(&rdev->exclusive_lock\);\s*"
         r"return r;"
     )
+    parked_exit_matches = list(re.finditer(parked_exit_pattern, reset_body, re.DOTALL))
+    ordinary_exit_matches = list(
+        re.finditer(ordinary_exit_pattern, reset_body, re.DOTALL)
+    )
     require(
-        len(re.findall(parked_exit_pattern, reset_body, re.DOTALL)) == 1,
+        len(parked_exit_matches) == 1,
         "forced GPU-reset parked exit does not downgrade at its quiet epoch",
     )
     require(
-        len(re.findall(ordinary_exit_pattern, reset_body, re.DOTALL)) == 1,
+        len(ordinary_exit_matches) == 1,
         "forced GPU-reset ordinary exit does not downgrade before mode resume",
+    )
+    reset_body_offset = reset_counter_at + len(reset_counter)
+    require(
+        brace_depth_at(
+            function_body,
+            reset_body_offset + parked_exit_matches[0].start(),
+        )
+        == 2,
+        "forced GPU-reset parked exit is outside its top-level parked branch",
+    )
+    require(
+        brace_depth_at(
+            function_body,
+            reset_body_offset + ordinary_exit_matches[0].start(),
+        )
+        == 1,
+        "forced GPU-reset ordinary exit is not an outer function transaction",
     )
     require(
         re.search(wrapper_pattern, texts[path], re.DOTALL) is not None,
@@ -1635,6 +1693,34 @@ def self_test(root: Path) -> int:
         else:
             raise InterfaceError(f"self-test accepted {label}")
 
+    unreachable_palm_reset = copy.deepcopy(source_texts)
+    palm_reset_path = "drivers/gpu/drm/radeon/evergreen.c"
+    palm_reset_source = unreachable_palm_reset[palm_reset_path]
+    palm_reset_start = palm_reset_source.find(
+        "\tlockdep_assert_held_write(&rdev->exclusive_lock);"
+    )
+    palm_reset_end = palm_reset_source.find(
+        "\n}\n\nint evergreen_asic_reset",
+        palm_reset_start,
+    )
+    require(
+        palm_reset_start >= 0 and palm_reset_end > palm_reset_start,
+        "self-test Palm reset body boundary differs from the source",
+    )
+    unreachable_palm_reset[palm_reset_path] = (
+        palm_reset_source[:palm_reset_start]
+        + "\tif (false) {\n"
+        + palm_reset_source[palm_reset_start:palm_reset_end]
+        + "\n\t}\n\treturn -EPERM;"
+        + palm_reset_source[palm_reset_end:]
+    )
+    try:
+        validate_palm_reset_registration(registration_rows, unreachable_palm_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unreachable Palm reset body")
+
     early_registration = copy.deepcopy(source_texts)
     early_registration["drivers/gpu/drm/radeon/radeon_kms.c"] += (
         "\nradeon_evergreen_dev_debugfs_register(NULL);\n"
@@ -1774,6 +1860,38 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted return-code post-state gate")
 
+    unreachable_post_state = copy.deepcopy(source_texts)
+    unreachable_source = unreachable_post_state[reset_source_path]
+    unreachable_start = unreachable_source.find(
+        '\tradeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");'
+    )
+    unreachable_unlock = unreachable_source.find(
+        "\tup_read(&rdev->exclusive_lock);",
+        unreachable_start,
+    )
+    unreachable_end = unreachable_unlock + len(
+        "\tup_read(&rdev->exclusive_lock);"
+    )
+    require(
+        unreachable_start >= 0 and unreachable_unlock > unreachable_start,
+        "self-test wedged reset transaction boundary differs from the source",
+    )
+    unreachable_post_state[reset_source_path] = (
+        unreachable_source[:unreachable_start]
+        + "\tif (false) {\n"
+        + unreachable_source[unreachable_start:unreachable_end]
+        + "\n\t}\n\treset_result = -EPERM;\n\tpost_reset_status = 0;"
+        + unreachable_source[unreachable_end:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(unreachable_post_state)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an unreachable wedged reset transaction"
+        )
+
     intervening_post_reset_mmio = copy.deepcopy(source_texts)
     intervening_post_reset_mmio[reset_source_path] = intervening_post_reset_mmio[
         reset_source_path
@@ -1863,6 +1981,51 @@ def self_test(root: Path) -> int:
         pass
     else:
         raise InterfaceError("self-test accepted a forced reset without writer lock")
+
+    unreachable_forced_reset = copy.deepcopy(source_texts)
+    forced_source = unreachable_forced_reset[reset_implementation_path]
+    forced_function_start = forced_source.find(
+        "static int radeon_gpu_reset_internal("
+    )
+    forced_function_end = forced_source.find(
+        "\n/**\n * radeon_gpu_reset -",
+        forced_function_start,
+    )
+    require(
+        forced_function_start >= 0 and forced_function_end > forced_function_start,
+        "self-test forced reset function boundary differs from the source",
+    )
+    forced_body = forced_source[forced_function_start:forced_function_end]
+    forced_transaction_start = forced_body.find(
+        "\tdown_write(&rdev->exclusive_lock);"
+    )
+    forced_transaction_return = forced_body.rfind("\treturn r;")
+    forced_transaction_end = forced_transaction_return + len("\treturn r;")
+    require(
+        forced_transaction_start >= 0
+        and forced_transaction_return > forced_transaction_start,
+        "self-test forced reset transaction boundary differs from the source",
+    )
+    unreachable_body = (
+        forced_body[:forced_transaction_start]
+        + "\tif (false) {\n"
+        + forced_body[forced_transaction_start:forced_transaction_end]
+        + "\n\t}\n\treturn -EPERM;"
+        + forced_body[forced_transaction_end:]
+    )
+    unreachable_forced_reset[reset_implementation_path] = (
+        forced_source[:forced_function_start]
+        + unreachable_body
+        + forced_source[forced_function_end:]
+    )
+    try:
+        validate_forced_gpu_reset_transaction(unreachable_forced_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an unreachable forced GPU-reset transaction"
+        )
 
     premature_forced_unlock = copy.deepcopy(source_texts)
     premature_forced_unlock[reset_implementation_path] = premature_forced_unlock[
@@ -2001,9 +2164,9 @@ def self_test(root: Path) -> int:
     print(
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
-        "22 Palm registration source, 4 registration contract, "
+        "23 Palm registration source, 4 registration contract, "
         f"{summary_rejection_count} summary-total, "
-        "5 reset-post-state, 6 forced-reset, 1 retired-denominator, "
+        "6 reset-post-state, 7 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0

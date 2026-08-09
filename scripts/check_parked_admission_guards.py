@@ -91,6 +91,27 @@ def strip_comments(source: str) -> str:
     return LINE_COMMENT.sub(blank, BLOCK_COMMENT.sub(blank, source))
 
 
+def reject_forward_goto_over_interval(
+    body: list[str],
+    interval_start: int,
+    interval_end: int,
+    label: str,
+) -> None:
+    """Reject a goto edge that enters after a required source interval."""
+    label_positions = {
+        match.group(1): index
+        for index, line in enumerate(body)
+        if (match := re.match(r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:", line))
+    }
+    for index, line in enumerate(body):
+        for jump in re.finditer(r"\bgoto\s+([A-Za-z_][A-Za-z0-9_]*)\s*;", line):
+            target = label_positions.get(jump.group(1))
+            if target is None:
+                raise GuardError(f"{label}: goto target {jump.group(1)} is absent")
+            if index < interval_start and target >= interval_end:
+                raise GuardError(f"{label}: goto {jump.group(1)} bypasses the refusal")
+
+
 def function_body(source: str, name: str) -> list[str]:
     """Return the lines of one function body, brace-to-brace.
 
@@ -143,6 +164,12 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
             f"{guard['id']}: the gpu_parked test follows {guard['precedes']}, "
             "so it refuses nothing"
         )
+    reject_forward_goto_over_interval(
+        body,
+        min(guard_at),
+        min(guard_at) + 1,
+        guard["id"],
+    )
 
     # The refusal value decides whether the caller reaches a reset re-entry:
     # radeon_gem_handle_lockup forwards every value except -EDEADLK, which it
@@ -394,6 +421,17 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 {
 \tif (READ_ONCE(rdev->gpu_parked) && rdev->needs_reset)
 \t\treturn -EIO;
+\tr = radeon_bo_create(rdev);
+\treturn 0;
+}
+""",
+    "forward goto bypasses the guard": """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+\tgoto bypass_parked_refusal;
+\tif (READ_ONCE(rdev->gpu_parked))
+\t\treturn -EIO;
+bypass_parked_refusal:
 \tr = radeon_bo_create(rdev);
 \treturn 0;
 }
@@ -714,6 +752,24 @@ int radeon_cs_ioctl(struct drm_device *dev)
 \tif (READ_ONCE(rdev->gpu_parked)) {
 \t\tup_read(&rdev->exclusive_lock);
 \t\treturn -EIO;
+\t}
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+    "forward goto bypasses parked refusal": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tgoto bypass_parked_refusal;
+\tif (READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EIO;
+\t}
+bypass_parked_refusal:
+\tif (!rdev->accel_working) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EBUSY;
 \t}
 \tr = radeon_cs_parser_init(&parser, data);
 \treturn r;

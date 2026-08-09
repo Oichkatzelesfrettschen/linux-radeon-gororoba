@@ -1,6 +1,6 @@
 schema = 1
-capture_schema = "gororoba-radeon-driver-source-map-v1"
-comparison_schema = "gororoba-radeon-driver-source-map-comparison-v1"
+capture_schema = "gororoba-radeon-driver-source-map-v2"
+comparison_schema = "gororoba-radeon-driver-source-map-comparison-v2"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
 max_source_bytes = 7000000
@@ -283,6 +283,7 @@ evidence_rank = "kernel-source"
 name = "module-loader-init"
 partition = "module-lifecycle"
 kind = "module-macro"
+scope = "match"
 caller = "linux_module_loader"
 callee = "radeon_module_init"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -293,6 +294,7 @@ expected_matches = 1
 name = "module-loader-exit"
 partition = "module-lifecycle"
 kind = "module-macro"
+scope = "match"
 caller = "linux_module_unloader"
 callee = "radeon_module_exit"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -303,6 +305,7 @@ expected_matches = 1
 name = "pci-core-probe"
 partition = "module-lifecycle"
 kind = "callback-table"
+scope = "brace"
 caller = "pci_core_probe"
 callee = "radeon_pci_probe"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -313,6 +316,7 @@ expected_matches = 1
 name = "pci-core-shutdown"
 partition = "module-lifecycle"
 kind = "callback-table"
+scope = "brace"
 caller = "pci_core_shutdown"
 callee = "radeon_pci_shutdown"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -323,6 +327,7 @@ expected_matches = 1
 name = "drm-debugfs-register"
 partition = "kms-and-debugfs"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_primary_minor_debugfs_init"
 callee = "radeon_dev_debugfs_register"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -333,6 +338,7 @@ expected_matches = 1
 name = "drm-open"
 partition = "module-lifecycle"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_file_open"
 callee = "radeon_driver_open_kms"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -343,6 +349,7 @@ expected_matches = 1
 name = "drm-postclose"
 partition = "module-lifecycle"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_file_postclose"
 callee = "radeon_driver_postclose_kms"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -353,6 +360,7 @@ expected_matches = 1
 name = "drm-unload"
 partition = "module-lifecycle"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_device_unregister"
 callee = "radeon_driver_unload_kms"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -363,6 +371,7 @@ expected_matches = 1
 name = "drm-dumb-create"
 partition = "profile-and-admission"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_mode_create_dumb"
 callee = "radeon_mode_dumb_create"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -373,6 +382,7 @@ expected_matches = 1
 name = "drm-prime-import"
 partition = "profile-and-admission"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_gem_prime_import"
 callee = "radeon_gem_prime_import_sg_table"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -383,6 +393,7 @@ expected_matches = 1
 name = "ioctl-gem-create"
 partition = "profile-and-admission"
 kind = "ioctl-macro"
+scope = "match"
 caller = "drm_ioctl_dispatch"
 callee = "radeon_gem_create_ioctl"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -393,6 +404,7 @@ expected_matches = 1
 name = "ioctl-gem-wait-idle"
 partition = "profile-and-admission"
 kind = "ioctl-macro"
+scope = "match"
 caller = "drm_ioctl_dispatch"
 callee = "radeon_gem_wait_idle_ioctl"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -403,6 +415,7 @@ expected_matches = 1
 name = "ioctl-command-submit"
 partition = "command-submission"
 kind = "ioctl-macro"
+scope = "match"
 caller = "drm_ioctl_dispatch"
 callee = "radeon_cs_ioctl"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -413,6 +426,7 @@ expected_matches = 1
 name = "ioctl-gem-userptr"
 partition = "profile-and-admission"
 kind = "ioctl-macro"
+scope = "match"
 caller = "drm_ioctl_dispatch"
 callee = "radeon_gem_userptr_ioctl"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
@@ -423,6 +437,7 @@ expected_matches = 1
 name = "palm-reset-file-write"
 partition = "reset-and-park"
 kind = "file-operations-table"
+scope = "brace"
 caller = "vfs_write"
 callee = "radeon_force_pci_reset_safe_write"
 path = "drivers/gpu/drm/radeon/radeon_evergreen_dev.c"
@@ -433,6 +448,7 @@ expected_matches = 1
 name = "palm-reset-fops-write"
 partition = "reset-and-park"
 kind = "file-operations-table"
+scope = "brace"
 caller = "radeon_force_pci_reset_safe_fops"
 callee = "radeon_force_pci_reset_safe_write"
 path = "drivers/gpu/drm/radeon/radeon_evergreen_dev.c"
@@ -443,6 +459,7 @@ expected_matches = 1
 name = "palm-reset-node-registration"
 partition = "reset-and-park"
 kind = "debugfs-registration"
+scope = "brace"
 caller = "radeon_evergreen_dev_debugfs_register"
 callee = "radeon_force_pci_reset_safe"
 path = "drivers/gpu/drm/radeon/radeon_evergreen_dev.c"
@@ -454,6 +471,7 @@ match_literals = true
 name = "palm-reset-debugfs-node"
 partition = "reset-and-park"
 kind = "debugfs-node"
+scope = "match"
 caller = "radeon_force_pci_reset_safe"
 callee = "radeon_force_pci_reset_safe_fops"
 path = "drivers/gpu/drm/radeon/radeon_evergreen_dev.c"
@@ -465,6 +483,7 @@ match_literals = true
 name = "rs480-reset-hang-node-registration"
 partition = "reset-and-park"
 kind = "debugfs-registration"
+scope = "brace"
 caller = "rs480_candidate_regs_debugfs_init"
 callee = "radeon_rs480_reset_hang_probe"
 path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
@@ -476,6 +495,7 @@ match_literals = true
 name = "rs480-reset-hang-show"
 partition = "reset-and-park"
 kind = "show-attribute-macro"
+scope = "match"
 caller = "rs480_reset_hang_probe_fops"
 callee = "rs480_reset_hang_probe_show"
 path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
@@ -486,6 +506,7 @@ expected_matches = 1
 name = "rs480-reset-hang-debugfs-node"
 partition = "reset-and-park"
 kind = "debugfs-node"
+scope = "match"
 caller = "radeon_rs480_reset_hang_probe"
 callee = "rs480_reset_hang_probe_fops"
 path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
@@ -497,6 +518,7 @@ match_literals = true
 name = "detected-reset-wrapper-mode"
 partition = "reset-and-park"
 kind = "reset-mode"
+scope = "brace"
 caller = "radeon_gpu_reset"
 callee = "radeon_gpu_reset_internal"
 path = "drivers/gpu/drm/radeon/radeon_device.c"
@@ -507,6 +529,7 @@ expected_matches = 1
 name = "forced-reset-wrapper-mode"
 partition = "reset-and-park"
 kind = "reset-mode"
+scope = "brace"
 caller = "radeon_gpu_reset_forced"
 callee = "radeon_gpu_reset_internal"
 path = "drivers/gpu/drm/radeon/radeon_device.c"
@@ -517,6 +540,7 @@ expected_matches = 1
 name = "rs480-wedged-forced-reset-call"
 partition = "reset-and-park"
 kind = "reset-request"
+scope = "brace"
 caller = "rs480_wedged_3d_reset"
 callee = "radeon_gpu_reset_forced"
 path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
@@ -527,26 +551,29 @@ expected_matches = 1
 name = "rs480-post-reset-observation-lock"
 partition = "reset-and-park"
 kind = "locked-post-reset-read"
+scope = "brace"
 caller = "rs480_wedged_3d_reset"
 callee = "RREG32"
 path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
-pattern = '(?s)reset_result\s*=\s*radeon_gpu_reset_forced\(rdev\);\s*down_read\(&rdev->exclusive_lock\);\s*if \(rdev->gpu_parked\) \{.*?post_reset_status\s*=\s*0x5041524B;\s*\} else \{\s*post_reset_status\s*=\s*RREG32\(R_000E40_RBBM_STATUS\);\s*\}\s*up_read\(&rdev->exclusive_lock\);'
+pattern = '(?s)static int rs480_wedged_3d_reset\([^;]+\)\s*\{.*?reset_result\s*=\s*radeon_gpu_reset_forced\(rdev\);\s*down_read\(&rdev->exclusive_lock\);\s*if \(rdev->gpu_parked\) \{.*?post_reset_status\s*=\s*0x5041524B;\s*\} else \{\s*post_reset_status\s*=\s*RREG32\(R_000E40_RBBM_STATUS\);\s*\}\s*up_read\(&rdev->exclusive_lock\);'
 expected_matches = 1
 
 [[binding]]
 name = "rs480-family-asic"
 partition = "command-submission"
 kind = "family-selection"
+scope = "brace"
 caller = "CHIP_RS480"
 callee = "rs400_asic"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
-pattern = '(?s)case CHIP_RS400:\s*case CHIP_RS480:\s*rdev->asic = &rs400_asic;'
+pattern = '(?s)int radeon_asic_init\(struct radeon_device \*rdev\)\s*\{.*?case CHIP_RS400:\s*case CHIP_RS480:\s*rdev->asic = &rs400_asic;'
 expected_matches = 1
 
 [[binding]]
 name = "rs400-ring-selection"
 partition = "command-submission"
 kind = "callback-table"
+scope = "brace"
 caller = "rs400_asic"
 callee = "r300_gfx_ring"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -557,6 +584,7 @@ expected_matches = 1
 name = "r300-ring-parser"
 partition = "command-submission"
 kind = "callback-table"
+scope = "brace"
 caller = "r300_gfx_ring"
 callee = "r300_cs_parse"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -567,6 +595,7 @@ expected_matches = 1
 name = "command-parser-wrapper"
 partition = "command-submission"
 kind = "wrapper-macro"
+scope = "match"
 caller = "radeon_cs_parse"
 callee = "rdev->asic->ring[ring]->cs_parse"
 path = "drivers/gpu/drm/radeon/radeon.h"
@@ -577,16 +606,18 @@ expected_matches = 1
 name = "packet-zero-checker"
 partition = "command-submission"
 kind = "passed-function"
+scope = "brace"
 caller = "r100_cs_parse_packet0"
 callee = "r300_packet0_check"
 path = "drivers/gpu/drm/radeon/r300.c"
-pattern = '(?s)r100_cs_parse_packet0\([^;]*&r300_packet0_check\)'
+pattern = '(?s)int r300_cs_parse\(struct radeon_cs_parser \*p\)\s*\{.*?r100_cs_parse_packet0\([^;]*&r300_packet0_check\)'
 expected_matches = 1
 
 [[binding]]
 name = "rs400-reset-target"
 partition = "reset-and-park"
 kind = "callback-table"
+scope = "brace"
 caller = "rs400_asic"
 callee = "r300_asic_reset"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -597,6 +628,7 @@ expected_matches = 1
 name = "asic-reset-wrapper"
 partition = "reset-and-park"
 kind = "wrapper-macro"
+scope = "match"
 caller = "radeon_asic_reset"
 callee = "rdev->asic->asic_reset"
 path = "drivers/gpu/drm/radeon/radeon.h"
@@ -607,6 +639,7 @@ expected_matches = 1
 name = "rs400-resume-target"
 partition = "reset-and-park"
 kind = "callback-table"
+scope = "brace"
 caller = "rs400_asic"
 callee = "rs400_resume"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -617,6 +650,7 @@ expected_matches = 1
 name = "rs400-gart-flush"
 partition = "gart-and-memory"
 kind = "callback-table"
+scope = "brace"
 caller = "rs400_asic.gart"
 callee = "rs400_gart_tlb_flush"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -627,6 +661,7 @@ expected_matches = 1
 name = "rs400-gart-page-entry"
 partition = "gart-and-memory"
 kind = "callback-table"
+scope = "brace"
 caller = "rs400_asic.gart"
 callee = "rs400_gart_get_page_entry"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -637,6 +672,7 @@ expected_matches = 1
 name = "rs400-gart-set-page"
 partition = "gart-and-memory"
 kind = "callback-table"
+scope = "brace"
 caller = "rs400_asic.gart"
 callee = "rs400_gart_set_page"
 path = "drivers/gpu/drm/radeon/radeon_asic.c"
@@ -647,6 +683,7 @@ expected_matches = 1
 name = "gart-page-entry-wrapper"
 partition = "gart-and-memory"
 kind = "wrapper-macro"
+scope = "match"
 caller = "radeon_gart_get_page_entry"
 callee = "rdev->asic->gart.get_page_entry"
 path = "drivers/gpu/drm/radeon/radeon.h"
@@ -657,6 +694,7 @@ expected_matches = 1
 name = "flip-reset-work"
 partition = "reset-and-park"
 kind = "workqueue-callback"
+scope = "match"
 caller = "drm_vblank_work"
 callee = "radeon_flip_work_func"
 path = "drivers/gpu/drm/radeon/radeon_display.c"
@@ -667,6 +705,7 @@ expected_matches = 1
 name = "fence-lockup-work"
 partition = "reset-and-park"
 kind = "workqueue-callback"
+scope = "match"
 caller = "delayed_work"
 callee = "radeon_fence_check_lockup"
 path = "drivers/gpu/drm/radeon/radeon_fence.c"
@@ -677,6 +716,7 @@ expected_matches = 1
 name = "gem-object-free"
 partition = "profile-and-admission"
 kind = "callback-table"
+scope = "brace"
 caller = "drm_gem_object_release"
 callee = "radeon_gem_object_free"
 path = "drivers/gpu/drm/radeon/radeon_gem.c"
@@ -687,6 +727,7 @@ expected_matches = 1
 name = "gem-object-fault"
 partition = "profile-and-admission"
 kind = "vm-operations-table"
+scope = "brace"
 caller = "vm_fault"
 callee = "radeon_gem_fault"
 path = "drivers/gpu/drm/radeon/radeon_gem.c"
@@ -697,6 +738,7 @@ expected_matches = 1
 name = "fbdev-mmap-external"
 partition = "profile-and-admission"
 kind = "callback-table"
+scope = "brace"
 caller = "fbdev_mmap"
 callee = "fb_io_mmap"
 path = "drivers/gpu/drm/radeon/radeon_fbdev.c"
@@ -707,6 +749,7 @@ expected_matches = 1
 name = "irq-entry"
 partition = "reset-and-park"
 kind = "irq-callback"
+scope = "match"
 caller = "linux_irq_dispatch"
 callee = "radeon_driver_irq_handler_kms"
 path = "drivers/gpu/drm/radeon/radeon_irq_kms.c"
@@ -717,6 +760,7 @@ expected_matches = 1
 name = "hotplug-work"
 partition = "reset-and-park"
 kind = "workqueue-callback"
+scope = "match"
 caller = "delayed_work"
 callee = "radeon_hotplug_work_func"
 path = "drivers/gpu/drm/radeon/radeon_irq_kms.c"
@@ -727,6 +771,7 @@ expected_matches = 1
 name = "dynamic-power-work"
 partition = "reset-and-park"
 kind = "workqueue-callback"
+scope = "match"
 caller = "delayed_work"
 callee = "radeon_dynpm_idle_work_handler"
 path = "drivers/gpu/drm/radeon/radeon_pm.c"
@@ -734,13 +779,14 @@ pattern = 'INIT_DELAYED_WORK\(&rdev->pm.dynpm_idle_work,\s*radeon_dynpm_idle_wor
 expected_matches = 1
 
 [[path_witness]]
-name = "rs480-command-validation-path"
+name = "rs480-command-submission-packet-validation"
+entry = "drm_ioctl_dispatch"
+terminal = "r300_packet0_check"
 context = [
-  "rdev->family equals CHIP_RS480.",
-  "ring equals RADEON_RING_TYPE_GFX_INDEX.",
-  "The radeon_cs_parse wrapper invokes the selected ring parser.",
+  "The path requires rdev->family to equal CHIP_RS480.",
+  "The path requires ring to equal RADEON_RING_TYPE_GFX_INDEX.",
+  "The witness assumes the radeon_cs_parse callback dispatch uses the selected ring table.",
 ]
-axis_join = "The execution axis ends at the selected ring parser callback. The family axis binds that callback to r300_cs_parse for the RS480 graphics ring."
 edge = [
   { axis = "ioctl-execution", edge_kind = "declared-indirect", caller = "drm_ioctl_dispatch", callee = "radeon_cs_ioctl", partition = "command-submission", provenance = "ioctl-command-submit", classification = "ioctl-macro" },
   { axis = "ioctl-execution", edge_kind = "lexical", caller = "radeon_cs_ioctl", callee = "radeon_cs_ib_chunk", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
@@ -752,51 +798,78 @@ edge = [
   { axis = "rs480-ring-selection", edge_kind = "lexical", caller = "r300_cs_parse", callee = "r100_cs_parse_packet0", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
   { axis = "rs480-ring-selection", edge_kind = "declared-indirect", caller = "r100_cs_parse_packet0", callee = "r300_packet0_check", partition = "command-submission", provenance = "packet-zero-checker", classification = "passed-function" },
 ]
+join = [
+  { kind = "callback-selection", from_axis = "ioctl-execution", from_symbol = "rdev->asic->ring[ring]->cs_parse", to_axis = "rs480-ring-selection", to_symbol = "CHIP_RS480", evidence_ids = ["command-parser-wrapper", "r300-ring-parser", "rs400-ring-selection", "rs480-family-asic"] },
+]
 
 [[path_witness]]
-name = "rs480-wedged-reset-path"
+name = "rs480-debugfs-wedged-reset-request"
+entry = "drm_primary_minor_debugfs_init"
+terminal = "rs480_wedged_3d_reset"
 context = [
-  "The compiled ceiling and runtime profile both reach mutate-dev.",
-  "rdev->family equals CHIP_RS480.",
-  "radeon_rs480_candidate_regs is nonzero.",
-  "radeon_rs480_reset_hang_probe equals an admitted WD3A or WD3B token.",
-  "accel_working and the graphics ring ready flag are both true.",
-  "A read event invokes the registered debugfs file operations.",
+  "The path requires a mutate-dev compiled ceiling and runtime profile.",
+  "The path requires accel_working and the graphics ring ready flag to be true.",
+  "The path requires radeon_rs480_candidate_regs to be nonzero.",
+  "The path requires radeon_rs480_reset_hang_probe to equal an admitted WD3A or WD3B token.",
+  "The witness assumes a later debugfs read dispatch from the registered node.",
 ]
-axis_join = "The reset execution axis ends at the selected ASIC reset callback. The family axis binds that callback to r300_asic_reset for CHIP_RS480."
 edge = [
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "drm_primary_minor_debugfs_init", callee = "radeon_dev_debugfs_register", partition = "kms-and-debugfs", provenance = "drm-debugfs-register", classification = "callback-table" },
-  { axis = "debugfs-reset-execution", edge_kind = "lexical", caller = "radeon_dev_debugfs_register", callee = "radeon_rs480_re_debugfs_register", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
-  { axis = "debugfs-reset-execution", edge_kind = "lexical", caller = "radeon_rs480_re_debugfs_register", callee = "rs480_candidate_regs_debugfs_init", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "rs480_candidate_regs_debugfs_init", callee = "radeon_rs480_reset_hang_probe", partition = "reset-and-park", provenance = "rs480-reset-hang-node-registration", classification = "debugfs-registration" },
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "radeon_rs480_reset_hang_probe", callee = "rs480_reset_hang_probe_fops", partition = "reset-and-park", provenance = "rs480-reset-hang-debugfs-node", classification = "debugfs-node" },
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "rs480_reset_hang_probe_fops", callee = "rs480_reset_hang_probe_show", partition = "reset-and-park", provenance = "rs480-reset-hang-show", classification = "show-attribute-macro" },
-  { axis = "debugfs-reset-execution", edge_kind = "lexical", caller = "rs480_reset_hang_probe_show", callee = "rs480_wedged_3d_reset", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "rs480_wedged_3d_reset", callee = "radeon_gpu_reset_forced", partition = "reset-and-park", provenance = "rs480-wedged-forced-reset-call", classification = "reset-request" },
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "radeon_gpu_reset_forced", callee = "radeon_gpu_reset_internal", partition = "reset-and-park", provenance = "forced-reset-wrapper-mode", classification = "reset-mode" },
-  { axis = "debugfs-reset-execution", edge_kind = "lexical", caller = "radeon_gpu_reset_internal", callee = "radeon_asic_reset", partition = "full-tree", provenance = "gnu-cflow", classification = "external" },
-  { axis = "debugfs-reset-execution", edge_kind = "declared-indirect", caller = "radeon_asic_reset", callee = "rdev->asic->asic_reset", partition = "reset-and-park", provenance = "asic-reset-wrapper", classification = "wrapper-macro" },
+  { axis = "debugfs-registration", edge_kind = "declared-indirect", caller = "drm_primary_minor_debugfs_init", callee = "radeon_dev_debugfs_register", partition = "kms-and-debugfs", provenance = "drm-debugfs-register", classification = "callback-table" },
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_dev_debugfs_register", callee = "radeon_rs480_re_debugfs_register", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_rs480_re_debugfs_register", callee = "rs480_candidate_regs_debugfs_init", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "declared-indirect", caller = "rs480_candidate_regs_debugfs_init", callee = "radeon_rs480_reset_hang_probe", partition = "reset-and-park", provenance = "rs480-reset-hang-node-registration", classification = "debugfs-registration" },
+  { axis = "debugfs-read-dispatch", edge_kind = "declared-indirect", caller = "radeon_rs480_reset_hang_probe", callee = "rs480_reset_hang_probe_fops", partition = "reset-and-park", provenance = "rs480-reset-hang-debugfs-node", classification = "debugfs-node" },
+  { axis = "debugfs-read-dispatch", edge_kind = "declared-indirect", caller = "rs480_reset_hang_probe_fops", callee = "rs480_reset_hang_probe_show", partition = "reset-and-park", provenance = "rs480-reset-hang-show", classification = "show-attribute-macro" },
+  { axis = "debugfs-read-dispatch", edge_kind = "lexical", caller = "rs480_reset_hang_probe_show", callee = "rs480_wedged_3d_reset", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+]
+join = [
+  { kind = "debugfs-read-event", from_axis = "debugfs-registration", from_symbol = "radeon_rs480_reset_hang_probe", to_axis = "debugfs-read-dispatch", to_symbol = "radeon_rs480_reset_hang_probe", evidence_ids = ["rs480-reset-hang-debugfs-node", "rs480-reset-hang-node-registration", "rs480-reset-hang-show"] },
+]
+
+[[path_witness]]
+name = "rs480-wd3-forced-reset-asic-selection"
+entry = "rs480_wedged_3d_reset"
+terminal = "r300_asic_reset"
+context = [
+  "The path requires a mutate-dev compiled ceiling and runtime profile.",
+  "The path requires rdev->family to equal CHIP_RS480.",
+  "The witness assumes the WD3 helper passes its token, ring, and availability admission checks.",
+]
+edge = [
+  { axis = "forced-reset-dispatch", edge_kind = "declared-indirect", caller = "rs480_wedged_3d_reset", callee = "radeon_gpu_reset_forced", partition = "reset-and-park", provenance = "rs480-wedged-forced-reset-call", classification = "reset-request" },
+  { axis = "forced-reset-dispatch", edge_kind = "declared-indirect", caller = "radeon_gpu_reset_forced", callee = "radeon_gpu_reset_internal", partition = "reset-and-park", provenance = "forced-reset-wrapper-mode", classification = "reset-mode" },
+  { axis = "forced-reset-dispatch", edge_kind = "lexical", caller = "radeon_gpu_reset_internal", callee = "radeon_asic_reset", partition = "full-tree", provenance = "gnu-cflow", classification = "external" },
+  { axis = "forced-reset-dispatch", edge_kind = "declared-indirect", caller = "radeon_asic_reset", callee = "rdev->asic->asic_reset", partition = "reset-and-park", provenance = "asic-reset-wrapper", classification = "wrapper-macro" },
   { axis = "rs480-reset-selection", edge_kind = "declared-indirect", caller = "CHIP_RS480", callee = "rs400_asic", partition = "command-submission", provenance = "rs480-family-asic", classification = "family-selection" },
   { axis = "rs480-reset-selection", edge_kind = "declared-indirect", caller = "rs400_asic", callee = "r300_asic_reset", partition = "reset-and-park", provenance = "rs400-reset-target", classification = "callback-table" },
 ]
+join = [
+  { kind = "callback-selection", from_axis = "forced-reset-dispatch", from_symbol = "rdev->asic->asic_reset", to_axis = "rs480-reset-selection", to_symbol = "CHIP_RS480", evidence_ids = ["asic-reset-wrapper", "rs400-reset-target", "rs480-family-asic"] },
+]
 
 [[path_witness]]
-name = "palm-pci-reset-path"
+name = "palm-debugfs-pci-config-reset"
+entry = "drm_primary_minor_debugfs_init"
+terminal = "radeon_pci_config_reset"
 context = [
-  "The compiled ceiling and runtime profile both reach mutate-dev.",
-  "rdev->family equals CHIP_PALM.",
-  "The write begins at position zero and contains the exact command 1.",
-  "radeon_dev_hardware_available returns zero.",
-  "radeon_palm_pci_reset_unsafe equals 1.",
+  "The path requires a mutate-dev compiled ceiling and runtime profile.",
+  "The path requires radeon_dev_hardware_available to return zero.",
+  "The path requires radeon_palm_pci_reset_unsafe to equal 1.",
+  "The path requires rdev->family to equal CHIP_PALM.",
+  "The path requires the write to begin at position zero and contain the exact command 1.",
+  "The witness assumes a later debugfs write dispatch from the registered node.",
 ]
-axis_join = "The registered Palm debugfs node selects its file operations table, and the table selects the bounded write handler."
 edge = [
-  { axis = "debugfs-write-execution", edge_kind = "declared-indirect", caller = "drm_primary_minor_debugfs_init", callee = "radeon_dev_debugfs_register", partition = "kms-and-debugfs", provenance = "drm-debugfs-register", classification = "callback-table" },
-  { axis = "debugfs-write-execution", edge_kind = "lexical", caller = "radeon_dev_debugfs_register", callee = "radeon_evergreen_dev_debugfs_register", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
-  { axis = "debugfs-write-execution", edge_kind = "declared-indirect", caller = "radeon_evergreen_dev_debugfs_register", callee = "radeon_force_pci_reset_safe", partition = "reset-and-park", provenance = "palm-reset-node-registration", classification = "debugfs-registration" },
-  { axis = "debugfs-write-execution", edge_kind = "declared-indirect", caller = "radeon_force_pci_reset_safe", callee = "radeon_force_pci_reset_safe_fops", partition = "reset-and-park", provenance = "palm-reset-debugfs-node", classification = "debugfs-node" },
-  { axis = "debugfs-write-execution", edge_kind = "declared-indirect", caller = "radeon_force_pci_reset_safe_fops", callee = "radeon_force_pci_reset_safe_write", partition = "reset-and-park", provenance = "palm-reset-fops-write", classification = "file-operations-table" },
-  { axis = "debugfs-write-execution", edge_kind = "lexical", caller = "radeon_force_pci_reset_safe_write", callee = "evergreen_gpu_pci_config_reset_safe", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "declared-indirect", caller = "drm_primary_minor_debugfs_init", callee = "radeon_dev_debugfs_register", partition = "kms-and-debugfs", provenance = "drm-debugfs-register", classification = "callback-table" },
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_dev_debugfs_register", callee = "radeon_evergreen_dev_debugfs_register", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "declared-indirect", caller = "radeon_evergreen_dev_debugfs_register", callee = "radeon_force_pci_reset_safe", partition = "reset-and-park", provenance = "palm-reset-node-registration", classification = "debugfs-registration" },
+  { axis = "debugfs-write-dispatch", edge_kind = "declared-indirect", caller = "radeon_force_pci_reset_safe", callee = "radeon_force_pci_reset_safe_fops", partition = "reset-and-park", provenance = "palm-reset-debugfs-node", classification = "debugfs-node" },
+  { axis = "debugfs-write-dispatch", edge_kind = "declared-indirect", caller = "radeon_force_pci_reset_safe_fops", callee = "radeon_force_pci_reset_safe_write", partition = "reset-and-park", provenance = "palm-reset-fops-write", classification = "file-operations-table" },
+  { axis = "debugfs-write-dispatch", edge_kind = "lexical", caller = "radeon_force_pci_reset_safe_write", callee = "evergreen_gpu_pci_config_reset_safe", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-write-dispatch", edge_kind = "lexical", caller = "evergreen_gpu_pci_config_reset_safe", callee = "radeon_pci_config_reset", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+]
+join = [
+  { kind = "debugfs-write-event", from_axis = "debugfs-registration", from_symbol = "radeon_force_pci_reset_safe", to_axis = "debugfs-write-dispatch", to_symbol = "radeon_force_pci_reset_safe", evidence_ids = ["palm-reset-debugfs-node", "palm-reset-fops-write", "palm-reset-node-registration"] },
 ]
 
 [[bounded_query]]
