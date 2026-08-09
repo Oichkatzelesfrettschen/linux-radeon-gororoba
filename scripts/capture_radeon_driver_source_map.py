@@ -1693,6 +1693,52 @@ def build_lexical_index(
     return rows
 
 
+def canonical_ctags_record(
+    line: str,
+    label: str,
+    row_number: int,
+) -> tuple[str, ...]:
+    fields = line.split("\t")
+    require(
+        len(fields) >= 4 and all(fields[:3]),
+        f"{label} row {row_number} is malformed",
+    )
+    require(
+        re.fullmatch(r'[1-9][0-9]*;"', fields[2]) is not None,
+        f"{label} row {row_number} has a nonnumeric address",
+    )
+    normalized_extensions: list[str] = []
+    extension_keys: set[str] = set()
+    for extension in fields[3:]:
+        require(extension, f"{label} row {row_number} has an empty extension")
+        if ":" in extension:
+            key, _separator, value = extension.partition(":")
+            require(
+                C_IDENTIFIER.fullmatch(key) is not None,
+                f"{label} row {row_number} has an invalid extension key",
+            )
+            normalized = extension
+        else:
+            key = "kind"
+            value = extension
+            normalized = f"kind:{extension}"
+        require(
+            key not in extension_keys and (key != "kind" or value),
+            f"{label} row {row_number} repeats or empties an extension",
+        )
+        extension_keys.add(key)
+        normalized_extensions.append(normalized)
+    require(
+        "kind" in extension_keys and "line" in extension_keys,
+        f"{label} row {row_number} omits kind or line identity",
+    )
+    require(
+        f"line:{fields[2][:-2]}" in normalized_extensions,
+        f"{label} row {row_number} line identity differs from its address",
+    )
+    return (*fields[:3], *sorted(normalized_extensions))
+
+
 def build_ctags_index(
     capture_root: Path,
     source_root: Path,
@@ -4014,19 +4060,40 @@ def verify_capture(
     ]
     require(ctags_rows, "Ctags index carries no source records")
     ctags_source_classes: set[str] = set()
+    ctags_records: list[tuple[str, ...]] = []
     for row_number, line in enumerate(ctags_rows, 1):
-        fields = line.split("\t")
-        require(len(fields) >= 3 and fields[0], f"Ctags row {row_number} is malformed")
-        source_entry = entry_map.get(fields[1])
+        record = canonical_ctags_record(line, "Ctags", row_number)
+        source_entry = entry_map.get(record[1])
         require(
             source_entry is not None
             and source_entry.source_class in {"c", "header"},
-            f"Ctags row {row_number} names a foreign source path: {fields[1]}",
+            f"Ctags row {row_number} names a foreign source path: {record[1]}",
         )
         ctags_source_classes.add(source_entry.source_class)
+        ctags_records.append(record)
     require(
         ctags_source_classes == {"c", "header"},
         "Ctags index does not cover both C and header sources",
+    )
+    require(
+        len(set(ctags_records)) == len(ctags_records),
+        "Ctags index repeats a normalized source record",
+    )
+    readtags_all_lines = (
+        root / "indexes/ctags/readtags-all.txt"
+    ).read_text(encoding="utf-8").splitlines()
+    require(
+        readtags_all_lines and all(readtags_all_lines),
+        "readtags full selection is empty or carries an empty row",
+    )
+    readtags_all_records = [
+        canonical_ctags_record(line, "readtags", row_number)
+        for row_number, line in enumerate(readtags_all_lines, 1)
+    ]
+    require(
+        len(set(readtags_all_records)) == len(readtags_all_records)
+        and set(readtags_all_records) == set(ctags_records),
+        "readtags full selection differs from the retained Ctags index",
     )
     root_symbols = sorted(
         {root_symbol for partition in policy.partitions for root_symbol in partition.roots}
@@ -4036,15 +4103,15 @@ def verify_capture(
         root / "queries/readtags-root-symbols.txt"
     ).read_text(encoding="utf-8").splitlines()
     require(readtags_lines, "readtags root selection is empty")
-    retained_tag_rows = set(ctags_rows)
-    for line in readtags_lines:
-        fields = line.split("\t")
-        require(
-            len(fields) >= 3
-            and fields[0] in root_symbols
-            and line in retained_tag_rows,
-            "readtags root selection differs from the retained Ctags index",
-        )
+    expected_readtags_lines = [
+        line
+        for line in readtags_all_lines
+        if line.split("\t", 1)[0] in set(root_symbols)
+    ]
+    require(
+        readtags_lines == expected_readtags_lines,
+        "readtags root selection differs from the retained full query",
+    )
     ctags_coverage_columns, ctags_coverage_rows = read_tsv(
         root / "queries/ctags-root-coverage.tsv",
         "radeon-driver-ctags-root-coverage-v1",
@@ -5070,6 +5137,35 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "Ctags forced C language indexes C and header functions",
             {row.split("\t", 1)[0] for row in ctags_fixture_rows}
             == {"ctags_c_fixture", "ctags_header_fixture"},
+        )
+        fixture_tag_lines = [
+            line
+            for line in (
+                temp / "capture/indexes/ctags/tags"
+            ).read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("!_TAG_")
+        ]
+        fixture_readtags_lines = (
+            temp / "capture/indexes/ctags/readtags-all.txt"
+        ).read_text(encoding="utf-8").splitlines()
+        check(
+            "readtags field ordering preserves each Ctags record identity",
+            {
+                canonical_ctags_record(line, "Ctags fixture", row_number)
+                for row_number, line in enumerate(fixture_tag_lines, 1)
+            }
+            == {
+                canonical_ctags_record(line, "readtags fixture", row_number)
+                for row_number, line in enumerate(fixture_readtags_lines, 1)
+            },
+        )
+        rejects(
+            "Ctags record parser rejects an address and line mismatch",
+            lambda: canonical_ctags_record(
+                'symbol\tfixture.c\t1;"\tfunction\tline:2',
+                "changed Ctags fixture",
+                1,
+            ),
         )
         check(
             "Ctags forced C language emits no warnings",
