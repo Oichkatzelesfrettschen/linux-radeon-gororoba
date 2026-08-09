@@ -36,12 +36,14 @@ d57a22ad5356637d7075cb2aba83e22af71f7bfb) across split production capability,
 development capability, and RS482 board policy. The package attestation records
 signed artifacts and successful dual-kernel DKMS lifecycles, while target
 contact, installation, module load, and hardware operation remain NOT RUN for
-0.7-1. This repository's current HEAD carries the same driver-tree object as
-that pin; later commits change only source correspondence and attestation
-surfaces. The signed 0.6-1 production and board-policy packages remain the most
-recent installed and runtime-accepted RS482 authority. The signed 0.5-1 and
-0.4-3 sets remain deeper rollback authorities, and the 0.3-96
-legacy-equivalent acceptance remains the deeper retained baseline.
+0.7-1. The peeled source commit carries that exact driver-tree object. Later
+repository commits may supersede source mechanisms without superseding the
+signed deployment pin; they remain unshipped until radeon-custom records a new
+source pin, package attestation, and module lifecycle. The signed 0.6-1
+production and board-policy packages remain the most recent installed and
+runtime-accepted RS482 authority. The signed 0.5-1 and 0.4-3 sets remain deeper
+rollback authorities, and the 0.3-96 legacy-equivalent acceptance remains the
+deeper retained baseline.
 
 The retained parked-device silicon verdict covers the older 0.6-1 module. An
 attended RS482 park latched `gpu_parked`; fresh native GEM creates, USERPTR
@@ -134,6 +136,24 @@ reproduces what the legacy tree shipped.
 hardware claim binds to. `RS485M` names the platform chipset of the target
 machine, sourced from DMI and the `1002:5950` host bridge, and it stays out of
 GPU register and reset claims.
+
+## Memory path contracts
+
+The active RS4xx memory-path source model has two finite owners:
+
+* `policy/rs4xx-gart-memory-path.tsv` covers GART, TTM, BO mapping, PTE
+  publication, userptr ownership, CPU mappings, and teardown. Its narrative is
+  `docs/rs4xx-gart-bo-lifecycle-contract.md`.
+* `policy/radeon-cs-reservation-fence-contract.tsv` covers command admission,
+  BO reservations, dependency import, IB scheduling, r300 fence commands, and
+  reservation-fence publication. Its narrative is
+  `docs/radeon-cs-reservation-fence-contract.md`.
+
+Both ledgers separate source status from runtime and silicon status. In
+particular, reservation fences and emitted cache commands prove software and
+ring order, not cached-GTT payload visibility. Exact RS482 payload and replay
+verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM, address
+domain, PAT, MTRR, and event-scoped aperture observations.
 
 ## License
 

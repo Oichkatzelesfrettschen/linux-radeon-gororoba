@@ -270,6 +270,14 @@ jobs:
         run: python3 scripts/check_rs4xx_gart_cache_policy.py --selftest
       - name: RS4xx GART cache policy
         run: python3 scripts/check_rs4xx_gart_cache_policy.py
+      - name: Radeon GART lifecycle calibration
+        run: python3 scripts/check_radeon_gart_lifecycle.py --selftest
+      - name: Radeon GART lifecycle contract
+        run: python3 scripts/check_radeon_gart_lifecycle.py
+      - name: Radeon CS reservation and fence calibration
+        run: python3 scripts/check_radeon_cs_reservation_fence_contract.py --selftest
+      - name: Radeon CS reservation and fence contract
+        run: python3 scripts/check_radeon_cs_reservation_fence_contract.py
       - name: legacy patch denominator calibration
         run: python3 scripts/check_legacy_patch_denominator.py --selftest
       - name: legacy patch denominator
