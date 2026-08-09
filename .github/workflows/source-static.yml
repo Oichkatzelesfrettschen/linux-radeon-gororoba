@@ -386,6 +386,15 @@ jobs:
         run: python3 scripts/check_kernel_build_root.py --self-test
       - name: source manifest calibration
         run: python3 scripts/manifest_source_tree.py --self-test
+      - name: Radeon driver source map calibration
+        run: python3 scripts/capture_radeon_driver_source_map.py --self-test
+      - name: Radeon driver source map
+        run: |
+          output="${RUNNER_TEMP}/radeon-driver-source-map"
+          python3 scripts/capture_radeon_driver_source_map.py \
+            --output "$output"
+          python3 scripts/capture_radeon_driver_source_map.py \
+            --verify "$output"
       - name: source closure calibration
         run: python3 scripts/check_source_closure.py --self-test
       - name: source equivalence attestation calibration

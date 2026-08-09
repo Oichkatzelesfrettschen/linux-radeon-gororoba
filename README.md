@@ -81,6 +81,54 @@ acceptance the legacy tree expressed only as a bit inside a generated header.
 A clean checkout therefore builds every generated header from source, and no
 tracked file is a build output.
 
+## Radeon driver source map
+
+`scripts/capture_radeon_driver_source_map.py` exports a named commit through
+Git, applies the tracked source closure, and writes an immutable source
+intelligence bundle outside the repository. The bundle retains all 221 source
+inputs, the complete C and header denominator, GNU Global definitions and
+references with stable database dumps, ctags, the portable cscope cross
+reference, GNU cflow indexes, partitioned cflow trees,
+declared and extracted callback bindings, bounded absence queries, complexity
+measurements, coefficient vectors, linked profile modules and their defined
+symbols, command metadata, analyzer diagnostics, and a complete SHA-256 ledger.
+
+The optional kernel roots add preprocessed views for every declared kernel and
+profile lane. Each root requires a matching toolchain bin directory. The
+capture verifies the Clang and LLD versions against the retained kernel root
+declaration and records every kernel tool executable hash. Kbuild then compiles
+the module and emits the selected translation units with temporary, toolchain,
+and kernel-root paths normalized in the retained products.
+
+```sh
+source_commit=$(git rev-parse HEAD)
+output="/var/tmp/linux-radeon-gororoba-source-intelligence/radeon-driver-lifecycle-admission-reset-source-map/${source_commit}"
+python3 scripts/capture_radeon_driver_source_map.py \
+  --treeish "$source_commit" \
+  --output "$output" \
+  --kernel-build-root /opt/gororoba/kernel-builds/6.18.38-2-cachyos-lts \
+  --kernel-build-root /opt/gororoba/kernel-builds/7.1.4-1-cachyos \
+  --kernel-toolchain-bin 6.18.38-2-cachyos-lts=/var/tmp/gororoba-toolchains/llvm-22.1.6/usr/bin \
+  --kernel-toolchain-bin 7.1.4-1-cachyos=/var/tmp/gororoba-toolchains/llvm-22.1.8/usr/bin
+python3 scripts/capture_radeon_driver_source_map.py --verify "$output"
+```
+
+The union of `radeon-driver-lexical-map.tsv`,
+`radeon-driver-declared-bindings.tsv`, and `analysis/call-candidates.tsv` is a
+candidate research graph. It never proves runtime reachability, build-profile
+inclusion, preprocessor activation, callback invocation, framework ordering,
+hardware behavior, or completeness of indirect bindings. Preprocessed views
+resolve named build lanes without changing that boundary.
+
+Two captures compare through normalized tables rather than analyzer database
+bytes:
+
+```sh
+python3 scripts/capture_radeon_driver_source_map.py \
+  --compare "$left_capture" "$right_capture" \
+  --output "$comparison_output"
+```
+
 ## Build profiles
 
 The no-flag build selects `prod`. Development builds form one monotone profile
