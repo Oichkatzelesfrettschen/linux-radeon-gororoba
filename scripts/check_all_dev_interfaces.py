@@ -102,8 +102,10 @@ RUNTIME_SOURCE_PATTERNS = {
         r"rdev->dev_context\.profile = profile",
     ),
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
-        r"static bool rs480_debugfs_refuse_if_parked\(.*?\)\n\{.*?"
+        r"static void rs480_debugfs_emit_schema\(.*?\)\n\{.*?"
         r"RADEON_DEV_OUTPUT_SCHEMA_LINE",
+        r"static bool rs480_debugfs_refuse_if_parked\(.*?\)\n\{.*?"
+        r"rs480_debugfs_emit_schema",
         r"void radeon_rs480_re_debugfs_register\(.*?\)\n\{.*?"
         r"RADEON_DEV_PROFILE_OBSERVE",
         r"static void rs480_candidate_regs_debugfs_init\(.*?\)\n\{.*?"
@@ -135,6 +137,80 @@ RUNTIME_SOURCE_PATTERNS = {
         r"radeon_dev_profile_enabled\(.*?"
         r"RADEON_DEV_PROFILE_MUTATE",
     ),
+}
+RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
+    {
+        "rs400_debugfs_gart_page_table_show",
+        "rs480_candidate_config_regs_show",
+        "rs480_candidate_firmware_read_regs_show",
+        "rs480_candidate_ga_regs_show",
+        "rs480_candidate_gart_mc_regs_show",
+        "rs480_candidate_gart_status_regs_show",
+        "rs480_candidate_gb_regs_show",
+        "rs480_candidate_mc_benign_regs_show",
+        "rs480_candidate_rb3d_regs_show",
+        "rs480_candidate_sc_regs_show",
+        "rs480_candidate_vap_regs_show",
+        "rs480_candidate_vip_straggler_regs_show",
+        "rs480_candidate_zb_regs_show",
+        "rs480_cp_ib_scratch_oracle_show",
+        "rs480_cp_me_oracle_show",
+        "rs480_cp_me_ram_inject_show",
+        "rs480_cp_me_ram_seq_show",
+        "rs480_force_clock_3d_read_show",
+        "rs480_force_clock_read_show",
+        "rs480_frontier_probe_show",
+        "rs480_gated_read_show",
+        "rs480_hazard_read_show",
+        "rs480_pll_regs_show",
+        "rs480_reset_hang_probe_show",
+        "rs480_safe_regs_show",
+        "rs480_sclk_cntl_show",
+        "rs480_uma_status_show",
+        "rs480_vertex_probe_show",
+    }
+)
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 30
+RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
+RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
+    "radeon_rs480_candidate_config_regs": "rs480_candidate_config_regs_fops",
+    "radeon_rs480_candidate_firmware_read_regs": (
+        "rs480_candidate_firmware_read_regs_fops"
+    ),
+    "radeon_rs480_candidate_ga_regs": "rs480_candidate_ga_regs_fops",
+    "radeon_rs480_candidate_gart_mc_regs": "rs480_candidate_gart_mc_regs_fops",
+    "radeon_rs480_candidate_gart_status_regs": (
+        "rs480_candidate_gart_status_regs_fops"
+    ),
+    "radeon_rs480_candidate_gb_regs": "rs480_candidate_gb_regs_fops",
+    "radeon_rs480_candidate_mc_benign_regs": (
+        "rs480_candidate_mc_benign_regs_fops"
+    ),
+    "radeon_rs480_candidate_rb3d_regs": "rs480_candidate_rb3d_regs_fops",
+    "radeon_rs480_candidate_regs": "rs480_candidate_config_regs_fops",
+    "radeon_rs480_candidate_sc_regs": "rs480_candidate_sc_regs_fops",
+    "radeon_rs480_candidate_vap_regs": "rs480_candidate_vap_regs_fops",
+    "radeon_rs480_candidate_vip_straggler_regs": (
+        "rs480_candidate_vip_straggler_regs_fops"
+    ),
+    "radeon_rs480_candidate_z_regs": "rs480_candidate_zb_regs_fops",
+    "radeon_rs480_candidate_zb_regs": "rs480_candidate_zb_regs_fops",
+    "radeon_rs480_cp_ib_scratch_oracle": "rs480_cp_ib_scratch_oracle_fops",
+    "radeon_rs480_cp_me_oracle": "rs480_cp_me_oracle_fops",
+    "radeon_rs480_cp_me_ram_dump": "rs480_cp_me_ram_dump_fops",
+    "radeon_rs480_cp_me_ram_inject": "rs480_cp_me_ram_inject_fops",
+    "radeon_rs480_force_clock_3d_read": "rs480_force_clock_3d_read_fops",
+    "radeon_rs480_force_clock_read": "rs480_force_clock_read_fops",
+    "radeon_rs480_frontier_probe": "rs480_frontier_probe_fops",
+    "radeon_rs480_gart_page_table": "rs400_debugfs_gart_page_table_fops",
+    "radeon_rs480_gated_read": "rs480_gated_read_fops",
+    "radeon_rs480_hazard_read": "rs480_hazard_read_fops",
+    "radeon_rs480_pll_regs": "rs480_pll_regs_fops",
+    "radeon_rs480_reset_hang_probe": "rs480_reset_hang_probe_fops",
+    "radeon_rs480_safe_regs": "rs480_safe_regs_fops",
+    "radeon_rs480_sclk_cntl": "rs480_sclk_cntl_fops",
+    "radeon_rs480_uma_status": "rs480_uma_status_fops",
+    "radeon_rs480_vertex_probe": "rs480_vertex_probe_fops",
 }
 MUTATION_AUDIT_PATTERNS = {
     "palm-reset-controls": (
@@ -541,6 +617,320 @@ def validate_output_schema_version(root: Path) -> None:
         pinned.group(1) == macro.group(1),
         "build-features.toml output_schema_version differs from "
         "RADEON_DEV_OUTPUT_SCHEMA_VERSION",
+    )
+
+
+def validate_rs4xx_output_schema_paths(
+    rows: list[dict[str, str]],
+    source: str,
+    expected_show_functions: frozenset[str] = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS,
+) -> None:
+    """Prove that every readable RS4xx development node reaches the schema
+    emitter before its first output or control-flow exit."""
+    rs4xx_nodes = {
+        row["marker"]
+        for row in rows
+        if row["marker_type"] == "debugfs-file"
+        and row["source_path"] == "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    }
+    readable_nodes = rs4xx_nodes - RS4XX_WRITE_ONLY_DEBUGFS_NODES
+    require(
+        len(readable_nodes) == RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT,
+        "RS4xx readable debugfs node denominator differs",
+    )
+
+    source_without_comments = strip_comments(source)
+    registration_pattern = re.compile(
+        r'debugfs_create_file\(\s*"(?P<node>radeon_rs480_[^"]+)"\s*,'
+        r"\s*0[0-7]+\s*,.*?,\s*&(?P<fops>[A-Za-z0-9_]+)\s*\);",
+        re.DOTALL,
+    )
+    registrations = list(registration_pattern.finditer(source_without_comments))
+    registered_node_fops = {
+        match.group("node"): match.group("fops") for match in registrations
+    }
+    require(
+        len(registered_node_fops) == len(registrations),
+        "RS4xx debugfs registration contains a duplicate node",
+    )
+    readable_node_fops = {
+        node: fops
+        for node, fops in registered_node_fops.items()
+        if node not in RS4XX_WRITE_ONLY_DEBUGFS_NODES
+    }
+    require(
+        readable_node_fops == RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
+        "RS4xx readable debugfs node-to-fops map differs",
+    )
+    require(
+        readable_nodes == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS),
+        "RS4xx readable debugfs manifest and fops map differ",
+    )
+
+    discovered_show_functions = frozenset(
+        re.findall(
+            r"^static int ([A-Za-z0-9_]+_show)\s*\(",
+            source_without_comments,
+            re.MULTILINE,
+        )
+    )
+    require(
+        discovered_show_functions == expected_show_functions,
+        "RS4xx output-schema show-function denominator differs",
+    )
+    custom_fops = {
+        "rs480_cp_me_ram_dump_fops",
+        "rs480_cp_me_ram_inject_fops",
+    }
+    defined_show_names = set(
+        re.findall(
+            r"\bDEFINE_SHOW_ATTRIBUTE\(([A-Za-z0-9_]+)\);",
+            source_without_comments,
+        )
+    )
+    require(
+        {f"{name}_fops" for name in defined_show_names}
+        == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS.values()) - custom_fops,
+        "RS4xx DEFINE_SHOW_ATTRIBUTE fops denominator differs",
+    )
+    require(
+        {f"{name}_show" for name in defined_show_names}
+        == set(discovered_show_functions)
+        - {"rs480_cp_me_ram_inject_show", "rs480_cp_me_ram_seq_show"},
+        "RS4xx DEFINE_SHOW_ATTRIBUTE handler denominator differs",
+    )
+    require(
+        len(
+            re.findall(
+                r"\bRADEON_DEV_OUTPUT_SCHEMA_LINE\b",
+                strip_comments_and_literals(source),
+            )
+        )
+        == 1,
+        "RS4xx schema-line emission is not centralized",
+    )
+
+    emitter_body = function_body(source, "rs480_debugfs_emit_schema")
+    require_one_match(
+        emitter_body,
+        r"^static void rs480_debugfs_emit_schema\(struct seq_file \*m\)\s*"
+        r"\{\s*if \(m->count == 0\)\s*"
+        r"seq_puts\(m, RADEON_DEV_OUTPUT_SCHEMA_LINE\);\s*\}$",
+        "RS4xx schema emitter",
+    )
+
+    hardware_refusal_body = function_body(
+        source,
+        "rs480_debugfs_refuse_hardware_access",
+    )
+    require(
+        "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in hardware_refusal_body
+        and "rs480_debugfs_emit_schema" not in hardware_refusal_body,
+        "RS4xx hardware-refusal gate emits an output schema",
+    )
+    refusal_body = function_body(source, "rs480_debugfs_refuse_if_parked")
+    refusal_schema = require_one_match(
+        refusal_body,
+        r"\brs480_debugfs_emit_schema\(m\);",
+        "RS4xx parked-state schema route",
+    )
+    require_outer_function_match(
+        refusal_body,
+        refusal_schema,
+        "RS4xx parked-state schema route",
+    )
+    refusal_delegate = require_one_match(
+        refusal_body,
+        r"\breturn rs480_debugfs_refuse_hardware_access\(m, rdev\);",
+        "RS4xx parked-state hardware-refusal route",
+    )
+    require_outer_function_match(
+        refusal_body,
+        refusal_delegate,
+        "RS4xx parked-state hardware-refusal route",
+    )
+    require(
+        refusal_schema.start() < refusal_delegate.start(),
+        "RS4xx parked-state route checks hardware before emitting its schema",
+    )
+
+    candidate_body = function_body(source, "rs480_candidate_regs_emit")
+    candidate_refusal = require_one_match(
+        candidate_body,
+        r"\bif \(rs480_debugfs_refuse_if_parked\(m, rdev\)\)",
+        "RS4xx candidate-register schema route",
+    )
+    require_outer_function_match(
+        candidate_body,
+        candidate_refusal,
+        "RS4xx candidate-register schema route",
+    )
+
+    route_patterns = (
+        (
+            "direct schema emitter",
+            re.compile(r"\brs480_debugfs_emit_schema\(m\);"),
+        ),
+        (
+            "parked-state schema route",
+            re.compile(
+                r"\bif\s*\(\s*rs480_debugfs_refuse_if_parked\(\s*m\s*,"
+                r"[^)]*\)\s*\)"
+            ),
+        ),
+        (
+            "candidate-register schema route",
+            re.compile(r"\breturn\s+rs480_candidate_regs_emit\(\s*m\s*,"),
+        ),
+    )
+    output_call = re.compile(r"\bseq_[A-Za-z0-9_]+\s*\(")
+    control_exit = re.compile(r"\b(?:goto|return)\b")
+    for function_name in sorted(discovered_show_functions):
+        if function_name == "rs480_cp_me_ram_seq_show":
+            continue
+        body = function_body(source, function_name)
+        routes = [
+            (match.start(), label, match)
+            for label, pattern in route_patterns
+            for match in pattern.finditer(body)
+        ]
+        require(bool(routes), f"{function_name} has no output-schema route")
+        _, label, first_route = min(routes, key=lambda route: route[0])
+        require_outer_function_match(body, first_route, f"{function_name} {label}")
+        prefix = strip_comments_and_literals(body[: first_route.start()])
+        require(
+            control_exit.search(prefix) is None,
+            f"{function_name} can exit before its output-schema route",
+        )
+        require(
+            output_call.search(prefix) is None,
+            f"{function_name} can emit output before its output-schema route",
+        )
+
+    dump_start_body = function_body(source, "rs480_cp_me_ram_seq_start")
+    dump_header_start = require_one_match(
+        dump_start_body,
+        r"if \(\*pos == 0\)\s*return SEQ_START_TOKEN;",
+        "RS4xx CP-ME dump header start",
+    )
+    require_outer_function_match(
+        dump_start_body,
+        dump_header_start,
+        "RS4xx CP-ME dump header start",
+    )
+    dump_disabled_start = require_one_match(
+        dump_start_body,
+        r"if \(radeon_rs480_cp_me_ram_dump != 1\)\s*return NULL;",
+        "RS4xx CP-ME dump disabled termination",
+    )
+    dump_limit_start = require_one_match(
+        dump_start_body,
+        r"if \(\*pos > RS480_CP_ME_RAM_DUMP_LIMIT\)\s*return NULL;",
+        "RS4xx CP-ME dump start bound",
+    )
+    dump_start_return = require_one_match(
+        dump_start_body,
+        r"\breturn pos;",
+        "RS4xx CP-ME dump initial record",
+    )
+    require_outer_function_match(
+        dump_start_body,
+        dump_start_return,
+        "RS4xx CP-ME dump initial record",
+    )
+    require(
+        dump_header_start.start()
+        < dump_disabled_start.start()
+        < dump_limit_start.start()
+        < dump_start_return.start(),
+        "RS4xx CP-ME dump start gates are out of order",
+    )
+    dump_next_body = function_body(source, "rs480_cp_me_ram_seq_next")
+    require_one_match(
+        dump_next_body,
+        r"if \(radeon_rs480_cp_me_ram_dump != 1 \|\|\s*"
+        r"rdev->gpu_parked \|\| READ_ONCE\(rdev->asic_suspended\) \|\|\s*"
+        r"\*pos > RS480_CP_ME_RAM_DUMP_LIMIT\)\s*return NULL;",
+        "RS4xx CP-ME dump iterator termination",
+    )
+    dump_show_body = function_body(source, "rs480_cp_me_ram_seq_show")
+    require(
+        "rs480_debugfs_refuse_if_parked" not in dump_show_body,
+        "RS4xx CP-ME dump data route can re-emit its schema",
+    )
+    dump_header = require_one_match(
+        dump_show_body,
+        r"if \(v == SEQ_START_TOKEN\)\s*\{.*?\n\t\}",
+        "RS4xx CP-ME dump header record",
+    )
+    require_outer_function_match(
+        dump_show_body,
+        dump_header,
+        "RS4xx CP-ME dump header record",
+    )
+    require_one_match(
+        dump_header.group(0),
+        r"\brs480_debugfs_emit_schema\(m\);",
+        "RS4xx CP-ME dump header schema",
+    )
+    require_one_match(
+        dump_header.group(0),
+        r"\brs480_debugfs_refuse_hardware_access\(m, rdev\)",
+        "RS4xx CP-ME dump header hardware-refusal route",
+    )
+    dump_disarmed = require_one_match(
+        dump_header.group(0),
+        r"if \(radeon_rs480_cp_me_ram_dump != 1\)\s*seq_puts\(m,",
+        "RS4xx CP-ME dump disarmed record",
+    )
+    dump_data_refusal = require_one_match(
+        dump_show_body[dump_header.end() :],
+        r"\brs480_debugfs_refuse_hardware_access\(m, rdev\)",
+        "RS4xx CP-ME dump data hardware-refusal route",
+    )
+    dump_address = require_one_match(
+        dump_show_body,
+        r"\*\(loff_t \*\)v - 1",
+        "RS4xx CP-ME dump address dereference",
+    )
+    require(
+        dump_header.start() < dump_address.start()
+        and dump_disarmed.start() < dump_header.end()
+        and dump_data_refusal.start() < dump_address.start() - dump_header.end(),
+        "RS4xx CP-ME dump dereferences the iterator before its disarmed record",
+    )
+
+    require_one_match(
+        source_without_comments,
+        r"static const struct seq_operations rs480_cp_me_ram_seq_ops = \{.*?"
+        r"\.show\s*=\s*rs480_cp_me_ram_seq_show,.*?\};",
+        "RS4xx CP-ME dump sequence show binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static int rs480_cp_me_ram_dump_open\(.*?\n\{.*?"
+        r"seq_open\(file, &rs480_cp_me_ram_seq_ops\)",
+        "RS4xx CP-ME dump open binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static const struct file_operations rs480_cp_me_ram_dump_fops = \{"
+        r".*?\.open\s*=\s*rs480_cp_me_ram_dump_open,.*?"
+        r"\.read\s*=\s*seq_read,.*?\};",
+        "RS4xx CP-ME dump fops binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static int rs480_cp_me_ram_inject_open\(.*?\n\{.*?"
+        r"single_open\(file, rs480_cp_me_ram_inject_show, inode->i_private\)",
+        "RS4xx CP-ME injection show binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static const struct file_operations rs480_cp_me_ram_inject_fops = \{"
+        r".*?\.open\s*=\s*rs480_cp_me_ram_inject_open,.*?"
+        r"\.read\s*=\s*seq_read,.*?\};",
+        "RS4xx CP-ME injection fops binding",
     )
 
 
@@ -1308,6 +1698,10 @@ def validate(
             root / "policy/dev-interface-registration-contract.tsv"
         )
         validate_output_schema_version(root)
+        validate_rs4xx_output_schema_paths(
+            rows,
+            source_texts["drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"],
+        )
         validate_runtime_sources(source_texts)
         validate_palm_reset_registration(registration_rows, source_texts)
         validate_mutation_audit(source_texts, features)
@@ -1485,6 +1879,172 @@ def self_test(root: Path) -> int:
     registration_rows = read_registration_contract(
         root / "policy/dev-interface-registration-contract.tsv"
     )
+    rs4xx_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    validate_rs4xx_output_schema_paths(rows, source_texts[rs4xx_source_path])
+    rs4xx_source = source_texts[rs4xx_source_path]
+    schema_rejection_count = 0
+
+    def reject_schema_mutant(
+        label: str,
+        candidate: str,
+        expected_show_functions: frozenset[str] = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS,
+    ) -> None:
+        nonlocal schema_rejection_count
+        try:
+            validate_rs4xx_output_schema_paths(
+                rows,
+                candidate,
+                expected_show_functions,
+            )
+        except InterfaceError:
+            schema_rejection_count += 1
+            return
+        raise InterfaceError(f"self-test accepted {label}")
+
+    missing_common_schema = rs4xx_source.replace(
+        "\t\tseq_puts(m, RADEON_DEV_OUTPUT_SCHEMA_LINE);",
+        "\t\tremoved_schema_line;",
+        1,
+    )
+    require(
+        missing_common_schema != rs4xx_source,
+        "self-test common schema fixture differs from the source",
+    )
+    reject_schema_mutant("a missing common schema line", missing_common_schema)
+
+    early_disarmed_functions = (
+        "rs480_candidate_vap_regs_show",
+        "rs480_candidate_firmware_read_regs_show",
+        "rs480_candidate_vip_straggler_regs_show",
+    )
+    for function_name in early_disarmed_functions:
+        missing_early_schema, replacement_count = re.subn(
+            rf"(static int {re.escape(function_name)}\(.*?\n\{{\n)"
+            r"\trs480_debugfs_emit_schema\(m\);\n",
+            r"\1",
+            rs4xx_source,
+            count=1,
+            flags=re.DOTALL,
+        )
+        require(
+            replacement_count == 1,
+            f"self-test early schema fixture differs for {function_name}",
+        )
+        reject_schema_mutant(
+            f"an early schema bypass in {function_name}",
+            missing_early_schema,
+        )
+
+    early_emitter_return = rs4xx_source.replace(
+        "static void rs480_debugfs_emit_schema(struct seq_file *m)\n"
+        "{\n"
+        "\tif (m->count == 0)",
+        "static void rs480_debugfs_emit_schema(struct seq_file *m)\n"
+        "{\n"
+        "\tif (m->count != 0)\n"
+        "\t\treturn;\n"
+        "\tif (m->count == 0)",
+        1,
+    )
+    require(
+        early_emitter_return != rs4xx_source,
+        "self-test schema-emitter return fixture differs from the source",
+    )
+    reject_schema_mutant("an early schema-emitter return", early_emitter_return)
+
+    alternate_seq_output = rs4xx_source.replace(
+        "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
+        "{\n",
+        "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
+        "{\n"
+        "\tseq_put_decimal_ull(m, \"\", 7);\n",
+        1,
+    )
+    require(
+        alternate_seq_output != rs4xx_source,
+        "self-test alternate seq output fixture differs from the source",
+    )
+    reject_schema_mutant("output through an alternate seq API", alternate_seq_output)
+
+    write_only_fops = rs4xx_source.replace(
+        'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,\n'
+        "\t\t\t    &rs480_safe_regs_fops);",
+        'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,\n'
+        "\t\t\t    &rs480_mc_flush_fops);",
+        1,
+    )
+    require(
+        write_only_fops != rs4xx_source,
+        "self-test node-to-fops fixture differs from the source",
+    )
+    reject_schema_mutant("a readable node with write-only fops", write_only_fops)
+
+    missing_dump_header = rs4xx_source.replace(
+        "if (*pos == 0)\n\t\treturn SEQ_START_TOKEN;",
+        "if (*pos == 0)\n\t\treturn NULL;",
+        1,
+    )
+    require(
+        missing_dump_header != rs4xx_source,
+        "self-test CP-ME dump header fixture differs from the source",
+    )
+    reject_schema_mutant("a CP-ME dump without its header record", missing_dump_header)
+
+    early_dump_return = rs4xx_source.replace(
+        "if (radeon_rs480_cp_me_ram_dump != 1)\n"
+        "\t\treturn NULL;\n"
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\treturn pos;",
+        "return pos;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1)\n"
+        "\t\treturn NULL;\n"
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;",
+        1,
+    )
+    require(
+        early_dump_return != rs4xx_source,
+        "self-test CP-ME dump ordering fixture differs from the source",
+    )
+    reject_schema_mutant("an early CP-ME dump iterator return", early_dump_return)
+
+    paginated_dump_schema = rs4xx_source.replace(
+        "\tif (rs480_debugfs_refuse_hardware_access(m, rdev))\n"
+        "\t\treturn 0;\n"
+        "\tunsigned int addr = (unsigned int)*(loff_t *)v - 1;",
+        "\tif (rs480_debugfs_refuse_if_parked(m, rdev))\n"
+        "\t\treturn 0;\n"
+        "\tunsigned int addr = (unsigned int)*(loff_t *)v - 1;",
+        1,
+    )
+    require(
+        paginated_dump_schema != rs4xx_source,
+        "self-test CP-ME dump pagination fixture differs from the source",
+    )
+    reject_schema_mutant("a schema emitter in CP-ME data records", paginated_dump_schema)
+
+    unbounded_dump_next = rs4xx_source.replace(
+        "if (radeon_rs480_cp_me_ram_dump != 1 ||\n"
+        "\t    rdev->gpu_parked || READ_ONCE(rdev->asic_suspended) ||\n"
+        "\t    *pos > RS480_CP_ME_RAM_DUMP_LIMIT)",
+        "if (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)",
+        1,
+    )
+    require(
+        unbounded_dump_next != rs4xx_source,
+        "self-test CP-ME dump termination fixture differs from the source",
+    )
+    reject_schema_mutant("an unbounded CP-ME dump iterator", unbounded_dump_next)
+
+    first_show_function = min(RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS)
+    shrunk_show_denominator = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS - {first_show_function}
+    reject_schema_mutant(
+        "a shrunk schema denominator",
+        rs4xx_source,
+        frozenset(shrunk_show_denominator),
+    )
+
     validate_runtime_sources(source_texts)
     validate_palm_reset_registration(registration_rows, source_texts)
     validate_mutation_audit(source_texts, features)
@@ -2002,6 +2562,7 @@ def self_test(root: Path) -> int:
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
         "22 Palm registration source, 4 registration contract, "
+        f"{schema_rejection_count} output-schema, "
         f"{summary_rejection_count} summary-total, "
         "5 reset-post-state, 6 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
