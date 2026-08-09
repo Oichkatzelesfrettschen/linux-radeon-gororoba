@@ -11,8 +11,12 @@ classes; a closed item names its proof, and an open item names its gate.
   `UPSTREAM_BASE.toml` (v6.18 base and the v7.1 mainline target).
 - Driver subtree imported from the pinned base with a committed pristine
   manifest and import calibration in CI: `docs/legacy-base-source-manifest.tsv`.
-- Base-delta classification of every divergence from the upstream base:
-  `radeon-custom docs/base-delta-map.tsv`, closure-checked in CI.
+- Base-delta classification of every divergence from the imported legacy base
+  remains frozen in `migration/input/base-delta-map.tsv`.
+- Post-tag source changes carry their upstream-backport, version-compat,
+  RS48X, or Palm classification in `docs/base-delta-map.tsv`, with exact
+  commit-path coverage checked by
+  `scripts/check_source_delta_map.py`.
 - Per-hunk provenance with recorded search universe and
   confirmed/likely/unproven labels: radeon-custom Step 5 artifacts.
 - Legacy series corrected to exact-context application. pkgrel 90 applied
@@ -105,7 +109,7 @@ classes; a closed item names its proof, and an open item names its gate.
   remains an alias for the mutation-capable ceiling. Module metadata binds the
   source commit, profile, feature-policy digest, and upstream base.
   `policy/all-dev-interface-manifest.tsv` preserves all 19 development
-  capabilities through an exact inventory of 18 module parameters, 33 debugfs
+  capabilities through an exact inventory of 17 module parameters, 32 debugfs
   files, and their source and generator markers. The module build gate verifies
   exact parameter, debugfs, linked-symbol, and generated-table projections.
   Production and all-development builds pass on 6.18 and 7.1. The intermediate

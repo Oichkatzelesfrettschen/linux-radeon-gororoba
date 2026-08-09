@@ -31,8 +31,8 @@
  * profile_model.output_schema_version so a manifest drift fails
  * check_all_dev_interfaces.py.
  */
-#define RADEON_DEV_OUTPUT_SCHEMA_VERSION 1
-#define RADEON_DEV_OUTPUT_SCHEMA_LINE "schema rs480-dev v1\n"
+#define RADEON_DEV_OUTPUT_SCHEMA_VERSION 2
+#define RADEON_DEV_OUTPUT_SCHEMA_LINE "schema rs480-dev v2\n"
 
 struct drm_minor;
 struct radeon_device;
@@ -94,7 +94,6 @@ extern int radeon_rs480_cp_ib_scratch_oracle;
 extern int radeon_rs480_force_clock_3d_index;
 extern int radeon_rs480_force_clock_index;
 extern int radeon_rs480_gated_read_index;
-extern int radeon_rs480_gpu_reset_recover_probe;
 extern int radeon_rs480_r400_us_cs;
 extern int radeon_rs480_reset_hang_probe;
 

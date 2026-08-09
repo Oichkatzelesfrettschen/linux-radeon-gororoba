@@ -250,6 +250,10 @@ jobs:
         run: python3 scripts/check_reconstruction_plan.py --self-test
       - name: reconstruction plan
         run: python3 scripts/check_reconstruction_plan.py
+      - name: source delta map calibration
+        run: python3 scripts/check_source_delta_map.py --self-test
+      - name: source delta map
+        run: python3 scripts/check_source_delta_map.py
       - name: build feature policy calibration
         run: python3 scripts/check_build_features.py --self-test
       - name: build feature policy

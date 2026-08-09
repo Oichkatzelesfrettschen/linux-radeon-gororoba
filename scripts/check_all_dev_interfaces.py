@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import re
 import subprocess
 import sys
@@ -89,6 +90,7 @@ RUNTIME_RANK = {
     "mutate-dev": 3,
 }
 RUNTIME_SOURCE_PATTERNS = {
+    "drivers/gpu/drm/radeon/radeon_device.c": (),
     "drivers/gpu/drm/radeon/radeon_dev.c": (
         r'\{ "off", RADEON_DEV_PROFILE_OFF \}',
         r'\{ "observe-dev", RADEON_DEV_PROFILE_OBSERVE \}',
@@ -157,16 +159,11 @@ MUTATION_AUDIT_PATTERNS = {
             1,
         ),
     ),
-    "reset-recovery-probes": (
-        (
-            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
-            r'radeon_dev_mark_mutation\(rdev, "RS4xx GPU reset recovery probe"\)',
-            1,
-        ),
+    "wedged-3d-reset-probes": (
         (
             "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
             r'radeon_dev_mark_mutation\(rdev, "RS4xx reset hang probe"\)',
-            3,
+            1,
         ),
     ),
     "reset-mask-selector": (
@@ -213,6 +210,45 @@ MUTATION_AUDIT_PATTERNS = {
             r'radeon_dev_mark_mutation\(rdev, "RS4xx CP scratch oracle"\)',
             1,
         ),
+    ),
+}
+
+RETIRED_RESET_PROBE_MARKERS = {
+    "drivers/gpu/drm/radeon/radeon_dev.c": (
+        "radeon_rs480_gpu_reset_recover_probe",
+    ),
+    "drivers/gpu/drm/radeon/radeon_dev.h": (
+        "radeon_rs480_gpu_reset_recover_probe",
+    ),
+    "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
+        "RS480_GPU_RESET_RECOVER_PROBE_ARM_TOKEN",
+        "RS480_RESET_HANG_PROBE_SOFT_RESET_TOKEN",
+        "RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN",
+        "rs480_gpu_reset_recover_probe_show",
+        "rs480_soft_reset",
+        "rs480_blit_busy_reset",
+        "0x52435652u",
+        "0x53525354u",
+        "0x48414e47u",
+        "r100_copy_blit(",
+        "r100_cp_init(rdev,",
+    ),
+}
+RETIRED_RESET_PROBE_MARKER_COUNT = 13
+RETIRED_RESET_PROBE_MARKER_SHA256 = (
+    "e1770eb360d89524585a715ecad78fbcbd02114f8dccf749c9e40ab61046feae"
+)
+C_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+C_LINE_COMMENT = re.compile(r"//[^\n]*")
+ADVERTISED_INTERFACE_TOTAL_PATTERNS = {
+    "docs/dev-interface-surface-audit.md": re.compile(
+        r"The development surface is (?P<debugfs>\d+) fork-added debugfs "
+        r"nodes and (?P<parameters>\d+) module\s+parameters"
+    ),
+    "docs/reconstruction-roadmap.md": re.compile(
+        r"all (?P<features>\d+) development\s+capabilities through an exact "
+        r"inventory of (?P<parameters>\d+) module parameters, "
+        r"(?P<debugfs>\d+) debugfs\s+files"
     ),
 }
 
@@ -331,6 +367,39 @@ def read_features(path: Path) -> dict[str, dict[str, object]]:
     return {feature["id"]: feature for feature in policy["feature"]}
 
 
+def advertised_interface_texts(root: Path) -> dict[str, str]:
+    return {
+        path: (root / path).read_text(encoding="ascii")
+        for path in ADVERTISED_INTERFACE_TOTAL_PATTERNS
+    }
+
+
+def validate_advertised_interface_totals(
+    texts: dict[str, str],
+    rows: list[dict[str, str]],
+    features: dict[str, dict[str, object]],
+) -> None:
+    expected = {
+        "features": sum(feature["tier"] != "prod" for feature in features.values()),
+        "parameters": sum(
+            row["marker_type"] == "module-parameter" for row in rows
+        ),
+        "debugfs": sum(row["marker_type"] == "debugfs-file" for row in rows),
+    }
+    for path, pattern in ADVERTISED_INTERFACE_TOTAL_PATTERNS.items():
+        require(path in texts, f"advertised interface summary is absent: {path}")
+        matches = list(pattern.finditer(texts[path]))
+        require(
+            len(matches) == 1,
+            f"advertised interface summary shape differs in {path}",
+        )
+        for field, value in matches[0].groupdict().items():
+            require(
+                int(value) == expected[field],
+                f"advertised {field} total differs in {path}",
+            )
+
+
 def custom_module_parameters(driver_root: Path) -> set[str]:
     parameters: set[str] = set()
     for source in driver_root.glob("*.c"):
@@ -436,6 +505,13 @@ def runtime_source_texts(root: Path) -> dict[str, str]:
         path = source.relative_to(root).as_posix()
         texts.setdefault(path, source.read_text(encoding="utf-8"))
     return texts
+
+
+def retired_reset_probe_source_texts(root: Path) -> dict[str, str]:
+    return {
+        path: (root / path).read_text(encoding="ascii")
+        for path in RETIRED_RESET_PROBE_MARKERS
+    }
 
 
 def validate_output_schema_version(root: Path) -> None:
@@ -751,6 +827,213 @@ def validate_palm_reset_registration(
     )
 
 
+def validate_retired_reset_probe_denominator(
+    markers_by_path: dict[str, tuple[str, ...]],
+) -> None:
+    identities = [
+        (path, marker)
+        for path in sorted(markers_by_path)
+        for marker in sorted(markers_by_path[path])
+    ]
+    require(
+        len(identities) == RETIRED_RESET_PROBE_MARKER_COUNT,
+        "retired reset-probe marker count differs from its pinned denominator",
+    )
+    require(
+        len(set(identities)) == len(identities),
+        "retired reset-probe marker denominator contains a duplicate identity",
+    )
+    serialized = "".join(
+        f"{path}\t{marker}\n" for path, marker in identities
+    ).encode("ascii")
+    require(
+        hashlib.sha256(serialized).hexdigest()
+        == RETIRED_RESET_PROBE_MARKER_SHA256,
+        "retired reset-probe marker identities differ from their pinned digest",
+    )
+
+
+def validate_retired_reset_probes(texts: dict[str, str]) -> None:
+    validate_retired_reset_probe_denominator(RETIRED_RESET_PROBE_MARKERS)
+    for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
+        require(path in texts, f"retired reset-probe source is absent: {path}")
+        for marker in markers:
+            require(
+                marker.casefold() not in texts[path].casefold(),
+                f"retired reset-probe marker is present in {path}: {marker}",
+            )
+
+
+def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
+    path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    require(path in texts, f"wedged reset-probe source is absent: {path}")
+    source = texts[path]
+    function_start = source.find("static int rs480_wedged_3d_reset(")
+    function_end = source.find(
+        "\nstatic int rs480_reset_hang_probe_show(", function_start
+    )
+    require(
+        function_start >= 0 and function_end > function_start,
+        "wedged reset-probe function boundary is absent",
+    )
+    function_body = source[function_start:function_end]
+    reset_call = "reset_result = radeon_gpu_reset_forced(rdev);"
+    read_lock = "down_read(&rdev->exclusive_lock);"
+    parked_branch = "if (rdev->gpu_parked) {"
+    parked_sentinel = "post_reset_status = 0x5041524B;"
+    else_branch = "} else {"
+    status_read = "post_reset_status = RREG32(R_000E40_RBBM_STATUS);"
+    branch_close = "}\n\tup_read(&rdev->exclusive_lock);"
+    read_unlock = "up_read(&rdev->exclusive_lock);"
+    for marker in (
+        reset_call,
+        read_lock,
+        parked_branch,
+        parked_sentinel,
+        else_branch,
+        status_read,
+        branch_close,
+        read_unlock,
+    ):
+        require(
+            function_body.count(marker) == 1,
+            f"wedged reset-probe carries an invalid marker count: {marker}",
+        )
+
+    post_reset = function_body.split(reset_call, 1)[1]
+    read_lock_at = post_reset.find(read_lock)
+    parked_branch_at = post_reset.find(parked_branch)
+    parked_sentinel_at = post_reset.find(parked_sentinel)
+    else_branch_at = post_reset.find(else_branch)
+    status_read_at = post_reset.find(status_read)
+    branch_close_at = post_reset.find(branch_close)
+    read_unlock_at = post_reset.find(read_unlock)
+    require(
+        read_lock_at
+        < parked_branch_at
+        < parked_sentinel_at
+        < else_branch_at
+        < status_read_at
+        < branch_close_at
+        < read_unlock_at,
+        "wedged reset-probe post-state transaction order differs",
+    )
+
+    before_read_lock = C_LINE_COMMENT.sub(
+        "", C_BLOCK_COMMENT.sub("", post_reset[:read_lock_at])
+    )
+    between_lock_and_branch = C_LINE_COMMENT.sub(
+        "",
+        C_BLOCK_COMMENT.sub(
+            "", post_reset[read_lock_at + len(read_lock) : parked_branch_at]
+        ),
+    )
+    require(
+        not before_read_lock.strip() and not between_lock_and_branch.strip(),
+        "wedged reset-probe executes code before the locked parked-state branch",
+    )
+    require(
+        "RREG" not in post_reset[parked_branch_at:else_branch_at],
+        "wedged reset-probe parked branch reads a register",
+    )
+    require(
+        post_reset[else_branch_at:branch_close_at].count("RREG") == 1,
+        "wedged reset-probe status read differs from the unparked branch",
+    )
+
+
+def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
+    path = "drivers/gpu/drm/radeon/radeon_device.c"
+    require(path in texts, f"forced GPU-reset source is absent: {path}")
+    source = texts[path]
+    function_start = source.find("static int radeon_gpu_reset_internal(")
+    function_end = source.find("\n/**\n * radeon_gpu_reset -", function_start)
+    require(
+        function_start >= 0 and function_end > function_start,
+        "forced GPU-reset implementation boundary is absent",
+    )
+    function_body = source[function_start:function_end]
+    transaction_pattern = (
+        r"down_write\(&rdev->exclusive_lock\);\s*"
+        r"if \(!force_reset && !rdev->needs_reset\) \{\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*return 0;\s*\}\s*"
+        r"if \(rdev->gpu_parked\) \{\s*"
+        r"rdev->needs_reset = false;\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*"
+        r"dev_err_once\(rdev->dev,\s*"
+        r'"parked: refusing radeon_gpu_reset re-entry\\n"\);\s*'
+        r"return -EIO;\s*\}\s*"
+        r"if \(force_reset\)\s*rdev->needs_reset = true;\s*"
+        r"atomic_inc\(&rdev->gpu_reset_counter\)"
+    )
+    wrapper_pattern = (
+        r"int radeon_gpu_reset_forced\(struct radeon_device \*rdev\)\s*"
+        r"\{\s*return radeon_gpu_reset_internal\(rdev, true\);\s*\}"
+    )
+    require(
+        re.search(transaction_pattern, function_body, re.DOTALL) is not None,
+        "forced GPU-reset request is outside the writer transaction",
+    )
+    reset_counter = "atomic_inc(&rdev->gpu_reset_counter);"
+    reset_counter_at = function_body.find(reset_counter)
+    require(
+        reset_counter_at >= 0,
+        "forced GPU-reset counter transition is absent",
+    )
+    reset_body = function_body[reset_counter_at + len(reset_counter):]
+    require(
+        "up_write(&rdev->exclusive_lock);" not in reset_body,
+        "forced GPU-reset writer lock ends before a legitimate downgrade",
+    )
+    require(
+        reset_body.count("downgrade_write(&rdev->exclusive_lock);") == 2,
+        "forced GPU-reset writer-to-reader downgrade paths differ",
+    )
+    require(
+        reset_body.count("up_read(&rdev->exclusive_lock);") == 2,
+        "forced GPU-reset read-lock release paths differ",
+    )
+    parked_exit_pattern = (
+        r"rdev->in_reset = true;\s*"
+        r"rdev->needs_reset = false;\s*"
+        r"msleep\(1\);\s*"
+        r"dev_err\(rdev->dev,\s*"
+        r'"parked: downgrading exclusive lock\\n"\);\s*'
+        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
+        r"msleep\(1\);\s*"
+        r"dev_info\(rdev->dev,\s*"
+        r'"GPU reset failed, GPU parked, host kept alive\\n"\);\s*'
+        r"rdev->in_reset = false;\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"msleep\(1\);\s*"
+        r"dev_err\(rdev->dev,\s*"
+        r'"parked: radeon_gpu_reset returning %d to caller\\n",\s*r\);\s*'
+        r"return r;"
+    )
+    ordinary_exit_pattern = (
+        r"rdev->in_reset = true;\s*"
+        r"rdev->needs_reset = false;\s*"
+        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
+        r"drm_helper_resume_force_mode\(rdev_to_drm\(rdev\)\);.*?"
+        r"rdev->needs_reset = r == -EAGAIN;\s*"
+        r"rdev->in_reset = false;\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"return r;"
+    )
+    require(
+        len(re.findall(parked_exit_pattern, reset_body, re.DOTALL)) == 1,
+        "forced GPU-reset parked exit does not downgrade at its quiet epoch",
+    )
+    require(
+        len(re.findall(ordinary_exit_pattern, reset_body, re.DOTALL)) == 1,
+        "forced GPU-reset ordinary exit does not downgrade before mode resume",
+    )
+    require(
+        re.search(wrapper_pattern, texts[path], re.DOTALL) is not None,
+        "forced GPU-reset entry does not select the forced transaction",
+    )
+
+
 def validate_mutation_audit(
     texts: dict[str, str],
     features: dict[str, dict[str, object]],
@@ -1017,6 +1300,9 @@ def validate(
     actual_debugfs = custom_debugfs_files(root / "drivers/gpu/drm/radeon")
     require(declared_debugfs == actual_debugfs, "custom debugfs inventory differs")
     if files:
+        validate_advertised_interface_totals(
+            advertised_interface_texts(root), rows, features
+        )
         source_texts = runtime_source_texts(root)
         registration_rows = read_registration_contract(
             root / "policy/dev-interface-registration-contract.tsv"
@@ -1025,6 +1311,9 @@ def validate(
         validate_runtime_sources(source_texts)
         validate_palm_reset_registration(registration_rows, source_texts)
         validate_mutation_audit(source_texts, features)
+        validate_retired_reset_probes(retired_reset_probe_source_texts(root))
+        validate_wedged_reset_probe_post_state(source_texts)
+        validate_forced_gpu_reset_transaction(source_texts)
 
     if module is not None:
         validate_module(
@@ -1041,6 +1330,26 @@ def self_test(root: Path) -> int:
     rows = read_manifest(root / "policy/all-dev-interface-manifest.tsv")
     features = read_features(root / "policy/build-features.toml")
     validate(root, rows, features)
+    summary_texts = advertised_interface_texts(root)
+    summary_rejection_count = 0
+    for path, pattern in ADVERTISED_INTERFACE_TOTAL_PATTERNS.items():
+        wrong_summary = copy.deepcopy(summary_texts)
+        match = pattern.search(wrong_summary[path])
+        require(match is not None, f"self-test summary fixture is absent: {path}")
+        count_start, count_end = match.span("debugfs")
+        wrong_summary[path] = (
+            wrong_summary[path][:count_start]
+            + str(int(match.group("debugfs")) + 1)
+            + wrong_summary[path][count_end:]
+        )
+        try:
+            validate_advertised_interface_totals(wrong_summary, rows, features)
+        except InterfaceError:
+            summary_rejection_count += 1
+        else:
+            raise InterfaceError(
+                f"self-test accepted a stale interface summary in {path}"
+            )
 
     cases: list[tuple[str, list[dict[str, str]]]] = []
 
@@ -1104,7 +1413,7 @@ def self_test(root: Path) -> int:
         "prod": (0, 0, 0),
         "observe-dev": (4, 2, 18),
         "probe-dev": (10, 8, 24),
-        "mutate-dev": (19, 18, 33),
+        "mutate-dev": (19, 17, 32),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -1127,7 +1436,7 @@ def self_test(root: Path) -> int:
         ("mutate-dev", "off"): (0, 0, 0),
         ("mutate-dev", "observe-dev"): (4, 2, 18),
         ("mutate-dev", "probe-dev"): (10, 8, 24),
-        ("mutate-dev", "mutate-dev"): (19, 18, 33),
+        ("mutate-dev", "mutate-dev"): (19, 17, 32),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)
@@ -1179,7 +1488,6 @@ def self_test(root: Path) -> int:
     validate_runtime_sources(source_texts)
     validate_palm_reset_registration(registration_rows, source_texts)
     validate_mutation_audit(source_texts, features)
-
     registration_source_mutations = (
         (
             "direct RS4xx callback",
@@ -1395,6 +1703,21 @@ def self_test(root: Path) -> int:
                 f"self-test accepted registration contract field {field}"
             )
 
+    validate_wedged_reset_probe_post_state(source_texts)
+    validate_forced_gpu_reset_transaction(source_texts)
+    retired_source_texts = retired_reset_probe_source_texts(root)
+    validate_retired_reset_probes(retired_source_texts)
+    shrunk_retired_denominator = copy.deepcopy(RETIRED_RESET_PROBE_MARKERS)
+    first_retired_path = sorted(shrunk_retired_denominator)[0]
+    shrunk_retired_denominator[first_retired_path] = (
+        shrunk_retired_denominator[first_retired_path][1:]
+    )
+    try:
+        validate_retired_reset_probe_denominator(shrunk_retired_denominator)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a shrunk retired-probe denominator")
     missing_gate = copy.deepcopy(source_texts)
     missing_gate["drivers/gpu/drm/radeon/evergreen_cs.c"] = re.sub(
         r"radeon_dev_profile_enabled",
@@ -1434,6 +1757,234 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a missing mutation call")
 
+    wrong_post_state = copy.deepcopy(source_texts)
+    reset_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    wrong_post_state[reset_source_path] = re.sub(
+        r"(reset_result = radeon_gpu_reset_forced\(rdev\);.*?)"
+        r"if \(rdev->gpu_parked\)",
+        r"\1if (reset_result)",
+        wrong_post_state[reset_source_path],
+        count=1,
+        flags=re.DOTALL,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(wrong_post_state)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted return-code post-state gate")
+
+    intervening_post_reset_mmio = copy.deepcopy(source_texts)
+    intervening_post_reset_mmio[reset_source_path] = intervening_post_reset_mmio[
+        reset_source_path
+    ].replace(
+        "reset_result = radeon_gpu_reset_forced(rdev);",
+        "reset_result = radeon_gpu_reset_forced(rdev);\n"
+        "\tpost_reset_status = RREG32(R_000E40_RBBM_STATUS);",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(intervening_post_reset_mmio)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted MMIO before the parked-state gate")
+
+    parked_branch_mmio = copy.deepcopy(source_texts)
+    parked_branch_mmio[reset_source_path] = parked_branch_mmio[
+        reset_source_path
+    ].replace(
+        '\t\tpost_reset_status = 0x5041524B; /* "PARK" */\n',
+        '\t\tpost_reset_status = 0x5041524B; /* "PARK" */\n'
+        "\t\tpre_reset_status = RREG32(R_000E40_RBBM_STATUS);\n",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(parked_branch_mmio)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted MMIO inside the parked branch")
+
+    missing_post_reset_read_lock = copy.deepcopy(source_texts)
+    missing_post_reset_read_lock[reset_source_path] = (
+        missing_post_reset_read_lock[reset_source_path].replace(
+            "\tdown_read(&rdev->exclusive_lock);\n", "", 1
+        )
+    )
+    try:
+        validate_wedged_reset_probe_post_state(missing_post_reset_read_lock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unlocked parked-state check")
+
+    missing_post_reset_read_unlock = copy.deepcopy(source_texts)
+    missing_post_reset_read_unlock[reset_source_path] = (
+        missing_post_reset_read_unlock[reset_source_path].replace(
+            "\tup_read(&rdev->exclusive_lock);\n", "", 1
+        )
+    )
+    try:
+        validate_wedged_reset_probe_post_state(missing_post_reset_read_unlock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unclosed post-state read lock")
+
+    ordinary_reset_call = copy.deepcopy(source_texts)
+    ordinary_reset_call[reset_source_path] = ordinary_reset_call[
+        reset_source_path
+    ].replace(
+        "reset_result = radeon_gpu_reset_forced(rdev);",
+        "reset_result = radeon_gpu_reset(rdev);",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(ordinary_reset_call)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unserialized forced reset call")
+
+    missing_forced_writer = copy.deepcopy(source_texts)
+    reset_implementation_path = "drivers/gpu/drm/radeon/radeon_device.c"
+    missing_forced_writer[reset_implementation_path] = re.sub(
+        r"(static int radeon_gpu_reset_internal\(.*?\n\{.*?)"
+        r"\tdown_write\(&rdev->exclusive_lock\);\n",
+        r"\1",
+        missing_forced_writer[reset_implementation_path],
+        count=1,
+        flags=re.DOTALL,
+    )
+    try:
+        validate_forced_gpu_reset_transaction(missing_forced_writer)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a forced reset without writer lock")
+
+    premature_forced_unlock = copy.deepcopy(source_texts)
+    premature_forced_unlock[reset_implementation_path] = premature_forced_unlock[
+        reset_implementation_path
+    ].replace(
+        "\tif (force_reset)\n",
+        "\tup_write(&rdev->exclusive_lock);\n\tif (force_reset)\n",
+        1,
+    )
+    try:
+        validate_forced_gpu_reset_transaction(premature_forced_unlock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a premature forced-reset unlock")
+
+    post_counter_forced_unlock = copy.deepcopy(source_texts)
+    post_counter_forced_unlock[reset_implementation_path] = (
+        post_counter_forced_unlock[reset_implementation_path].replace(
+            "\tatomic_inc(&rdev->gpu_reset_counter);\n",
+            "\tatomic_inc(&rdev->gpu_reset_counter);\n"
+            "\tup_write(&rdev->exclusive_lock);\n",
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(post_counter_forced_unlock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a post-counter writer unlock")
+
+    reset_counter_line = "\tatomic_inc(&rdev->gpu_reset_counter);\n"
+    early_downgrade_line = "\tdowngrade_write(&rdev->exclusive_lock);\n"
+    ordinary_downgrade_context = (
+        "\trdev->in_reset = true;\n"
+        "\trdev->needs_reset = false;\n\n"
+        "\tdowngrade_write(&rdev->exclusive_lock);\n\n"
+        "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
+    )
+    ordinary_without_downgrade = (
+        "\trdev->in_reset = true;\n"
+        "\trdev->needs_reset = false;\n\n"
+        "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
+    )
+    reset_implementation_source = source_texts[reset_implementation_path]
+    require(
+        reset_implementation_source.count(reset_counter_line) == 1
+        and reset_implementation_source.count(ordinary_downgrade_context) == 1,
+        "self-test ordinary downgrade fixture differs from the source",
+    )
+    moved_ordinary_downgrade = copy.deepcopy(source_texts)
+    moved_ordinary_source = reset_implementation_source.replace(
+        reset_counter_line,
+        reset_counter_line + early_downgrade_line,
+        1,
+    ).replace(
+        ordinary_downgrade_context,
+        ordinary_without_downgrade,
+        1,
+    )
+    require(
+        moved_ordinary_source.count(early_downgrade_line.strip()) == 2,
+        "self-test ordinary downgrade mutant changes the downgrade denominator",
+    )
+    moved_ordinary_downgrade[reset_implementation_path] = moved_ordinary_source
+    try:
+        validate_forced_gpu_reset_transaction(moved_ordinary_downgrade)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a moved ordinary reset downgrade")
+
+    parked_downgrade_context = (
+        '\t\tdev_err(rdev->dev, "parked: downgrading exclusive lock\\n");\n'
+        "\t\tdowngrade_write(&rdev->exclusive_lock);\n"
+        "\t\tmsleep(1);"
+    )
+    parked_without_downgrade = (
+        '\t\tdev_err(rdev->dev, "parked: downgrading exclusive lock\\n");\n'
+        "\t\tmsleep(1);"
+    )
+    require(
+        reset_implementation_source.count(parked_downgrade_context) == 1,
+        "self-test parked downgrade fixture differs from the source",
+    )
+    moved_parked_downgrade = copy.deepcopy(source_texts)
+    moved_parked_source = reset_implementation_source.replace(
+        reset_counter_line,
+        reset_counter_line + early_downgrade_line,
+        1,
+    ).replace(
+        parked_downgrade_context,
+        parked_without_downgrade,
+        1,
+    )
+    require(
+        moved_parked_source.count(early_downgrade_line.strip()) == 2,
+        "self-test parked downgrade mutant changes the downgrade denominator",
+    )
+    moved_parked_downgrade[reset_implementation_path] = moved_parked_source
+    try:
+        validate_forced_gpu_reset_transaction(moved_parked_downgrade)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a moved parked reset downgrade")
+
+    retired_rejection_count = 0
+    for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
+        for marker in markers:
+            reintroduced = copy.deepcopy(retired_source_texts)
+            reintroduced[path] += f"\n{marker}\n"
+            try:
+                validate_retired_reset_probes(reintroduced)
+            except InterfaceError:
+                retired_rejection_count += 1
+            else:
+                raise InterfaceError(
+                    f"self-test accepted retired reset-probe marker {marker}"
+                )
+
     require(
         carries_symbol({"reader_fops"}, "reader_fops"),
         "self-test rejected an exact compiler symbol",
@@ -1450,8 +2001,10 @@ def self_test(root: Path) -> int:
     print(
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
-        "22 Palm registration source, 4 registration contract, and "
-        "3 compiler-symbol cases"
+        "22 Palm registration source, 4 registration contract, "
+        f"{summary_rejection_count} summary-total, "
+        "5 reset-post-state, 6 forced-reset, 1 retired-denominator, "
+        f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0
 

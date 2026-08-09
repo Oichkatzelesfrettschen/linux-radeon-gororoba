@@ -14,7 +14,7 @@ development_arming = "single-device"
 # Every fork-added readable development node emits "schema rs480-dev v<N>"
 # as its first line; this value pins <N> and must equal
 # RADEON_DEV_OUTPUT_SCHEMA_VERSION in drivers/gpu/drm/radeon/radeon_dev.h.
-output_schema_version = 1
+output_schema_version = 2
 
 # Runtime dependencies describe the post-tag build projection. Reconstruction
 # ordering and evidence dependencies remain separate because neither licenses
@@ -614,13 +614,14 @@ package_projection = "production"
 rollback = "retain equivalent failed-reset quiescence and activation"
 
 [[feature]]
-id = "reset-recovery-probes"
-setting = "reset-probes-dev"
+id = "wedged-3d-reset-probes"
+setting = "wedged-reset-probes-dev"
 tier = "mutate-dev"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
   "drivers/gpu/drm/radeon/radeon_dev.c",
   "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_device.c",
   "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
 ]
 source_mechanisms = ["M22"]
@@ -646,14 +647,14 @@ scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "reset-execution"
 interface_class = "raw-hardware-writer"
-resource_bounds = "one bounded reset or wedge operation per exact request"
-locking = "reset serialization, device lifecycle, and parked-state refusal"
-error_contract = "every failed gate returns before reset or wedge execution"
+resource_bounds = "one production-path reset per exact request"
+locking = "forced request and reset under the production writer lock, post-reset parked check and RBBM sample under the reset read lock, device lifecycle, and parked-state refusal"
+error_contract = "failed admission returns before reset; ASIC reset failure parks the device; ring-test failure with saved commands preserves a pending reset; ring-test failure without saved commands returns the underlying error and clears the pending reset"
 tests = [
-  "normal: exact token executes one bounded recovery probe",
-  "boundary: one-shot result stays within the fixed schema",
+  "normal: WD3A or WD3B executes one production-path reset",
+  "boundary: exact tokens select distinct predicates and -EAGAIN reports an unparked partial reset",
   "failure: parked device returns before reset access",
-  "adversarial: malformed token cannot reach wedge execution",
+  "adversarial: malformed token cannot reach reset execution",
 ]
 production_promotion_condition = "no production promotion for reset experiment interfaces"
 profile_exception = "none"
