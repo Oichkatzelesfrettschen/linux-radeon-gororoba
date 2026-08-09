@@ -12,12 +12,16 @@ source for blame and commit archaeology.
 
 ## Repository boundary
 
+<!-- markdownlint-disable MD013 -->
+
 | Repository | Authority |
 | --- | --- |
 | `linux-radeon-gororoba` | Modified Radeon kernel source, upstream base mapping, source generators, register policy tables, source tests, RAD-06 |
 | `radeon-custom` | Arch and CachyOS PKGBUILD, DKMS glue, compiler policy, initramfs and modprobe policy, hazard preflight, source pin, package verification |
 | `steinmarder-r300` | Target-silicon probes, retained result bundles, falsifiers, hardware verdicts |
 | `mesa-26-gororoba` | r300g and r3v userspace behavior |
+
+<!-- markdownlint-enable MD013 -->
 
 Packaging targets Arch and CachyOS alone.
 
@@ -27,31 +31,43 @@ Packaging targets Arch and CachyOS alone.
 `radeon-unified-0.3-pkgrel91-source-equivalent` onward.
 
 `radeon-custom` has completed the signed source-pin cutover and remains the
-deployment and packaging authority. Its active 0.6-1 packages pin this
+deployment and packaging authority. Its active 0.7-1 packages pin this
 repository's signed profiled-source checkpoint (tag
-`radeon-unified-0.6-profiled-source`, object
-7a011a561c38258180e1f3083a0e5d8e74f5c1dd, driver tree
-84b3c5c0282bf37236f2c4fda80eb17048bdd1ed) across split production capability,
-development capability, and RS482 board policy. The signed 0.6-1 production
-and board-policy packages are installed and runtime-accepted on the RS482
-target across a reboot, with the loaded module srcversion
-EA8E3BBBBA9E5580BDA7553 bonded to source commit
-7a8dfb50cc4861ebd2c33a2d96cd19f961443c8e. The signed 0.5-1 and 0.4-3 sets
-are the rollback authorities, the `0.6-1 -> 0.5-1 -> 0.6-1` rollback path is
-executed against the exact signed archives, and the 0.3-96 legacy-equivalent
-acceptance remains the deeper retained baseline.
+`radeon-unified-0.7-profiled-source`, tag object
+7f500d682aad600ca443c7f26e913b6b4034c834, peeled source commit
+293a4ae3fe82cd03585ef3157e82b0b59b641b47, and driver tree
+d57a22ad5356637d7075cb2aba83e22af71f7bfb) across split production capability,
+development capability, and RS482 board policy. The package attestation records
+signed artifacts and successful dual-kernel DKMS lifecycles. That attestation
+itself records target contact, installation, module load, and hardware operation
+as NOT RUN for 0.7-1. A later read-only live cross-check establishes deployment
+identity only. The bound PCI device resolves to `/sys/module/radeon`, and the
+loaded module `srcversion` `A7F72BE636B52D7EED42415` matches the on-disk DKMS
+0.7 module. The on-disk metadata pins source commit
+`293a4ae3fe82cd03585ef3157e82b0b59b641b47` and driver tree
+`d57a22ad5356637d7075cb2aba83e22af71f7bfb`. This cross-check does not amend the
+attestation or establish retained behavioral acceptance. Later repository
+commits may supersede source mechanisms without superseding the signed
+deployment pin; they remain unshipped until radeon-custom records a new source
+pin, package attestation, and module lifecycle. The retained 0.6-1 parked-device
+bundle remains the last retained parked-behavior silicon verdict; it is not a
+general current runtime authority. The signed 0.5-1 and 0.4-3 sets remain deeper
+rollback authorities, and the 0.3-96 legacy-equivalent acceptance remains the
+deeper retained baseline.
 
-The parked-device entry contract this tree carries is measured on RS482
-silicon: an attended park latched `gpu_parked`, after which fresh native GEM
-creates, USERPTR creation, and foreign PRIME import each returned -EIO with
-`radeon_bo_create` counting zero, CS submission returned -EBUSY before
-parser entry, and `WAIT_IDLE` returned -EIO. The verdict lives in
-steinmarder-r300 as bundle
+The retained parked-device silicon verdict covers the older 0.6-1 module. An
+attended RS482 park latched `gpu_parked`; fresh native GEM creates, USERPTR
+creation, and foreign PRIME import each returned -EIO with `radeon_bo_create`
+counting zero, CS submission returned -EBUSY through the separate
+`!accel_working` refusal before parser entry, and `WAIT_IDLE` returned -EIO.
+The verdict lives in steinmarder-r300 as bundle
 `cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z`.
-Two open items ride that verdict: `radeon_mode_dumb_create` masks the parked
--EIO to -ENOMEM at the ioctl boundary, and an orderly warm reboot failed to
-reclaim the parked host, so a park costs physical power-cycle recovery
-capability.
+The 0.7-1 source now preserves the dumb-create errno and adds a direct
+`gpu_parked` CS refusal with -EIO before parser initialization. Both corrections
+are source- and package-verified. The live 0.7 deployment identity does not
+promote them to retained target behavior; 0.6-1 remains the last retained parked
+silicon verdict. The warm reboot failure also remains open: the measured parked
+host required physical power-cycle recovery.
 
 ## Source closure
 
@@ -89,6 +105,17 @@ sh scripts/build_radeon_module.sh \
   --all-dev \
   --kernel-build-root "$KERNEL_BUILD_ROOT"
 ```
+
+The retained declared build identities are `6.18.38-2-cachyos-lts` and
+`7.1.4-1-cachyos`. At source commit
+`df6f5cf10024ee20cc5db66e5c891f9207f24f7a`, the exact-root matrix passed
+`prod`, `observe-dev`, `probe-dev`, and `mutate-dev` with zero warnings on both
+roots. The 6.18 root used the signed Clang and LLD 22.1.6 package set in
+`ci/kernel-toolchains/clang-lld-22.1.6.sha256`; the 7.1 root used the signed
+22.1.8 set. The built Radeon driver tree was
+`bc05af9ebe11efd046b99359fd063f38a6b1e2ce`. This proves bounded compilation,
+link, metadata, and interface projection. It does not prove module loading,
+runtime reachability, or hardware behavior.
 
 The temporary build tree carries `radeon_build_profile.h` and
 `radeon-build-profile.toml`. The linked module records the source commit,
@@ -131,6 +158,24 @@ reproduces what the legacy tree shipped.
 hardware claim binds to. `RS485M` names the platform chipset of the target
 machine, sourced from DMI and the `1002:5950` host bridge, and it stays out of
 GPU register and reset claims.
+
+## Memory path contracts
+
+The active RS4xx memory-path source model has two finite owners:
+
+* `policy/rs4xx-gart-memory-path.tsv` covers GART, TTM, BO mapping, PTE
+  publication, userptr ownership, CPU mappings, and teardown. Its narrative is
+  `docs/rs4xx-gart-bo-lifecycle-contract.md`.
+* `policy/radeon-cs-reservation-fence-contract.tsv` covers command admission,
+  BO reservations, dependency import, IB scheduling, r300 fence commands, and
+  reservation-fence publication. Its narrative is
+  `docs/radeon-cs-reservation-fence-contract.md`.
+
+Both ledgers separate source status from runtime and silicon status. In
+particular, reservation fences and emitted cache commands prove software and
+ring order, not cached-GTT payload visibility. Exact RS482 payload and replay
+verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM, address
+domain, PAT, MTRR, and event-scoped aperture observations.
 
 ## License
 

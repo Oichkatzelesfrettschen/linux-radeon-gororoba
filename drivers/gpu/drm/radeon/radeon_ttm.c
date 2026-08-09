@@ -353,6 +353,10 @@ static int radeon_ttm_tt_pin_userptr(struct ttm_device *bdev, struct ttm_tt *ttm
 				   pages);
 		if (r < 0)
 			goto release_pages;
+		if (!r) {
+			r = -EFAULT;
+			goto release_pages;
+		}
 
 		pinned += r;
 
@@ -362,7 +366,7 @@ static int radeon_ttm_tt_pin_userptr(struct ttm_device *bdev, struct ttm_tt *ttm
 				      (u64)ttm->num_pages << PAGE_SHIFT,
 				      GFP_KERNEL);
 	if (r)
-		goto release_sg;
+		goto release_pages;
 
 	r = dma_map_sgtable(rdev->dev, ttm->sg, direction, 0);
 	if (r)
@@ -374,7 +378,8 @@ static int radeon_ttm_tt_pin_userptr(struct ttm_device *bdev, struct ttm_tt *ttm
 	return 0;
 
 release_sg:
-	kfree(ttm->sg);
+	sg_free_table(ttm->sg);
+	memset(ttm->sg, 0, sizeof(*ttm->sg));
 
 release_pages:
 	release_pages(ttm->pages, pinned);
@@ -408,6 +413,7 @@ static void radeon_ttm_tt_unpin_userptr(struct ttm_device *bdev, struct ttm_tt *
 	}
 
 	sg_free_table(ttm->sg);
+	memset(ttm->sg, 0, sizeof(*ttm->sg));
 }
 
 static bool radeon_ttm_backend_is_bound(struct ttm_tt *ttm)
@@ -431,7 +437,9 @@ static int radeon_ttm_backend_bind(struct ttm_device *bdev,
 		return 0;
 
 	if (gtt->userptr) {
-		radeon_ttm_tt_pin_userptr(bdev, ttm);
+		r = radeon_ttm_tt_pin_userptr(bdev, ttm);
+		if (r)
+			return r;
 		flags &= ~RADEON_GART_PAGE_WRITE;
 	}
 
@@ -447,6 +455,8 @@ static int radeon_ttm_backend_bind(struct ttm_device *bdev,
 	if (r) {
 		DRM_ERROR("failed to bind %u pages at 0x%08X\n",
 			  ttm->num_pages, (unsigned)gtt->offset);
+		if (gtt->userptr)
+			radeon_ttm_tt_unpin_userptr(bdev, ttm);
 		return r;
 	}
 	gtt->bound = true;
@@ -458,9 +468,6 @@ static void radeon_ttm_backend_unbind(struct ttm_device *bdev, struct ttm_tt *tt
 	struct radeon_ttm_tt *gtt = (void *)ttm;
 	struct radeon_device *rdev = radeon_get_rdev(bdev);
 
-	if (gtt->userptr)
-		radeon_ttm_tt_unpin_userptr(bdev, ttm);
-
 	if (!gtt->bound)
 		return;
 
@@ -469,6 +476,8 @@ static void radeon_ttm_backend_unbind(struct ttm_device *bdev, struct ttm_tt *tt
 	radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);
 
 	gtt->bound = false;
+	if (gtt->userptr)
+		radeon_ttm_tt_unpin_userptr(bdev, ttm);
 }
 
 static void radeon_ttm_backend_destroy(struct ttm_device *bdev, struct ttm_tt *ttm)
