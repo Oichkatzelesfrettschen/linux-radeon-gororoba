@@ -3571,11 +3571,25 @@ def verify_no_host_path_leaks(root: Path, forbidden_paths: tuple[Path, ...] = ()
         }:
             continue
         content = path.read_bytes()
-        leaked = [marker.decode("utf-8") for marker in markers if marker in content]
-        for match in re.finditer(rb"/tmp/[A-Za-z0-9._+/-]+", content):
+        leaked = {
+            marker.decode("utf-8")
+            for marker in markers
+            if (
+                re.search(
+                    rb"(?<![A-Za-z0-9._+-])" + re.escape(marker),
+                    content,
+                )
+                if marker.startswith(b"/")
+                else marker in content
+            )
+        }
+        for match in re.finditer(
+            rb"(?<![A-Za-z0-9._+-])/tmp/[A-Za-z0-9._+/-]+",
+            content,
+        ):
             candidate = match.group(0)
             if not candidate.startswith((b"/tmp/source", b"/tmp/capture")):
-                leaked.append(candidate.decode("utf-8", errors="replace"))
+                leaked.add(candidate.decode("utf-8", errors="replace"))
         require(
             not leaked,
             f"capture product {relative.as_posix()} retains host paths: "
@@ -5205,6 +5219,14 @@ def self_test(repository: Path, policy_path: Path) -> int:
         accepts(
             "capture path policy accepts canonical sandbox paths",
             lambda: verify_no_host_path_leaks(portable_root, (portable_root,)),
+        )
+        write_text(
+            portable_root / "metadata/example.tsv",
+            "path\tdrivers/media/Kconfig\n",
+        )
+        accepts(
+            "capture path policy accepts a relative media source path",
+            lambda: verify_no_host_path_leaks(portable_root),
         )
         write_text(
             portable_root / "metadata/example.tsv",
