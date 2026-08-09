@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Prove the parked-device refusals still refuse, against known-bad mutations.
 
-A parked device stays parked until reboot, and three call sites hold that
+A parked device stays parked until reboot, and four call sites hold that
 contract: radeon_gem_object_create refuses every buffer object allocation
 funnelled through it, radeon_gem_prime_import_sg_table refuses the importer
-that bypasses the funnel, and radeon_gem_wait_idle_ioctl refuses before
-mmio_hdp_flush reaches a wedged engine. A fourth check holds the errno at the
+that bypasses the funnel, radeon_gem_wait_idle_ioctl refuses before
+mmio_hdp_flush reaches a wedged engine, and radeon_cs_ioctl refuses before
+parser initialization. A fifth check holds the errno at the
 dumb-create boundary: radeon_mode_dumb_create forwards the creator's result,
 so the parked -EIO stays distinguishable from -ENOMEM exhaustion.
 
@@ -52,9 +53,19 @@ GUARDS = [
         "precedes": "mmio_hdp_flush",
         "returns": "-EIO",
     },
+    {
+        "id": "command-submission",
+        "path": SUBTREE / "radeon_cs.c",
+        "function": "radeon_cs_ioctl",
+        "precedes": "radeon_cs_parser_init",
+        "returns": "-EIO",
+    },
 ]
 
 GUARD_READ = re.compile(r"READ_ONCE\s*\(\s*rdev->gpu_parked\s*\)")
+POSITIVE_GUARD = re.compile(
+    r"^\s*if\s*\(\s*READ_ONCE\s*\(\s*rdev->gpu_parked\s*\)\s*\)\s*\{?\s*$"
+)
 FUNCTION_END = re.compile(r"^\}")
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 LINE_COMMENT = re.compile(r"//[^\n]*")
@@ -109,10 +120,16 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
 
     body = function_body(strip_comments(source), guard["function"])
 
-    guard_at = [i for i, line in enumerate(body) if GUARD_READ.search(line)]
-    if not guard_at:
+    latch_reads = [i for i, line in enumerate(body) if GUARD_READ.search(line)]
+    if not latch_reads:
         raise GuardError(
             f"{guard['id']}: no READ_ONCE(rdev->gpu_parked) in {guard['function']}"
+        )
+    guard_at = [i for i, line in enumerate(body) if POSITIVE_GUARD.match(line)]
+    if len(guard_at) != 1 or guard_at != latch_reads:
+        raise GuardError(
+            f"{guard['id']}: the parked latch must appear once as the exact positive "
+            "condition if (READ_ONCE(rdev->gpu_parked))"
         )
 
     call_at = [i for i, line in enumerate(body) if guard["precedes"] in line]
@@ -157,6 +174,140 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
                 f"{guard['id']}: the refusal is conditional on a VRAM request, "
                 "so a GTT request is readmitted"
             )
+
+    if guard["id"] == "prime-import":
+        check_prime_import_lock(body, min(guard_at))
+    elif guard["id"] == "wait-idle-flush":
+        check_wait_idle_lock(body, min(guard_at))
+    elif guard["id"] == "command-submission":
+        check_command_submission_lock(body, min(guard_at), min(call_at))
+
+
+def line_index(body: list[str], pattern: str, start: int = 0) -> int:
+    for index in range(start, len(body)):
+        if re.search(pattern, body[index]):
+            return index
+    return -1
+
+
+def require_guard_unlock(
+    entry: str, body: list[str], guard_index: int, result_pattern: str
+) -> None:
+    """Require the guarded refusal to release the read lock before return."""
+
+    unlock_at = line_index(
+        body, r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)", guard_index
+    )
+    result_at = line_index(body, result_pattern, guard_index)
+    if unlock_at < 0 or result_at < 0 or unlock_at > result_at:
+        raise GuardError(
+            f"{entry}: parked refusal does not release exclusive_lock before returning"
+        )
+
+
+def require_lock_held_at_guard(
+    entry: str, body: list[str], lock_index: int, guard_index: int
+) -> None:
+    """Reject an exclusive-lock release between acquisition and latch read."""
+
+    unlock_at = line_index(
+        body,
+        r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)",
+        lock_index + 1,
+    )
+    if unlock_at >= 0 and unlock_at < guard_index:
+        raise GuardError(
+            f"{entry}: exclusive_lock is released before the parked latch test"
+        )
+
+
+def check_prime_import_lock(body: list[str], guard_index: int) -> None:
+    """Prove PRIME checks the latch before reservation and allocation locks."""
+
+    lock_at = line_index(body, r"down_read\s*\(\s*&rdev->exclusive_lock\s*\)")
+    reservation_at = line_index(body, r"dma_resv_lock\s*\(")
+    allocation_at = line_index(body, r"radeon_bo_create\s*\(")
+    reservation_unlock_at = line_index(body, r"dma_resv_unlock\s*\(")
+    final_unlock_at = line_index(
+        body,
+        r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)",
+        reservation_unlock_at + 1,
+    )
+    if not (
+        0
+        <= lock_at
+        < guard_index
+        < reservation_at
+        < allocation_at
+        < reservation_unlock_at
+        < final_unlock_at
+    ):
+        raise GuardError(
+            "prime-import: expected exclusive lock, parked guard, dma_resv "
+            "lock, allocation, dma_resv unlock, and exclusive unlock order"
+        )
+    require_lock_held_at_guard("prime-import", body, lock_at, guard_index)
+    require_guard_unlock(
+        "prime-import",
+        body,
+        guard_index,
+        r"return\s+ERR_PTR\s*\(\s*-EIO\s*\)\s*;",
+    )
+
+
+def check_wait_idle_lock(body: list[str], guard_index: int) -> None:
+    """Prove WAIT leaves the bounded reservation wait outside the read lock."""
+
+    wait_at = line_index(body, r"dma_resv_wait_timeout\s*\(")
+    lock_at = line_index(body, r"down_read\s*\(\s*&rdev->exclusive_lock\s*\)")
+    placement_at = line_index(
+        body, r"cur_placement\s*=\s*READ_ONCE\s*\(", guard_index + 1
+    )
+    flush_at = line_index(body, r"mmio_hdp_flush", placement_at + 1)
+    final_unlock_at = line_index(
+        body, r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)", flush_at + 1
+    )
+    if not (
+        0 <= wait_at < lock_at < guard_index < placement_at < flush_at < final_unlock_at
+    ):
+        raise GuardError(
+            "wait-idle-flush: expected reservation wait, exclusive lock, "
+            "parked guard, placement, flush, and unlock order"
+        )
+    require_lock_held_at_guard("wait-idle-flush", body, lock_at, guard_index)
+    require_guard_unlock("wait-idle-flush", body, guard_index, r"return\s+-EIO\s*;")
+
+
+def check_command_submission_lock(
+    body: list[str], guard_index: int, parser_index: int
+) -> None:
+    """Prove the CS latch test is the first locked submission refusal."""
+
+    lock_at = [
+        index
+        for index, line in enumerate(body)
+        if re.search(r"down_read\s*\(\s*&rdev->exclusive_lock\s*\)", line)
+    ]
+    if not lock_at or min(lock_at) > guard_index:
+        raise GuardError(
+            "command-submission: exclusive_lock read acquisition does not "
+            "precede the parked latch test"
+        )
+
+    require_lock_held_at_guard("command-submission", body, min(lock_at), guard_index)
+
+    require_guard_unlock("command-submission", body, guard_index, r"return\s+-EIO\s*;")
+
+    acceleration_at = [
+        index
+        for index, line in enumerate(body)
+        if re.search(r"if\s*\(\s*!\s*rdev->accel_working\s*\)", line)
+    ]
+    if not acceleration_at or not (guard_index < min(acceleration_at) < parser_index):
+        raise GuardError(
+            "command-submission: gpu_parked -EIO must precede the separate "
+            "accel_working refusal and parser initialization"
+        )
 
 
 def check_dumb_create_propagation(root: Path) -> None:
@@ -213,6 +364,15 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 """
 
 FIXTURES_BAD = {
+    "guard polarity inverted": """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+\tif (!READ_ONCE(rdev->gpu_parked))
+\t\treturn -EIO;
+\tr = radeon_bo_create(rdev);
+\treturn 0;
+}
+""",
     "guard removed": """
 int radeon_gem_object_create(struct radeon_device *rdev)
 {
@@ -326,6 +486,105 @@ int radeon_mode_dumb_create(struct drm_file *file_priv)
 """,
 }
 
+PRIME_FIXTURE_GOOD = """
+struct drm_gem_object *radeon_gem_prime_import_sg_table(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn ERR_PTR(-EIO);
+\t}
+\tdma_resv_lock(resv, NULL);
+\tret = radeon_bo_create(rdev, size, align, false, domain, 0, sg, resv, &bo);
+\tdma_resv_unlock(resv);
+\tup_read(&rdev->exclusive_lock);
+\treturn &bo->tbo.base;
+}
+"""
+
+PRIME_FIXTURE_MUTATIONS = {
+    "guard polarity inverted": (
+        "if (READ_ONCE(rdev->gpu_parked))",
+        "if (!READ_ONCE(rdev->gpu_parked))",
+    ),
+    "read lock removed": (
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tremoved_down_read();",
+    ),
+    "guard unlock removed": (
+        "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
+        "\t\treturn ERR_PTR(-EIO);",
+    ),
+    "exclusive lock released before guard": (
+        "\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))",
+        (
+            "\tdown_read(&rdev->exclusive_lock);\n"
+            "\tup_read(&rdev->exclusive_lock);\n"
+            "\tif (READ_ONCE(rdev->gpu_parked))"
+        ),
+    ),
+    "parked errno changed": (
+        "return ERR_PTR(-EIO);",
+        "return ERR_PTR(-EBUSY);",
+    ),
+    "reservation lock moved before guard": (
+        ("\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))"),
+        (
+            "\tdown_read(&rdev->exclusive_lock);\n"
+            "\tdma_resv_lock(resv, NULL);\n"
+            "\tif (READ_ONCE(rdev->gpu_parked))"
+        ),
+    ),
+}
+
+WAIT_FIXTURE_GOOD = """
+int radeon_gem_wait_idle_ioctl(struct drm_device *dev)
+{
+\tret = dma_resv_wait_timeout(resv, usage, true, timeout);
+\tdown_read(&rdev->exclusive_lock);
+\tif (READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\tdrm_gem_object_put(gobj);
+\t\treturn -EIO;
+\t}
+\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);
+\tif (rdev->asic->mmio_hdp_flush)
+\t\trdev->asic->mmio_hdp_flush(rdev);
+\tup_read(&rdev->exclusive_lock);
+\treturn r;
+}
+"""
+
+WAIT_FIXTURE_MUTATIONS = {
+    "guard polarity inverted": (
+        "if (READ_ONCE(rdev->gpu_parked))",
+        "if (!READ_ONCE(rdev->gpu_parked))",
+    ),
+    "reservation wait moved under exclusive lock": (
+        (
+            "\tret = dma_resv_wait_timeout(resv, usage, true, timeout);\n"
+            "\tdown_read(&rdev->exclusive_lock);"
+        ),
+        (
+            "\tdown_read(&rdev->exclusive_lock);\n"
+            "\tret = dma_resv_wait_timeout(resv, usage, true, timeout);"
+        ),
+    ),
+    "guard unlock removed": (
+        ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
+        "\t\tdrm_gem_object_put(gobj);",
+    ),
+    "exclusive lock released before guard": (
+        "\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))",
+        (
+            "\tdown_read(&rdev->exclusive_lock);\n"
+            "\tup_read(&rdev->exclusive_lock);\n"
+            "\tif (READ_ONCE(rdev->gpu_parked))"
+        ),
+    ),
+    "parked errno changed": ("\t\treturn -EIO;", "\t\treturn -EBUSY;"),
+}
+
 # A comment naming the guarded call sits above the guard in the real source, so
 # a matcher that reads prose as code reports the guard as following the call it
 # precedes. This fixture is good and must stay accepted.
@@ -341,6 +600,126 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 \treturn 0;
 }
 """
+
+CS_FIXTURE_GOOD = """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EIO;
+\t}
+\tif (!rdev->accel_working) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EBUSY;
+\t}
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+"""
+
+CS_FIXTURES_BAD = {
+    "parked guard polarity inverted": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (!READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EIO;
+\t}
+\tif (!rdev->accel_working)
+\t\treturn -EBUSY;
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+    "acceleration state substitutes for the parked latch": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (!rdev->accel_working)
+\t\treturn -EBUSY;
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+    "parked refusal follows parser initialization": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tr = radeon_cs_parser_init(&parser, data);
+\tif (READ_ONCE(rdev->gpu_parked))
+\t\treturn -EIO;
+\treturn r;
+}
+""",
+    "parked refusal returns acceleration errno": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (READ_ONCE(rdev->gpu_parked))
+\t\treturn -EBUSY;
+\tif (!rdev->accel_working)
+\t\treturn -EBUSY;
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+    "exclusive read lock acquisition removed": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tif (READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EIO;
+\t}
+\tif (!rdev->accel_working)
+\t\treturn -EBUSY;
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+    "exclusive read lock released before parked refusal": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+	down_read(&rdev->exclusive_lock);
+	up_read(&rdev->exclusive_lock);
+	if (READ_ONCE(rdev->gpu_parked)) {
+		up_read(&rdev->exclusive_lock);
+		return -EIO;
+	}
+	if (!rdev->accel_working)
+		return -EBUSY;
+	r = radeon_cs_parser_init(&parser, data);
+	return r;
+}
+""",
+    "parked refusal leaks the exclusive read lock": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (READ_ONCE(rdev->gpu_parked))
+\t\treturn -EIO;
+\tif (!rdev->accel_working)
+\t\treturn -EBUSY;
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+    "acceleration refusal precedes parked refusal": """
+int radeon_cs_ioctl(struct drm_device *dev)
+{
+\tdown_read(&rdev->exclusive_lock);
+\tif (!rdev->accel_working)
+\t\treturn -EBUSY;
+\tif (READ_ONCE(rdev->gpu_parked)) {
+\t\tup_read(&rdev->exclusive_lock);
+\t\treturn -EIO;
+\t}
+\tr = radeon_cs_parser_init(&parser, data);
+\treturn r;
+}
+""",
+}
 
 
 def selftest(tmp: Path) -> int:
@@ -397,11 +776,91 @@ def selftest(tmp: Path) -> int:
             print(f"selftest known-bad ACCEPTED: dumb-create {name}", file=sys.stderr)
             failures += 1
 
+    locked_fixtures = (
+        (
+            next(item for item in GUARDS if item["id"] == "prime-import"),
+            PRIME_FIXTURE_GOOD,
+            PRIME_FIXTURE_MUTATIONS,
+        ),
+        (
+            next(item for item in GUARDS if item["id"] == "wait-idle-flush"),
+            WAIT_FIXTURE_GOOD,
+            WAIT_FIXTURE_MUTATIONS,
+        ),
+    )
+    for locked_spec, good_fixture, mutations in locked_fixtures:
+        path = tmp / locked_spec["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(good_fixture, encoding="ascii")
+        try:
+            check_guard(tmp, locked_spec)
+            print(f"selftest known-good accepted: {locked_spec['id']} lock order")
+        except GuardError as exc:
+            print(
+                f"selftest known-good REJECTED: {locked_spec['id']}: {exc}",
+                file=sys.stderr,
+            )
+            failures += 1
+        for name, (old, new) in mutations.items():
+            if good_fixture.count(old) != 1:
+                print(
+                    f"selftest fixture error: {locked_spec['id']} {name}",
+                    file=sys.stderr,
+                )
+                failures += 1
+                continue
+            path.write_text(good_fixture.replace(old, new, 1), encoding="ascii")
+            try:
+                check_guard(tmp, locked_spec)
+            except GuardError:
+                print(f"selftest known-bad rejected: {locked_spec['id']} {name}")
+            else:
+                print(
+                    f"selftest known-bad ACCEPTED: {locked_spec['id']} {name}",
+                    file=sys.stderr,
+                )
+                failures += 1
+
+    cs_spec = {
+        "id": "command-submission",
+        "path": Path("radeon_cs.c"),
+        "function": "radeon_cs_ioctl",
+        "precedes": "radeon_cs_parser_init",
+        "returns": "-EIO",
+    }
+    (tmp / "radeon_cs.c").write_text(CS_FIXTURE_GOOD, encoding="utf-8")
+    try:
+        check_guard(tmp, cs_spec)
+        print("selftest known-good accepted: command submission refuses with -EIO")
+    except GuardError as exc:
+        print(
+            f"selftest known-good REJECTED: command-submission: {exc}", file=sys.stderr
+        )
+        failures += 1
+
+    for name, fixture in CS_FIXTURES_BAD.items():
+        (tmp / "radeon_cs.c").write_text(fixture, encoding="utf-8")
+        try:
+            check_guard(tmp, cs_spec)
+        except GuardError:
+            print(f"selftest known-bad rejected: command-submission {name}")
+        else:
+            print(
+                f"selftest known-bad ACCEPTED: command-submission {name}",
+                file=sys.stderr,
+            )
+            failures += 1
+
     if failures:
         print(f"selftest: {failures} fixture(s) misclassified", file=sys.stderr)
         return 1
-    good_count = len(good) + 1
-    bad_count = len(FIXTURES_BAD) + len(DUMB_FIXTURES_BAD)
+    good_count = len(good) + 2 + len(locked_fixtures)
+    bad_count = (
+        len(FIXTURES_BAD)
+        + len(DUMB_FIXTURES_BAD)
+        + len(CS_FIXTURES_BAD)
+        + sum(len(mutations) for _, _, mutations in locked_fixtures)
+    )
     print(f"selftest: {good_count} good and {bad_count} bad fixtures classified")
     return 0
 

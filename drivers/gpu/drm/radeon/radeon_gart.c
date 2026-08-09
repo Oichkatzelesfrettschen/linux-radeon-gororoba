@@ -228,6 +228,20 @@ void radeon_gart_table_vram_free(struct radeon_device *rdev)
 /*
  * Common gart functions.
  */
+static bool radeon_gart_range_valid(struct radeon_device *rdev,
+				    unsigned int offset, int pages)
+{
+	unsigned int start;
+
+	if (pages <= 0 || offset & ~PAGE_MASK)
+		return false;
+	if ((unsigned int)pages > rdev->gart.num_cpu_pages)
+		return false;
+
+	start = offset >> PAGE_SHIFT;
+	return start <= rdev->gart.num_cpu_pages - pages;
+}
+
 /**
  * radeon_gart_unbind - unbind pages from the gart page table
  *
@@ -248,9 +262,15 @@ void radeon_gart_unbind(struct radeon_device *rdev, unsigned int offset,
 		WARN(1, "trying to unbind memory from uninitialized GART !\n");
 		return;
 	}
+	if (!radeon_gart_range_valid(rdev, offset, pages)) {
+		WARN(1, "invalid GART unbind range offset %u pages %d\n",
+		     offset, pages);
+		return;
+	}
 	t = offset / RADEON_GPU_PAGE_SIZE;
 	p = t / (PAGE_SIZE / RADEON_GPU_PAGE_SIZE);
 	for (i = 0; i < pages; i++, p++) {
+		t = p * (PAGE_SIZE / RADEON_GPU_PAGE_SIZE);
 		if (rdev->gart.pages[p]) {
 			rdev->gart.pages[p] = NULL;
 			for (j = 0; j < (PAGE_SIZE / RADEON_GPU_PAGE_SIZE); j++, t++) {
@@ -292,6 +312,11 @@ int radeon_gart_bind(struct radeon_device *rdev, unsigned int offset,
 
 	if (!rdev->gart.ready) {
 		WARN(1, "trying to bind memory to uninitialized GART !\n");
+		return -EINVAL;
+	}
+	if (!dma_addr || !radeon_gart_range_valid(rdev, offset, pages)) {
+		WARN(1, "invalid GART bind range offset %u pages %d\n",
+		     offset, pages);
 		return -EINVAL;
 	}
 	t = offset / RADEON_GPU_PAGE_SIZE;
