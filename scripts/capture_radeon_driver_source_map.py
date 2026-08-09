@@ -25,7 +25,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import tomllib
 from collections import defaultdict
@@ -932,33 +931,28 @@ def export_source(repository: Path, commit: str, policy: Policy, destination: Pa
     require(sum(entry[3] for entry in admitted) <= policy.max_source_bytes, "source byte count exceeds the policy ceiling")
     require(len(tree_entries) == len(admitted), "source closure contains an unclassified tracked path")
 
-    archive = git_output(repository, "archive", "--format=tar", commit, policy.source_root, text=False)
-    assert isinstance(archive, bytes)
-    allowed = {entry[4]: entry for entry in admitted}
-    seen: set[str] = set()
     source_entries: list[SourceEntry] = []
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-        for member in tar.getmembers():
-            if member.isdir():
-                continue
-            if member.name not in allowed:
-                continue
-            require(member.isfile(), f"archive carries a nonregular admitted member: {member.name}")
-            require(member.name not in seen, f"archive repeats admitted member: {member.name}")
-            extracted = tar.extractfile(member)
-            require(extracted is not None, f"cannot read archive member: {member.name}")
-            content = extracted.read()
-            mode, _object_type, object_id, size, path = allowed[member.name]
-            require(len(content) == size, f"archive size differs for {path}")
-            target = destination / path
-            write_bytes(target, content)
-            target.chmod(0o755 if mode == "100755" else 0o644)
-            source_entries.append(
-                SourceEntry(path, mode, object_id, size, sha256_bytes(content), source_class(policy, path) or "")
+    for mode, _object_type, object_id, size, path in admitted:
+        content = git_output(repository, "cat-file", "blob", object_id, text=False)
+        assert isinstance(content, bytes)
+        require(len(content) == size, f"Git blob size differs for {path}")
+        require(
+            git_object_id("blob", content) == object_id,
+            f"Git blob identity differs for {path}",
+        )
+        target = destination / path
+        write_bytes(target, content)
+        target.chmod(0o755 if mode == "100755" else 0o644)
+        source_entries.append(
+            SourceEntry(
+                path,
+                mode,
+                object_id,
+                size,
+                sha256_bytes(content),
+                source_class(policy, path) or "",
             )
-            seen.add(path)
-    missing = sorted(set(allowed) - seen)
-    require(not missing, f"archive omitted admitted paths: {', '.join(missing)}")
+        )
     return sorted(source_entries, key=lambda item: item.path.encode("utf-8"))
 
 
@@ -5298,6 +5292,32 @@ def self_test(repository: Path, policy_path: Path) -> int:
         live_driver_tree = str(
             git_output(repository, "rev-parse", f"{live_commit}:{policy.source_root}")
         ).strip()
+        blob_export_root = temp / "blob-export"
+        blob_export_entries = {
+            entry.path: entry
+            for entry in export_source(
+                repository,
+                live_commit,
+                policy,
+                blob_export_root,
+            )
+        }
+        ignored_metadata_path = f"{policy.source_root}/.gitignore"
+        ignored_metadata = blob_export_entries.get(ignored_metadata_path)
+        check(
+            "Git blob export retains tracked source metadata despite export-ignore",
+            ignored_metadata is not None
+            and ignored_metadata.source_class == "repository-metadata"
+            and ignored_metadata.object_id
+            == str(
+                git_output(
+                    repository,
+                    "rev-parse",
+                    f"{live_commit}:{ignored_metadata_path}",
+                )
+            ).strip()
+            and (blob_export_root / ignored_metadata_path).is_file(),
+        )
         write_source_tree_proof(
             proof_root,
             repository,
