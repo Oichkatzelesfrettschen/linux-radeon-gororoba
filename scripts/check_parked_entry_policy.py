@@ -106,8 +106,11 @@ CONTRACTS = (
                 "current_park_behavior",
                 "returns -EIO before accel_working",
             ),
+            ("current_park_behavior", "reset admission"),
+            ("current_park_behavior", "relocation validation"),
             ("test", "gpu_parked -EIO refusal"),
-            ("test", "precedes radeon_cs_parser_init"),
+            ("test", "reset admission"),
+            ("test", "IB scheduling order"),
         ),
     ),
 )
@@ -221,20 +224,22 @@ GOOD_POLICY = (
         "new_resource": "no",
         "existing_resource": "yes",
         "current_park_behavior": (
-            "0.7-1 source tests gpu_parked under the exclusive_lock reader and "
-            "returns -EIO before accel_working, parser initialization, relocation "
-            "validation, and IB scheduling"
+            "tests gpu_parked under the exclusive_lock reader and returns -EIO "
+            "before accel_working, reset admission, parser initialization, "
+            "relocation validation, and IB scheduling"
         ),
         "required_park_behavior": "bounded refusal",
         "error": "-EIO",
         "evidence": (
-            "0.6-1 hardware-pass returned -EBUSY through !accel_working in 16us "
-            "before parser entry; 0.7-1 direct parked refusal source- and "
-            "package-verified, silicon acceptance pending"
+            "pre-fix hardware-pass; steinmarder-r300 "
+            "cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z "
+            "measured -EBUSY in 16us before parser entry; corrected -EIO ordering "
+            "is compile-verified and silicon acceptance remains pending"
         ),
         "test": (
-            "check_parked_admission_guards.py proves the gpu_parked -EIO refusal "
-            "precedes radeon_cs_parser_init"
+            "check_parked_admission_guards.py proves read lock, unconditional "
+            "gpu_parked refusal, acceleration and reset admission, parser "
+            "initialization, relocation validation, and IB scheduling order"
         ),
     },
 )
