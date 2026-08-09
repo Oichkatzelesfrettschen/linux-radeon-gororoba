@@ -22,19 +22,30 @@ from check_generated_register_outputs import OutputError
 from check_generated_register_outputs import verify_outputs
 from check_kernel_build_root import VerificationError as KernelRootError
 from check_kernel_build_root import verify as verify_kernel_root
+from check_source_delta_map import DeltaMapError
+from check_source_delta_map import changed_source_commit_paths
+from check_source_delta_map import read_map
+from check_source_delta_map import validate as validate_source_delta
+from check_source_delta_map import validate_baseline as validate_source_delta_baseline
+from check_source_delta_map import validate_union_only_merge
+from check_source_delta_map import validate_union_path
 from manifest_source_tree import load_policy, manifest
 
 
 CONTROL_PATTERNS = (
-    ".github/workflows/reconstruction-history.yml",
+    ".github/workflows/**",
     "scripts/check_reconstruction_history.py",
     "scripts/check_reconstruction_plan.py",
     "scripts/check_generated_register_outputs.py",
+    "scripts/check_kernel_build_root.py",
+    "scripts/check_source_delta_map.py",
+    "scripts/manifest_source_tree.py",
     "scripts/materialize_migration_input.py",
     "MIGRATION_INPUT.toml",
     "migration/**",
     "docs/*reconstruction*plan.tsv",
     "docs/*effect-assignments.tsv",
+    "docs/reconstruction-input-inventory.tsv",
     "policy/kernel-compat-files.txt",
     "UPSTREAM_BASE.toml",
     "source-closure.toml",
@@ -185,13 +196,21 @@ def commit_trailers(repository: Path, commit: str) -> dict[str, list[str]]:
 
 def changed_paths(repository: Path, commit: str) -> list[str]:
     parent = git(repository, "rev-parse", f"{commit}^").decode("ascii").strip()
+    return changed_paths_between(repository, parent, commit)
+
+
+def changed_paths_between(
+    repository: Path,
+    before: str,
+    after: str,
+) -> list[str]:
     output = git(
         repository,
         "diff",
         "--name-only",
-        "--format=",
-        parent,
-        commit,
+        "--no-renames",
+        before,
+        after,
     ).decode("utf-8")
     return [line for line in output.splitlines() if line]
 
@@ -222,32 +241,102 @@ def is_reconstruction_range(
     return True
 
 
-def verify_post_tag_commit(repository: Path, commit: str) -> None:
-    parents = git(repository, "rev-list", "--parents", "-n", "1", commit).split()
-    if len(parents) != 2:
-        raise HistoryError(
-            f"{commit[:12]}: post-tag source ranges contain no merge commits"
-        )
-    paths = changed_paths(repository, commit)
+def generated_source_paths(paths: list[str]) -> list[str]:
+    driver_prefix = "drivers/gpu/drm/radeon/"
+    return [
+        path
+        for path in paths
+        if path == f"{driver_prefix}mkregtable"
+        or (path.startswith(driver_prefix) and path.endswith("_reg_safe.h"))
+    ]
+
+
+def tracked_generated_source(repository: Path, treeish: str) -> list[str]:
+    output = git(
+        repository,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        treeish,
+        "--",
+        "drivers/gpu/drm/radeon",
+    ).decode("utf-8")
+    return generated_source_paths(output.splitlines())
+
+
+def verify_post_tag_paths(commit: str, paths: list[str]) -> None:
     forbidden = [path for path in paths if is_control_path(path)]
     if forbidden:
         raise HistoryError(
             f"{commit[:12]}: post-tag source commit changes control files: "
             + ", ".join(forbidden)
         )
-    generated = [
-        path
-        for path in paths
-        if path == "drivers/gpu/drm/radeon/mkregtable"
-        or path.endswith("_reg_safe.h")
-    ]
+    generated = generated_source_paths(paths)
     if generated:
         raise HistoryError(
             f"{commit[:12]}: generated source is tracked: "
             + ", ".join(generated)
         )
-    parent = git(repository, "rev-parse", f"{commit}^").decode("ascii").strip()
-    run(["git", "diff", "--check", parent, commit], cwd=repository)
+
+
+def require_trusted_merge_parent(
+    commit: str,
+    parents: list[str],
+    trusted_base: str,
+) -> None:
+    if len(parents) != 2:
+        raise HistoryError(
+            f"{commit[:12]}: post-tag source merge requires two parents"
+        )
+    if parents.count(trusted_base) != 1:
+        raise HistoryError(
+            f"{commit[:12]}: post-tag source merge lacks the exact trusted base parent"
+        )
+
+
+def verify_post_tag_commit(
+    repository: Path,
+    commit: str,
+    trusted_base: str,
+) -> None:
+    commit_and_parents = git(
+        repository, "rev-list", "--parents", "-n", "1", commit
+    ).decode("ascii").split()
+    parents = commit_and_parents[1:]
+    generated = tracked_generated_source(repository, commit)
+    if generated:
+        raise HistoryError(
+            f"{commit[:12]}: final source tree tracks generated output: "
+            + ", ".join(generated)
+        )
+    if len(parents) == 1:
+        verify_post_tag_paths(commit, changed_paths(repository, commit))
+    else:
+        require_trusted_merge_parent(commit, parents, trusted_base)
+        try:
+            validate_union_only_merge(
+                repository,
+                commit,
+                parents,
+                pathspec=None,
+            )
+        except DeltaMapError as exc:
+            raise HistoryError(f"{commit[:12]}: {exc}") from exc
+        verify_post_tag_paths(
+            commit,
+            changed_paths_between(repository, trusted_base, commit),
+        )
+    for parent in parents:
+        run(["git", "diff", "--check", parent, commit], cwd=repository)
+
+
+def verify_source_delta_contract(repository: Path) -> None:
+    try:
+        validate_source_delta_baseline(repository)
+        changed_commit_paths = changed_source_commit_paths(repository)
+        validate_source_delta(read_map(repository), changed_commit_paths)
+    except DeltaMapError as exc:
+        raise HistoryError(f"source-delta contract: {exc}") from exc
 
 
 def verify_commit_metadata(
@@ -449,7 +538,8 @@ def prepare(
     ]
     if not is_reconstruction_range(commits, trailers_by_commit):
         for commit in commits:
-            verify_post_tag_commit(repository, commit)
+            verify_post_tag_commit(repository, commit, base)
+        verify_source_delta_contract(repository)
         print("post-tag source range: no reconstruction matrix")
         return []
 
@@ -647,6 +737,7 @@ def append_matrix(path: Path, prepared: list[tuple[str, str]]) -> None:
 
 
 def self_test() -> int:
+    union_rejections = 0
     try:
         parsed = parse_trailer_lines(
             "Reconstruction-id: B01\nKernel-lanes: 6.18\n"
@@ -655,6 +746,12 @@ def self_test() -> int:
             raise HistoryError("trailer parser lost Reconstruction-id")
         if not is_control_path("migration/input/oracle.tsv"):
             raise HistoryError("control path matcher missed migration input")
+        if not is_control_path("scripts/check_source_delta_map.py"):
+            raise HistoryError("control path matcher missed source history policy")
+        if not is_control_path(".github/workflows/source-static.yml"):
+            raise HistoryError("control path matcher missed workflow policy")
+        if not is_control_path("scripts/manifest_source_tree.py"):
+            raise HistoryError("control path matcher missed imported policy code")
         if is_control_path("drivers/gpu/drm/radeon/r300.c"):
             raise HistoryError("control path matcher rejected Radeon source")
         sample = {"base": [{"commit_id": "B01"}, {"commit_id": "B02"}]}
@@ -690,12 +787,69 @@ def self_test() -> int:
             pass
         else:
             raise HistoryError("range classifier accepted duplicate IDs")
+
+        validate_union_path("base", "first", "base", "first", "first.c")
+        validate_union_path("base", "base", "second", "second", "second.c")
+        for entries in (
+            ("base", "same", "same", "novel", "equal.c"),
+            ("base", "first", "base", "base", "dropped-first.c"),
+            ("base", "base", "second", "base", "dropped-second.c"),
+            ("base", "first", "second", "first", "divergent.c"),
+        ):
+            try:
+                validate_union_path(*entries)
+            except DeltaMapError:
+                union_rejections += 1
+            else:
+                raise HistoryError("union calibration accepted invalid source content")
+
+        require_trusted_merge_parent("merge", ["feature", "base"], "base")
+        for parents, trusted_base in (
+            ([], "base"),
+            (["feature"], "base"),
+            (["first", "second"], "base"),
+            (["base", "base"], "base"),
+            (["first", "base", "second"], "base"),
+        ):
+            try:
+                require_trusted_merge_parent("merge", parents, trusted_base)
+            except HistoryError:
+                union_rejections += 1
+            else:
+                raise HistoryError("union calibration accepted invalid parent authority")
+
+        verify_post_tag_paths(
+            "commit",
+            ["drivers/gpu/drm/radeon/r300.c", "docs/result.md"],
+        )
+        generated_paths = generated_source_paths(
+            [
+                "drivers/gpu/drm/radeon/r300_reg_safe.h",
+                "drivers/gpu/drm/radeon/mkregtable",
+                "scripts/example_reg_safe.h",
+            ]
+        )
+        if generated_paths != [
+            "drivers/gpu/drm/radeon/r300_reg_safe.h",
+            "drivers/gpu/drm/radeon/mkregtable",
+        ]:
+            raise HistoryError("generated source tree matcher differs")
+        for path in (
+            "scripts/check_source_delta_map.py",
+            "drivers/gpu/drm/radeon/r300_reg_safe.h",
+        ):
+            try:
+                verify_post_tag_paths("commit", [path])
+            except HistoryError:
+                union_rejections += 1
+            else:
+                raise HistoryError("union calibration accepted a forbidden path")
     except HistoryError as exc:
         print(f"reconstruction-history calibration: FAIL: {exc}", file=sys.stderr)
         return 1
     print(
         "reconstruction-history calibration: trailers, range classes, "
-        "control paths, and order pass"
+        f"control paths, order, and {union_rejections} union rejections pass"
     )
     return 0
 
