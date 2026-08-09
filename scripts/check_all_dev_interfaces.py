@@ -993,6 +993,41 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         reset_body.count("up_read(&rdev->exclusive_lock);") == 2,
         "forced GPU-reset read-lock release paths differ",
     )
+    parked_exit_pattern = (
+        r"rdev->in_reset = true;\s*"
+        r"rdev->needs_reset = false;\s*"
+        r"msleep\(1\);\s*"
+        r"dev_err\(rdev->dev,\s*"
+        r'"parked: downgrading exclusive lock\\n"\);\s*'
+        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
+        r"msleep\(1\);\s*"
+        r"dev_info\(rdev->dev,\s*"
+        r'"GPU reset failed, GPU parked, host kept alive\\n"\);\s*'
+        r"rdev->in_reset = false;\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"msleep\(1\);\s*"
+        r"dev_err\(rdev->dev,\s*"
+        r'"parked: radeon_gpu_reset returning %d to caller\\n",\s*r\);\s*'
+        r"return r;"
+    )
+    ordinary_exit_pattern = (
+        r"rdev->in_reset = true;\s*"
+        r"rdev->needs_reset = false;\s*"
+        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
+        r"drm_helper_resume_force_mode\(rdev_to_drm\(rdev\)\);.*?"
+        r"rdev->needs_reset = r == -EAGAIN;\s*"
+        r"rdev->in_reset = false;\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"return r;"
+    )
+    require(
+        len(re.findall(parked_exit_pattern, reset_body, re.DOTALL)) == 1,
+        "forced GPU-reset parked exit does not downgrade at its quiet epoch",
+    )
+    require(
+        len(re.findall(ordinary_exit_pattern, reset_body, re.DOTALL)) == 1,
+        "forced GPU-reset ordinary exit does not downgrade before mode resume",
+    )
     require(
         re.search(wrapper_pattern, texts[path], re.DOTALL) is not None,
         "forced GPU-reset entry does not select the forced transaction",
@@ -1860,6 +1895,82 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a post-counter writer unlock")
 
+    reset_counter_line = "\tatomic_inc(&rdev->gpu_reset_counter);\n"
+    early_downgrade_line = "\tdowngrade_write(&rdev->exclusive_lock);\n"
+    ordinary_downgrade_context = (
+        "\trdev->in_reset = true;\n"
+        "\trdev->needs_reset = false;\n\n"
+        "\tdowngrade_write(&rdev->exclusive_lock);\n\n"
+        "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
+    )
+    ordinary_without_downgrade = (
+        "\trdev->in_reset = true;\n"
+        "\trdev->needs_reset = false;\n\n"
+        "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
+    )
+    reset_implementation_source = source_texts[reset_implementation_path]
+    require(
+        reset_implementation_source.count(reset_counter_line) == 1
+        and reset_implementation_source.count(ordinary_downgrade_context) == 1,
+        "self-test ordinary downgrade fixture differs from the source",
+    )
+    moved_ordinary_downgrade = copy.deepcopy(source_texts)
+    moved_ordinary_source = reset_implementation_source.replace(
+        reset_counter_line,
+        reset_counter_line + early_downgrade_line,
+        1,
+    ).replace(
+        ordinary_downgrade_context,
+        ordinary_without_downgrade,
+        1,
+    )
+    require(
+        moved_ordinary_source.count(early_downgrade_line.strip()) == 2,
+        "self-test ordinary downgrade mutant changes the downgrade denominator",
+    )
+    moved_ordinary_downgrade[reset_implementation_path] = moved_ordinary_source
+    try:
+        validate_forced_gpu_reset_transaction(moved_ordinary_downgrade)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a moved ordinary reset downgrade")
+
+    parked_downgrade_context = (
+        '\t\tdev_err(rdev->dev, "parked: downgrading exclusive lock\\n");\n'
+        "\t\tdowngrade_write(&rdev->exclusive_lock);\n"
+        "\t\tmsleep(1);"
+    )
+    parked_without_downgrade = (
+        '\t\tdev_err(rdev->dev, "parked: downgrading exclusive lock\\n");\n'
+        "\t\tmsleep(1);"
+    )
+    require(
+        reset_implementation_source.count(parked_downgrade_context) == 1,
+        "self-test parked downgrade fixture differs from the source",
+    )
+    moved_parked_downgrade = copy.deepcopy(source_texts)
+    moved_parked_source = reset_implementation_source.replace(
+        reset_counter_line,
+        reset_counter_line + early_downgrade_line,
+        1,
+    ).replace(
+        parked_downgrade_context,
+        parked_without_downgrade,
+        1,
+    )
+    require(
+        moved_parked_source.count(early_downgrade_line.strip()) == 2,
+        "self-test parked downgrade mutant changes the downgrade denominator",
+    )
+    moved_parked_downgrade[reset_implementation_path] = moved_parked_source
+    try:
+        validate_forced_gpu_reset_transaction(moved_parked_downgrade)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a moved parked reset downgrade")
+
     retired_rejection_count = 0
     for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
         for marker in markers:
@@ -1892,7 +2003,7 @@ def self_test(root: Path) -> int:
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
         "22 Palm registration source, 4 registration contract, "
         f"{summary_rejection_count} summary-total, "
-        "5 reset-post-state, 4 forced-reset, 1 retired-denominator, "
+        "5 reset-post-state, 6 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0
