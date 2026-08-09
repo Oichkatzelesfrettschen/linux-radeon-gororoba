@@ -38,6 +38,7 @@ CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v1"
 COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v1"
 LEXICAL_SCHEMA = "radeon-driver-lexical-map-v1"
 DECLARED_BINDING_SCHEMA = "radeon-driver-declared-bindings-v1"
+PATH_WITNESS_SCHEMA = "radeon-driver-contextual-path-witnesses-v1"
 HASH_LEDGER = "capture-hashes.sha256"
 POLICY_PATH = Path("policy/radeon-driver-source-map.toml")
 SCRIPT_PATH = Path("scripts/capture_radeon_driver_source_map.py")
@@ -78,13 +79,23 @@ INITIALIZER_BINDING_KINDS = {
     "vm-operations-table",
 }
 BRACE_SCOPED_BINDING_KINDS = INITIALIZER_BINDING_KINDS | {
+    "debugfs-registration",
     "reset-mode",
     "reset-request",
 }
+CALL_CANDIDATE_EDGE_KINDS = {
+    "declared-indirect",
+    "extracted-indirect",
+    "lexical",
+}
+PATH_WITNESS_SEMANTIC_LIMIT = (
+    "ordered-source-witness-not-runtime-reachability"
+)
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 C_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MECHANISM_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 C_COMMENT_OR_LITERAL = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
@@ -163,6 +174,25 @@ class Binding:
 
 
 @dataclass(frozen=True)
+class PathWitnessEdge:
+    axis: str
+    edge_kind: str
+    caller: str
+    callee: str
+    partition: str
+    provenance: str
+    classification: str
+
+
+@dataclass(frozen=True)
+class PathWitness:
+    name: str
+    context: tuple[str, ...]
+    axis_join: str
+    edges: tuple[PathWitnessEdge, ...]
+
+
+@dataclass(frozen=True)
 class BoundedQuery:
     name: str
     paths: tuple[str, ...]
@@ -220,6 +250,7 @@ class Policy:
     partitions: tuple[Partition, ...]
     hazards: tuple[Hazard, ...]
     bindings: tuple[Binding, ...]
+    path_witnesses: tuple[PathWitness, ...]
     bounded_queries: tuple[BoundedQuery, ...]
 
 
@@ -451,6 +482,87 @@ def string_list(mapping: dict[str, Any], key: str, label: str, allow_empty: bool
     return tuple(value)
 
 
+def validate_path_witness_shape(witness: PathWitness, label: str) -> None:
+    require(
+        MECHANISM_NAME.fullmatch(witness.name) is not None,
+        f"{label}.name is not mechanism-first ASCII",
+    )
+    require(witness.context, f"{label}.context must not be empty")
+    require(
+        all(
+            item.isascii()
+            and item.strip() == item
+            and "\t" not in item
+            and "\n" not in item
+            for item in witness.context
+        ),
+        f"{label}.context contains invalid text",
+    )
+    require(
+        witness.axis_join.isascii()
+        and witness.axis_join.strip() == witness.axis_join
+        and "\t" not in witness.axis_join
+        and "\n" not in witness.axis_join,
+        f"{label}.axis_join contains invalid text",
+    )
+    require(len(witness.edges) >= 2, f"{label}.edges must contain at least two edges")
+    completed_axes: set[str] = set()
+    active_axis = ""
+    previous_callee = ""
+    identities: set[tuple[str, ...]] = set()
+    for edge_index, edge in enumerate(witness.edges):
+        edge_label = f"{label}.edges[{edge_index}]"
+        require(
+            MECHANISM_NAME.fullmatch(edge.axis) is not None,
+            f"{edge_label}.axis is invalid",
+        )
+        require(
+            edge.edge_kind in CALL_CANDIDATE_EDGE_KINDS,
+            f"{edge_label}.edge_kind is invalid",
+        )
+        require(
+            all(
+                value
+                and value.isascii()
+                and "\t" not in value
+                and "\n" not in value
+                for value in (
+                    edge.caller,
+                    edge.callee,
+                    edge.partition,
+                    edge.provenance,
+                    edge.classification,
+                )
+            ),
+            f"{edge_label} contains invalid candidate identity text",
+        )
+        if edge.axis != active_axis:
+            if active_axis:
+                completed_axes.add(active_axis)
+            require(
+                edge.axis not in completed_axes,
+                f"{label} returns to a completed axis: {edge.axis}",
+            )
+            active_axis = edge.axis
+            previous_callee = ""
+        if previous_callee:
+            require(
+                previous_callee == edge.caller,
+                f"{label} axis {edge.axis} is not contiguous at edge {edge_index}",
+            )
+        previous_callee = edge.callee
+        identity = (
+            edge.edge_kind,
+            edge.caller,
+            edge.callee,
+            edge.partition,
+            edge.provenance,
+            edge.classification,
+        )
+        require(identity not in identities, f"{label} repeats a candidate edge")
+        identities.add(identity)
+
+
 def load_policy(path: Path) -> Policy:
     try:
         content = path.read_bytes()
@@ -475,6 +587,7 @@ def load_policy(path: Path) -> Policy:
         "partition",
         "hazard",
         "binding",
+        "path_witness",
         "bounded_query",
     }
     reject_unknown(data, top_keys, "policy")
@@ -754,6 +867,53 @@ def load_policy(path: Path) -> Policy:
     binding_edges = {(item.kind, item.caller, item.callee) for item in bindings}
     require(len(binding_edges) == len(bindings), "declared binding edge repeats")
 
+    path_witnesses: list[PathWitness] = []
+    for index, item in enumerate(data.get("path_witness", [])):
+        label = f"path_witness[{index}]"
+        require(isinstance(item, dict), f"{label} must be a table")
+        reject_unknown(item, {"name", "context", "axis_join", "edge"}, label)
+        raw_edges = item.get("edge")
+        require(isinstance(raw_edges, list), f"{label}.edge must be a table list")
+        edges: list[PathWitnessEdge] = []
+        for edge_index, edge in enumerate(raw_edges):
+            edge_label = f"{label}.edge[{edge_index}]"
+            require(isinstance(edge, dict), f"{edge_label} must be a table")
+            edge_keys = {
+                "axis",
+                "edge_kind",
+                "caller",
+                "callee",
+                "partition",
+                "provenance",
+                "classification",
+            }
+            reject_unknown(edge, edge_keys, edge_label)
+            require(set(edge) == edge_keys, f"{edge_label} is incomplete")
+            edges.append(
+                PathWitnessEdge(
+                    string_value(edge, "axis", edge_label),
+                    string_value(edge, "edge_kind", edge_label),
+                    string_value(edge, "caller", edge_label),
+                    string_value(edge, "callee", edge_label),
+                    string_value(edge, "partition", edge_label),
+                    string_value(edge, "provenance", edge_label),
+                    string_value(edge, "classification", edge_label),
+                )
+            )
+        witness = PathWitness(
+            string_value(item, "name", label),
+            string_list(item, "context", label),
+            string_value(item, "axis_join", label),
+            tuple(edges),
+        )
+        validate_path_witness_shape(witness, label)
+        path_witnesses.append(witness)
+    require(path_witnesses, "policy carries no contextual path witnesses")
+    require(
+        len({item.name for item in path_witnesses}) == len(path_witnesses),
+        "path witness name repeats",
+    )
+
     bounded_queries: list[BoundedQuery] = []
     for index, item in enumerate(data.get("bounded_query", [])):
         label = f"bounded_query[{index}]"
@@ -810,6 +970,7 @@ def load_policy(path: Path) -> Policy:
         tuple(partitions),
         tuple(hazards),
         tuple(bindings),
+        tuple(path_witnesses),
         tuple(bounded_queries),
     )
 
@@ -2226,6 +2387,92 @@ def write_call_candidates(
         ordered,
     )
     return ordered
+
+
+def build_contextual_path_witnesses(
+    capture_root: Path,
+    policy: Policy,
+    call_rows: list[tuple[Any, ...]] | list[list[str]],
+    *,
+    write_output: bool = True,
+) -> list[tuple[Any, ...]]:
+    normalized_candidates = [tuple(str(value) for value in row) for row in call_rows]
+    require(
+        all(len(row) == 6 for row in normalized_candidates),
+        "call candidate row width differs while building path witnesses",
+    )
+    require(
+        len(set(normalized_candidates)) == len(normalized_candidates),
+        "call candidates repeat an edge while building path witnesses",
+    )
+    candidate_set = set(normalized_candidates)
+    output_rows: list[tuple[Any, ...]] = []
+    for witness in policy.path_witnesses:
+        validate_path_witness_shape(witness, f"path witness {witness.name}")
+        axis_steps: defaultdict[str, int] = defaultdict(int)
+        context_json = json.dumps(
+            list(witness.context),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        for edge in witness.edges:
+            candidate = (
+                edge.edge_kind,
+                edge.caller,
+                edge.callee,
+                edge.partition,
+                edge.provenance,
+                edge.classification,
+            )
+            require(
+                candidate in candidate_set,
+                "path witness "
+                f"{witness.name} lacks candidate edge "
+                f"{edge.caller} -> {edge.callee}",
+            )
+            axis_steps[edge.axis] += 1
+            output_rows.append(
+                (
+                    witness.name,
+                    edge.axis,
+                    axis_steps[edge.axis],
+                    edge.edge_kind,
+                    edge.caller,
+                    edge.callee,
+                    edge.partition,
+                    edge.provenance,
+                    edge.classification,
+                    context_json,
+                    witness.axis_join,
+                    PATH_WITNESS_SEMANTIC_LIMIT,
+                )
+            )
+    require(
+        len(output_rows) == sum(len(item.edges) for item in policy.path_witnesses),
+        "path witness output does not close the policy denominator",
+    )
+    require(len(set(output_rows)) == len(output_rows), "path witness output repeats a row")
+    if write_output:
+        write_tsv(
+            capture_root / "analysis/contextual-path-witnesses.tsv",
+            PATH_WITNESS_SCHEMA,
+            (
+                "witness_id",
+                "axis",
+                "step",
+                "edge_kind",
+                "caller",
+                "callee",
+                "edge_partition",
+                "edge_provenance",
+                "edge_classification",
+                "required_context_json",
+                "axis_join",
+                "semantic_limit",
+            ),
+            output_rows,
+        )
+    return output_rows
 
 
 def evaluate_bounded_queries(
@@ -3798,6 +4045,8 @@ def verify_capture(
         "lexical_row_count",
         "declared_binding_count",
         "call_candidate_count",
+        "path_witness_count",
+        "path_witness_edge_count",
         "preprocessor_lanes",
         "semantic_limit",
     }
@@ -3826,6 +4075,8 @@ def verify_capture(
         "lexical_row_count": (1, MAX_ANALYSIS_ROWS),
         "declared_binding_count": (1, MAX_ANALYSIS_ROWS),
         "call_candidate_count": (1, MAX_ANALYSIS_ROWS),
+        "path_witness_count": (1, MAX_ANALYSIS_ROWS),
+        "path_witness_edge_count": (1, MAX_ANALYSIS_ROWS),
     }
     for key, (minimum, maximum) in integer_bounds.items():
         value = manifest[key]
@@ -4663,8 +4914,60 @@ def verify_capture(
         "SCC report order is not normalized",
     )
 
-    _call_columns, call_rows = read_tsv(root / "analysis/call-candidates.tsv", "radeon-driver-call-candidates-v1")
+    call_columns, call_rows = read_tsv(
+        root / "analysis/call-candidates.tsv",
+        "radeon-driver-call-candidates-v1",
+    )
+    require(
+        call_columns
+        == [
+            "edge_kind",
+            "caller",
+            "callee",
+            "partition",
+            "provenance",
+            "classification",
+        ],
+        "call candidate columns differ",
+    )
     require(len(call_rows) == manifest["call_candidate_count"], "call candidate count differs")
+    path_columns, path_rows = read_tsv(
+        root / "analysis/contextual-path-witnesses.tsv",
+        PATH_WITNESS_SCHEMA,
+    )
+    require(
+        path_columns
+        == [
+            "witness_id",
+            "axis",
+            "step",
+            "edge_kind",
+            "caller",
+            "callee",
+            "edge_partition",
+            "edge_provenance",
+            "edge_classification",
+            "required_context_json",
+            "axis_join",
+            "semantic_limit",
+        ],
+        "contextual path witness columns differ",
+    )
+    expected_path_rows = build_contextual_path_witnesses(
+        root,
+        policy,
+        call_rows,
+        write_output=False,
+    )
+    require(
+        path_rows == [[str(value) for value in row] for row in expected_path_rows],
+        "contextual path witnesses differ from offline replay",
+    )
+    require(
+        manifest["path_witness_count"] == len(policy.path_witnesses)
+        and manifest["path_witness_edge_count"] == len(path_rows),
+        "contextual path witness denominator differs",
+    )
     require(retained_count > 20, "capture retained too few evidence files")
     return manifest
 
@@ -4787,6 +5090,11 @@ def capture_source_map(
         declared_rows = verify_declared_bindings(stage, source_root, entry_map, policy)
         _extracted_rows, generated_edges = extract_callback_candidates(stage, source_root, entries, policy)
         call_rows = write_call_candidates(stage, cflow_edges, declared_rows, generated_edges)
+        path_witness_rows = build_contextual_path_witnesses(
+            stage,
+            policy,
+            call_rows,
+        )
         run_bounded_queries(stage, source_root, entries, policy)
         build_complexity_and_coefficients(stage, source_root, source_list, policy, recorder, cflow_edges, declared_rows)
         preprocessor_lanes = capture_preprocessor_views(
@@ -4828,6 +5136,8 @@ def capture_source_map(
             "lexical_row_count": len(lexical_rows),
             "declared_binding_count": len(declared_rows),
             "call_candidate_count": len(call_rows),
+            "path_witness_count": len(policy.path_witnesses),
+            "path_witness_edge_count": len(path_witness_rows),
             "preprocessor_lanes": preprocessor_lanes,
             "semantic_limit": "candidate-research-graph-not-runtime-reachability",
         }
@@ -4915,6 +5225,31 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             binding_rows,
         )
 
+        path_columns, left_paths = row_set(
+            left / "analysis/contextual-path-witnesses.tsv",
+            PATH_WITNESS_SCHEMA,
+        )
+        right_path_columns, right_paths = row_set(
+            right / "analysis/contextual-path-witnesses.tsv",
+            PATH_WITNESS_SCHEMA,
+        )
+        require(
+            path_columns == right_path_columns,
+            "contextual path witness comparison schemas differ",
+        )
+        path_rows = [
+            ("removed", *row) for row in sorted(left_paths - right_paths)
+        ]
+        path_rows.extend(
+            ("added", *row) for row in sorted(right_paths - left_paths)
+        )
+        write_tsv(
+            stage / "contextual-path-witness-delta.tsv",
+            "radeon-driver-contextual-path-witness-delta-v1",
+            ("change", *path_columns),
+            path_rows,
+        )
+
         coefficient_columns, left_coefficients = row_set(left / "analysis/coefficient-vectors.tsv", "radeon-driver-coefficient-vectors-v2")
         right_coefficient_columns, right_coefficients = row_set(right / "analysis/coefficient-vectors.tsv", "radeon-driver-coefficient-vectors-v2")
         require(coefficient_columns == right_coefficient_columns, "coefficient comparison schemas differ")
@@ -4936,6 +5271,7 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             "file_delta_count": len(file_rows),
             "call_candidate_delta_count": len(call_rows),
             "declared_binding_delta_count": len(binding_rows),
+            "path_witness_delta_count": len(path_rows),
             "coefficient_vector_delta_count": len(coefficient_rows),
             "semantic_limit": "normalized-candidate-delta-not-runtime-behavior",
         }
@@ -4945,7 +5281,8 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
         stage.rename(output)
         print(
             f"Radeon source-map comparison: {len(file_rows)} files, "
-            f"{len(call_rows)} call candidates, {len(binding_rows)} bindings"
+            f"{len(call_rows)} call candidates, {len(binding_rows)} bindings, "
+            f"{len(path_rows)} path witness rows"
         )
         return summary
     finally:
@@ -4988,7 +5325,16 @@ def self_test(repository: Path, policy_path: Path) -> int:
     except SourceMapError as exc:
         print(f"  CALIBRATION FAIL: live policy: {exc}", file=sys.stderr)
         return 1
-    check("live policy closes partitions, hazards, bindings, and queries", bool(policy.partitions and policy.hazards and policy.bindings and policy.bounded_queries))
+    check(
+        "live policy closes partitions, hazards, bindings, paths, and queries",
+        bool(
+            policy.partitions
+            and policy.hazards
+            and policy.bindings
+            and policy.path_witnesses
+            and policy.bounded_queries
+        ),
+    )
     toolchain_closures = []
     for lane in policy.kernel_lanes:
         closure_declaration, closure_entries = load_toolchain_closure(
@@ -5172,6 +5518,96 @@ def self_test(repository: Path, policy_path: Path) -> int:
     check(
         "function-scoped binding cannot cross from its owner into a decoy function",
         len(binding_matches(crossed_function, reset_binding)) == 0,
+    )
+    path_candidates = [
+        (
+            "lexical",
+            "entry",
+            "callback_slot",
+            "full-tree",
+            "gnu-cflow",
+            "driver",
+        ),
+        (
+            "declared-indirect",
+            "family",
+            "callback_target",
+            "command-submission",
+            "family-callback",
+            "callback-table",
+        ),
+    ]
+    path_witness = PathWitness(
+        "contextual-callback-path",
+        ("family equals the synthetic target",),
+        "The callback slot selects the target under the declared family context.",
+        (
+            PathWitnessEdge(
+                "execution",
+                *path_candidates[0],
+            ),
+            PathWitnessEdge(
+                "family-selection",
+                *path_candidates[1],
+            ),
+        ),
+    )
+    path_policy = Policy(
+        **{
+            **policy.__dict__,
+            "path_witnesses": (path_witness,),
+        }
+    )
+    accepts(
+        "contextual path witness accepts exact ordered axes",
+        lambda: build_contextual_path_witnesses(
+            Path("."),
+            path_policy,
+            path_candidates,
+            write_output=False,
+        ),
+    )
+    rejects(
+        "contextual path witness rejects a missing candidate edge",
+        lambda: build_contextual_path_witnesses(
+            Path("."),
+            path_policy,
+            path_candidates[:1],
+            write_output=False,
+        ),
+    )
+    rejects(
+        "contextual path witness rejects duplicate candidate evidence",
+        lambda: build_contextual_path_witnesses(
+            Path("."),
+            path_policy,
+            [*path_candidates, path_candidates[0]],
+            write_output=False,
+        ),
+    )
+    discontinuous_witness = PathWitness(
+        "discontinuous-callback-path",
+        path_witness.context,
+        path_witness.axis_join,
+        (
+            path_witness.edges[0],
+            PathWitnessEdge(
+                "execution",
+                "lexical",
+                "different_caller",
+                "different_target",
+                "full-tree",
+                "gnu-cflow",
+                "driver",
+            ),
+        ),
+    )
+    rejects(
+        "contextual path witness rejects a discontinuous axis",
+        lambda: validate_path_witness_shape(
+            discontinuous_witness,
+            "discontinuous fixture",
+        ),
     )
     tricky = 'const char *a = "/*"; .member = target,\nconst char *b = "//"; .other = next,\n'
     check("combined lexer preserves code after comment tokens inside strings", ".member = target" in strip_comments_and_literals(tricky) and ".other = next" in strip_comments_and_literals(tricky))
