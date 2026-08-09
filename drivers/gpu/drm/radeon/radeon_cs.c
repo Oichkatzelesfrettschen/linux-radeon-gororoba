@@ -804,6 +804,10 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	if (r) {
 		goto out;
 	}
+	if (!list_empty(&parser.validated) && !parser.ib.fence) {
+		DRM_ERROR("Successful command submission has validated BOs but no fence !\n");
+		r = -EINVAL;
+	}
 out:
 	radeon_cs_parser_fini(&parser, r);
 	up_read(&rdev->exclusive_lock);

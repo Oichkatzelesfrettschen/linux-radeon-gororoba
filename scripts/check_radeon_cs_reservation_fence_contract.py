@@ -25,7 +25,7 @@ import check_rs4xx_gart_cache_policy as cache_policy
 POLICY = Path("policy/radeon-cs-reservation-fence-contract.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "bad475e304c5e03a56f8f45efab696817ea3dc04066315d87124062740801ce4"
+    "0542c3392b46196d679948a3c7150670f87afc645418d33e66c7226901cb54de"
 )
 
 EXPECTED_ROWS = {
@@ -325,6 +325,18 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
         ),
     )
 
+    require_order(
+        "validated submissions require a success fence before cleanup",
+        ioctl,
+        (
+            "r = radeon_cs_ib_vm_chunk",
+            "!list_empty(&parser.validated) && !parser.ib.fence",
+            "r = -EINVAL;",
+            "out:",
+            "radeon_cs_parser_fini",
+        ),
+    )
+
     next_reloc = function(root, "radeon_cs.c", "radeon_cs_packet_next_reloc")
     require_order(
         "relocation record index admission",
@@ -590,6 +602,15 @@ SOURCE_MUTATIONS = {
         "drivers/gpu/drm/radeon/radeon_cs.c",
         "\tif (p->chunk_relocs && !p->chunk_ib)\n",
         "\tif (false)\n",
+    ),
+    "validated submission lacks final fence admission": (
+        "drivers/gpu/drm/radeon/radeon_cs.c",
+        (
+            "\tif (!list_empty(&parser.validated) && !parser.ib.fence) {\n"
+            '\t\tDRM_ERROR("Successful command submission has validated BOs but no fence !\\n");\n'
+            "\t\tr = -EINVAL;\n\t}\n"
+        ),
+        "",
     ),
     "relocation index accepts unaligned records": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
