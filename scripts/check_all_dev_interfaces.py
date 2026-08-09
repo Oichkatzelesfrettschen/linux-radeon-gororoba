@@ -848,6 +848,14 @@ def validate_rs4xx_output_schema_paths(
         dump_header_start,
         "RS4xx CP-ME dump header start",
     )
+    dump_start_prefix = strip_comments_and_literals(
+        dump_start_body[: dump_header_start.start()]
+    )
+    require(
+        output_call.search(dump_start_body) is None
+        and control_exit.search(dump_start_prefix) is None,
+        "RS4xx CP-ME dump start bypasses its header record",
+    )
     dump_disabled_start = require_one_match(
         dump_start_body,
         r"if \(radeon_rs480_cp_me_ram_dump != 1\)\s*return NULL;",
@@ -876,12 +884,43 @@ def validate_rs4xx_output_schema_paths(
         "RS4xx CP-ME dump start gates are out of order",
     )
     dump_next_body = function_body(source, "rs480_cp_me_ram_seq_next")
-    require_one_match(
+    dump_next_increment = require_one_match(
+        dump_next_body,
+        r"\+\+\*pos;",
+        "RS4xx CP-ME dump iterator increment",
+    )
+    dump_next_gate = require_one_match(
         dump_next_body,
         r"if \(radeon_rs480_cp_me_ram_dump != 1 \|\|\s*"
         r"rdev->gpu_parked \|\| READ_ONCE\(rdev->asic_suspended\) \|\|\s*"
         r"\*pos > RS480_CP_ME_RAM_DUMP_LIMIT\)\s*return NULL;",
         "RS4xx CP-ME dump iterator termination",
+    )
+    require_outer_function_match(
+        dump_next_body,
+        dump_next_gate,
+        "RS4xx CP-ME dump iterator termination",
+    )
+    dump_next_return = require_one_match(
+        dump_next_body,
+        r"\breturn pos;",
+        "RS4xx CP-ME dump iterator record",
+    )
+    require_outer_function_match(
+        dump_next_body,
+        dump_next_return,
+        "RS4xx CP-ME dump iterator record",
+    )
+    dump_next_prefix = strip_comments_and_literals(
+        dump_next_body[dump_next_increment.end() : dump_next_gate.start()]
+    )
+    require(
+        dump_next_increment.start()
+        < dump_next_gate.start()
+        < dump_next_return.start()
+        and output_call.search(dump_next_body) is None
+        and control_exit.search(dump_next_prefix) is None,
+        "RS4xx CP-ME dump iterator termination is bypassable",
     )
     dump_show_body = function_body(source, "rs480_cp_me_ram_seq_show")
     require(
@@ -2202,6 +2241,23 @@ def self_test(root: Path) -> int:
         "self-test CP-ME dump termination fixture differs from the source",
     )
     reject_schema_mutant("an unbounded CP-ME dump iterator", unbounded_dump_next)
+
+    early_dump_next_return = rs4xx_source.replace(
+        "\t++*pos;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1 ||",
+        "\t++*pos;\n"
+        "\treturn pos;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1 ||",
+        1,
+    )
+    require(
+        early_dump_next_return != rs4xx_source,
+        "self-test CP-ME next-return fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME dump next return",
+        early_dump_next_return,
+    )
 
     first_show_function = min(RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS)
     shrunk_show_denominator = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS - {first_show_function}
