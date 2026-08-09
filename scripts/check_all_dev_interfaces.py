@@ -642,7 +642,8 @@ def validate_rs4xx_output_schema_paths(
     source_without_comments = strip_comments(source)
     registration_pattern = re.compile(
         r'debugfs_create_file\(\s*"(?P<node>radeon_rs480_[^"]+)"\s*,'
-        r"\s*0[0-7]+\s*,.*?,\s*&(?P<fops>[A-Za-z0-9_]+)\s*\);",
+        r"\s*(?P<mode>0[0-7]+)\s*,.*?,"
+        r"\s*&(?P<fops>[A-Za-z0-9_]+)\s*\);",
         re.DOTALL,
     )
     registrations = list(registration_pattern.finditer(source_without_comments))
@@ -661,6 +662,19 @@ def validate_rs4xx_output_schema_paths(
     require(
         readable_node_fops == RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
         "RS4xx readable debugfs node-to-fops map differs",
+    )
+    readable_node_modes = {
+        match.group("node"): match.group("mode")
+        for match in registrations
+        if match.group("node") not in RS4XX_WRITE_ONLY_DEBUGFS_NODES
+    }
+    expected_node_modes = {
+        node: "0600" if node == "radeon_rs480_cp_me_ram_inject" else "0400"
+        for node in RS4XX_OUTPUT_SCHEMA_NODE_FOPS
+    }
+    require(
+        readable_node_modes == expected_node_modes,
+        "RS4xx readable debugfs node modes differ",
     )
     require(
         readable_nodes == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS),
@@ -709,6 +723,8 @@ def validate_rs4xx_output_schema_paths(
         == 1,
         "RS4xx schema-line emission is not centralized",
     )
+    output_call = re.compile(r"\bseq_[A-Za-z0-9_]+\s*\(")
+    control_exit = re.compile(r"\b(?:goto|return)\b")
 
     emitter_body = function_body(source, "rs480_debugfs_emit_schema")
     require_one_match(
@@ -765,6 +781,14 @@ def validate_rs4xx_output_schema_paths(
         candidate_refusal,
         "RS4xx candidate-register schema route",
     )
+    candidate_prefix = strip_comments_and_literals(
+        candidate_body[: candidate_refusal.start()]
+    )
+    require(
+        output_call.search(candidate_prefix) is None
+        and control_exit.search(candidate_prefix) is None,
+        "RS4xx candidate-register helper bypasses its schema route",
+    )
 
     route_patterns = (
         (
@@ -783,8 +807,6 @@ def validate_rs4xx_output_schema_paths(
             re.compile(r"\breturn\s+rs480_candidate_regs_emit\(\s*m\s*,"),
         ),
     )
-    output_call = re.compile(r"\bseq_[A-Za-z0-9_]+\s*\(")
-    control_exit = re.compile(r"\b(?:goto|return)\b")
     for function_name in sorted(discovered_show_functions):
         if function_name == "rs480_cp_me_ram_seq_show":
             continue
@@ -868,10 +890,18 @@ def validate_rs4xx_output_schema_paths(
         dump_header,
         "RS4xx CP-ME dump header record",
     )
-    require_one_match(
+    dump_header_schema = require_one_match(
         dump_header.group(0),
         r"\brs480_debugfs_emit_schema\(m\);",
         "RS4xx CP-ME dump header schema",
+    )
+    dump_header_prefix = strip_comments_and_literals(
+        dump_header.group(0)[: dump_header_schema.start()]
+    )
+    require(
+        output_call.search(dump_header_prefix) is None
+        and control_exit.search(dump_header_prefix) is None,
+        "RS4xx CP-ME dump header emits or exits before its schema",
     )
     require_one_match(
         dump_header.group(0),
@@ -883,8 +913,15 @@ def validate_rs4xx_output_schema_paths(
         r"if \(radeon_rs480_cp_me_ram_dump != 1\)\s*seq_puts\(m,",
         "RS4xx CP-ME dump disarmed record",
     )
+    dump_data_body = dump_show_body[dump_header.end() :]
+    require(
+        "rs480_debugfs_emit_schema" not in dump_data_body
+        and "rs480_debugfs_refuse_if_parked" not in dump_data_body
+        and "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in dump_data_body,
+        "RS4xx CP-ME dump data records can re-emit their schema",
+    )
     dump_data_refusal = require_one_match(
-        dump_show_body[dump_header.end() :],
+        dump_data_body,
         r"\brs480_debugfs_refuse_hardware_access\(m, rdev\)",
         "RS4xx CP-ME dump data hardware-refusal route",
     )
@@ -903,8 +940,11 @@ def validate_rs4xx_output_schema_paths(
     require_one_match(
         source_without_comments,
         r"static const struct seq_operations rs480_cp_me_ram_seq_ops = \{.*?"
+        r"\.start\s*=\s*rs480_cp_me_ram_seq_start,.*?"
+        r"\.next\s*=\s*rs480_cp_me_ram_seq_next,.*?"
+        r"\.stop\s*=\s*rs480_cp_me_ram_seq_stop,.*?"
         r"\.show\s*=\s*rs480_cp_me_ram_seq_show,.*?\};",
-        "RS4xx CP-ME dump sequence show binding",
+        "RS4xx CP-ME dump sequence operation bindings",
     )
     require_one_match(
         source_without_comments,
@@ -1966,6 +2006,23 @@ def self_test(root: Path) -> int:
     )
     reject_schema_mutant("output through an alternate seq API", alternate_seq_output)
 
+    candidate_helper_output, replacement_count = re.subn(
+        r"(static int rs480_candidate_regs_emit\(.*?\n\{\n)"
+        r"(\tif \(rs480_debugfs_refuse_if_parked\(m, rdev\)\))",
+        r'\1\tseq_puts(m, "bad\\n");\n\2',
+        rs4xx_source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    require(
+        replacement_count == 1,
+        "self-test candidate-helper output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "candidate-helper output before its schema route",
+        candidate_helper_output,
+    )
+
     write_only_fops = rs4xx_source.replace(
         'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,\n'
         "\t\t\t    &rs480_safe_regs_fops);",
@@ -1979,6 +2036,17 @@ def self_test(root: Path) -> int:
     )
     reject_schema_mutant("a readable node with write-only fops", write_only_fops)
 
+    unreadable_mode = rs4xx_source.replace(
+        'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,',
+        'debugfs_create_file("radeon_rs480_safe_regs", 0200, root, rdev,',
+        1,
+    )
+    require(
+        unreadable_mode != rs4xx_source,
+        "self-test readable-node mode fixture differs from the source",
+    )
+    reject_schema_mutant("a schema-bearing node without read mode", unreadable_mode)
+
     missing_dump_header = rs4xx_source.replace(
         "if (*pos == 0)\n\t\treturn SEQ_START_TOKEN;",
         "if (*pos == 0)\n\t\treturn NULL;",
@@ -1989,6 +2057,23 @@ def self_test(root: Path) -> int:
         "self-test CP-ME dump header fixture differs from the source",
     )
     reject_schema_mutant("a CP-ME dump without its header record", missing_dump_header)
+
+    early_dump_header_output = rs4xx_source.replace(
+        "\tif (v == SEQ_START_TOKEN) {\n"
+        "\t\trs480_debugfs_emit_schema(m);",
+        "\tif (v == SEQ_START_TOKEN) {\n"
+        "\t\tseq_puts(m, \"bad\\n\");\n"
+        "\t\trs480_debugfs_emit_schema(m);",
+        1,
+    )
+    require(
+        early_dump_header_output != rs4xx_source,
+        "self-test CP-ME header output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME header output before its schema",
+        early_dump_header_output,
+    )
 
     early_dump_return = rs4xx_source.replace(
         "if (radeon_rs480_cp_me_ram_dump != 1)\n"
@@ -2023,6 +2108,37 @@ def self_test(root: Path) -> int:
         "self-test CP-ME dump pagination fixture differs from the source",
     )
     reject_schema_mutant("a schema emitter in CP-ME data records", paginated_dump_schema)
+
+    direct_paginated_schema = rs4xx_source.replace(
+        "\t}\n"
+        "\tif (rs480_debugfs_refuse_hardware_access(m, rdev))",
+        "\t}\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "\tif (rs480_debugfs_refuse_hardware_access(m, rdev))",
+        1,
+    )
+    require(
+        direct_paginated_schema != rs4xx_source,
+        "self-test direct paginated schema fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a direct schema emitter in CP-ME data records",
+        direct_paginated_schema,
+    )
+
+    wrong_dump_start_binding = rs4xx_source.replace(
+        "\t.start = rs480_cp_me_ram_seq_start,",
+        "\t.start = rs480_cp_me_ram_seq_next,",
+        1,
+    )
+    require(
+        wrong_dump_start_binding != rs4xx_source,
+        "self-test CP-ME sequence binding fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a CP-ME sequence with the wrong start binding",
+        wrong_dump_start_binding,
+    )
 
     unbounded_dump_next = rs4xx_source.replace(
         "if (radeon_rs480_cp_me_ram_dump != 1 ||\n"
