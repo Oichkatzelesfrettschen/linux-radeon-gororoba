@@ -1019,37 +1019,50 @@ def validate_rs4xx_output_schema_paths(
 
     require_one_match(
         source_without_comments,
-        r"static const struct seq_operations rs480_cp_me_ram_seq_ops = \{.*?"
-        r"\.start\s*=\s*rs480_cp_me_ram_seq_start,.*?"
-        r"\.next\s*=\s*rs480_cp_me_ram_seq_next,.*?"
-        r"\.stop\s*=\s*rs480_cp_me_ram_seq_stop,.*?"
-        r"\.show\s*=\s*rs480_cp_me_ram_seq_show,.*?\};",
+        r"static const struct seq_operations rs480_cp_me_ram_seq_ops = \{\s*"
+        r"\.start\s*=\s*rs480_cp_me_ram_seq_start,\s*"
+        r"\.next\s*=\s*rs480_cp_me_ram_seq_next,\s*"
+        r"\.stop\s*=\s*rs480_cp_me_ram_seq_stop,\s*"
+        r"\.show\s*=\s*rs480_cp_me_ram_seq_show,\s*\};",
         "RS4xx CP-ME dump sequence operation bindings",
     )
     require_one_match(
         source_without_comments,
-        r"static int rs480_cp_me_ram_dump_open\(.*?\n\{.*?"
-        r"seq_open\(file, &rs480_cp_me_ram_seq_ops\)",
+        r"static int rs480_cp_me_ram_dump_open\(struct inode \*inode, "
+        r"struct file \*file\)\s*\{\s*"
+        r"int ret = seq_open\(file, &rs480_cp_me_ram_seq_ops\);\s*"
+        r"if \(!ret\)\s*"
+        r"\(\(struct seq_file \*\)file->private_data\)->private = "
+        r"inode->i_private;\s*return ret;\s*\}",
         "RS4xx CP-ME dump open binding",
     )
     require_one_match(
         source_without_comments,
-        r"static const struct file_operations rs480_cp_me_ram_dump_fops = \{"
-        r".*?\.open\s*=\s*rs480_cp_me_ram_dump_open,.*?"
-        r"\.read\s*=\s*seq_read,.*?\};",
+        r"static const struct file_operations rs480_cp_me_ram_dump_fops = \{\s*"
+        r"\.owner\s*=\s*THIS_MODULE,\s*"
+        r"\.open\s*=\s*rs480_cp_me_ram_dump_open,\s*"
+        r"\.read\s*=\s*seq_read,\s*"
+        r"\.llseek\s*=\s*seq_lseek,\s*"
+        r"\.release\s*=\s*seq_release,\s*\};",
         "RS4xx CP-ME dump fops binding",
     )
     require_one_match(
         source_without_comments,
-        r"static int rs480_cp_me_ram_inject_open\(.*?\n\{.*?"
-        r"single_open\(file, rs480_cp_me_ram_inject_show, inode->i_private\)",
+        r"static int rs480_cp_me_ram_inject_open\(struct inode \*inode, "
+        r"struct file \*file\)\s*\{\s*"
+        r"int r = single_open\(file, rs480_cp_me_ram_inject_show, "
+        r"inode->i_private\);\s*"
+        r"return r \? r : nonseekable_open\(inode, file\);\s*\}",
         "RS4xx CP-ME injection show binding",
     )
     require_one_match(
         source_without_comments,
-        r"static const struct file_operations rs480_cp_me_ram_inject_fops = \{"
-        r".*?\.open\s*=\s*rs480_cp_me_ram_inject_open,.*?"
-        r"\.read\s*=\s*seq_read,.*?\};",
+        r"static const struct file_operations rs480_cp_me_ram_inject_fops = \{\s*"
+        r"\.owner\s*=\s*THIS_MODULE,\s*"
+        r"\.open\s*=\s*rs480_cp_me_ram_inject_open,\s*"
+        r"\.read\s*=\s*seq_read,\s*"
+        r"\.write\s*=\s*rs480_cp_me_ram_inject_write,\s*"
+        r"\.release\s*=\s*single_release,\s*\};",
         "RS4xx CP-ME injection fops binding",
     )
 
@@ -2363,6 +2376,44 @@ def self_test(root: Path) -> int:
         "self-test CP-ME stop-schema fixture differs from the source",
     )
     reject_schema_mutant("schema output from CP-ME dump stop", dump_stop_schema)
+
+    early_dump_open_return = rs4xx_source.replace(
+        "static int rs480_cp_me_ram_dump_open(struct inode *inode, struct file *file)\n"
+        "{\n",
+        "static int rs480_cp_me_ram_dump_open(struct inode *inode, struct file *file)\n"
+        "{\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1)\n"
+        "\t\treturn -ENODEV;\n",
+        1,
+    )
+    require(
+        early_dump_open_return != rs4xx_source,
+        "self-test CP-ME dump-open fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME dump open return",
+        early_dump_open_return,
+    )
+
+    early_inject_open_return = rs4xx_source.replace(
+        "static int rs480_cp_me_ram_inject_open(struct inode *inode, "
+        "struct file *file)\n"
+        "{\n",
+        "static int rs480_cp_me_ram_inject_open(struct inode *inode, "
+        "struct file *file)\n"
+        "{\n"
+        "\tif (radeon_rs480_cp_me_ram_inject == 0)\n"
+        "\t\treturn -ENODEV;\n",
+        1,
+    )
+    require(
+        early_inject_open_return != rs4xx_source,
+        "self-test CP-ME injection-open fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME injection open return",
+        early_inject_open_return,
+    )
 
     first_show_function = min(RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS)
     shrunk_show_denominator = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS - {first_show_function}
