@@ -755,6 +755,14 @@ def validate_rs4xx_output_schema_paths(
         refusal_schema,
         "RS4xx parked-state schema route",
     )
+    refusal_prefix = strip_comments_and_literals(
+        refusal_body[: refusal_schema.start()]
+    )
+    require(
+        output_call.search(refusal_prefix) is None
+        and control_exit.search(refusal_prefix) is None,
+        "RS4xx parked-state helper bypasses its schema route",
+    )
     refusal_delegate = require_one_match(
         refusal_body,
         r"\breturn rs480_debugfs_refuse_hardware_access\(m, rdev\);",
@@ -924,6 +932,14 @@ def validate_rs4xx_output_schema_paths(
         dump_data_body,
         r"\brs480_debugfs_refuse_hardware_access\(m, rdev\)",
         "RS4xx CP-ME dump data hardware-refusal route",
+    )
+    dump_data_prefix = strip_comments_and_literals(
+        dump_data_body[: dump_data_refusal.start()]
+    )
+    require(
+        output_call.search(dump_data_prefix) is None
+        and control_exit.search(dump_data_prefix) is None,
+        "RS4xx CP-ME dump data bypasses its hardware-refusal route",
     )
     dump_address = require_one_match(
         dump_show_body,
@@ -1992,6 +2008,23 @@ def self_test(root: Path) -> int:
     )
     reject_schema_mutant("an early schema-emitter return", early_emitter_return)
 
+    refusal_helper_output, replacement_count = re.subn(
+        r"(static bool rs480_debugfs_refuse_if_parked\(.*?\n\{\n)"
+        r"(\trs480_debugfs_emit_schema\(m\);)",
+        r'\1\tseq_puts(m, "bad\\n");\n\2',
+        rs4xx_source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    require(
+        replacement_count == 1,
+        "self-test refusal-helper output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "refusal-helper output before its schema route",
+        refusal_helper_output,
+    )
+
     alternate_seq_output = rs4xx_source.replace(
         "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
         "{\n",
@@ -2124,6 +2157,23 @@ def self_test(root: Path) -> int:
     reject_schema_mutant(
         "a direct schema emitter in CP-ME data records",
         direct_paginated_schema,
+    )
+
+    early_dump_data_output = rs4xx_source.replace(
+        "\t}\n"
+        "\tif (rs480_debugfs_refuse_hardware_access(m, rdev))",
+        "\t}\n"
+        "\tseq_puts(m, \"bad\\n\");\n"
+        "\tif (rs480_debugfs_refuse_hardware_access(m, rdev))",
+        1,
+    )
+    require(
+        early_dump_data_output != rs4xx_source,
+        "self-test CP-ME data output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME data output before its hardware-refusal route",
+        early_dump_data_output,
     )
 
     wrong_dump_start_binding = rs4xx_source.replace(
