@@ -1,6 +1,6 @@
-# Source-side identity of the radeon-unified 0.8 profiled source checkpoint.
+# Source identity of the radeon-unified 0.8 profiled source checkpoint.
 # The record binds the signed tag to the exact objects it names and to the
-# source-side checks that ran against them. It carries source identity and
+# source checks that ran against them. It carries source identity and
 # makes no package, installation, or silicon claim; package artifacts, their
 # detached signatures, and hardware verdicts live in radeon-custom and
 # steinmarder-r300.
@@ -38,8 +38,14 @@ source_commit_6_18_build = "PASS"
 source_commit_7_1_build = "PASS"
 prod_profile = "PASS"
 all_dev_profile = "PASS"
-parked_guard_checker = "PASS"
-parked_guard_checker_selftest = "PASS"
+
+# The parked guard commands run locally in a clean worktree at peeled_commit,
+# independent of profile_workflow_run.
+local_parked_guard_commit = "2433cbd69cd99d1dd002447bb4d481ed66141562"
+local_parked_guard_checker_command = "python3 scripts/check_parked_admission_guards.py"
+local_parked_guard_checker_result = "PASS"
+local_parked_guard_selftest_command = "python3 scripts/check_parked_admission_guards.py --selftest"
+local_parked_guard_selftest_result = "PASS"
 
 kernel_6_18 = "6.18.38-2-cachyos-lts"
 kernel_7_1 = "7.1.4-1-cachyos"
