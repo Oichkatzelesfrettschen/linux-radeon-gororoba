@@ -166,17 +166,16 @@ static void rs480_debugfs_emit_schema(struct seq_file *m)
 		seq_puts(m, RADEON_DEV_OUTPUT_SCHEMA_LINE);
 }
 
-/* rs480_debugfs_refuse_hardware_access -- after a failed RS480 reset the GA-routed
- * register bus never grants a non-posted read, so a debugfs register read
- * black-holes the K8 northbridge and sync-floods the box (cold cycle only).
- * Every RS480 RE debugfs reader refuses hardware access once gpu_parked is
- * set; the node reports the parked state instead of touching MMIO. The same
- * gate covers asic_suspended, which radeon_suspend_kms raises before
- * radeon_suspend() powers the ASIC down, so a read during system suspend
- * reports the suspended state instead of reaching MMIO on a powered-down
- * engine. A read already past the gate when suspend starts is ordered only
- * by the suspend path's own quiescing, so the flag narrows the window
- * rather than serializing against in-flight reads. */
+/* A failed RS480 reset leaves the GA-routed register bus without non-posted
+ * read completion. A debugfs register read then stalls the K8 northbridge and
+ * sync-floods the system until a cold cycle. Each RS480 RE debugfs reader
+ * refuses hardware access after gpu_parked becomes set and reports the parked
+ * state instead of touching MMIO. The same gate covers asic_suspended, which
+ * radeon_suspend_kms raises before radeon_suspend() powers the ASIC down, so a
+ * read during system suspend reports the suspended state instead of reaching a
+ * powered-down engine. The suspend path quiesces a read that passed the gate
+ * before suspension, so the flag narrows the race window without serializing
+ * an in-flight read. */
 static bool rs480_debugfs_refuse_hardware_access(struct seq_file *m,
 						  struct radeon_device *rdev)
 {
@@ -1082,27 +1081,89 @@ DEFINE_SHOW_ATTRIBUTE(rs480_pll_regs);
  * (the 8-bit-RADDR read-back, 256/256 match).
  */
 #define RS480_CP_ME_RAM_DUMP_LIMIT 0x100u	/* 256 microwords; CP_ME_RAM_RADDR is 8-bit, higher wraps */
+/* Position LIMIT + 1 is the ordinary EOF after address 255. Positions LIMIT
+ * + 2, + 4, and + 6 encode disarmed, parked, and suspended terminal records;
+ * seq_file replays each encoded position as one terminal_status line without
+ * another MMIO read. */
+#define RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED \
+	(RS480_CP_ME_RAM_DUMP_LIMIT + 2)
+#define RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED \
+	(RS480_CP_ME_RAM_DUMP_LIMIT + 4)
+#define RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED \
+	(RS480_CP_ME_RAM_DUMP_LIMIT + 6)
+
+static loff_t rs480_cp_me_ram_seq_terminal_position(struct radeon_device *rdev)
+{
+	if (READ_ONCE(rdev->gpu_parked))
+		return RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED;
+	if (READ_ONCE(rdev->asic_suspended))
+		return RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;
+	if (READ_ONCE(radeon_rs480_cp_me_ram_dump) != 1)
+		return RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;
+	return 0;
+}
+
+static bool rs480_cp_me_ram_seq_is_terminal(loff_t position)
+{
+	return position == RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED ||
+	       position == RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED ||
+	       position == RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;
+}
+
+static void rs480_cp_me_ram_seq_emit_terminal(struct seq_file *m,
+						       loff_t position)
+{
+	switch (position) {
+	case RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:
+		seq_puts(m, "terminal_status\tstatus=disarmed\n");
+		break;
+	case RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:
+		seq_puts(m, "terminal_status\tstatus=gpu-parked\n");
+		break;
+	case RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:
+		seq_puts(m, "terminal_status\tstatus=asic-suspended\n");
+		break;
+	default:
+		seq_puts(m, "terminal_status\tstatus=invalid\n");
+		break;
+	}
+}
 
 static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)
 {
+	struct radeon_device *rdev = m->private;
+	loff_t terminal_position;
+
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
-	if (radeon_rs480_cp_me_ram_dump != 1)
-		return NULL;
+	if (rs480_cp_me_ram_seq_is_terminal(*pos))
+		return pos;
 	if (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)
 		return NULL;
+	terminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);
+	if (terminal_position) {
+		*pos = terminal_position;
+		return pos;
+	}
 	return pos;
 }
 
 static void *rs480_cp_me_ram_seq_next(struct seq_file *m, void *v, loff_t *pos)
 {
 	struct radeon_device *rdev = m->private;
+	loff_t terminal_position;
+	bool was_terminal = rs480_cp_me_ram_seq_is_terminal(*pos);
 
 	++*pos;
-	if (radeon_rs480_cp_me_ram_dump != 1 ||
-	    rdev->gpu_parked || READ_ONCE(rdev->asic_suspended) ||
-	    *pos > RS480_CP_ME_RAM_DUMP_LIMIT)
+	if (was_terminal)
 		return NULL;
+	if (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)
+		return NULL;
+	terminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);
+	if (terminal_position) {
+		*pos = terminal_position;
+		return pos;
+	}
 	return pos;
 }
 
@@ -1113,21 +1174,23 @@ static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
 static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
 {
 	struct radeon_device *rdev = m->private;
+	loff_t terminal_position;
 
 	if (v == SEQ_START_TOKEN) {
 		rs480_debugfs_emit_schema(m);
-		if (rs480_debugfs_refuse_hardware_access(m, rdev))
-			return 0;
-		if (radeon_rs480_cp_me_ram_dump != 1)
-			seq_puts(m, "disarmed (rs480_cp_me_ram_dump != 1): "
-				    "set rs480_cp_me_ram_dump=1 for an attended, idle-engine read.\n");
 		return 0;
 	}
-	if (radeon_rs480_cp_me_ram_dump != 1)
+	if (rs480_cp_me_ram_seq_is_terminal(m->index)) {
+		rs480_cp_me_ram_seq_emit_terminal(m, m->index);
 		return 0;
-	if (rs480_debugfs_refuse_hardware_access(m, rdev))
+	}
+	terminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);
+	if (terminal_position) {
+		m->index = terminal_position;
+		rs480_cp_me_ram_seq_emit_terminal(m, terminal_position);
 		return 0;
-	unsigned int addr = (unsigned int)*(loff_t *)v - 1;
+	}
+	unsigned int addr = (unsigned int)m->index - 1;
 	u32 datah, datal;
 
 	WREG32(RADEON_CP_ME_RAM_RADDR, addr);
