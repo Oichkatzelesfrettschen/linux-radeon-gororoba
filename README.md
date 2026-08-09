@@ -84,14 +84,17 @@ tracked file is a build output.
 ## Radeon driver source map
 
 `scripts/capture_radeon_driver_source_map.py` exports a named commit through
-Git, applies the tracked source closure, and writes an immutable source
-intelligence bundle outside the repository. The bundle retains all 221 source
-inputs, the complete C and header denominator, GNU Global definitions and
-references with stable database dumps, ctags, the portable cscope cross
-reference, GNU cflow indexes, partitioned cflow trees,
-declared and extracted callback bindings, bounded absence queries, complexity
-measurements, coefficient vectors, linked profile modules and their defined
-symbols, command metadata, analyzer diagnostics, and a complete SHA-256 ledger.
+Git, applies the tracked source closure, and writes a sealed deterministic
+source intelligence bundle outside the repository. The bundle retains all 222
+source inputs, the complete C and header denominator, Git object proofs, GNU
+Global definitions and references with stable database dumps, ctags, the
+portable cscope cross reference, GNU cflow indexes, partitioned cflow trees,
+declared and extracted callback bindings, bounded queries, contextual path
+witnesses, complexity measurements, coefficient vectors, linked profile
+modules, canonical profile symbol deltas, command metadata, analyzer
+diagnostics, and a complete SHA-256 ledger. The directory remains an ordinary
+mutable filesystem object. The verifier detects changes through an independently
+derived file denominator, the ledger, and offline artifact replay.
 
 The optional kernel roots add preprocessed views for every declared kernel and
 profile lane. Each root requires a matching toolchain bin directory. The
@@ -108,9 +111,13 @@ python3 scripts/capture_radeon_driver_source_map.py \
   --output "$output" \
   --kernel-build-root /opt/gororoba/kernel-builds/6.18.38-2-cachyos-lts \
   --kernel-build-root /opt/gororoba/kernel-builds/7.1.4-1-cachyos \
-  --kernel-toolchain-bin 6.18.38-2-cachyos-lts=/var/tmp/gororoba-toolchains/llvm-22.1.6/usr/bin \
-  --kernel-toolchain-bin 7.1.4-1-cachyos=/var/tmp/gororoba-toolchains/llvm-22.1.8/usr/bin
-python3 scripts/capture_radeon_driver_source_map.py --verify "$output"
+  --kernel-toolchain-bin \
+    6.18.38-2-cachyos-lts=/opt/gororoba/toolchains/llvm-22.1.6/usr/bin \
+  --kernel-toolchain-bin \
+    7.1.4-1-cachyos=/opt/gororoba/toolchains/llvm-22.1.8/usr/bin
+python3 scripts/capture_radeon_driver_source_map.py \
+  --verify "$output" \
+  --require-all-kernel-lanes
 ```
 
 The union of `radeon-driver-lexical-map.tsv`,
@@ -118,7 +125,15 @@ The union of `radeon-driver-lexical-map.tsv`,
 candidate research graph. It never proves runtime reachability, build-profile
 inclusion, preprocessor activation, callback invocation, framework ordering,
 hardware behavior, or completeness of indirect bindings. Preprocessed views
-resolve named build lanes without changing that boundary.
+resolve named build lanes without changing that boundary. Contextual path
+witnesses preserve ordered source edges, required conditions, and typed
+callback or debugfs event joins without collapsing registration time into later
+dispatch. `analysis/hazard-guard-identifier-census.tsv` remains a lexical
+census. The mutation-calibrated semantic checkers own executable guard claims.
+
+`docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
+the complete reference attestation, the four retained path witnesses, the
+coefficient derivations, the trust boundaries, and the next verification gates.
 
 Two captures compare through normalized tables rather than analyzer database
 bytes:
