@@ -1,0 +1,11 @@
+# schema: gororoba-post-tag-source-delta-map-v1
+# baseline: radeon-unified-0.7-profiled-source
+# imported-base-map: migration/input/base-delta-map.tsv
+delta_id	source_path	symbol_or_range	classification	mechanism	evidence_class	validation
+forced-reset-transaction	drivers/gpu/drm/radeon/radeon.h	radeon_gpu_reset_forced	rs48x-mechanism	forced-reset-request-and-post-status-serialization	compile-verified	all-dev symbol projection and dual-kernel module builds
+retired-direct-reset-probes	drivers/gpu/drm/radeon/radeon_dev.c	removed radeon_rs480_gpu_reset_recover_probe and narrowed rs480_reset_hang_probe description	rs48x-mechanism	direct-reset-probe-retirement	compile-verified	retired-identity denominator and dual-kernel module builds
+retired-direct-reset-probes	drivers/gpu/drm/radeon/radeon_dev.h	removed radeon_rs480_gpu_reset_recover_probe declaration	rs48x-mechanism	direct-reset-probe-retirement	compile-verified	retired-identity denominator and dual-kernel module builds
+development-output-schema-v2	drivers/gpu/drm/radeon/radeon_dev.h	RADEON_DEV_OUTPUT_SCHEMA_VERSION	rs48x-mechanism	development-output-schema-v2	compile-verified	schema macro and feature-policy agreement
+forced-reset-transaction	drivers/gpu/drm/radeon/radeon_device.c	radeon_gpu_reset_internal through radeon_gpu_reset_forced	rs48x-mechanism	forced-reset-request-and-post-status-serialization	compile-verified	writer-transaction mutants and dual-kernel module builds
+retired-direct-reset-probes	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	removed RCVR SRST and HANG paths	rs48x-mechanism	direct-reset-probe-retirement	compile-verified	thirteen retired-identity mutants and dual-kernel module builds
+forced-reset-transaction	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	rs480_wedged_3d_reset	rs48x-mechanism	forced-reset-request-and-post-status-serialization	compile-verified	post-reset lock and MMIO-order mutants plus dual-kernel module builds

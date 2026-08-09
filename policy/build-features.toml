@@ -14,7 +14,7 @@ development_arming = "single-device"
 # Every fork-added readable development node emits "schema rs480-dev v<N>"
 # as its first line; this value pins <N> and must equal
 # RADEON_DEV_OUTPUT_SCHEMA_VERSION in drivers/gpu/drm/radeon/radeon_dev.h.
-output_schema_version = 1
+output_schema_version = 2
 
 # Runtime dependencies describe the post-tag build projection. Reconstruction
 # ordering and evidence dependencies remain separate because neither licenses
@@ -649,7 +649,7 @@ side_effect_class = "reset-execution"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one production-path reset per exact request"
 locking = "forced request and reset under the production writer lock, post-reset parked check and RBBM sample under the reset read lock, device lifecycle, and parked-state refusal"
-error_contract = "failed admission returns before reset; ASIC reset failure parks the device; ring-test failure preserves a pending reset"
+error_contract = "failed admission returns before reset; ASIC reset failure parks the device; ring-test failure with saved commands preserves a pending reset; ring-test failure without saved commands returns the underlying error and clears the pending reset"
 tests = [
   "normal: WD3A or WD3B executes one production-path reset",
   "boundary: exact tokens select distinct predicates and -EAGAIN reports an unparked partial reset",

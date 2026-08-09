@@ -881,14 +881,18 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     read_lock = "down_read(&rdev->exclusive_lock);"
     parked_branch = "if (rdev->gpu_parked) {"
     parked_sentinel = "post_reset_status = 0x5041524B;"
+    else_branch = "} else {"
     status_read = "post_reset_status = RREG32(R_000E40_RBBM_STATUS);"
+    branch_close = "}\n\tup_read(&rdev->exclusive_lock);"
     read_unlock = "up_read(&rdev->exclusive_lock);"
     for marker in (
         reset_call,
         read_lock,
         parked_branch,
         parked_sentinel,
+        else_branch,
         status_read,
+        branch_close,
         read_unlock,
     ):
         require(
@@ -900,11 +904,18 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     read_lock_at = post_reset.find(read_lock)
     parked_branch_at = post_reset.find(parked_branch)
     parked_sentinel_at = post_reset.find(parked_sentinel)
+    else_branch_at = post_reset.find(else_branch)
     status_read_at = post_reset.find(status_read)
+    branch_close_at = post_reset.find(branch_close)
     read_unlock_at = post_reset.find(read_unlock)
     require(
-        read_lock_at < parked_branch_at < parked_sentinel_at
-        < status_read_at < read_unlock_at,
+        read_lock_at
+        < parked_branch_at
+        < parked_sentinel_at
+        < else_branch_at
+        < status_read_at
+        < branch_close_at
+        < read_unlock_at,
         "wedged reset-probe post-state transaction order differs",
     )
 
@@ -914,7 +925,7 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     between_lock_and_branch = C_LINE_COMMENT.sub(
         "",
         C_BLOCK_COMMENT.sub(
-            "", post_reset[read_lock_at + len(read_lock):parked_branch_at]
+            "", post_reset[read_lock_at + len(read_lock) : parked_branch_at]
         ),
     )
     require(
@@ -922,20 +933,37 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
         "wedged reset-probe executes code before the locked parked-state branch",
     )
     require(
-        "RREG" not in post_reset[parked_branch_at:parked_sentinel_at],
+        "RREG" not in post_reset[parked_branch_at:else_branch_at],
         "wedged reset-probe parked branch reads a register",
+    )
+    require(
+        post_reset[else_branch_at:branch_close_at].count("RREG") == 1,
+        "wedged reset-probe status read differs from the unparked branch",
     )
 
 
 def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
     path = "drivers/gpu/drm/radeon/radeon_device.c"
     require(path in texts, f"forced GPU-reset source is absent: {path}")
-    implementation_pattern = (
-        r"static int radeon_gpu_reset_internal\(.*?bool force_reset\).*?"
-        r"\{.*?down_write\(&rdev->exclusive_lock\);.*?"
-        r"if \(!force_reset && !rdev->needs_reset\).*?"
-        r"if \(rdev->gpu_parked\).*?"
-        r"if \(force_reset\)\s*rdev->needs_reset = true;.*?"
+    source = texts[path]
+    function_start = source.find("static int radeon_gpu_reset_internal(")
+    function_end = source.find("\n/**\n * radeon_gpu_reset -", function_start)
+    require(
+        function_start >= 0 and function_end > function_start,
+        "forced GPU-reset implementation boundary is absent",
+    )
+    function_body = source[function_start:function_end]
+    transaction_pattern = (
+        r"down_write\(&rdev->exclusive_lock\);\s*"
+        r"if \(!force_reset && !rdev->needs_reset\) \{\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*return 0;\s*\}\s*"
+        r"if \(rdev->gpu_parked\) \{\s*"
+        r"rdev->needs_reset = false;\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*"
+        r"dev_err_once\(rdev->dev,\s*"
+        r'"parked: refusing radeon_gpu_reset re-entry\\n"\);\s*'
+        r"return -EIO;\s*\}\s*"
+        r"if \(force_reset\)\s*rdev->needs_reset = true;\s*"
         r"atomic_inc\(&rdev->gpu_reset_counter\)"
     )
     wrapper_pattern = (
@@ -943,7 +971,7 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         r"\{\s*return radeon_gpu_reset_internal\(rdev, true\);\s*\}"
     )
     require(
-        re.search(implementation_pattern, texts[path], re.DOTALL) is not None,
+        re.search(transaction_pattern, function_body, re.DOTALL) is not None,
         "forced GPU-reset request is outside the writer transaction",
     )
     require(
@@ -1708,6 +1736,22 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted MMIO before the parked-state gate")
 
+    parked_branch_mmio = copy.deepcopy(source_texts)
+    parked_branch_mmio[reset_source_path] = parked_branch_mmio[
+        reset_source_path
+    ].replace(
+        '\t\tpost_reset_status = 0x5041524B; /* "PARK" */\n',
+        '\t\tpost_reset_status = 0x5041524B; /* "PARK" */\n'
+        "\t\tpre_reset_status = RREG32(R_000E40_RBBM_STATUS);\n",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(parked_branch_mmio)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted MMIO inside the parked branch")
+
     missing_post_reset_read_lock = copy.deepcopy(source_texts)
     missing_post_reset_read_lock[reset_source_path] = (
         missing_post_reset_read_lock[reset_source_path].replace(
@@ -1766,6 +1810,21 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a forced reset without writer lock")
 
+    premature_forced_unlock = copy.deepcopy(source_texts)
+    premature_forced_unlock[reset_implementation_path] = premature_forced_unlock[
+        reset_implementation_path
+    ].replace(
+        "\tif (force_reset)\n",
+        "\tup_write(&rdev->exclusive_lock);\n\tif (force_reset)\n",
+        1,
+    )
+    try:
+        validate_forced_gpu_reset_transaction(premature_forced_unlock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a premature forced-reset unlock")
+
     retired_rejection_count = 0
     for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
         for marker in markers:
@@ -1798,7 +1857,7 @@ def self_test(root: Path) -> int:
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
         "22 Palm registration source, 4 registration contract, "
         f"{summary_rejection_count} summary-total, "
-        "4 reset-post-state, 2 forced-reset, 1 retired-denominator, "
+        "5 reset-post-state, 3 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0

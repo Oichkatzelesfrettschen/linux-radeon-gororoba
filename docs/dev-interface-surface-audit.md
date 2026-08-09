@@ -118,7 +118,7 @@ unstable development ABI.
 
 ## Output schema versioning
 
-Every fork-added readable node emits `schema rs480-dev v1` as its first
+Every fork-added readable node emits `schema rs480-dev v2` as its first
 line: `rs480_debugfs_refuse_if_parked` emits it once per open for every
 gate-routed reader (including the parked and suspended refusal notices),
 and the GART page-table and CP-ME injection result readers emit it before
