@@ -17,6 +17,8 @@ required_tools = [
   "lizard",
   "scc",
   "dot",
+  "ldd",
+  "pacman",
   "python3",
 ]
 
@@ -42,10 +44,12 @@ allowed_stderr_patterns = [
 ]
 
 [tool.ctags]
+version_first_line = "Universal Ctags 6.2.1(v6.2.1), Copyright (C) 2015-2025 Universal Ctags Team"
+executable_sha256 = "0c6a9651a911e77cfccb259945f6bd9c920ec3389c9e2af8f17eca387a3f65d9"
+readtags_sha256 = "bacc73876edfc8f826bebe155788883c86ba5a69141d8456254f2b176af8ce52"
+package_owner = "ctags 1:6.2.1-1.1"
 allowed_stderr_patterns = [
   '^ctags: Notice: No options will be read from files or environment$',
-  '^ctags: Warning: Enabling Cargo subparser may enable TOML parser\.$',
-  '^ctags: Warning: The current implementation of the TOML parser is broken\.$',
 ]
 
 [source_classes]
@@ -90,12 +94,16 @@ translation_units = [
 release = "6.18.38-2-cachyos-lts"
 declaration = "ci/kernel-build-roots/6.18.38-2-cachyos-lts.toml"
 manifest = "ci/kernel-build-roots/6.18.38-2-cachyos-lts.manifest.tsv"
+toolchain_declaration = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-closure.toml"
+toolchain_manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-closure.tsv"
 profiles = ["prod", "mutate-dev"]
 
 [[preprocessor.kernel]]
 release = "7.1.4-1-cachyos"
 declaration = "ci/kernel-build-roots/7.1.4-1-cachyos.toml"
 manifest = "ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv"
+toolchain_declaration = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-closure.toml"
+toolchain_manifest = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-closure.tsv"
 profiles = ["prod", "observe-dev", "probe-dev", "mutate-dev"]
 
 [[partition]]
@@ -186,7 +194,7 @@ falsifier = "A generated register bitmap that does not derive from the admitted 
 [[hazard]]
 symbol = "radeon_dev_hardware_available"
 side_effect_class = "state-read"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_dev_asic_powered", identifiers = ["shutdown", "asic_suspended"] },
   { owner = "radeon_dev_hardware_available", identifiers = ["radeon_dev_asic_powered", "gpu_parked"] },
 ]
@@ -195,7 +203,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "radeon_gem_object_create"
 side_effect_class = "software-state-write"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_gem_object_create", identifiers = ["gpu_parked"] },
 ]
 evidence_rank = "kernel-source"
@@ -203,7 +211,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "r300_packet0_check"
 side_effect_class = "command-validation"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "r300_cs_parse", identifiers = ["reg_safe_bm", "reg_safe_bm_size", "r300_packet0_check"] },
 ]
 evidence_rank = "kernel-source"
@@ -211,7 +219,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "radeon_cs_ioctl"
 side_effect_class = "command-submit"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_cs_ioctl", identifiers = ["exclusive_lock", "gpu_parked", "accel_working", "in_reset"] },
 ]
 evidence_rank = "kernel-source"
@@ -219,13 +227,13 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "rs400_gart_set_page"
 side_effect_class = "memory-translation-write"
-guard_contracts = []
+guard_identifier_census = []
 evidence_rank = "kernel-source"
 
 [[hazard]]
 symbol = "radeon_gpu_reset_internal"
 side_effect_class = "engine-reset"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_gpu_reset_internal", identifiers = ["exclusive_lock", "force_reset", "needs_reset", "gpu_parked"] },
 ]
 evidence_rank = "kernel-source"
@@ -233,7 +241,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "radeon_gpu_reset"
 side_effect_class = "engine-reset"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_gpu_reset_internal", identifiers = ["exclusive_lock", "force_reset", "needs_reset", "gpu_parked"] },
 ]
 evidence_rank = "kernel-source"
@@ -241,7 +249,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "radeon_gpu_reset_forced"
 side_effect_class = "engine-reset"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_gpu_reset_internal", identifiers = ["exclusive_lock", "force_reset", "needs_reset", "gpu_parked"] },
 ]
 evidence_rank = "kernel-source"
@@ -249,7 +257,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "rs480_wedged_3d_reset"
 side_effect_class = "engine-reset"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "rs480_reset_hang_probe_show", identifiers = ["rs480_debugfs_refuse_if_parked", "radeon_rs480_reset_hang_probe", "RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN", "RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN", "accel_working", "ready", "rs480_wedged_3d_reset"] },
   { owner = "rs480_wedged_3d_reset", identifiers = ["rs480_frontend_wedged", "rs480_frontend_busy", "radeon_gpu_reset_forced", "exclusive_lock", "gpu_parked"] },
 ]
@@ -258,7 +266,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "radeon_force_pci_reset_safe_write"
 side_effect_class = "pci-config-reset"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "radeon_force_pci_reset_safe_write", identifiers = ["ppos", "count", "sysfs_streq", "CHIP_PALM", "exclusive_lock", "radeon_dev_hardware_available"] },
 ]
 evidence_rank = "kernel-source"
@@ -266,7 +274,7 @@ evidence_rank = "kernel-source"
 [[hazard]]
 symbol = "evergreen_gpu_pci_config_reset_safe"
 side_effect_class = "pci-config-reset"
-guard_contracts = [
+guard_identifier_census = [
   { owner = "evergreen_gpu_pci_config_reset_safe", identifiers = ["CHIP_PALM", "lockdep_assert_held_write", "radeon_dev_hardware_available", "radeon_palm_dev_pci_reset_unsafe"] },
 ]
 evidence_rank = "kernel-source"
@@ -697,22 +705,40 @@ expected_matches = 1
 name = "legacy-palm-debugfs-init-symbol"
 paths = ["drivers/gpu/drm/radeon/*.c", "drivers/gpu/drm/radeon/*.h"]
 pattern = '\bradeon_evergreen_dev_debugfs_init\b'
+expected_matches = 0
 rationale = "The pre-merge global debugfs registration symbol disappears from the corrected source."
 
 [[bounded_query]]
 name = "pci-remove-callback"
 paths = ["drivers/gpu/drm/radeon/radeon_drv.c"]
 pattern = '\.remove\s*='
+expected_matches = 0
 rationale = "The admitted PCI driver table carries no explicit remove callback."
 
 [[bounded_query]]
 name = "global-debugfs-parent"
 paths = ["drivers/gpu/drm/radeon/*.c"]
 pattern = 'debugfs_create_file\([^;]*,\s*NULL\s*,'
+expected_matches = 0
 rationale = "A NULL debugfs parent creates a global lifetime outside a DRM minor tree."
 
 [[bounded_query]]
 name = "gpu-reset-entry-symbol-occurrences"
 paths = ["drivers/gpu/drm/radeon/*.c"]
 pattern = '\bradeon_gpu_reset(?:_forced|_internal)?\s*\('
+expected_matches = 10
 rationale = "Every detected, forced, and internal reset entry occurrence remains visible even when a narrow root list omits a callback path."
+
+[[bounded_query]]
+name = "forced-reset-c-symbol-occurrences"
+paths = ["drivers/gpu/drm/radeon/*.c"]
+pattern = '\bradeon_gpu_reset_forced\b'
+expected_matches = 2
+rationale = "The forced reset symbol has one definition and one current driver call site."
+
+[[bounded_query]]
+name = "palm-pci-reset-c-symbol-occurrences"
+paths = ["drivers/gpu/drm/radeon/*.c"]
+pattern = '\bevergreen_gpu_pci_config_reset_safe\b'
+expected_matches = 2
+rationale = "The Palm reset body has one definition and one current driver call site."
