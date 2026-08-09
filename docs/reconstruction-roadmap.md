@@ -105,7 +105,7 @@ classes; a closed item names its proof, and an open item names its gate.
   remains an alias for the mutation-capable ceiling. Module metadata binds the
   source commit, profile, feature-policy digest, and upstream base.
   `policy/all-dev-interface-manifest.tsv` preserves all 19 development
-  capabilities through an exact inventory of 18 module parameters, 33 debugfs
+  capabilities through an exact inventory of 17 module parameters, 32 debugfs
   files, and their source and generator markers. The module build gate verifies
   exact parameter, debugfs, linked-symbol, and generated-table projections.
   Production and all-development builds pass on 6.18 and 7.1. The intermediate

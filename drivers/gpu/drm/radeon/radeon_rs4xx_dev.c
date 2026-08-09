@@ -1808,11 +1808,13 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
 
 	radeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");
 	reset_result = radeon_gpu_reset_forced(rdev);
-	/* No register read after a parked reset: the parked GPU keeps its MC
-	 * stopped and display requests off, and the first post-park MMIO read
-	 * is the proven host-killer. The r300_asic_reset dmesg ladder carries
-	 * the at-reset and post-soft-reset RBBM values; report those.
+	/* The read lock joins the parked-state check and RBBM sample in one
+	 * reset epoch. A reset writer runs before this lock or after the sample.
+	 * A parked GPU keeps its MC stopped and display requests off, and the
+	 * first post-park MMIO read is the proven host-killer. The r300_asic_reset
+	 * dmesg ladder carries the at-reset and post-soft-reset RBBM values.
 	 */
+	down_read(&rdev->exclusive_lock);
 	if (rdev->gpu_parked) {
 		dev_err(rdev->dev,
 			"probe: radeon_gpu_reset returned %d, no post-park register read\n",
@@ -1821,6 +1823,7 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
 	} else {
 		post_reset_status = RREG32(R_000E40_RBBM_STATUS);
 	}
+	up_read(&rdev->exclusive_lock);
 	if (!reset_result)
 		verdict = "RECOVERED(corroborate via dmesg)";
 	else if (reset_result == -EAGAIN)

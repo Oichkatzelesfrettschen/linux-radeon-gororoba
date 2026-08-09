@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 33 fork-added debugfs nodes and 18 module
+The development surface is 32 fork-added debugfs nodes and 17 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
@@ -54,7 +54,7 @@ columns record the gates beyond that shared guard.
 | radeon_rs480_cp_me_oracle | 0400 | probe-dev | exact token 0x4f524331; IGP live-fire excluded | none |
 | radeon_rs480_force_clock_read, _force_clock_3d_read, _gated_read | 0400 | mutate-dev | index selector (-1 sentinel) | RS4xx force-clock read / force-clock 3D read / gated-state read |
 | radeon_rs480_cp_ib_scratch_oracle | 0400 | mutate-dev | rs480_cp_ib_scratch_oracle arm | RS4xx CP scratch oracle |
-| radeon_rs480_reset_hang_probe | 0400 | mutate-dev | exact WD3A or WD3B token; admitted frontend state; forced request under reset writer lock | RS4xx reset hang probe |
+| radeon_rs480_reset_hang_probe | 0400 | mutate-dev | exact WD3A or WD3B token; admitted frontend state; forced request under reset writer lock; parked check and RBBM sample under reset read lock | RS4xx reset hang probe |
 
 ## Writer gate inventory
 

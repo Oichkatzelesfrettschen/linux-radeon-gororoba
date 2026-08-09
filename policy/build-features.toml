@@ -648,7 +648,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "reset-execution"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one production-path reset per exact request"
-locking = "forced request and reset under the production writer lock, device lifecycle, and parked-state refusal"
+locking = "forced request and reset under the production writer lock, post-reset parked check and RBBM sample under the reset read lock, device lifecycle, and parked-state refusal"
 error_contract = "failed admission returns before reset; ASIC reset failure parks the device; ring-test failure preserves a pending reset"
 tests = [
   "normal: WD3A or WD3B executes one production-path reset",
