@@ -258,6 +258,22 @@ jobs:
         run: python3 scripts/check_all_dev_interfaces.py --self-test
       - name: all-dev interface inventory
         run: python3 scripts/check_all_dev_interfaces.py
+      - name: parked admission guard calibration
+        run: python3 scripts/check_parked_admission_guards.py --selftest
+      - name: parked admission guards
+        run: python3 scripts/check_parked_admission_guards.py
+      - name: parked entry policy calibration
+        run: python3 scripts/check_parked_entry_policy.py --selftest
+      - name: parked entry policy
+        run: python3 scripts/check_parked_entry_policy.py
+      - name: RS4xx GART cache policy calibration
+        run: python3 scripts/check_rs4xx_gart_cache_policy.py --selftest
+      - name: RS4xx GART cache policy
+        run: python3 scripts/check_rs4xx_gart_cache_policy.py
+      - name: legacy patch denominator calibration
+        run: python3 scripts/check_legacy_patch_denominator.py --selftest
+      - name: legacy patch denominator
+        run: python3 scripts/check_legacy_patch_denominator.py
       - name: reconstruction prefix calibration
         run: python3 scripts/materialize_reconstruction_prefixes.py --self-test
       - name: reconstruction prefixes
