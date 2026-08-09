@@ -25,7 +25,7 @@ import check_rs4xx_gart_cache_policy as cache_policy
 POLICY = Path("policy/radeon-cs-reservation-fence-contract.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "36e60bd6bde6347dd836bd9df40530210c34d83e2c7bea971245ff94c9604e1e"
+    "1a3dc7f6a6763777429c1656923607982e973804798e114788a6e0305c9a1c9d"
 )
 CS_DIRECT_PREFIX_SHA256 = {
     "relocs": "bd4645062b4348cbecfb5a1353312a61f20f1e5909401bf2c9cac9717e652ead",
@@ -34,7 +34,7 @@ CS_DIRECT_PREFIX_SHA256 = {
     "next_reloc": "bd02f061ab8376685f57aaaf9e108cc2ac1a67bbd90a27abb082442393caaa2e",
 }
 EXPECTED_POLICY_ROW_SHA256 = {
-    "RS482_ASIC_COMMAND_CALLBACK_BINDING": "ff542ab28a631dd2625d5210b0e49483b35ba32b79532b6a73afaf3880bd7d8c",
+    "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
     "CS_PARKED_EARLY_REFUSAL": "39966eb5ded5c02865dbdbf80a128c5a2bb04be08388cb38749c75281ce31364",
     "CS_RELOCATION_RECORD_GEOMETRY": "8b9a3b46b9eeb3d1f220231321dd11d651c48d353cc2214576c4b4889b57f8c0",
     "CS_BO_RESERVATION_LOCKS": "f1b5de72d7097b53d3fbf0aecb0fa5d85a0e186eaa5697d7d0e96831310d0626",
@@ -45,9 +45,9 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "CS_RESERVATION_FENCE_PUBLICATION": "cd0354edac2176635adb4533b6d7b2863d43a88978a93b0a6a39111c43821e0d",
     "CS_RELOCATION_ACCESS_DIRECTION": "00a7666480c9867108a10896c05ce67c3b2170ebfb55bea16b708606d30ee740",
     "FENCE_FORCE_COMPLETION_PUBLICATION": "cb392679622a03322f1e4c73ee62d0fbd7db6087744da82c8ebf5fab558fa36c",
-    "RS482_RESET_RING_REPLAY_SEMANTICS": "908ab413a611c7c5dc78e3b6790e06d0408adee1a225e04a593e321fa30e0342",
+    "RS482_RESET_RING_REPLAY_SEMANTICS": "2af2b8ad90f3fb88315fd5d7e26f2593093fbaefe21f6ea0d184a241d15250af",
     "CS_SUSPEND_FENCE_LOCK_CONTEXT": "632195d11b66ae70e39d2478c87f3d49f062da38e2f2241100198bf40d21bf10",
-    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "f439eef616546406773817bd358c12dc055499bc5ea567e595d53e99c87ea938",
+    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "e61dd8c04fd18073b9da6a0913a7677174226b59bed1613854caefd49d4a9923",
 }
 
 EXPECTED_ROWS = {
@@ -100,7 +100,7 @@ EXPECTED_ROWS = {
 EXPECTED_EXTERNAL = {
     "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": (
         "steinmarder-r300",
-        "dfd54caf26cc94f157cd231e0741cc16887ec595",
+        "746675620eb49d3b7186da01f137773a5128d41b",
         "src/re/r300/corpora/rs482_k8_memory_path_frontier_v1/frontier.jsonl",
         "CPU_GTT_GPU_PUBLICATION;GPU_GTT_CPU_INVALIDATION",
     ),
@@ -732,7 +732,13 @@ def check_open_boundaries(root: Path) -> None:
             "suspend now carries a ring lock token; update the OPEN lock row"
         )
 
-    reset = function(root, "radeon_device.c", "radeon_gpu_reset")
+    reset_entry = function(root, "radeon_device.c", "radeon_gpu_reset")
+    require(
+        "reset entry delegation differs",
+        reset_entry,
+        r"return\s+radeon_gpu_reset_internal\s*\(\s*rdev\s*,\s*false\s*\)\s*;",
+    )
+    reset = function(root, "radeon_device.c", "radeon_gpu_reset_internal")
     require_order(
         "reset backup, reset, replay, and force-completion structure",
         reset,
@@ -822,6 +828,16 @@ SOURCE_MUTATIONS = {
             "\t},\n\t.ring = {\n"
             "\t\t[RADEON_RING_TYPE_GFX_INDEX] = &rv515_gfx_ring"
         ),
+    ),
+    "reset entry bypasses serialized implementation": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\treturn radeon_gpu_reset_internal(rdev, false);",
+        "\treturn 0;",
+    ),
+    "reset implementation drops writer lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tdown_write(&rdev->exclusive_lock);\n",
+        "",
     ),
     "parked CS condition is inverted": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
@@ -1138,6 +1154,13 @@ SOURCE_MUTATIONS = {
 }
 
 SOURCE_EXPECTED_ERRORS = {
+    "reset entry bypasses serialized implementation": (
+        "reset entry delegation differs"
+    ),
+    "reset implementation drops writer lock": (
+        "reset backup, reset, replay, and force-completion structure: "
+        "missing or out of order: down_write(&rdev->exclusive_lock)"
+    ),
     "relocation chunk accepts a partial record": (
         "relocation chunk length admission guard differs: "
         "exact condition match count is 0"

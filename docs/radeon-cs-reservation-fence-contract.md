@@ -88,7 +88,9 @@ fail with its declared semantic error before the tree result has authority.
   owns future exact target replay count and current payload evidence. Linux
   supplies source order and the commit identity that an admitted trial must
   bind. Successful ring replay and failed-reset force completion are sibling
-  outcomes in `radeon_gpu_reset`; neither is a prerequisite for the other.
+  outcomes in `radeon_gpu_reset_internal`; the public `radeon_gpu_reset`
+  entry delegates to that serialized implementation. Neither outcome is a
+  prerequisite for the other.
 
 ## Submission sequence
 
@@ -179,12 +181,12 @@ the shared target question from the other ledger's source status.
 
 The retained declared build identities remain `6.18.38-2-cachyos-lts` and
 `7.1.4-1-cachyos`. At source commit
-`286d8fbc56c8017bfe6e00a29771ddc2f3040654`, the exact-root matrix passed
+`df6f5cf10024ee20cc5db66e5c891f9207f24f7a`, the exact-root matrix passed
 `prod`, `observe-dev`, `probe-dev`, and `mutate-dev` with zero warnings on both
 roots. The 6.18 root used the signed Clang and LLD 22.1.6 package set; the 7.1
 root used the signed 22.1.8 set. Their exact package and signature identities
 live in `ci/kernel-toolchains/`. The built Radeon driver tree was
-`ef45f03a970fdb84b8975ba3fec96b2bfe625324`. The result proves bounded source
+`bc05af9ebe11efd046b99359fd063f38a6b1e2ce`. The result proves bounded source
 reachability, link, metadata, and profile projection, not module loading,
 runtime reachability, or silicon behavior.
 
@@ -224,7 +226,7 @@ python3 scripts/check_radeon_gart_lifecycle.py
 
 Then run the module build harness against both exact declared kernel roots as
 documented in `README.md`. The matrix recorded for driver tree
-`ef45f03a970fdb84b8975ba3fec96b2bfe625324` satisfies this gate. A driver or
+`bc05af9ebe11efd046b99359fd063f38a6b1e2ce` satisfies this gate. A driver or
 build-contract change requires a new exact-root matrix. These checks prove a
 bounded source and compile contract only. They do not prove live submission,
 reset replay count, fence completion, payload visibility, performance, or

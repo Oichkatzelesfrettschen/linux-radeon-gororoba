@@ -196,12 +196,12 @@ enable and does not close a ledger row.
 
 The retained declared build identities remain `6.18.38-2-cachyos-lts` and
 `7.1.4-1-cachyos`. At source commit
-`286d8fbc56c8017bfe6e00a29771ddc2f3040654`, the exact-root matrix passed
+`df6f5cf10024ee20cc5db66e5c891f9207f24f7a`, the exact-root matrix passed
 `prod`, `observe-dev`, `probe-dev`, and `mutate-dev` with zero warnings on both
 roots. The 6.18 root used the signed Clang and LLD 22.1.6 package set; the 7.1
 root used the signed 22.1.8 set. Their exact package and signature identities
 live in `ci/kernel-toolchains/`. The built Radeon driver tree was
-`ef45f03a970fdb84b8975ba3fec96b2bfe625324`. The result proves bounded source
+`bc05af9ebe11efd046b99359fd063f38a6b1e2ce`. The result proves bounded source
 reachability, link, metadata, and profile projection, not module loading,
 runtime reachability, or silicon behavior.
 
@@ -238,7 +238,7 @@ python3 scripts/check_rs4xx_gart_cache_policy.py
 
 Then run the module build harness against both exact declared kernel roots as
 documented in `README.md`. The matrix recorded for driver tree
-`ef45f03a970fdb84b8975ba3fec96b2bfe625324` satisfies this gate. A driver or
+`bc05af9ebe11efd046b99359fd063f38a6b1e2ce` satisfies this gate. A driver or
 build-contract change requires a new exact-root matrix. A green checker and
 exact-root profile matrix establish a bounded source and compile result only.
 They do not establish runtime reachability, silicon coherence, performance, or
