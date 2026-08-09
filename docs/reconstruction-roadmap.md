@@ -14,8 +14,9 @@ classes; a closed item names its proof, and an open item names its gate.
 - Base-delta classification of every divergence from the imported legacy base
   remains frozen in `migration/input/base-delta-map.tsv`.
 - Post-tag source changes carry their upstream-backport, version-compat,
-  RS48X, or Palm classification in `docs/base-delta-map.tsv`, with exact path
-  coverage checked by `scripts/check_source_delta_map.py`.
+  RS48X, or Palm classification in `docs/base-delta-map.tsv`, with exact
+  commit-path coverage checked by
+  `scripts/check_source_delta_map.py`.
 - Per-hunk provenance with recorded search universe and
   confirmed/likely/unproven labels: radeon-custom Step 5 artifacts.
 - Legacy series corrected to exact-context application. pkgrel 90 applied

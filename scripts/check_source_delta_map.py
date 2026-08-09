@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify post-tag Radeon source-delta classification and path coverage."""
+"""Verify post-tag Radeon source-delta classification by commit and path."""
 
 from __future__ import annotations
 
@@ -13,15 +13,20 @@ from pathlib import Path
 
 
 BASELINE_TAG = "radeon-unified-0.7-profiled-source"
+BASELINE_TAG_OBJECT = "7f500d682aad600ca443c7f26e913b6b4034c834"
+BASELINE_COMMIT = "293a4ae3fe82cd03585ef3157e82b0b59b641b47"
 DRIVER_ROOT = Path("drivers/gpu/drm/radeon")
 MAP_PATH = Path("docs/base-delta-map.tsv")
 REQUIRED_HEADERS = (
     "# schema: gororoba-post-tag-source-delta-map-v1",
-    f"# baseline: {BASELINE_TAG}",
+    f"# baseline-tag: {BASELINE_TAG}",
+    f"# baseline-tag-object: {BASELINE_TAG_OBJECT}",
+    f"# baseline-commit: {BASELINE_COMMIT}",
     "# imported-base-map: migration/input/base-delta-map.tsv",
 )
 MAP_FIELDS = {
     "delta_id",
+    "source_commit",
     "source_path",
     "symbol_or_range",
     "classification",
@@ -37,6 +42,7 @@ CLASSIFICATIONS = {
 }
 EVIDENCE_CLASSES = {"source-verified", "compile-verified"}
 DURABLE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+SHA40 = re.compile(r"[0-9a-f]{40}")
 CHRONOLOGY_PREFIX = re.compile(
     r"(?:phase|wave|mission|sprint|step|batch|set|group)(?:-|$)"
 )
@@ -85,27 +91,71 @@ def git_output(root: Path, *arguments: str) -> str:
     return result.stdout
 
 
-def changed_source_paths(root: Path) -> set[str]:
-    git_output(root, "rev-parse", "--verify", f"{BASELINE_TAG}^{{commit}}")
+def validate_baseline(
+    root: Path,
+    expected_tag_object: str = BASELINE_TAG_OBJECT,
+    expected_commit: str = BASELINE_COMMIT,
+) -> None:
+    tag_object = git_output(
+        root, "rev-parse", "--verify", f"refs/tags/{BASELINE_TAG}^{{tag}}"
+    ).strip()
+    require(
+        tag_object == expected_tag_object,
+        f"source-delta baseline tag object differs: {tag_object}",
+    )
+    commit = git_output(
+        root, "rev-parse", "--verify", f"refs/tags/{BASELINE_TAG}^{{commit}}"
+    ).strip()
+    require(
+        commit == expected_commit,
+        f"source-delta baseline peeled commit differs: {commit}",
+    )
+    git_output(root, "merge-base", "--is-ancestor", expected_commit, "HEAD")
+
+
+def changed_source_commit_paths(root: Path) -> set[tuple[str, str]]:
     output = git_output(
         root,
-        "diff",
-        "--name-only",
-        f"{BASELINE_TAG}..HEAD",
+        "rev-list",
+        "--reverse",
+        f"{BASELINE_COMMIT}..HEAD",
         "--",
         DRIVER_ROOT.as_posix(),
     )
-    return {line for line in output.splitlines() if line}
+    changed: set[tuple[str, str]] = set()
+    for commit in output.splitlines():
+        parents = git_output(root, "rev-list", "--parents", "-n", "1", commit).split()
+        require(
+            len(parents) == 2,
+            f"post-tag Radeon source commit is a merge: {commit}",
+        )
+        paths = git_output(
+            root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            commit,
+            "--",
+            DRIVER_ROOT.as_posix(),
+        )
+        for source_path in paths.splitlines():
+            if source_path:
+                changed.add((commit, source_path))
+    return changed
 
 
 def validate(
-    root: Path,
     rows: list[dict[str, str]],
-    changed_paths: set[str],
+    changed_commit_paths: set[tuple[str, str]],
 ) -> None:
-    require(bool(changed_paths), "post-tag source range has no Radeon paths")
-    keys: set[tuple[str, str, str]] = set()
-    declared_paths: set[str] = set()
+    require(
+        bool(changed_commit_paths),
+        "post-tag source range has no Radeon commit-path pairs",
+    )
+    keys: set[tuple[str, str, str, str]] = set()
+    declared_commit_paths: set[tuple[str, str]] = set()
     for row in rows:
         require(
             all(row.get(field) for field in MAP_FIELDS),
@@ -128,6 +178,10 @@ def validate(
             f"source-delta mechanism carries chronology: {row['mechanism']}",
         )
         require(
+            SHA40.fullmatch(row["source_commit"]) is not None,
+            f"source-delta commit is not a full object ID: {row['source_commit']}",
+        )
+        require(
             row["classification"] in CLASSIFICATIONS,
             f"source-delta classification is unknown: {row['classification']}",
         )
@@ -144,27 +198,40 @@ def validate(
             source_path.is_relative_to(DRIVER_ROOT),
             f"source-delta path leaves the imported subtree: {source_path}",
         )
+        commit_path = (row["source_commit"], row["source_path"])
         require(
-            (root / source_path).is_file(),
-            f"source-delta path is absent: {source_path}",
+            commit_path in changed_commit_paths,
+            "source-delta row names no post-tag commit-path change: "
+            + ":".join(commit_path),
         )
-        key = (row["delta_id"], row["source_path"], row["symbol_or_range"])
+        key = (
+            row["delta_id"],
+            row["source_commit"],
+            row["source_path"],
+            row["symbol_or_range"],
+        )
         require(key not in keys, f"source-delta row is duplicated: {key}")
         keys.add(key)
-        declared_paths.add(row["source_path"])
+        declared_commit_paths.add(commit_path)
 
     require(
-        declared_paths == changed_paths,
-        "source-delta path coverage differs: "
-        + ",".join(sorted(declared_paths ^ changed_paths)),
+        declared_commit_paths == changed_commit_paths,
+        "source-delta commit-path coverage differs: "
+        + ",".join(
+            f"{commit}:{path}"
+            for commit, path in sorted(
+                declared_commit_paths ^ changed_commit_paths
+            )
+        ),
     )
 
 
 def self_test(root: Path) -> int:
     map_text = (root / MAP_PATH).read_text(encoding="ascii")
     rows = parse_map(map_text)
-    changed_paths = changed_source_paths(root)
-    validate(root, rows, changed_paths)
+    validate_baseline(root)
+    changed_commit_paths = changed_source_commit_paths(root)
+    validate(rows, changed_commit_paths)
     rejection_count = 0
 
     invalid_headers = map_text.replace(REQUIRED_HEADERS[0], "# schema: wrong", 1)
@@ -174,6 +241,17 @@ def self_test(root: Path) -> int:
         rejection_count += 1
     else:
         raise DeltaMapError("self-test accepted a changed map schema")
+
+    for expected_tag_object, expected_commit in (
+        ("0" * 40, BASELINE_COMMIT),
+        (BASELINE_TAG_OBJECT, "0" * 40),
+    ):
+        try:
+            validate_baseline(root, expected_tag_object, expected_commit)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted a changed baseline identity")
 
     candidates: list[list[dict[str, str]]] = []
     empty_field = copy.deepcopy(rows)
@@ -194,6 +272,12 @@ def self_test(root: Path) -> int:
     invalid_mechanism = copy.deepcopy(rows)
     invalid_mechanism[0]["mechanism"] = "forced_reset"
     candidates.append(invalid_mechanism)
+    invalid_commit = copy.deepcopy(rows)
+    invalid_commit[0]["source_commit"] = "not-a-commit"
+    candidates.append(invalid_commit)
+    unrelated_commit = copy.deepcopy(rows)
+    unrelated_commit[0]["source_commit"] = "0" * 40
+    candidates.append(unrelated_commit)
     escaping_path = copy.deepcopy(rows)
     escaping_path[0]["source_path"] = "../radeon.h"
     candidates.append(escaping_path)
@@ -203,15 +287,17 @@ def self_test(root: Path) -> int:
     duplicate = copy.deepcopy(rows)
     duplicate.append(copy.deepcopy(duplicate[0]))
     candidates.append(duplicate)
-    first_path = sorted(changed_paths)[0]
+    first_commit_path = sorted(changed_commit_paths)[0]
     missing_coverage = [
-        copy.deepcopy(row) for row in rows if row["source_path"] != first_path
+        copy.deepcopy(row)
+        for row in rows
+        if (row["source_commit"], row["source_path"]) != first_commit_path
     ]
     candidates.append(missing_coverage)
 
     for candidate in candidates:
         try:
-            validate(root, candidate, changed_paths)
+            validate(candidate, changed_commit_paths)
         except DeltaMapError:
             rejection_count += 1
         else:
@@ -230,13 +316,16 @@ def main() -> int:
         if args.self_test:
             return self_test(root)
         rows = read_map(root)
-        paths = changed_source_paths(root)
-        validate(root, rows, paths)
+        validate_baseline(root)
+        commit_paths = changed_source_commit_paths(root)
+        validate(rows, commit_paths)
     except (DeltaMapError, OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"source delta map: {exc}", file=sys.stderr)
         return 1
     print(
-        f"source delta map: {len(paths)} paths, "
+        f"source delta map: "
+        f"{len({commit for commit, _path in commit_paths})} commits, "
+        f"{len(commit_paths)} commit-paths, "
         f"{len({row['mechanism'] for row in rows})} mechanisms, "
         f"{len(rows)} rows"
     )

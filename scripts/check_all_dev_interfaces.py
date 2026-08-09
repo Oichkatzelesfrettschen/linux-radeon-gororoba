@@ -974,6 +974,25 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         re.search(transaction_pattern, function_body, re.DOTALL) is not None,
         "forced GPU-reset request is outside the writer transaction",
     )
+    reset_counter = "atomic_inc(&rdev->gpu_reset_counter);"
+    reset_counter_at = function_body.find(reset_counter)
+    require(
+        reset_counter_at >= 0,
+        "forced GPU-reset counter transition is absent",
+    )
+    reset_body = function_body[reset_counter_at + len(reset_counter):]
+    require(
+        "up_write(&rdev->exclusive_lock);" not in reset_body,
+        "forced GPU-reset writer lock ends before a legitimate downgrade",
+    )
+    require(
+        reset_body.count("downgrade_write(&rdev->exclusive_lock);") == 2,
+        "forced GPU-reset writer-to-reader downgrade paths differ",
+    )
+    require(
+        reset_body.count("up_read(&rdev->exclusive_lock);") == 2,
+        "forced GPU-reset read-lock release paths differ",
+    )
     require(
         re.search(wrapper_pattern, texts[path], re.DOTALL) is not None,
         "forced GPU-reset entry does not select the forced transaction",
@@ -1825,6 +1844,22 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a premature forced-reset unlock")
 
+    post_counter_forced_unlock = copy.deepcopy(source_texts)
+    post_counter_forced_unlock[reset_implementation_path] = (
+        post_counter_forced_unlock[reset_implementation_path].replace(
+            "\tatomic_inc(&rdev->gpu_reset_counter);\n",
+            "\tatomic_inc(&rdev->gpu_reset_counter);\n"
+            "\tup_write(&rdev->exclusive_lock);\n",
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(post_counter_forced_unlock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a post-counter writer unlock")
+
     retired_rejection_count = 0
     for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
         for marker in markers:
@@ -1857,7 +1892,7 @@ def self_test(root: Path) -> int:
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
         "22 Palm registration source, 4 registration contract, "
         f"{summary_rejection_count} summary-total, "
-        "5 reset-post-state, 3 forced-reset, 1 retired-denominator, "
+        "5 reset-post-state, 4 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0
