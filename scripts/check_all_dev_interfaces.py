@@ -724,6 +724,10 @@ def validate_rs4xx_output_schema_paths(
         "RS4xx schema-line emission is not centralized",
     )
     output_call = re.compile(r"\bseq_[A-Za-z0-9_]+\s*\(")
+    schema_output_route = re.compile(
+        r"\b(?:rs480_debugfs_emit_schema|"
+        r"rs480_debugfs_refuse_(?:hardware_access|if_parked))\s*\("
+    )
     control_exit = re.compile(r"\b(?:goto|return)\b")
 
     emitter_body = function_body(source, "rs480_debugfs_emit_schema")
@@ -853,6 +857,7 @@ def validate_rs4xx_output_schema_paths(
     )
     require(
         output_call.search(dump_start_body) is None
+        and schema_output_route.search(dump_start_body) is None
         and control_exit.search(dump_start_prefix) is None,
         "RS4xx CP-ME dump start bypasses its header record",
     )
@@ -882,6 +887,12 @@ def validate_rs4xx_output_schema_paths(
         < dump_limit_start.start()
         < dump_start_return.start(),
         "RS4xx CP-ME dump start gates are out of order",
+    )
+    dump_start_control = strip_comments_and_literals(dump_start_body)
+    require(
+        len(re.findall(r"\breturn\b", dump_start_control)) == 4
+        and re.search(r"\bgoto\b", dump_start_control) is None,
+        "RS4xx CP-ME dump start control transfers differ",
     )
     dump_next_body = function_body(source, "rs480_cp_me_ram_seq_next")
     dump_next_increment = require_one_match(
@@ -919,8 +930,22 @@ def validate_rs4xx_output_schema_paths(
         < dump_next_gate.start()
         < dump_next_return.start()
         and output_call.search(dump_next_body) is None
+        and schema_output_route.search(dump_next_body) is None
         and control_exit.search(dump_next_prefix) is None,
         "RS4xx CP-ME dump iterator termination is bypassable",
+    )
+    dump_next_control = strip_comments_and_literals(dump_next_body)
+    require(
+        len(re.findall(r"\breturn\b", dump_next_control)) == 2
+        and re.search(r"\bgoto\b", dump_next_control) is None,
+        "RS4xx CP-ME dump iterator control transfers differ",
+    )
+    dump_stop_body = function_body(source, "rs480_cp_me_ram_seq_stop")
+    require_one_match(
+        dump_stop_body,
+        r"^static void rs480_cp_me_ram_seq_stop\(struct seq_file \*m, void \*v\)"
+        r"\s*\{\s*\}$",
+        "RS4xx CP-ME dump stop",
     )
     dump_show_body = function_body(source, "rs480_cp_me_ram_seq_show")
     require(
@@ -2258,6 +2283,86 @@ def self_test(root: Path) -> int:
         "an early CP-ME dump next return",
         early_dump_next_return,
     )
+
+    dump_start_schema = rs4xx_source.replace(
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n"
+        "{\n",
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n"
+        "{\n"
+        "\trs480_debugfs_emit_schema(m);\n",
+        1,
+    )
+    require(
+        dump_start_schema != rs4xx_source,
+        "self-test CP-ME start-schema fixture differs from the source",
+    )
+    reject_schema_mutant("schema output from CP-ME dump start", dump_start_schema)
+
+    extra_dump_start_return = rs4xx_source.replace(
+        "\tif (*pos == 0)\n"
+        "\t\treturn SEQ_START_TOKEN;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1)",
+        "\tif (*pos == 0)\n"
+        "\t\treturn SEQ_START_TOKEN;\n"
+        "\treturn NULL;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1)",
+        1,
+    )
+    require(
+        extra_dump_start_return != rs4xx_source,
+        "self-test CP-ME start-return fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an extra CP-ME dump start return",
+        extra_dump_start_return,
+    )
+
+    dump_next_schema = rs4xx_source.replace(
+        "\t++*pos;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1 ||",
+        "\t++*pos;\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1 ||",
+        1,
+    )
+    require(
+        dump_next_schema != rs4xx_source,
+        "self-test CP-ME next-schema fixture differs from the source",
+    )
+    reject_schema_mutant("schema output from CP-ME dump next", dump_next_schema)
+
+    dump_next_refusal = rs4xx_source.replace(
+        "\t++*pos;\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1 ||",
+        "\t++*pos;\n"
+        "\trs480_debugfs_refuse_if_parked(m, rdev);\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1 ||",
+        1,
+    )
+    require(
+        dump_next_refusal != rs4xx_source,
+        "self-test CP-ME next-refusal fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "refusal output from CP-ME dump next",
+        dump_next_refusal,
+    )
+
+    dump_stop_schema = rs4xx_source.replace(
+        "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n"
+        "{\n"
+        "}",
+        "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n"
+        "{\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "}",
+        1,
+    )
+    require(
+        dump_stop_schema != rs4xx_source,
+        "self-test CP-ME stop-schema fixture differs from the source",
+    )
+    reject_schema_mutant("schema output from CP-ME dump stop", dump_stop_schema)
 
     first_show_function = min(RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS)
     shrunk_show_denominator = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS - {first_show_function}
