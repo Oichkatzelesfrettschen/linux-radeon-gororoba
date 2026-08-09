@@ -89,6 +89,7 @@ RUNTIME_RANK = {
     "mutate-dev": 3,
 }
 RUNTIME_SOURCE_PATTERNS = {
+    "drivers/gpu/drm/radeon/radeon_device.c": (),
     "drivers/gpu/drm/radeon/radeon_dev.c": (
         r'\{ "off", RADEON_DEV_PROFILE_OFF \}',
         r'\{ "observe-dev", RADEON_DEV_PROFILE_OBSERVE \}',
@@ -789,7 +790,7 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     require(path in texts, f"wedged reset-probe source is absent: {path}")
     pattern = (
-        r"reset_result = radeon_gpu_reset\(rdev\);.*?"
+        r"reset_result = radeon_gpu_reset_forced\(rdev\);.*?"
         r"if \(rdev->gpu_parked\) \{.*?"
         r"post_reset_status = 0x5041524B;.*?"
         r"\} else \{.*?"
@@ -799,6 +800,31 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     require(
         re.search(pattern, texts[path], re.DOTALL) is not None,
         "wedged reset-probe post-state gate differs from gpu_parked",
+    )
+
+
+def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
+    path = "drivers/gpu/drm/radeon/radeon_device.c"
+    require(path in texts, f"forced GPU-reset source is absent: {path}")
+    implementation_pattern = (
+        r"static int radeon_gpu_reset_internal\(.*?bool force_reset\).*?"
+        r"\{.*?down_write\(&rdev->exclusive_lock\);.*?"
+        r"if \(!force_reset && !rdev->needs_reset\).*?"
+        r"if \(rdev->gpu_parked\).*?"
+        r"if \(force_reset\)\s*rdev->needs_reset = true;.*?"
+        r"atomic_inc\(&rdev->gpu_reset_counter\)"
+    )
+    wrapper_pattern = (
+        r"int radeon_gpu_reset_forced\(struct radeon_device \*rdev\)\s*"
+        r"\{\s*return radeon_gpu_reset_internal\(rdev, true\);\s*\}"
+    )
+    require(
+        re.search(implementation_pattern, texts[path], re.DOTALL) is not None,
+        "forced GPU-reset request is outside the writer transaction",
+    )
+    require(
+        re.search(wrapper_pattern, texts[path], re.DOTALL) is not None,
+        "forced GPU-reset entry does not select the forced transaction",
     )
 
 
@@ -1078,6 +1104,7 @@ def validate(
         validate_mutation_audit(source_texts, features)
         validate_retired_reset_probes(retired_reset_probe_source_texts(root))
         validate_wedged_reset_probe_post_state(source_texts)
+        validate_forced_gpu_reset_transaction(source_texts)
 
     if module is not None:
         validate_module(
@@ -1448,6 +1475,7 @@ def self_test(root: Path) -> int:
             )
 
     validate_wedged_reset_probe_post_state(source_texts)
+    validate_forced_gpu_reset_transaction(source_texts)
     retired_source_texts = retired_reset_probe_source_texts(root)
     validate_retired_reset_probes(retired_source_texts)
     missing_gate = copy.deepcopy(source_texts)
@@ -1492,7 +1520,7 @@ def self_test(root: Path) -> int:
     wrong_post_state = copy.deepcopy(source_texts)
     reset_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     wrong_post_state[reset_source_path] = re.sub(
-        r"(reset_result = radeon_gpu_reset\(rdev\);.*?)"
+        r"(reset_result = radeon_gpu_reset_forced\(rdev\);.*?)"
         r"if \(rdev->gpu_parked\)",
         r"\1if (reset_result)",
         wrong_post_state[reset_source_path],
@@ -1505,6 +1533,38 @@ def self_test(root: Path) -> int:
         pass
     else:
         raise InterfaceError("self-test accepted return-code post-state gate")
+
+    ordinary_reset_call = copy.deepcopy(source_texts)
+    ordinary_reset_call[reset_source_path] = ordinary_reset_call[
+        reset_source_path
+    ].replace(
+        "reset_result = radeon_gpu_reset_forced(rdev);",
+        "reset_result = radeon_gpu_reset(rdev);",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(ordinary_reset_call)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unserialized forced reset call")
+
+    missing_forced_writer = copy.deepcopy(source_texts)
+    reset_implementation_path = "drivers/gpu/drm/radeon/radeon_device.c"
+    missing_forced_writer[reset_implementation_path] = re.sub(
+        r"(static int radeon_gpu_reset_internal\(.*?\n\{.*?)"
+        r"\tdown_write\(&rdev->exclusive_lock\);\n",
+        r"\1",
+        missing_forced_writer[reset_implementation_path],
+        count=1,
+        flags=re.DOTALL,
+    )
+    try:
+        validate_forced_gpu_reset_transaction(missing_forced_writer)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a forced reset without writer lock")
 
     retired_rejection_count = 0
     for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
@@ -1537,7 +1597,7 @@ def self_test(root: Path) -> int:
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
         "22 Palm registration source, 4 registration contract, "
-        "1 reset-post-state, "
+        "1 reset-post-state, 2 forced-reset, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0

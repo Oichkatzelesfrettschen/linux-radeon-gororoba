@@ -1845,14 +1845,16 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 }
 
 /**
- * radeon_gpu_reset - reset the asic
+ * radeon_gpu_reset_internal - execute a detected or forced GPU reset
  *
  * @rdev: radeon device pointer
+ * @force_reset: establish the request under the writer lock
  *
- * Attempt the reset the GPU if it has hung (all asics).
+ * Attempt to reset the GPU (all ASICs).
  * Returns 0 for success or an error on failure.
  */
-int radeon_gpu_reset(struct radeon_device *rdev)
+static int radeon_gpu_reset_internal(struct radeon_device *rdev,
+				     bool force_reset)
 {
 	unsigned ring_sizes[RADEON_NUM_RINGS];
 	uint32_t *ring_data[RADEON_NUM_RINGS];
@@ -1864,7 +1866,7 @@ int radeon_gpu_reset(struct radeon_device *rdev)
 
 	down_write(&rdev->exclusive_lock);
 
-	if (!rdev->needs_reset) {
+	if (!force_reset && !rdev->needs_reset) {
 		up_write(&rdev->exclusive_lock);
 		return 0;
 	}
@@ -1876,6 +1878,8 @@ int radeon_gpu_reset(struct radeon_device *rdev)
 			     "parked: refusing radeon_gpu_reset re-entry\n");
 		return -EIO;
 	}
+	if (force_reset)
+		rdev->needs_reset = true;
 
 	atomic_inc(&rdev->gpu_reset_counter);
 
@@ -2077,3 +2081,31 @@ int radeon_gpu_reset(struct radeon_device *rdev)
 	up_read(&rdev->exclusive_lock);
 	return r;
 }
+
+/**
+ * radeon_gpu_reset - reset the ASIC after a detected hang
+ *
+ * @rdev: radeon device pointer
+ *
+ * The reset executes when needs_reset is set.  Returns 0 for success or an
+ * error on failure.
+ */
+int radeon_gpu_reset(struct radeon_device *rdev)
+{
+	return radeon_gpu_reset_internal(rdev, false);
+}
+
+#if RADEON_MUTATE_DEV
+/**
+ * radeon_gpu_reset_forced - establish and execute one reset request
+ *
+ * @rdev: radeon device pointer
+ *
+ * The writer lock owns the needs_reset transition and the complete production
+ * reset.  Returns 0 for success or an error on failure.
+ */
+int radeon_gpu_reset_forced(struct radeon_device *rdev)
+{
+	return radeon_gpu_reset_internal(rdev, true);
+}
+#endif

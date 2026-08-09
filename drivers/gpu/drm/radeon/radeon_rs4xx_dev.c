@@ -1759,10 +1759,10 @@ DEFINE_SHOW_ATTRIBUTE(rs480_cp_ib_scratch_oracle);
  * r300_asic_reset (which, with the IGP force-clock, recovers instead of
  * hard-locking), then radeon_ring_restore re-emits on success or
  * radeon_fence_driver_force_completion retires the wedged fence on failure,
- * closing with radeon_ib_ring_tests.  radeon_gpu_reset requires
- * rdev->needs_reset; lockup detection and each probe set that state.  A zero
- * return reports recovery.  -EAGAIN reports a reset followed by a failed ring
- * test with commands saved.  Other negative values report failure.
+ * closing with radeon_ib_ring_tests.  radeon_gpu_reset_forced establishes the
+ * reset request under the production writer lock.  A zero return reports
+ * recovery.  -EAGAIN reports a reset followed by a failed ring test with
+ * commands saved.  Other negative values report failure.
  *
  * WD3A admits a busy frontend (VAP or GA busy), including a mid-flight 3D draw
  * whose backend remains busy.  WD3B admits a frontend busy state with
@@ -1807,8 +1807,7 @@ static int rs480_wedged_3d_reset(struct radeon_device *rdev, struct seq_file *m,
 	}
 
 	radeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");
-	rdev->needs_reset = true;
-	reset_result = radeon_gpu_reset(rdev);
+	reset_result = radeon_gpu_reset_forced(rdev);
 	/* No register read after a parked reset: the parked GPU keeps its MC
 	 * stopped and display requests off, and the first post-park MMIO read
 	 * is the proven host-killer. The r300_asic_reset dmesg ladder carries
