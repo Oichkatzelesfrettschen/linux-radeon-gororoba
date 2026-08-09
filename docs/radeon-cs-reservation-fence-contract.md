@@ -32,8 +32,10 @@ mutations before the tree result has authority.
   relocation, or ring work. Reset uses the writer side.
 * Relocation topology uses `CS_RELOCATION_RECORD_GEOMETRY` and
   `CS_SUCCESS_FENCE_INVARIANT`. Parser admission requires complete four dword
-  relocation records and rejects relocation metadata without an IB. Malformed
-  topology cannot reach BO validation or successful fence cleanup.
+  relocation records and rejects relocation metadata without an IB. Before
+  cleanup, ioctl success with validated BOs also requires `parser.ib.fence`.
+  Malformed topology or missing completion state cannot publish reservation
+  fences.
 * BO ownership uses `CS_BO_RESERVATION_LOCKS`. Every relocation holds its GEM
   reference, enters the validation list, and reaches `drm_exec_prepare_obj`
   before TTM validation and GPU offset capture. Reservation ownership protects
@@ -101,8 +103,9 @@ contracts:
   remain inside the chunk, and leave one complete record before `p->relocs` or
   `kdata` access. Truncated and misaligned metadata now returns `EINVAL`.
 * `CS_SUCCESS_FENCE_INVARIANT` rejects a relocation chunk when no IB chunk is
-  present. This prevents a relocation only request from reaching successful
-  cleanup without `parser.ib.fence` produced by scheduling.
+  present. It also rejects a successful scheduling path that has validated BOs
+  but no `parser.ib.fence`. These two checks prevent cleanup from publishing a
+  missing completion token into BO reservations.
 
 The repairs do not validate the truth of a userspace access domain declaration
 and do not prove that an emitted fence completed.
