@@ -54,8 +54,7 @@ columns record the gates beyond that shared guard.
 | radeon_rs480_cp_me_oracle | 0400 | probe-dev | exact token 0x4f524331; IGP live-fire excluded | none |
 | radeon_rs480_force_clock_read, _force_clock_3d_read, _gated_read | 0400 | mutate-dev | index selector (-1 sentinel) | RS4xx force-clock read / force-clock 3D read / gated-state read |
 | radeon_rs480_cp_ib_scratch_oracle | 0400 | mutate-dev | rs480_cp_ib_scratch_oracle arm | RS4xx CP scratch oracle |
-| radeon_rs480_gpu_reset_recover_probe | 0400 | mutate-dev | exact arm token; engine-idle gate | RS4xx GPU reset recovery probe |
-| radeon_rs480_reset_hang_probe | 0400 | mutate-dev | exact arm token; staged | RS4xx reset hang probe |
+| radeon_rs480_reset_hang_probe | 0400 | mutate-dev | exact WD3A or WD3B token; admitted frontend state | RS4xx reset hang probe |
 
 ## Writer gate inventory
 
@@ -101,7 +100,7 @@ byte-identically from the legacy packaging series
 
 ## Module parameter arming domains
 
-The 18 parameters keep the three arming domains: booleans open at exactly 1
+The 17 parameters keep the three arming domains: booleans open at exactly 1
 (`rs480_hazard_readers_armed`, `rs480_r400_us_cs`, `palm_pci_reset_unsafe`,
 `rs480_safe_regs`, `rs480_candidate_regs`, `rs480_cp_me_ram_dump`), index
 selectors use the -1 sentinel where any in-range nonnegative value selects
@@ -109,8 +108,8 @@ selectors use the -1 sentinel where any in-range nonnegative value selects
 `rs480_gated_read_index`, `rs480_frontier_index`, `rs480_vertex_index`,
 `rs480_hazard_index`), and exact-token gates require their named constant
 (`rs480_cp_me_ram_inject`, `rs480_cp_me_oracle`,
-`rs480_gpu_reset_recover_probe`, `rs480_reset_hang_probe`,
-`rs480_cp_ib_scratch_oracle`). `rs480_reset_mask` selects a mask where 0 is
+`rs480_reset_hang_probe`, `rs480_cp_ib_scratch_oracle`).
+`rs480_reset_mask` selects a mask where 0 is
 the baseline. `profile_dev` is 0444 load-time-only; development arming binds
 to one device through `radeon_dev_arm_holder`
 (`policy/build-features.toml` `profile_model.development_arming`). The

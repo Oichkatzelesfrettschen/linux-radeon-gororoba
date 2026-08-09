@@ -157,16 +157,11 @@ MUTATION_AUDIT_PATTERNS = {
             1,
         ),
     ),
-    "reset-recovery-probes": (
-        (
-            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
-            r'radeon_dev_mark_mutation\(rdev, "RS4xx GPU reset recovery probe"\)',
-            1,
-        ),
+    "wedged-3d-reset-probes": (
         (
             "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
             r'radeon_dev_mark_mutation\(rdev, "RS4xx reset hang probe"\)',
-            3,
+            1,
         ),
     ),
     "reset-mask-selector": (
@@ -213,6 +208,28 @@ MUTATION_AUDIT_PATTERNS = {
             r'radeon_dev_mark_mutation\(rdev, "RS4xx CP scratch oracle"\)',
             1,
         ),
+    ),
+}
+
+RETIRED_RESET_PROBE_MARKERS = {
+    "drivers/gpu/drm/radeon/radeon_dev.c": (
+        "radeon_rs480_gpu_reset_recover_probe",
+    ),
+    "drivers/gpu/drm/radeon/radeon_dev.h": (
+        "radeon_rs480_gpu_reset_recover_probe",
+    ),
+    "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
+        "RS480_GPU_RESET_RECOVER_PROBE_ARM_TOKEN",
+        "RS480_RESET_HANG_PROBE_SOFT_RESET_TOKEN",
+        "RS480_RESET_HANG_PROBE_BLIT_RESET_TOKEN",
+        "rs480_gpu_reset_recover_probe_show",
+        "rs480_soft_reset",
+        "rs480_blit_busy_reset",
+        "0x52435652u",
+        "0x53525354u",
+        "0x48414e47u",
+        "r100_copy_blit(",
+        "r100_cp_init(rdev,",
     ),
 }
 
@@ -436,6 +453,13 @@ def runtime_source_texts(root: Path) -> dict[str, str]:
         path = source.relative_to(root).as_posix()
         texts.setdefault(path, source.read_text(encoding="utf-8"))
     return texts
+
+
+def retired_reset_probe_source_texts(root: Path) -> dict[str, str]:
+    return {
+        path: (root / path).read_text(encoding="ascii")
+        for path in RETIRED_RESET_PROBE_MARKERS
+    }
 
 
 def validate_output_schema_version(root: Path) -> None:
@@ -751,6 +775,33 @@ def validate_palm_reset_registration(
     )
 
 
+def validate_retired_reset_probes(texts: dict[str, str]) -> None:
+    for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
+        require(path in texts, f"retired reset-probe source is absent: {path}")
+        for marker in markers:
+            require(
+                marker.casefold() not in texts[path].casefold(),
+                f"retired reset-probe marker is present in {path}: {marker}",
+            )
+
+
+def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
+    path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    require(path in texts, f"wedged reset-probe source is absent: {path}")
+    pattern = (
+        r"reset_result = radeon_gpu_reset\(rdev\);.*?"
+        r"if \(rdev->gpu_parked\) \{.*?"
+        r"post_reset_status = 0x5041524B;.*?"
+        r"\} else \{.*?"
+        r"post_reset_status = RREG32\(R_000E40_RBBM_STATUS\);.*?"
+        r"\}"
+    )
+    require(
+        re.search(pattern, texts[path], re.DOTALL) is not None,
+        "wedged reset-probe post-state gate differs from gpu_parked",
+    )
+
+
 def validate_mutation_audit(
     texts: dict[str, str],
     features: dict[str, dict[str, object]],
@@ -1025,6 +1076,8 @@ def validate(
         validate_runtime_sources(source_texts)
         validate_palm_reset_registration(registration_rows, source_texts)
         validate_mutation_audit(source_texts, features)
+        validate_retired_reset_probes(retired_reset_probe_source_texts(root))
+        validate_wedged_reset_probe_post_state(source_texts)
 
     if module is not None:
         validate_module(
@@ -1104,7 +1157,7 @@ def self_test(root: Path) -> int:
         "prod": (0, 0, 0),
         "observe-dev": (4, 2, 18),
         "probe-dev": (10, 8, 24),
-        "mutate-dev": (19, 18, 33),
+        "mutate-dev": (19, 17, 32),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -1127,7 +1180,7 @@ def self_test(root: Path) -> int:
         ("mutate-dev", "off"): (0, 0, 0),
         ("mutate-dev", "observe-dev"): (4, 2, 18),
         ("mutate-dev", "probe-dev"): (10, 8, 24),
-        ("mutate-dev", "mutate-dev"): (19, 18, 33),
+        ("mutate-dev", "mutate-dev"): (19, 17, 32),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)
@@ -1179,7 +1232,6 @@ def self_test(root: Path) -> int:
     validate_runtime_sources(source_texts)
     validate_palm_reset_registration(registration_rows, source_texts)
     validate_mutation_audit(source_texts, features)
-
     registration_source_mutations = (
         (
             "direct RS4xx callback",
@@ -1395,6 +1447,9 @@ def self_test(root: Path) -> int:
                 f"self-test accepted registration contract field {field}"
             )
 
+    validate_wedged_reset_probe_post_state(source_texts)
+    retired_source_texts = retired_reset_probe_source_texts(root)
+    validate_retired_reset_probes(retired_source_texts)
     missing_gate = copy.deepcopy(source_texts)
     missing_gate["drivers/gpu/drm/radeon/evergreen_cs.c"] = re.sub(
         r"radeon_dev_profile_enabled",
@@ -1434,6 +1489,37 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a missing mutation call")
 
+    wrong_post_state = copy.deepcopy(source_texts)
+    reset_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    wrong_post_state[reset_source_path] = re.sub(
+        r"(reset_result = radeon_gpu_reset\(rdev\);.*?)"
+        r"if \(rdev->gpu_parked\)",
+        r"\1if (reset_result)",
+        wrong_post_state[reset_source_path],
+        count=1,
+        flags=re.DOTALL,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(wrong_post_state)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted return-code post-state gate")
+
+    retired_rejection_count = 0
+    for path, markers in RETIRED_RESET_PROBE_MARKERS.items():
+        for marker in markers:
+            reintroduced = copy.deepcopy(retired_source_texts)
+            reintroduced[path] += f"\n{marker}\n"
+            try:
+                validate_retired_reset_probes(reintroduced)
+            except InterfaceError:
+                retired_rejection_count += 1
+            else:
+                raise InterfaceError(
+                    f"self-test accepted retired reset-probe marker {marker}"
+                )
+
     require(
         carries_symbol({"reader_fops"}, "reader_fops"),
         "self-test rejected an exact compiler symbol",
@@ -1450,8 +1536,9 @@ def self_test(root: Path) -> int:
     print(
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
-        "22 Palm registration source, 4 registration contract, and "
-        "3 compiler-symbol cases"
+        "22 Palm registration source, 4 registration contract, "
+        "1 reset-post-state, "
+        f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0
 
