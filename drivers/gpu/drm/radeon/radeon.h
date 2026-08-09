@@ -2457,13 +2457,13 @@ struct radeon_device {
 	u64 gart_pin_size;
 };
 
-/* Development write-path checks, run immediately before final arm
- * consumption.  radeon_dev_asic_powered refuses a torn-down (-ESHUTDOWN)
- * or suspend-powered-down (-EHOSTDOWN) ASIC; radeon_dev_hardware_available
- * adds the parked-engine refusal (-EIO) for operations whose MMIO or ring
- * access would touch the non-posted-write black hole.  The PCI-config
- * reset trigger uses the powered check alone because a parked engine is
- * that node's forensic target.
+/* Development writer checks run immediately before final arm consumption.
+ * radeon_dev_asic_powered refuses a torn down (-ESHUTDOWN) or suspended
+ * (-EHOSTDOWN) ASIC.  radeon_dev_hardware_available adds the parked engine
+ * refusal (-EIO) for operations whose MMIO or ring access would touch the
+ * nonposted write black hole.  Every development trigger that reaches MMIO
+ * or ring access, including Palm PCI configuration reset, uses the complete
+ * hardware availability check.
  */
 static inline int radeon_dev_asic_powered(const struct radeon_device *rdev)
 {

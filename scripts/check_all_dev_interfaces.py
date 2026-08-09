@@ -26,11 +26,56 @@ MANIFEST_FIELDS = {
     "source_path",
     "source_mechanism",
 }
+REGISTRATION_FIELDS = {
+    "interface_name",
+    "registration_symbol",
+    "source_path",
+    "parent_expression",
+    "lifetime_owner",
+    "teardown_mechanism",
+    "mode",
+    "compiled_profile",
+    "runtime_profile",
+    "family_predicate",
+    "execution_device_ids",
+    "evidence_device_ids",
+    "scope_relation",
+}
+PALM_RESET_REGISTRATION = {
+    "interface_name": "radeon_force_pci_reset_safe",
+    "registration_symbol": "radeon_evergreen_dev_debugfs_register",
+    "source_path": "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+    "parent_expression": "minor->debugfs_root",
+    "lifetime_owner": "DRM primary minor",
+    "teardown_mechanism": (
+        "DRM core removes the primary debugfs tree during device unregister"
+    ),
+    "mode": "0200",
+    "compiled_profile": "mutate-dev",
+    "runtime_profile": "mutate-dev",
+    "family_predicate": "rdev->family == CHIP_PALM",
+    "execution_device_ids": (
+        "1002:9802;1002:9803;1002:9804;1002:9805;1002:9806;"
+        "1002:9807;1002:9808;1002:9809;1002:980a"
+    ),
+    "evidence_device_ids": "none",
+    "scope_relation": "broader-than-evidence",
+}
 MODULE_PARAMETER = re.compile(
     r"\bmodule_param_named\(\s*([A-Za-z0-9_]+)"
     r"|\bmodule_param\(\s*([A-Za-z0-9_]+)"
 )
 DEBUGFS_FILE = re.compile(r'debugfs_create_file\(\s*"([^"]+)"')
+FUNCTION_END = re.compile(r"^\}")
+C_COMMENT_OR_LITERAL = re.compile(
+    r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+    re.DOTALL,
+)
+PALM_RESET_HARDWARE_ACCESS = re.compile(
+    r"\b(?:WREG32|RREG32|r600_rlc_stop|rv770_set_clk_bypass_mode|"
+    r"pci_clear_master|evergreen_mc_stop|evergreen_mc_wait_for_idle|"
+    r"evergreen_mc_resume|radeon_pci_config_reset)\s*\("
+)
 PROFILE_RANK = {
     "prod": 0,
     "observe-dev": 1,
@@ -69,8 +114,19 @@ RUNTIME_SOURCE_PATTERNS = {
         r"RADEON_DEV_PROFILE_MUTATE",
     ),
     "drivers/gpu/drm/radeon/radeon_evergreen_dev.c": (
-        r"void radeon_evergreen_dev_debugfs_init\(.*?\)\n\{.*?"
+        r"void radeon_evergreen_dev_debugfs_register\(.*?\)\n\{.*?"
         r"RADEON_DEV_PROFILE_MUTATE",
+    ),
+    "drivers/gpu/drm/radeon/radeon_drv.c": (
+        r"static void radeon_dev_debugfs_register\(.*?\)\n\{.*?"
+        r"radeon_rs480_re_debugfs_register\(minor\);.*?"
+        r"radeon_evergreen_dev_debugfs_register\(minor\);.*?\}",
+        r"\.debugfs_init = radeon_dev_debugfs_register",
+    ),
+    "drivers/gpu/drm/radeon/radeon_kms.c": (),
+    "drivers/gpu/drm/radeon/evergreen.c": (
+        r"int evergreen_gpu_pci_config_reset_safe\(.*?\)\n\{.*?"
+        r"radeon_palm_dev_pci_reset_unsafe",
     ),
     "drivers/gpu/drm/radeon/evergreen_cs.c": (
         r"evergreen_dev_reg_safe_bm",
@@ -81,20 +137,15 @@ RUNTIME_SOURCE_PATTERNS = {
 MUTATION_AUDIT_PATTERNS = {
     "palm-reset-controls": (
         (
-            "drivers/gpu/drm/radeon/radeon_dev.c",
-            r'radeon_dev_mark_mutation\(rdev, "Palm unsafe PCI reset override"\)',
-            1,
-        ),
-        (
-            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
-            r'radeon_dev_mark_mutation\(rdev, "Evergreen debugfs PCI reset"\)',
+            "drivers/gpu/drm/radeon/evergreen.c",
+            r'radeon_dev_mark_mutation\(rdev, "Palm PCI config reset"\)',
             1,
         ),
     ),
     "smx-dc-ctl0-policy": (
         (
             "drivers/gpu/drm/radeon/evergreen_cs.c",
-            r'radeon_dev_mark_mutation\(.*?p->rdev,.*?'
+            r"radeon_dev_mark_mutation\(.*?p->rdev,.*?"
             r'"Evergreen SMX_DC_CTL0 command policy"\)',
             1,
         ),
@@ -175,6 +226,82 @@ def require(condition: bool, message: str) -> None:
         raise InterfaceError(message)
 
 
+def strip_comments(source: str) -> str:
+    """Blank C comments while preserving literals, positions, and line count."""
+
+    def blank_comment(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if not token.startswith(("/*", "//")):
+            return token
+        return re.sub(r"[^\n]", " ", match.group(0))
+
+    return C_COMMENT_OR_LITERAL.sub(blank_comment, source)
+
+
+def strip_comments_and_literals(source: str) -> str:
+    """Blank comments and C literals while preserving source positions."""
+
+    def blank(match: re.Match[str]) -> str:
+        return re.sub(r"[^\n]", " ", match.group(0))
+
+    return C_COMMENT_OR_LITERAL.sub(blank, source)
+
+
+def brace_depth_at(source: str, position: int) -> int:
+    """Return lexical brace depth before a position in comment-free C."""
+    prefix = strip_comments_and_literals(source[:position])
+    depth = 0
+    for character in prefix:
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+        require(depth >= 0, "C source carries an unmatched closing brace")
+    return depth
+
+
+def require_outer_function_match(
+    body: str,
+    match: re.Match[str],
+    label: str,
+) -> None:
+    require(
+        brace_depth_at(body, match.start()) == 1,
+        f"{label} is not an unconditional outer function statement",
+    )
+
+
+def identifier_counts(texts: dict[str, str], identifier: str) -> dict[str, int]:
+    """Count a C identifier across the driver corpus outside comments and literals."""
+    pattern = re.compile(rf"\b{re.escape(identifier)}\b")
+    return {
+        path: len(pattern.findall(strip_comments_and_literals(source)))
+        for path, source in texts.items()
+        if pattern.search(strip_comments_and_literals(source))
+    }
+
+
+def function_body(source: str, name: str) -> str:
+    """Return one column-zero C function definition, brace to brace."""
+    lines = strip_comments(source).splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(rf"^(?:[A-Za-z_].*\b)?{re.escape(name)}\s*\(", line):
+            start = index
+            break
+    require(start is not None, f"function {name} is absent")
+    for index in range(start, len(lines)):
+        if FUNCTION_END.match(lines[index]):
+            return "\n".join(lines[start : index + 1])
+    raise InterfaceError(f"function {name} has no closing brace")
+
+
+def require_one_match(body: str, pattern: str, label: str) -> re.Match[str]:
+    matches = list(re.finditer(pattern, body, re.DOTALL))
+    require(len(matches) == 1, f"{label} count is {len(matches)}, expected 1")
+    return matches[0]
+
+
 def read_manifest(path: Path) -> list[dict[str, str]]:
     text = path.read_text(encoding="ascii")
     lines = [line for line in text.splitlines() if line]
@@ -183,6 +310,18 @@ def read_manifest(path: Path) -> list[dict[str, str]]:
     require(
         set(rows[0]) == MANIFEST_FIELDS,
         "all-dev interface manifest schema is invalid",
+    )
+    return rows
+
+
+def read_registration_contract(path: Path) -> list[dict[str, str]]:
+    text = path.read_text(encoding="ascii")
+    lines = [line for line in text.splitlines() if line]
+    require(bool(lines), "development interface registration contract is empty")
+    rows = list(csv.DictReader(lines, delimiter="\t"))
+    require(
+        bool(rows) and set(rows[0]) == REGISTRATION_FIELDS,
+        "development interface registration contract schema is invalid",
     )
     return rows
 
@@ -288,22 +427,23 @@ def runtime_rows(
 
 
 def runtime_source_texts(root: Path) -> dict[str, str]:
-    return {
+    texts = {
         path: (root / path).read_text(encoding="ascii")
         for path in RUNTIME_SOURCE_PATTERNS
     }
+    driver_root = root / "drivers/gpu/drm/radeon"
+    for source in driver_root.glob("*.c"):
+        path = source.relative_to(root).as_posix()
+        texts.setdefault(path, source.read_text(encoding="utf-8"))
+    return texts
 
 
 def validate_output_schema_version(root: Path) -> None:
     """The schema version has one home per artifact class: the macro in
     radeon_dev.h drives every emitted line, and build-features.toml pins
     the value a probe runner may accept, so drift between them fails."""
-    header = (root / "drivers/gpu/drm/radeon/radeon_dev.h").read_text(
-        encoding="ascii"
-    )
-    macro = re.search(
-        r"#define RADEON_DEV_OUTPUT_SCHEMA_VERSION (\d+)", header
-    )
+    header = (root / "drivers/gpu/drm/radeon/radeon_dev.h").read_text(encoding="ascii")
+    macro = re.search(r"#define RADEON_DEV_OUTPUT_SCHEMA_VERSION (\d+)", header)
     require(macro is not None, "RADEON_DEV_OUTPUT_SCHEMA_VERSION is absent")
     line = re.search(
         r'#define RADEON_DEV_OUTPUT_SCHEMA_LINE "schema rs480-dev v(\d+)'
@@ -315,9 +455,7 @@ def validate_output_schema_version(root: Path) -> None:
         macro.group(1) == line.group(1),
         "schema line version differs from RADEON_DEV_OUTPUT_SCHEMA_VERSION",
     )
-    features = (root / "policy/build-features.toml").read_text(
-        encoding="ascii"
-    )
+    features = (root / "policy/build-features.toml").read_text(encoding="ascii")
     pinned = re.search(r"^output_schema_version = (\d+)$", features, re.M)
     require(
         pinned is not None,
@@ -338,6 +476,279 @@ def validate_runtime_sources(texts: dict[str, str]) -> None:
                 re.search(pattern, texts[path], re.DOTALL) is not None,
                 f"runtime gate is absent from {path}: {pattern}",
             )
+
+
+def validate_palm_reset_registration(
+    rows: list[dict[str, str]],
+    texts: dict[str, str],
+) -> None:
+    require(
+        len(rows) == 1,
+        "development interface registration contract must contain one Palm row",
+    )
+    row = rows[0]
+    require(
+        all(row[field] for field in REGISTRATION_FIELDS),
+        "development interface registration contract carries an empty field",
+    )
+    require(
+        row == PALM_RESET_REGISTRATION,
+        "Palm reset registration contract differs from its canonical values",
+    )
+
+    driver_source = texts["drivers/gpu/drm/radeon/radeon_drv.c"]
+    dispatcher_body = function_body(driver_source, "radeon_dev_debugfs_register")
+    require_one_match(
+        dispatcher_body,
+        r"^static void radeon_dev_debugfs_register\(struct drm_minor \*minor\)"
+        r"\n\{\s*radeon_rs480_re_debugfs_register\(minor\);\s*"
+        r"radeon_evergreen_dev_debugfs_register\(minor\);\s*\}$",
+        "development debugfs dispatcher",
+    )
+    require_one_match(
+        driver_source,
+        r"\.debugfs_init = radeon_dev_debugfs_register",
+        "DRM development debugfs callback",
+    )
+    require(
+        identifier_counts(texts, "radeon_evergreen_dev_debugfs_register")
+        == {
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c": 1,
+            "drivers/gpu/drm/radeon/radeon_drv.c": 1,
+        },
+        "Palm reset registration has an unbound source reference",
+    )
+
+    palm_source = texts["drivers/gpu/drm/radeon/radeon_evergreen_dev.c"]
+    write_body = function_body(palm_source, "radeon_force_pci_reset_safe_write")
+    write_position_gate = require_one_match(
+        write_body,
+        r"if \(\*ppos != 0\)\s*return -ESPIPE;",
+        "Palm reset repeated-write refusal",
+    )
+    write_count_gate = require_one_match(
+        write_body,
+        r"if \(count == 0 \|\| count > sizeof\(input\) - 1\)\s*"
+        r"return -EINVAL;",
+        "Palm reset input length refusal",
+    )
+    write_copy_gate = require_one_match(
+        write_body,
+        r"if \(copy_from_user\(input, buf, count\)\)\s*return -EFAULT;",
+        "Palm reset input copy refusal",
+    )
+    write_token_gate = require_one_match(
+        write_body,
+        r'if \(!sysfs_streq\(input, "1"\)\)\s*return -EINVAL;',
+        "Palm reset exact token refusal",
+    )
+    write_family = require_one_match(
+        write_body,
+        r"if \(!rdev \|\| rdev->family != CHIP_PALM\)\s*return -ENODEV;",
+        "Palm reset write family refusal",
+    )
+    write_lock = require_one_match(
+        write_body,
+        r"down_write\(&rdev->exclusive_lock\);",
+        "Palm reset writer lock acquisition",
+    )
+    write_available = require_one_match(
+        write_body,
+        r"rc = radeon_dev_hardware_available\(rdev\);\s*"
+        r"if \(rc\)\s*goto out_unlock;",
+        "Palm reset write availability refusal",
+    )
+    write_admission = require_one_match(
+        write_body,
+        r"if \(!rdev \|\| rdev->family != CHIP_PALM\)\s*return -ENODEV;\s*"
+        r"down_write\(&rdev->exclusive_lock\);\s*"
+        r"rc = radeon_dev_hardware_available\(rdev\);\s*"
+        r"if \(rc\)\s*goto out_unlock;",
+        "Palm reset unconditional writer admission sequence",
+    )
+    require(
+        re.findall(r"\bgoto\s+([A-Za-z_][A-Za-z0-9_]*)\s*;", write_body)
+        == ["out_unlock"],
+        "Palm reset write body carries an unbound control transfer",
+    )
+    require(
+        re.findall(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*):",
+            write_body,
+            re.MULTILINE,
+        )
+        == ["out_unlock"],
+        "Palm reset write body carries an unbound label",
+    )
+    write_position = require_one_match(
+        write_body,
+        r"\*ppos = 1;",
+        "Palm reset write position consumption",
+    )
+    write_reset = require_one_match(
+        write_body,
+        r"rc = evergreen_gpu_pci_config_reset_safe\(rdev\);",
+        "Palm reset write invocation",
+    )
+    write_unlock = require_one_match(
+        write_body,
+        r"up_write\(&rdev->exclusive_lock\);",
+        "Palm reset writer lock release",
+    )
+    write_return = require_one_match(
+        write_body,
+        r"return rc \? rc : \(ssize_t\)count;",
+        "Palm reset write result",
+    )
+    for match, label in (
+        (write_position_gate, "Palm reset repeated-write refusal"),
+        (write_count_gate, "Palm reset input length refusal"),
+        (write_copy_gate, "Palm reset input copy refusal"),
+        (write_token_gate, "Palm reset exact token refusal"),
+        (write_family, "Palm reset write family refusal"),
+        (write_lock, "Palm reset writer lock acquisition"),
+        (write_available, "Palm reset write availability refusal"),
+        (write_admission, "Palm reset writer admission sequence"),
+        (write_position, "Palm reset write position consumption"),
+        (write_reset, "Palm reset write invocation"),
+        (write_unlock, "Palm reset writer lock release"),
+        (write_return, "Palm reset write result"),
+    ):
+        require_outer_function_match(write_body, match, label)
+    write_code = strip_comments_and_literals(write_body)
+    require(
+        re.findall(
+            r"\b(?:if|for|while|switch|do|goto|break|continue)\b",
+            write_code,
+        )
+        == ["if", "if", "if", "if", "if", "if", "goto"],
+        "Palm reset write control flow differs from its bounded sequence",
+    )
+    require(
+        len(re.findall(r"\breturn\b", write_code)) == 6,
+        "Palm reset write return set differs from its bounded sequence",
+    )
+    require(
+        write_family.start()
+        < write_lock.start()
+        < write_available.start()
+        < write_position.start()
+        < write_reset.start()
+        < write_unlock.start(),
+        "Palm reset write gate, lock, admission, reset, and unlock order differs",
+    )
+    require(
+        identifier_counts(texts, "evergreen_gpu_pci_config_reset_safe")
+        == {
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c": 1,
+            "drivers/gpu/drm/radeon/evergreen.c": 1,
+        },
+        "Palm reset execution has an unbound source reference",
+    )
+
+    register_body = function_body(palm_source, "radeon_evergreen_dev_debugfs_register")
+    register_minor = require_one_match(
+        register_body,
+        r"if \(!minor \|\| minor->type != DRM_MINOR_PRIMARY \|\| !minor->dev \|\|"
+        r"\s*!minor->debugfs_root\)\s*return;",
+        "Palm reset primary minor refusal",
+    )
+    register_device = require_one_match(
+        register_body,
+        r"rdev = minor->dev->dev_private;",
+        "Palm reset device lookup",
+    )
+    register_scope = require_one_match(
+        register_body,
+        r"if \(!rdev \|\| rdev->family != CHIP_PALM \|\|\s*"
+        r"!radeon_dev_profile_enabled\(rdev, RADEON_DEV_PROFILE_MUTATE\)\)"
+        r"\s*return;",
+        "Palm reset registration scope refusal",
+    )
+    register_file = require_one_match(
+        register_body,
+        r'debugfs_create_file\("radeon_force_pci_reset_safe", 0200,\s*'
+        r"minor->debugfs_root, rdev,\s*"
+        r"&radeon_force_pci_reset_safe_fops\);",
+        "Palm reset per-device debugfs file",
+    )
+    require(
+        register_minor.start()
+        < register_device.start()
+        < register_scope.start()
+        < register_file.start(),
+        "Palm reset minor, device, scope, and registration order differs",
+    )
+
+    reset_body = function_body(
+        texts["drivers/gpu/drm/radeon/evergreen.c"],
+        "evergreen_gpu_pci_config_reset_safe",
+    )
+    reset_family = require_one_match(
+        reset_body,
+        r"^int evergreen_gpu_pci_config_reset_safe"
+        r"\(struct radeon_device \*rdev\)\n\{\s*"
+        r"struct evergreen_mc_save save;\s*u32 tmp, i;\s*int r;\s*"
+        r"if \(!rdev \|\| rdev->family != CHIP_PALM\)\s*return -ENODEV;",
+        "Palm reset family refusal before executable code",
+    )
+    reset_lock = require_one_match(
+        reset_body,
+        r"lockdep_assert_held_write\(&rdev->exclusive_lock\);",
+        "Palm reset writer lock assertion",
+    )
+    require(
+        re.search(
+            r"\b(?:down_write(?:_killable|_trylock)?|up_write|downgrade_write)\b",
+            strip_comments_and_literals(reset_body),
+        )
+        is None,
+        "Palm reset body changes the caller-owned writer lock",
+    )
+    reset_available = require_one_match(
+        reset_body,
+        r"r = radeon_dev_hardware_available\(rdev\);\s*"
+        r"if \(r\)\s*return r;",
+        "Palm reset body availability refusal",
+    )
+    reset_unsafe = require_one_match(
+        reset_body,
+        r"if \(!radeon_palm_dev_pci_reset_unsafe\(rdev\)\)\s*\{.*?"
+        r"return -EPERM;\s*\}",
+        "Palm reset exact unsafe Boolean refusal",
+    )
+    reset_marker = require_one_match(
+        reset_body,
+        r'radeon_dev_mark_mutation\(rdev, "Palm PCI config reset"\);',
+        "Palm reset mutation marker",
+    )
+    hardware_accesses = list(PALM_RESET_HARDWARE_ACCESS.finditer(reset_body))
+    require(
+        bool(hardware_accesses), "Palm reset body has no classified hardware access"
+    )
+    first_hardware = hardware_accesses[0]
+    require(
+        first_hardware.group(0).startswith("WREG32("),
+        "Palm reset first classified hardware access is not CP halt",
+    )
+    require(
+        reset_family.end()
+        < reset_lock.start()
+        < reset_available.start()
+        < reset_unsafe.start()
+        < reset_marker.start()
+        < first_hardware.start(),
+        "Palm reset family, lock, availability, Boolean, marker, and hardware order differs",
+    )
+
+    require(
+        not re.search(
+            r'debugfs_create_file\("radeon_force_pci_reset_safe", 0200,\s*NULL,',
+            texts["drivers/gpu/drm/radeon/radeon_evergreen_dev.c"],
+            re.DOTALL,
+        ),
+        "Palm reset interface uses the global debugfs root",
+    )
 
 
 def validate_mutation_audit(
@@ -481,9 +892,7 @@ def validate_module(
     )
     require(result.returncode == 0, "modinfo rejected the built module")
     module_parameters = {
-        line.split(":", 1)[0]
-        for line in result.stdout.splitlines()
-        if ":" in line
+        line.split(":", 1)[0] for line in result.stdout.splitlines() if ":" in line
     }
     require(
         ("profile_dev" in module_parameters) == (profile != "prod"),
@@ -492,10 +901,7 @@ def validate_module(
     parameters = {
         name
         for name in module_parameters
-        if (
-            name == "palm_pci_reset_unsafe"
-            or name.startswith("rs480_")
-        )
+        if (name == "palm_pci_reset_unsafe" or name.startswith("rs480_"))
     }
     expected_parameters = {
         row["marker"]
@@ -532,14 +938,10 @@ def validate_module(
     require(result.returncode == 0, "strings rejected the built module")
     strings = set(result.stdout.splitlines())
     expected_debugfs = {
-        row["marker"]
-        for row in expected_rows
-        if row["marker_type"] == "debugfs-file"
+        row["marker"] for row in expected_rows if row["marker_type"] == "debugfs-file"
     }
     declared_debugfs = {
-        row["marker"]
-        for row in rows
-        if row["marker_type"] == "debugfs-file"
+        row["marker"] for row in rows if row["marker_type"] == "debugfs-file"
     }
     actual_debugfs = declared_debugfs & strings
     require(
@@ -616,8 +1018,12 @@ def validate(
     require(declared_debugfs == actual_debugfs, "custom debugfs inventory differs")
     if files:
         source_texts = runtime_source_texts(root)
+        registration_rows = read_registration_contract(
+            root / "policy/dev-interface-registration-contract.tsv"
+        )
         validate_output_schema_version(root)
         validate_runtime_sources(source_texts)
+        validate_palm_reset_registration(registration_rows, source_texts)
         validate_mutation_audit(source_texts, features)
 
     if module is not None:
@@ -665,9 +1071,7 @@ def self_test(root: Path) -> int:
     cases.append(("missing feature coverage", missing_feature))
 
     undeclared_parameter = [
-        row
-        for row in copy.deepcopy(rows)
-        if row["marker"] != "rs480_reset_mask"
+        row for row in copy.deepcopy(rows) if row["marker"] != "rs480_reset_mask"
     ]
     cases.append(("undeclared source interface", undeclared_parameter))
 
@@ -706,10 +1110,7 @@ def self_test(root: Path) -> int:
         selected = profile_rows(rows, features, profile)
         observed = (
             len({row["feature_id"] for row in selected}),
-            sum(
-                row["marker_type"] == "module-parameter"
-                for row in selected
-            ),
+            sum(row["marker_type"] == "module-parameter" for row in selected),
             sum(row["marker_type"] == "debugfs-file" for row in selected),
         )
         require(
@@ -732,16 +1133,12 @@ def self_test(root: Path) -> int:
         selected = runtime_rows(rows, features, *selection)
         observed = (
             len({row["feature_id"] for row in selected}),
-            sum(
-                row["marker_type"] == "module-parameter"
-                for row in selected
-            ),
+            sum(row["marker_type"] == "module-parameter" for row in selected),
             sum(row["marker_type"] == "debugfs-file" for row in selected),
         )
         require(
             observed == expected,
-            "self-test runtime count differs for "
-            + "/".join(selection),
+            "self-test runtime count differs for " + "/".join(selection),
         )
 
     try:
@@ -776,8 +1173,228 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted an unknown runtime profile")
 
     source_texts = runtime_source_texts(root)
+    registration_rows = read_registration_contract(
+        root / "policy/dev-interface-registration-contract.tsv"
+    )
     validate_runtime_sources(source_texts)
+    validate_palm_reset_registration(registration_rows, source_texts)
     validate_mutation_audit(source_texts, features)
+
+    registration_source_mutations = (
+        (
+            "direct RS4xx callback",
+            "drivers/gpu/drm/radeon/radeon_drv.c",
+            ".debugfs_init = radeon_dev_debugfs_register",
+            ".debugfs_init = radeon_rs480_re_debugfs_register",
+        ),
+        (
+            "global debugfs parent",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "minor->debugfs_root, rdev,",
+            "NULL, rdev,",
+        ),
+        (
+            "missing registration family gate",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "if (!rdev || rdev->family != CHIP_PALM ||",
+            "if (!rdev ||",
+        ),
+        (
+            "missing write family gate",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "if (!rdev || rdev->family != CHIP_PALM)\n\t\treturn -ENODEV;",
+            "if (!rdev)\n\t\treturn -ENODEV;",
+        ),
+        (
+            "missing exclusive lock",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "down_write(&rdev->exclusive_lock);",
+            "removed_exclusive_lock;",
+        ),
+        (
+            "conditional exclusive lock",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "down_write(&rdev->exclusive_lock);",
+            "if (false)\n\t\tdown_write(&rdev->exclusive_lock);",
+        ),
+        (
+            "conditional writer admission block",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "if (!rdev || rdev->family != CHIP_PALM)\n"
+            "\t\treturn -ENODEV;\n\n"
+            "\tdown_write(&rdev->exclusive_lock);\n"
+            "\trc = radeon_dev_hardware_available(rdev);\n"
+            "\tif (rc)\n"
+            "\t\tgoto out_unlock;",
+            "if (false) {\n"
+            "\t\tif (!rdev || rdev->family != CHIP_PALM)\n"
+            "\t\t\treturn -ENODEV;\n\n"
+            "\t\tdown_write(&rdev->exclusive_lock);\n"
+            "\t\trc = radeon_dev_hardware_available(rdev);\n"
+            "\t\tif (rc)\n"
+            "\t\t\tgoto out_unlock;\n"
+            "\t}",
+        ),
+        (
+            "missing reset family gate",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "if (!rdev || rdev->family != CHIP_PALM)\n\t\treturn -ENODEV;",
+            "if (!rdev)\n\t\treturn -ENODEV;",
+        ),
+        (
+            "missing lock assertion",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);",
+            "removed_lock_assertion;",
+        ),
+        (
+            "reset body releases caller lock",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);\n"
+            "\tup_write(&rdev->exclusive_lock);",
+        ),
+        (
+            "reset body downgrades caller lock",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);\n"
+            "\tdowngrade_write(&rdev->exclusive_lock);",
+        ),
+        (
+            "reset body releases parenthesized caller lock",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);\n"
+            "\tup_write(&((rdev)->exclusive_lock));",
+        ),
+        (
+            "reset body releases caller lock after comment marker literal",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);\n"
+            '\tdev_info(rdev->dev, "//");\n'
+            "\tup_write(&((rdev)->exclusive_lock));",
+        ),
+        (
+            "missing runtime profile gate",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE)",
+            "false",
+        ),
+        (
+            "ignored write availability result",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "rc = radeon_dev_hardware_available(rdev);\n"
+            "\tif (rc)\n\t\tgoto out_unlock;",
+            "rc = radeon_dev_hardware_available(rdev);\n"
+            "\tif (false)\n\t\tgoto out_unlock;",
+        ),
+        (
+            "ignored reset availability result",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "r = radeon_dev_hardware_available(rdev);\n\tif (r)\n\t\treturn r;",
+            "r = radeon_dev_hardware_available(rdev);\n\tif (false)\n\t\treturn r;",
+        ),
+        (
+            "unlock before reset",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "\t*ppos = 1;\n\trc = evergreen_gpu_pci_config_reset_safe(rdev);",
+            "\t*ppos = 1;\n"
+            "\tup_write(&rdev->exclusive_lock);\n"
+            "\trc = evergreen_gpu_pci_config_reset_safe(rdev);",
+        ),
+        (
+            "hardware access before reset family gate",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "\tif (!rdev || rdev->family != CHIP_PALM)\n\t\treturn -ENODEV;",
+            "\tWREG32(CP_ME_CNTL, 0);\n"
+            "\tif (!rdev || rdev->family != CHIP_PALM)\n"
+            "\t\treturn -ENODEV;",
+        ),
+    )
+    for label, path, needle, replacement in registration_source_mutations:
+        require(
+            source_texts[path].count(needle) == 1,
+            f"self-test source mutation is ambiguous: {label}",
+        )
+        candidate_texts = copy.deepcopy(source_texts)
+        candidate_texts[path] = candidate_texts[path].replace(needle, replacement, 1)
+        try:
+            validate_palm_reset_registration(registration_rows, candidate_texts)
+        except InterfaceError:
+            pass
+        else:
+            raise InterfaceError(f"self-test accepted {label}")
+
+    early_registration = copy.deepcopy(source_texts)
+    early_registration["drivers/gpu/drm/radeon/radeon_kms.c"] += (
+        "\nradeon_evergreen_dev_debugfs_register(NULL);\n"
+    )
+    try:
+        validate_palm_reset_registration(registration_rows, early_registration)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted early Palm reset registration")
+
+    second_reset_caller = copy.deepcopy(source_texts)
+    second_reset_caller["drivers/gpu/drm/radeon/radeon_kms.c"] += (
+        "\nevergreen_gpu_pci_config_reset_safe(other_rdev);\n"
+    )
+    try:
+        validate_palm_reset_registration(registration_rows, second_reset_caller)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unbound Palm reset caller")
+
+    parenthesized_reset_caller = copy.deepcopy(source_texts)
+    parenthesized_reset_caller["drivers/gpu/drm/radeon/radeon_kms.c"] += (
+        "\n(evergreen_gpu_pci_config_reset_safe)(other_rdev);\n"
+    )
+    try:
+        validate_palm_reset_registration(
+            registration_rows,
+            parenthesized_reset_caller,
+        )
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a parenthesized Palm reset caller")
+
+    second_registration_caller = copy.deepcopy(source_texts)
+    second_registration_caller["drivers/gpu/drm/radeon/radeon_ttm.c"] += (
+        "\nradeon_evergreen_dev_debugfs_register(minor);\n"
+    )
+    try:
+        validate_palm_reset_registration(
+            registration_rows,
+            second_registration_caller,
+        )
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unbound registration caller")
+
+    registration_contract_mutations = (
+        ("parent_expression", "NULL"),
+        ("lifetime_owner", "module lifetime"),
+        ("mode", "0644"),
+        ("family_predicate", "rdev->family >= CHIP_PALM"),
+    )
+    for field, value in registration_contract_mutations:
+        candidate_rows = copy.deepcopy(registration_rows)
+        candidate_rows[0][field] = value
+        try:
+            validate_palm_reset_registration(candidate_rows, source_texts)
+        except InterfaceError:
+            pass
+        else:
+            raise InterfaceError(
+                f"self-test accepted registration contract field {field}"
+            )
+
     missing_gate = copy.deepcopy(source_texts)
     missing_gate["drivers/gpu/drm/radeon/evergreen_cs.c"] = re.sub(
         r"radeon_dev_profile_enabled",
@@ -832,7 +1449,8 @@ def self_test(root: Path) -> int:
 
     print(
         "all-dev interface self-test: 9 manifest rejection, "
-        "6 build-profile, 12 runtime-profile, 2 mutation-audit, and "
+        "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
+        "22 Palm registration source, 4 registration contract, and "
         "3 compiler-symbol cases"
     )
     return 0
@@ -873,15 +1491,11 @@ def main() -> int:
         print(f"all-dev interfaces: {error}", file=sys.stderr)
         return 1
 
-    reported_rows = (
-        profile_rows(rows, features, args.profile) if args.module else rows
-    )
+    reported_rows = profile_rows(rows, features, args.profile) if args.module else rows
     parameter_count = sum(
         row["marker_type"] == "module-parameter" for row in reported_rows
     )
-    debugfs_count = sum(
-        row["marker_type"] == "debugfs-file" for row in reported_rows
-    )
+    debugfs_count = sum(row["marker_type"] == "debugfs-file" for row in reported_rows)
     feature_count = len({row["feature_id"] for row in reported_rows})
     report_name = (
         f"{args.profile} compiled interfaces"

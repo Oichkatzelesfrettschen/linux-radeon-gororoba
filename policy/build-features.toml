@@ -156,39 +156,40 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon_asic.h",
   "drivers/gpu/drm/radeon/radeon_dev.c",
   "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_drv.c",
   "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
 ]
 source_mechanisms = ["B11.unsafe", "B12"]
 dependencies = ["bounded-palm-reset"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, and explicit root write or exact unsafe Boolean override"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact CHIP_PALM guards, exact unsafe Boolean, and explicit root write"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
-arming_model = "explicit-root-write-or-boolean"
-privilege = "debugfs-root"
-execution_scope = "Palm and Wrestler devices exposing the reset trigger"
-evidence_scope = "migration source only"
+arming_model = "explicit-root-write-and-boolean"
+privilege = "root-only per-device DRM debugfs"
+execution_scope = "CHIP_PALM devices 1002:9802 through 1002:980a"
+evidence_scope = "migration source only; Palm silicon not run"
 scope_refs = []
-scope_relation = "equal"
-scope_decision = "the trigger remains a development-only reset interface"
+scope_relation = "broader-than-evidence"
+scope_decision = "exact CHIP_PALM execution remains development only until Palm evidence exists"
 side_effect_class = "reset-execution"
 interface_class = "raw-hardware-writer"
-resource_bounds = "one nonseekable write consumes one reset request; the Boolean override is load-time bounded"
-locking = "existing Radeon reset serialization"
-error_contract = "default refusal and every invalid, repeated, or unavailable request return before reset"
+resource_bounds = "one nonseekable write consumes one reset request with two usec_timeout bounded polls"
+locking = "exclusive_lock writer spans final availability admission and the complete reset body"
+error_contract = "wrong family, closed profile, wrong Boolean, invalid command, repeated write, and unavailable hardware return before reset"
 tests = [
-  "normal: exact root write reaches one bounded reset request",
-  "boundary: exact unsafe Boolean opens only the named override",
-  "failure: the default refuses unsafe Palm PCI reset",
-  "adversarial: production and runtime-off builds expose neither reset surface",
+  "normal: exact Palm guards, exact unsafe Boolean, and exact root write reach one serialized bounded reset request",
+  "boundary: the CHIP_PALM predicate admits only PCI IDs 1002:9802 through 1002:980a",
+  "failure: every wrong family, closed profile, wrong Boolean, and unavailable state refuses before reset",
+  "adversarial: global parent, early registration, missing lock, and broadened family mutations fail the source checker",
 ]
 production_promotion_condition = "no production promotion for raw reset and unsafe-override interfaces"
 profile_exception = "none"
 exception_basis = "none"
 package_projection = "development"
-rollback = "select a lower build profile or remove the development package"
+rollback = "select a lower build profile or remove the development package; no production surface changes"
 
 [[feature]]
 id = "rs4xx-debugfs"
