@@ -1,0 +1,50 @@
+# Source-side identity of the radeon-unified 0.8 profiled source checkpoint.
+# The record binds the signed tag to the exact objects it names and to the
+# source-side checks that ran against them. It carries source identity and
+# makes no package, installation, or silicon claim; package artifacts, their
+# detached signatures, and hardware verdicts live in radeon-custom and
+# steinmarder-r300.
+#
+# The record lands after the commit it identifies, because a tag object cannot
+# be recorded inside the commit it names without a recursive identity.
+
+schema = 1
+
+tag_name = "radeon-unified-0.8-profiled-source"
+tag_object = "c3745d24ea7481ec56c5c0b1aa397be4b8788b72"
+peeled_commit = "2433cbd69cd99d1dd002447bb4d481ed66141562"
+
+repository_tree = "2c59b0ab7aaf0a4bdb49fccd36fac3e7110b5214"
+driver_subtree = "drivers/gpu/drm/radeon"
+driver_tree = "e3432f8dda41e2fcb93fad23a0f3825541c15e93"
+feature_policy_tree = "32cf3722d22e43b40f9e20b2ae24fadbb14a7ee8"
+feature_policy_sha256 = "d14711fbc6e3f6e5aa61ae16957e06b5b6ff210e5c5b2965d858f559cee5945b"
+upstream_commit = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+upstream_subtree = "06a00c78fc5be13ed90c2a2c6973f272d993b6a3"
+
+signing_format = "ssh"
+signer_principal = "151315375+Oichkatzelesfrettschen@users.noreply.github.com"
+signer_fingerprint = "SHA256:wD1s3tsUVHvjrLUruNtYVv/K1/4b7sJA4W7DTdMn8SA"
+allowed_signers_sha256 = "2133f7e0926032a91d8c55211a4dad9cdf16d188e2bab24c2b70f68d464c24b0"
+allowed_signers_path = "radeon-custom packaging/arch/radeon-unified-dkms/radeon-source-tag-allowed-signers"
+verification_command = "git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=ALLOWED_SIGNERS verify-tag radeon-unified-0.8-profiled-source"
+local_verification = "PASS"
+published_object_matches_local = true
+
+# The tag peels to the main push commit this run checked out, so each result
+# names the same driver source the tag identifies.
+profile_workflow_run = 31329206539
+source_commit_6_18_build = "PASS"
+source_commit_7_1_build = "PASS"
+prod_profile = "PASS"
+all_dev_profile = "PASS"
+parked_guard_checker = "PASS"
+parked_guard_checker_selftest = "PASS"
+
+kernel_6_18 = "6.18.38-2-cachyos-lts"
+kernel_7_1 = "7.1.4-1-cachyos"
+
+package_artifacts = "NOT RUN"
+package_signatures = "NOT RUN"
+target_install = "NOT RUN"
+hardware_operation = "NOT RUN"
