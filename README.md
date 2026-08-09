@@ -161,7 +161,7 @@ GPU register and reset claims.
 
 ## Memory path contracts
 
-The active RS4xx memory-path source model has two finite owners:
+The active RS4xx memory-path source model has three finite owners:
 
 * `policy/rs4xx-gart-memory-path.tsv` covers GART, TTM, BO mapping, PTE
   publication, userptr ownership, CPU mappings, and teardown. Its narrative is
@@ -170,10 +170,17 @@ The active RS4xx memory-path source model has two finite owners:
   BO reservations, dependency import, IB scheduling, r300 fence commands, and
   reservation-fence publication. Its narrative is
   `docs/radeon-cs-reservation-fence-contract.md`.
+* `policy/rs4xx-vram-gtt-capacity-contract.tsv` covers aperture admission,
+  GART metadata cost, VRAM and GTT allocator capacity, BO placement, movement,
+  pin accounting, usage counters, and fragmentation observations. Its exact
+  four-state RS482 matrix and exclusions live beside it, and its narrative is
+  `docs/rs4xx-vram-gtt-capacity-contract.md`.
 
-Both ledgers separate source status from runtime and silicon status. In
+All three ledgers separate source status from runtime and silicon status. In
 particular, reservation fences and emitted cache commands prove software and
-ring order, not cached-GTT payload visibility. Exact RS482 payload and replay
+ring order, not cached-GTT payload visibility. GTT size is virtual aperture
+capacity rather than proved physical backing, and a source-supported size is
+not a performance result. Exact RS482 payload, allocation-pressure, and replay
 verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM, address
 domain, PAT, MTRR, and event-scoped aperture observations.
 
