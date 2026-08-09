@@ -1123,6 +1123,8 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
 				    "set rs480_cp_me_ram_dump=1 for an attended, idle-engine read.\n");
 		return 0;
 	}
+	if (radeon_rs480_cp_me_ram_dump != 1)
+		return 0;
 	if (rs480_debugfs_refuse_hardware_access(m, rdev))
 		return 0;
 	unsigned int addr = (unsigned int)*(loff_t *)v - 1;
