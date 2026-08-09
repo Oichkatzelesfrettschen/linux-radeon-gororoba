@@ -27,31 +27,34 @@ Packaging targets Arch and CachyOS alone.
 `radeon-unified-0.3-pkgrel91-source-equivalent` onward.
 
 `radeon-custom` has completed the signed source-pin cutover and remains the
-deployment and packaging authority. Its active 0.6-1 packages pin this
+deployment and packaging authority. Its active 0.7-1 packages pin this
 repository's signed profiled-source checkpoint (tag
-`radeon-unified-0.6-profiled-source`, object
-7a011a561c38258180e1f3083a0e5d8e74f5c1dd, driver tree
-84b3c5c0282bf37236f2c4fda80eb17048bdd1ed) across split production capability,
-development capability, and RS482 board policy. The signed 0.6-1 production
-and board-policy packages are installed and runtime-accepted on the RS482
-target across a reboot, with the loaded module srcversion
-EA8E3BBBBA9E5580BDA7553 bonded to source commit
-7a8dfb50cc4861ebd2c33a2d96cd19f961443c8e. The signed 0.5-1 and 0.4-3 sets
-are the rollback authorities, the `0.6-1 -> 0.5-1 -> 0.6-1` rollback path is
-executed against the exact signed archives, and the 0.3-96 legacy-equivalent
-acceptance remains the deeper retained baseline.
+`radeon-unified-0.7-profiled-source`, tag object
+7f500d682aad600ca443c7f26e913b6b4034c834, peeled source commit
+293a4ae3fe82cd03585ef3157e82b0b59b641b47, and driver tree
+d57a22ad5356637d7075cb2aba83e22af71f7bfb) across split production capability,
+development capability, and RS482 board policy. The package attestation records
+signed artifacts and successful dual-kernel DKMS lifecycles, while target
+contact, installation, module load, and hardware operation remain NOT RUN for
+0.7-1. This repository's current HEAD carries the same driver-tree object as
+that pin; later commits change only source correspondence and attestation
+surfaces. The signed 0.6-1 production and board-policy packages remain the most
+recent installed and runtime-accepted RS482 authority. The signed 0.5-1 and
+0.4-3 sets remain deeper rollback authorities, and the 0.3-96
+legacy-equivalent acceptance remains the deeper retained baseline.
 
-The parked-device entry contract this tree carries is measured on RS482
-silicon: an attended park latched `gpu_parked`, after which fresh native GEM
-creates, USERPTR creation, and foreign PRIME import each returned -EIO with
-`radeon_bo_create` counting zero, CS submission returned -EBUSY before
-parser entry, and `WAIT_IDLE` returned -EIO. The verdict lives in
-steinmarder-r300 as bundle
+The retained parked-device silicon verdict covers the older 0.6-1 module. An
+attended RS482 park latched `gpu_parked`; fresh native GEM creates, USERPTR
+creation, and foreign PRIME import each returned -EIO with `radeon_bo_create`
+counting zero, CS submission returned -EBUSY through the separate
+`!accel_working` refusal before parser entry, and `WAIT_IDLE` returned -EIO.
+The verdict lives in steinmarder-r300 as bundle
 `cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z`.
-Two open items ride that verdict: `radeon_mode_dumb_create` masks the parked
--EIO to -ENOMEM at the ioctl boundary, and an orderly warm reboot failed to
-reclaim the parked host, so a park costs physical power-cycle recovery
-capability.
+The 0.7-1 source now preserves the dumb-create errno and adds a direct
+`gpu_parked` CS refusal with -EIO before parser initialization. Both corrections
+are source- and package-verified but await 0.7-1 target acceptance. The warm
+reboot failure also remains open: the measured parked host required physical
+power-cycle recovery.
 
 ## Source closure
 
