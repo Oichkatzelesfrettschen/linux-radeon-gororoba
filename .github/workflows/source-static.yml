@@ -156,10 +156,80 @@ jobs:
         with:
           persist-credentials: false
           clean: true
+      - name: Materialize declared Clang and LLD toolchain
+        run: |
+          toolchain_manifest=ci/kernel-toolchains/clang-lld-22.1.6.sha256
+          sha256sum -c "$toolchain_manifest"
+          manifest_rows=$(wc -l < "$toolchain_manifest")
+          [ "$manifest_rows" -eq 8 ] || {
+            echo "toolchain manifest must contain eight rows" >&2
+            exit 1
+          }
+          mapfile -t toolchain_packages < <(
+            awk '$2 !~ /\.sig$/ { print $2 }' "$toolchain_manifest"
+          )
+          [ "${#toolchain_packages[@]}" -eq 4 ] || {
+            echo "toolchain manifest must select four packages" >&2
+            exit 1
+          }
+          selected_components=
+          for package_path in "${toolchain_packages[@]}"
+          do
+            package_name=${package_path##*/}
+            case "$package_path" in
+              /var/cache/pacman/pkg/*.pkg.tar.zst) ;;
+              *) echo "toolchain package path is outside the cache" >&2; exit 1 ;;
+            esac
+            case "$package_name" in
+              llvm-libs-*.pkg.tar.zst) component=llvm-libs ;;
+              llvm-*.pkg.tar.zst) component=llvm ;;
+              clang-*.pkg.tar.zst) component=clang ;;
+              lld-*.pkg.tar.zst) component=lld ;;
+              *) echo "unexpected toolchain package: $package_name" >&2; exit 1 ;;
+            esac
+            case " $selected_components " in
+              *" $component "*)
+                echo "duplicate toolchain component: $component" >&2
+                exit 1
+                ;;
+            esac
+            selected_components="$selected_components $component"
+            signature_path="$package_path.sig"
+            signature_rows=$(awk -v expected="$signature_path" \
+              '$2 == expected { count++ } END { print count + 0 }' \
+              "$toolchain_manifest")
+            [ "$signature_rows" -eq 1 ] || {
+              echo "toolchain package has no unique signature row" >&2
+              exit 1
+            }
+            pacman-key --verify \
+              "$signature_path" \
+              "$package_path"
+          done
+          for required_component in llvm-libs llvm clang lld
+          do
+            case " $selected_components " in
+              *" $required_component "*) ;;
+              *) echo "missing toolchain component: $required_component" >&2; exit 1 ;;
+            esac
+          done
+          toolchain_root=$(mktemp -d \
+            "$RUNNER_TEMP/radeon-clang-22.1.6.XXXXXX")
+          for package_path in "${toolchain_packages[@]}"
+          do
+            bsdtar -xf "$package_path" -C "$toolchain_root"
+          done
+          printf 'RADEON_TOOLCHAIN_ROOT=%s\n' "$toolchain_root" >> "$GITHUB_ENV"
       - name: radeon.ko builds from the tracked subtree
         env:
           KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
         run: |
+          export PATH="$RADEON_TOOLCHAIN_ROOT/usr/bin:/usr/bin"
+          export LD_LIBRARY_PATH="$RADEON_TOOLCHAIN_ROOT/usr/lib"
+          [ "$(command -v clang)" = "$RADEON_TOOLCHAIN_ROOT/usr/bin/clang" ]
+          [ "$(command -v ld.lld)" = "$RADEON_TOOLCHAIN_ROOT/usr/bin/ld.lld" ]
+          [ "$(clang --version | sed -n '1s/^clang version //p')" = 22.1.6 ]
+          [ "$(ld.lld --version | awk 'NR == 1 {print $2}')" = 22.1.6 ]
           [ -n "$KERNEL_BUILD_ROOT" ] || {
             echo "RADEON_MODULE_KERNEL_BUILD_ROOT_618 is unset" >&2; exit 1; }
           python3 scripts/check_kernel_build_root.py \
@@ -174,7 +244,15 @@ jobs:
               --kernel-build-root "$KERNEL_BUILD_ROOT"
           timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh \
-              --all-dev \
+              --observe-dev \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --probe-dev \
+              --kernel-build-root "$KERNEL_BUILD_ROOT"
+          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            sh scripts/build_radeon_module.sh \
+              --mutate-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   module-build-7-1:
@@ -187,10 +265,80 @@ jobs:
         with:
           persist-credentials: false
           clean: true
+      - name: Materialize declared Clang and LLD toolchain
+        run: |
+          toolchain_manifest=ci/kernel-toolchains/clang-lld-22.1.8.sha256
+          sha256sum -c "$toolchain_manifest"
+          manifest_rows=$(wc -l < "$toolchain_manifest")
+          [ "$manifest_rows" -eq 8 ] || {
+            echo "toolchain manifest must contain eight rows" >&2
+            exit 1
+          }
+          mapfile -t toolchain_packages < <(
+            awk '$2 !~ /\.sig$/ { print $2 }' "$toolchain_manifest"
+          )
+          [ "${#toolchain_packages[@]}" -eq 4 ] || {
+            echo "toolchain manifest must select four packages" >&2
+            exit 1
+          }
+          selected_components=
+          for package_path in "${toolchain_packages[@]}"
+          do
+            package_name=${package_path##*/}
+            case "$package_path" in
+              /var/cache/pacman/pkg/*.pkg.tar.zst) ;;
+              *) echo "toolchain package path is outside the cache" >&2; exit 1 ;;
+            esac
+            case "$package_name" in
+              llvm-libs-*.pkg.tar.zst) component=llvm-libs ;;
+              llvm-*.pkg.tar.zst) component=llvm ;;
+              clang-*.pkg.tar.zst) component=clang ;;
+              lld-*.pkg.tar.zst) component=lld ;;
+              *) echo "unexpected toolchain package: $package_name" >&2; exit 1 ;;
+            esac
+            case " $selected_components " in
+              *" $component "*)
+                echo "duplicate toolchain component: $component" >&2
+                exit 1
+                ;;
+            esac
+            selected_components="$selected_components $component"
+            signature_path="$package_path.sig"
+            signature_rows=$(awk -v expected="$signature_path" \
+              '$2 == expected { count++ } END { print count + 0 }' \
+              "$toolchain_manifest")
+            [ "$signature_rows" -eq 1 ] || {
+              echo "toolchain package has no unique signature row" >&2
+              exit 1
+            }
+            pacman-key --verify \
+              "$signature_path" \
+              "$package_path"
+          done
+          for required_component in llvm-libs llvm clang lld
+          do
+            case " $selected_components " in
+              *" $required_component "*) ;;
+              *) echo "missing toolchain component: $required_component" >&2; exit 1 ;;
+            esac
+          done
+          toolchain_root=$(mktemp -d \
+            "$RUNNER_TEMP/radeon-clang-22.1.8.XXXXXX")
+          for package_path in "${toolchain_packages[@]}"
+          do
+            bsdtar -xf "$package_path" -C "$toolchain_root"
+          done
+          printf 'RADEON_TOOLCHAIN_ROOT=%s\n' "$toolchain_root" >> "$GITHUB_ENV"
       - name: radeon.ko builds from the tracked subtree
         env:
           KERNEL_BUILD_ROOT: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_71 }}
         run: |
+          export PATH="$RADEON_TOOLCHAIN_ROOT/usr/bin:/usr/bin"
+          export LD_LIBRARY_PATH="$RADEON_TOOLCHAIN_ROOT/usr/lib"
+          [ "$(command -v clang)" = "$RADEON_TOOLCHAIN_ROOT/usr/bin/clang" ]
+          [ "$(command -v ld.lld)" = "$RADEON_TOOLCHAIN_ROOT/usr/bin/ld.lld" ]
+          [ "$(clang --version | sed -n '1s/^clang version //p')" = 22.1.8 ]
+          [ "$(ld.lld --version | awk 'NR == 1 {print $2}')" = 22.1.8 ]
           [ -n "$KERNEL_BUILD_ROOT" ] || {
             echo "RADEON_MODULE_KERNEL_BUILD_ROOT_71 is unset" >&2
             exit 1
@@ -216,10 +364,6 @@ jobs:
           timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
             sh scripts/build_radeon_module.sh \
               --mutate-dev \
-              --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
-            sh scripts/build_radeon_module.sh \
-              --all-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
   lint:

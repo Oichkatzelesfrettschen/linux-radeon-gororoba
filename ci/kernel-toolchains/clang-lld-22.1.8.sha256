@@ -1,0 +1,8 @@
+95c79ac181858b8c5ddf2072593685aea56cbe441a4594dd86344a5fc941c94a  /var/cache/pacman/pkg/llvm-libs-22.1.8-2-x86_64_v3.pkg.tar.zst
+ba6952faeae5464c63fbe96166b1ada3e464ea1fdf6b11506d077f855a5ad696  /var/cache/pacman/pkg/llvm-libs-22.1.8-2-x86_64_v3.pkg.tar.zst.sig
+9063d390e056863d8fa747c383168b169d8ad3d6b590d14c1c5e7821ebf7c43e  /var/cache/pacman/pkg/llvm-22.1.8-2-x86_64_v3.pkg.tar.zst
+d7fdcfb8c2de5ace0cd4aa57ed07ec6bf489e530aba9ea39700523a006bc7e5b  /var/cache/pacman/pkg/llvm-22.1.8-2-x86_64_v3.pkg.tar.zst.sig
+a3a8ce735d0ef2ea8affda1bf00ccafff42be566dc9e22f566686fb43a4472a1  /var/cache/pacman/pkg/clang-22.1.8-2-x86_64_v3.pkg.tar.zst
+4c348cb30cdafafefd27f6e7dbb065ed78028b600cf745972ee911db1a9ae583  /var/cache/pacman/pkg/clang-22.1.8-2-x86_64_v3.pkg.tar.zst.sig
+76387bd48e9e3693ec6464158bcb5372602566346832023088e6e42eb42691a9  /var/cache/pacman/pkg/lld-22.1.8-1.1-x86_64_v3.pkg.tar.zst
+136018c2f459879e9f73b6c3fb5085e2887770274a03c1482cbb3c9f4bf0ff06  /var/cache/pacman/pkg/lld-22.1.8-1.1-x86_64_v3.pkg.tar.zst.sig

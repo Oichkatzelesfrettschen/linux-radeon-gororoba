@@ -12,9 +12,9 @@
 # The kernel root resolves from --kernel-build-root, then
 # RADEON_MODULE_KERNEL_BUILD_ROOT, then the running kernel. The root is
 # validated for the Kbuild surface before make runs, the kernel's own
-# compiler family is matched (LLVM=1 on a clang-built root), and the log is
-# scanned for warnings: the Kbuild compiler-differs notice on the retained
-# root is the one explained diagnostic, and any other warning fails the run.
+# compiler family is matched (LLVM=1 on a clang-built root), and every build
+# warning fails the run. CI materializes the exact compiler and linker packages
+# declared for each retained kernel root before invoking this harness.
 # The no-flag default resolves to prod. Each development profile selects its
 # monotone source ceiling, and all-dev is an alias for mutate-dev. A green run
 # means radeon.ko linked, modpost completed, and the embedded source, profile,
@@ -88,11 +88,10 @@ if ! resolved_profile=$(resolve_profile "$requested_profile"); then
 fi
 
 scan_build_warnings() {
-  unexpected=$(grep -n 'warning' "$1" |
-    grep -v 'the compiler differs from the one used to build the kernel' || true)
-  if [ -n "$unexpected" ]; then
-    echo "BUILD WARNINGS: the log carries warnings outside the allowlist" >&2
-    printf '%s\n' "$unexpected" | sed 's/^/  /' >&2
+  warnings=$(grep -ni 'warning' "$1" || true)
+  if [ -n "$warnings" ]; then
+    echo "BUILD WARNINGS: the log carries warnings" >&2
+    printf '%s\n' "$warnings" | sed 's/^/  /' >&2
     return 1
   fi
   return 0
@@ -113,12 +112,14 @@ if [ "$self_test" -eq 1 ]; then
   fails=0
   echo "module build gate calibration:"
   printf 'CC [M] radeon_gem.o\nLD [M] radeon.ko\n' > "$TMP/clean.log"
-  printf 'warning: the compiler differs from the one used to build the kernel\n' > "$TMP/allowed.log"
+  printf 'warning: the compiler differs from the one used to build the kernel\n' > "$TMP/mismatch.log"
   printf 'rs400.c:12:5: warning: unused variable [-Wunused-variable]\n' > "$TMP/bad.log"
+  printf 'WARNING: modpost reported an unresolved contract\n' > "$TMP/uppercase.log"
   if scan_build_warnings "$TMP/clean.log" && \
-     scan_build_warnings "$TMP/allowed.log" 2>/dev/null && \
-     ! scan_build_warnings "$TMP/bad.log" 2>/dev/null; then
-    echo "  ok: warning scan passes clean and allowlisted logs, fails on any other"
+     ! scan_build_warnings "$TMP/mismatch.log" 2>/dev/null && \
+     ! scan_build_warnings "$TMP/bad.log" 2>/dev/null && \
+     ! scan_build_warnings "$TMP/uppercase.log" 2>/dev/null; then
+    echo "  ok: warning scan passes a clean log and rejects every warning"
   else
     echo "  CALIBRATION FAIL: warning scan verdicts" >&2; fails=$((fails + 1))
   fi
@@ -180,7 +181,7 @@ EOF
     fails=$((fails + 1))
   fi
   [ "$fails" -eq 0 ] || { echo "module build gate calibration: FAIL ($fails)" >&2; exit 1; }
-  echo "module build gate calibration: 3 warning verdicts, 2 profile verdicts, 4 identity verdicts, 2 root verdicts"
+  echo "module build gate calibration: 4 warning verdicts, 2 profile verdicts, 4 identity verdicts, 2 root verdicts"
   exit 0
 fi
 
