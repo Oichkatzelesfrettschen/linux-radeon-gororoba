@@ -2968,6 +2968,40 @@ def validate_kernel_toolchain(
     return rows, environment, toolchain_prefix, closure_entries
 
 
+def normalize_runtime_library_soname(
+    requested_name: str,
+    dynamic_table: str,
+) -> str:
+    soname_matches = re.findall(
+        r"\(SONAME\)[^\r\n]*\[([^\]\r\n]+)\]",
+        dynamic_table,
+    )
+    require(
+        len(soname_matches) == 1
+        and re.fullmatch(r"[^/\s]+", soname_matches[0]) is not None,
+        "runtime library dynamic table does not carry one valid SONAME",
+    )
+    soname = soname_matches[0]
+    requested_path = Path(requested_name)
+    if requested_path.is_absolute():
+        require(
+            "." not in requested_path.parts
+            and ".." not in requested_path.parts
+            and requested_name.startswith(
+                ("/usr/lib/", "/usr/lib64/", "/lib/", "/lib64/")
+            )
+            and requested_path.name == soname,
+            "absolute runtime loader name differs from the ELF SONAME",
+        )
+    else:
+        require(
+            re.fullmatch(r"[^/\s]+", requested_name) is not None
+            and requested_name == soname,
+            "runtime loader name differs from the ELF SONAME",
+        )
+    return soname
+
+
 def capture_toolchain_runtime_libraries(
     release: str,
     bin_directory: Path,
@@ -3027,8 +3061,11 @@ def capture_toolchain_runtime_libraries(
                 stripped,
             )
             require(match is not None, f"ldd emitted an unparsed row: {stripped}")
-            soname, raw_path = match.groups()
-            require(raw_path != "not", f"kernel tool runtime library is absent: {soname}")
+            requested_name, raw_path = match.groups()
+            require(
+                raw_path != "not",
+                f"kernel tool runtime library is absent: {requested_name}",
+            )
             resolved = Path(raw_path).resolve(strict=True)
             status = resolved.stat()
             require(
@@ -3052,6 +3089,21 @@ def capture_toolchain_runtime_libraries(
                 and not notes.stderr
                 and build_id_match is not None,
                 f"kernel tool runtime library has no readable build ID: {resolved}",
+            )
+            dynamic = subprocess.run(
+                [str(readelf), "--dynamic-table", str(resolved)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=command_environment,
+            )
+            require(
+                dynamic.returncode == 0 and not dynamic.stderr,
+                f"kernel tool runtime library has no readable dynamic table: {resolved}",
+            )
+            soname = normalize_runtime_library_soname(
+                requested_name,
+                dynamic.stdout,
             )
             try:
                 relative = resolved.relative_to(toolchain_prefix.resolve())
@@ -3101,6 +3153,112 @@ def capture_toolchain_runtime_libraries(
         f"loaded LLVM library set differs from pinned closure: {release}",
     )
     return sorted(rows)
+
+
+def validate_toolchain_runtime_rows(
+    runtime_rows: list[tuple[Any, ...]] | list[list[str]],
+    lane_releases: set[str],
+    closure_entries_by_release: dict[str, list[ToolchainClosureEntry]],
+) -> None:
+    require(
+        runtime_rows == sorted(runtime_rows),
+        "toolchain runtime library rows are not sorted",
+    )
+    require(
+        len({tuple(row) for row in runtime_rows}) == len(runtime_rows),
+        "toolchain runtime library rows repeat",
+    )
+    expected_runtime_pairs = {
+        (release, tool)
+        for release in lane_releases
+        for tool in LLVM_KERNEL_TOOLS
+    }
+    require(
+        {(row[0], row[1]) for row in runtime_rows} == expected_runtime_pairs,
+        "toolchain runtime command denominator differs",
+    )
+    for row in runtime_rows:
+        require(
+            len(row) == 8 and all(isinstance(value, str) for value in row),
+            "toolchain runtime library row width or type differs",
+        )
+        release, command, soname, provider, resolved_path, digest, build_id, package_owner = row
+        require(
+            release in lane_releases
+            and command in LLVM_KERNEL_TOOLS
+            and re.fullmatch(r"[^/\s]+", soname) is not None,
+            "toolchain runtime library row identity differs",
+        )
+        if provider == "kernel-virtual":
+            require(
+                soname == "linux-vdso.so.1"
+                and resolved_path == "<kernel-virtual>"
+                and digest == "-"
+                and build_id == "-"
+                and package_owner == "kernel",
+                "kernel virtual runtime row differs",
+            )
+            continue
+        require(
+            HEX_64.fullmatch(digest) is not None
+            and re.fullmatch(r"[0-9a-f]{16,128}", build_id) is not None,
+            "toolchain runtime library identity is invalid",
+        )
+        if provider == "toolchain-pinned":
+            entries = {
+                entry.logical_name: entry
+                for entry in closure_entries_by_release[release]
+                if entry.kind == "library"
+            }
+            expected_entry = entries.get(soname)
+            require(
+                expected_entry is not None
+                and resolved_path
+                == f"<kernel-toolchain-root>/{expected_entry.relative_path}"
+                and digest == expected_entry.resolved_sha256
+                and package_owner == "toolchain-closure-declaration",
+                f"pinned runtime library differs from closure: {release} {soname}",
+            )
+        elif provider == "host-runtime-recorded":
+            host_path = Path(resolved_path)
+            require(
+                host_path.is_absolute()
+                and "." not in host_path.parts
+                and ".." not in host_path.parts
+                and (
+                    resolved_path.startswith("/usr/")
+                    or resolved_path.startswith("/lib/")
+                    or resolved_path.startswith("/lib64/")
+                )
+                and re.fullmatch(r"[A-Za-z0-9@._+:-]+", package_owner)
+                is not None,
+                "host runtime library provenance is invalid",
+            )
+        else:
+            raise SourceMapError(
+                f"toolchain runtime library provider is invalid: {provider}"
+            )
+    for release in lane_releases:
+        require(
+            {
+                row[2]
+                for row in runtime_rows
+                if row[0] == release and row[3] == "toolchain-pinned"
+            }
+            == set(LLVM_KERNEL_LIBRARIES),
+            f"pinned runtime library denominator differs: {release}",
+        )
+        for command in LLVM_KERNEL_TOOLS:
+            require(
+                sum(
+                    row[0] == release
+                    and row[1] == command
+                    and row[3] == "kernel-virtual"
+                    for row in runtime_rows
+                )
+                == 1,
+                f"kernel virtual runtime row differs: {release} {command}",
+            )
 
 
 def capture_preprocessor_views(
@@ -3234,15 +3392,19 @@ def capture_preprocessor_views(
             lane.toolchain_manifest,
         )
         toolchain_rows.extend(release_toolchain_rows)
-        runtime_library_rows.extend(
-            capture_toolchain_runtime_libraries(
-                release,
-                toolchain_bin,
-                toolchain_environment,
-                toolchain_prefix,
-                closure_entries,
-            )
+        release_runtime_rows = capture_toolchain_runtime_libraries(
+            release,
+            toolchain_bin,
+            toolchain_environment,
+            toolchain_prefix,
+            closure_entries,
         )
+        validate_toolchain_runtime_rows(
+            release_runtime_rows,
+            {release},
+            {release: closure_entries},
+        )
+        runtime_library_rows.extend(release_runtime_rows)
         recorder.add_replacement(kernel_root, "<kernel-build-root>")
         recorder.add_replacement(toolchain_prefix, "<kernel-toolchain-root>")
         recorder.run(
@@ -4474,98 +4636,11 @@ def verify_capture(
         ],
         "toolchain runtime library columns differ",
     )
-    require(
-        len({tuple(row) for row in runtime_rows}) == len(runtime_rows),
-        "toolchain runtime library rows repeat",
+    validate_toolchain_runtime_rows(
+        runtime_rows,
+        lane_releases,
+        closure_entries_by_release,
     )
-    expected_runtime_pairs = {
-        (release, tool)
-        for release in lane_releases
-        for tool in LLVM_KERNEL_TOOLS
-    }
-    require(
-        {(row[0], row[1]) for row in runtime_rows} == expected_runtime_pairs,
-        "toolchain runtime command denominator differs",
-    )
-    for row in runtime_rows:
-        require(len(row) == len(runtime_columns), "toolchain runtime library row width differs")
-        release, command, soname, provider, resolved_path, digest, build_id, package_owner = row
-        require(
-            release in lane_releases
-            and command in LLVM_KERNEL_TOOLS
-            and re.fullmatch(r"[^/\s]+", soname) is not None,
-            "toolchain runtime library row identity differs",
-        )
-        if provider == "kernel-virtual":
-            require(
-                soname == "linux-vdso.so.1"
-                and resolved_path == "<kernel-virtual>"
-                and digest == "-"
-                and build_id == "-"
-                and package_owner == "kernel",
-                "kernel virtual runtime row differs",
-            )
-            continue
-        require(
-            HEX_64.fullmatch(digest) is not None
-            and re.fullmatch(r"[0-9a-f]{16,128}", build_id) is not None,
-            "toolchain runtime library identity is invalid",
-        )
-        if provider == "toolchain-pinned":
-            entries = {
-                entry.logical_name: entry
-                for entry in closure_entries_by_release[release]
-                if entry.kind == "library"
-            }
-            expected_entry = entries.get(soname)
-            require(
-                expected_entry is not None
-                and resolved_path
-                == f"<kernel-toolchain-root>/{expected_entry.relative_path}"
-                and digest == expected_entry.resolved_sha256
-                and package_owner == "toolchain-closure-declaration",
-                f"pinned runtime library differs from closure: {release} {soname}",
-            )
-        elif provider == "host-runtime-recorded":
-            host_path = Path(resolved_path)
-            require(
-                host_path.is_absolute()
-                and "." not in host_path.parts
-                and ".." not in host_path.parts
-                and (
-                    resolved_path.startswith("/usr/")
-                    or resolved_path.startswith("/lib/")
-                    or resolved_path.startswith("/lib64/")
-                )
-                and re.fullmatch(r"[A-Za-z0-9@._+:-]+", package_owner)
-                is not None,
-                "host runtime library provenance is invalid",
-            )
-        else:
-            raise SourceMapError(
-                f"toolchain runtime library provider is invalid: {provider}"
-            )
-    for release in lane_releases:
-        require(
-            {
-                row[2]
-                for row in runtime_rows
-                if row[0] == release and row[3] == "toolchain-pinned"
-            }
-            == set(LLVM_KERNEL_LIBRARIES),
-            f"pinned runtime library denominator differs: {release}",
-        )
-        for command in LLVM_KERNEL_TOOLS:
-            require(
-                sum(
-                    row[0] == release
-                    and row[1] == command
-                    and row[3] == "kernel-virtual"
-                    for row in runtime_rows
-                )
-                == 1,
-                f"kernel virtual runtime row differs: {release} {command}",
-            )
 
     for database_name in GLOBAL_DATABASE_NAMES:
         database = root / "indexes/global" / database_name
@@ -4931,6 +5006,75 @@ def self_test(repository: Path, policy_path: Path) -> int:
             and {entry.logical_name for entry in entries if entry.kind == "library"}
             == set(LLVM_KERNEL_LIBRARIES)
             for lane, declaration, entries in toolchain_closures
+        ),
+    )
+    runtime_lane, _runtime_declaration, runtime_entries = toolchain_closures[0]
+    runtime_fixture_rows: list[tuple[Any, ...]] = [
+        (
+            runtime_lane.release,
+            tool,
+            "linux-vdso.so.1",
+            "kernel-virtual",
+            "<kernel-virtual>",
+            "-",
+            "-",
+            "kernel",
+        )
+        for tool in LLVM_KERNEL_TOOLS
+    ]
+    runtime_fixture_rows.extend(
+        (
+            runtime_lane.release,
+            LLVM_KERNEL_TOOLS[0],
+            entry.logical_name,
+            "toolchain-pinned",
+            f"<kernel-toolchain-root>/{entry.relative_path}",
+            entry.resolved_sha256,
+            "a" * 40,
+            "toolchain-closure-declaration",
+        )
+        for entry in runtime_entries
+        if entry.kind == "library"
+    )
+    runtime_fixture_rows.sort()
+    accepts(
+        "toolchain runtime validator closes commands and pinned libraries",
+        lambda: validate_toolchain_runtime_rows(
+            runtime_fixture_rows,
+            {runtime_lane.release},
+            {runtime_lane.release: runtime_entries},
+        ),
+    )
+    forged_runtime_rows = list(runtime_fixture_rows)
+    forged_runtime_rows[0] = (
+        *forged_runtime_rows[0][:5],
+        "0" * 64,
+        *forged_runtime_rows[0][6:],
+    )
+    forged_runtime_rows.sort()
+    rejects(
+        "toolchain runtime validator rejects a changed library identity",
+        lambda: validate_toolchain_runtime_rows(
+            forged_runtime_rows,
+            {runtime_lane.release},
+            {runtime_lane.release: runtime_entries},
+        ),
+    )
+    check(
+        "ELF SONAME normalizes an absolute dynamic linker alias",
+        normalize_runtime_library_soname(
+            "/lib64/ld-linux-x86-64.so.2",
+            "0x000000000000000e (SONAME) Library soname: "
+            "[ld-linux-x86-64.so.2]\n",
+        )
+        == "ld-linux-x86-64.so.2",
+    )
+    rejects(
+        "ELF SONAME rejects a mismatched loader name",
+        lambda: normalize_runtime_library_soname(
+            "libforged.so.1",
+            "0x000000000000000e (SONAME) Library soname: "
+            "[libactual.so.1]\n",
         ),
     )
     release_paths = parse_release_paths(
