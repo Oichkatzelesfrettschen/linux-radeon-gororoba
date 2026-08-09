@@ -90,8 +90,12 @@ static int radeon_cs_parser_relocs(struct radeon_cs_parser *p)
 		return 0;
 	}
 	chunk = p->chunk_relocs;
+	if (chunk->length_dw % 4) {
+		DRM_ERROR("Relocation chunk length %u is not a multiple of 4 dwords\n",
+			  chunk->length_dw);
+		return -EINVAL;
+	}
 	p->dma_reloc_idx = 0;
-	/* FIXME: we assume that each relocs use 4 dwords */
 	p->nrelocs = chunk->length_dw / 4;
 	p->relocs = kvcalloc(p->nrelocs, sizeof(struct radeon_bo_list),
 			GFP_KERNEL);
@@ -407,6 +411,10 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 				priority = (s32)p->chunks[i].kdata[2];
 		}
 	}
+	if (p->chunk_relocs && !p->chunk_ib)
+		return radeon_rs480_cs_parser_init_fail(p, "relocs_without_ib",
+							-EINVAL, p->nchunks,
+							p->nchunks, 0, 0);
 
 	/* these are KMS only */
 	if (p->rdev) {
@@ -946,13 +954,13 @@ int radeon_cs_packet_next_reloc(struct radeon_cs_parser *p,
 		return -EINVAL;
 	}
 	idx = radeon_get_ib_value(p, p3reloc.idx + 1);
-	if (idx >= relocs_chunk->length_dw) {
-		DRM_ERROR("Relocs at %d after relocations chunk end %d !\n",
+	if (idx >= relocs_chunk->length_dw || idx % 4 ||
+	    relocs_chunk->length_dw - idx < 4) {
+		DRM_ERROR("Relocs at %d do not name one aligned 4-dword record in chunk %d !\n",
 			  idx, relocs_chunk->length_dw);
 		radeon_cs_dump_packet(p, &p3reloc);
 		return -EINVAL;
 	}
-	/* FIXME: we assume reloc size is 4 dwords */
 	if (nomm) {
 		*cs_reloc = p->relocs;
 		(*cs_reloc)->gpu_offset =
