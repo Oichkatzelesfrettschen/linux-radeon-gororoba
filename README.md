@@ -107,12 +107,15 @@ sh scripts/build_radeon_module.sh \
 ```
 
 The retained declared build identities are `6.18.38-2-cachyos-lts` and
-`7.1.4-1-cachyos`. Source commit
-`be729bd3f9ab4d2abcbf07c558e16e4655fcdf64` was not replayed against those exact
-roots. Its final compatibility matrix passed `prod`, `observe-dev`,
-`probe-dev`, and `mutate-dev` on the then installed
-`6.18.42-1-cachyos-lts` and `7.1.6-1-cachyos` roots. Those installed roots are
-compatibility evidence, not replacements for the retained declared identities.
+`7.1.4-1-cachyos`. At source commit
+`286d8fbc56c8017bfe6e00a29771ddc2f3040654`, the exact-root matrix passed
+`prod`, `observe-dev`, `probe-dev`, and `mutate-dev` with zero warnings on both
+roots. The 6.18 root used the signed Clang and LLD 22.1.6 package set in
+`ci/kernel-toolchains/clang-lld-22.1.6.sha256`; the 7.1 root used the signed
+22.1.8 set. The built Radeon driver tree was
+`ef45f03a970fdb84b8975ba3fec96b2bfe625324`. This proves bounded compilation,
+link, metadata, and interface projection. It does not prove module loading,
+runtime reachability, or hardware behavior.
 
 The temporary build tree carries `radeon_build_profile.h` and
 `radeon-build-profile.toml`. The linked module records the source commit,

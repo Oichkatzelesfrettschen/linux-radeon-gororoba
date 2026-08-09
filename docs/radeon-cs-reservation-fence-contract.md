@@ -178,18 +178,19 @@ the shared target question from the other ledger's source status.
 ## Build priorities
 
 The retained declared build identities remain `6.18.38-2-cachyos-lts` and
-`7.1.4-1-cachyos`. Source commit
-`be729bd3f9ab4d2abcbf07c558e16e4655fcdf64` was not replayed on those exact
-roots. Its final compatibility matrix passed `prod`, `observe-dev`,
-`probe-dev`, and `mutate-dev` against the then installed
-`6.18.42-1-cachyos-lts` and `7.1.6-1-cachyos` roots. That result proves
-cross-version compatibility for those installed roots. It does not satisfy the
-retained declared-root acceptance gate.
+`7.1.4-1-cachyos`. At source commit
+`286d8fbc56c8017bfe6e00a29771ddc2f3040654`, the exact-root matrix passed
+`prod`, `observe-dev`, `probe-dev`, and `mutate-dev` with zero warnings on both
+roots. The 6.18 root used the signed Clang and LLD 22.1.6 package set; the 7.1
+root used the signed 22.1.8 set. Their exact package and signature identities
+live in `ci/kernel-toolchains/`. The built Radeon driver tree was
+`ef45f03a970fdb84b8975ba3fec96b2bfe625324`. The result proves bounded source
+reachability, link, metadata, and profile projection, not module loading,
+runtime reachability, or silicon behavior.
 
-1. Admit the relocation repairs only after the CS checker classifies its good
-   tree and every known bad fixture, the parked guard checker remains
-   calibrated, and `prod`, `observe-dev`, `probe-dev`, and `mutate-dev` link
-   with zero warnings against both exact declared kernel roots.
+1. Preserve the CS and parked guard known-good and known-bad calibration and
+   the eight-lane exact-root, exact-toolchain, zero-warning build matrix on
+   every change to the repaired source or its build contract.
 2. Build the finite packet resource role map before changing reservation usage.
    The corpus must cover every supported r300 write site and include negative
    domain declarations that compile but fail admission.
@@ -222,7 +223,9 @@ python3 scripts/check_radeon_gart_lifecycle.py
 ```
 
 Then run the module build harness against both exact declared kernel roots as
-documented in `README.md`. The recorded installed-root compatibility matrix is
-not a substitute. These checks prove a bounded source and compile contract
-only. They do not prove live submission, reset replay count, fence completion,
-payload visibility, performance, or hazard clearance.
+documented in `README.md`. The matrix recorded for driver tree
+`ef45f03a970fdb84b8975ba3fec96b2bfe625324` satisfies this gate. A driver or
+build-contract change requires a new exact-root matrix. These checks prove a
+bounded source and compile contract only. They do not prove live submission,
+reset replay count, fence completion, payload visibility, performance, or
+hazard clearance.
