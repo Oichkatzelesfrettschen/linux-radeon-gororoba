@@ -166,7 +166,6 @@ bool radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev)
 	    radeon_palm_pci_reset_unsafe != 1)
 		return false;
 
-	radeon_dev_mark_mutation(rdev, "Palm unsafe PCI reset override");
 	return true;
 }
 #endif

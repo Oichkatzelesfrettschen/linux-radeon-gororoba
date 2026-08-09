@@ -98,7 +98,7 @@ extern int radeon_rs480_gpu_reset_recover_probe;
 extern int radeon_rs480_r400_us_cs;
 extern int radeon_rs480_reset_hang_probe;
 
-void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev);
+void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor);
 bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev);
 u32 radeon_rs4xx_dev_reset_mask(struct radeon_device *rdev,
 				u32 baseline_mask, const char **name_out);
@@ -106,7 +106,7 @@ void radeon_debugfs_rs480_mc_flush_init(struct radeon_device *rdev);
 bool radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev);
 #else
 static inline void
-radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev)
+radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)
 {
 }
 

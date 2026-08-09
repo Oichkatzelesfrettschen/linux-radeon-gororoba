@@ -97,7 +97,9 @@ classes; a closed item names its proof, and an open item names its gate.
   and `scripts/check_build_features.py` calibrates every rejection class.
 - B11 splits after the equivalence tag: bounded Palm reset and default refusal
   remain production correctness, while `palm_pci_reset_unsafe` joins the
-  root-only B12 reset trigger under `palm-reset-dev`.
+  root-only per-device B12 reset trigger under `palm-reset-dev`. The trigger
+  registers through the DRM primary minor, executes only on `CHIP_PALM`, and
+  holds the Radeon exclusive writer lock across the reset body.
 - The no-flag build selects `prod`. Development builds select the monotone
   `observe-dev`, `probe-dev`, and `mutate-dev` source projections. `all-dev`
   remains an alias for the mutation-capable ceiling. Module metadata binds the

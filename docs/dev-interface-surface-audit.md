@@ -9,6 +9,15 @@ Symbols were verified against `drivers/gpu/drm/radeon/radeon_rs4xx_dev.c`,
 `radeon_dev.c`, and `radeon_evergreen_dev.c` (`git grep -n debugfs_create_file`
 and per-function body extraction).
 
+`policy/dev-interface-registration-contract.tsv` binds the Palm reset node to
+the DRM primary minor, its managed debugfs tree, mode 0200, runtime and
+compiled mutate profiles, exact `CHIP_PALM` execution, and the external
+evidence boundary. `scripts/check_all_dev_interfaces.py` calibrates this
+contract against comment-stripped, brace-bounded function bodies. Its
+mutations cover a global parent, early registration, missing family gates,
+ignored hardware availability, early unlock, hardware access before the
+family refusal, wrong mode, and wrong lifetime owner.
+
 ## Access-mode policy
 
 Every node that touches hardware on read is root-only 0400. The two write
@@ -54,11 +63,35 @@ columns record the gates beyond that shared guard.
 | --- | --- | --- | --- | --- |
 | radeon_rs480_mc_flush | 0200 | mutate-dev | family check, exact command val == 1, radeon_dev_hardware_available (shutdown, suspended, parked), bounded 16-dword CP packet, nonseekable fd | RS4xx CP cache drain |
 | radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | one operation per fd (ppos consumed on admission), token 0x494e4a31 plus literal ARM keyword, surplus-rejecting shared parser rs480_cp_me_inject_parse, address bound 0x100, radeon_dev_hardware_available, idle gate, write-verify-restore | RS4xx CP-ME RAM injection |
-| radeon_force_pci_reset_safe | 0200 | mutate-dev | exact command 1 via sysfs_streq, one operation per fd (ppos consumed on admission), radeon_dev_asic_powered (parked engine stays admitted as the forensic target), Evergreen debugfs PCI reset path, nonseekable fd | Evergreen debugfs PCI reset |
+| radeon_force_pci_reset_safe | 0200 | mutate-dev | DRM primary minor root, exact CHIP_PALM registration and write guards, exact command 1 via sysfs_streq, one operation per fd, exclusive_lock writer, radeon_dev_hardware_available, exact palm_pci_reset_unsafe Boolean, bounded PCI configuration reset | Palm PCI config reset |
 
 Each write node opens through `nonseekable_open`, which clears `FMODE_LSEEK`
 and `FMODE_PWRITE` on the descriptor, so lseek and pwrite fail at the VFS
 layer and every trigger is a fresh open-write-close.
+
+## Palm reset registration and execution boundary
+
+The Palm reset path carries three independent family checks. Registration
+requires a primary DRM minor, a live `minor->debugfs_root`, runtime
+`mutate-dev`, and `rdev->family == CHIP_PALM`. The write handler repeats the
+family check, takes `exclusive_lock` for writing, and checks hardware
+availability before consuming the file position. The reset body repeats the
+family check, asserts the writer lock, repeats hardware availability, requires
+`palm_pci_reset_unsafe == 1`, and records the mutation immediately before the
+first hardware write.
+
+The driver table invokes one development dispatcher from `drm_driver`'s
+`debugfs_init` callback. The dispatcher registers the RS4xx surface and the
+Palm surface after DRM supplies the primary minor. `radeon_driver_load_kms`
+contains no development debugfs registration. DRM core teardown removes the
+per-device tree during unregister, so no global reset dentry retains a Radeon
+device pointer.
+
+The compiled `CHIP_PALM` PCI set is `1002:9802` through `1002:980a` in both
+declared kernel targets. This repository carries migration source evidence and
+no Palm silicon run. The source correction therefore earns compile verified
+status only. A Palm hardware verdict requires a retained target bundle in the
+Palm evidence lane.
 
 The two shared-fops rows are inherited compatibility aliases, reproduced
 byte-identically from the legacy packaging series

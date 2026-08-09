@@ -4065,22 +4065,31 @@ int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)
 {
 	struct evergreen_mc_save save;
 	u32 tmp, i;
+	int r;
 
-	/* CHIP_PALM (Wrestler GPU on Brazos APU, Evergreen / TeraScale-2 VLIW5)
-	 * shares the PCIe root-complex with the embedded GbE controller.
-	 * A pci-config reset propagates a brief link-training stall to
-	 * adjacent devices (the NIC goes offline for ~2 minutes on the
-	 * ThinkPad X130e and X-server loses its dual-output layout state).
-	 * Refuse by default on Palm-class silicon; userspace must set
-	 * radeon.palm_pci_reset_unsafe=1 to override.
+	/* The bounded reset implementation uses Palm register and memory
+	 * controller sequencing.  Every other Radeon family refuses before
+	 * the first hardware access.
 	 */
-	if (rdev->family == CHIP_PALM &&
-	    !radeon_palm_dev_pci_reset_unsafe(rdev)) {
+	if (!rdev || rdev->family != CHIP_PALM)
+		return -ENODEV;
+	lockdep_assert_held_write(&rdev->exclusive_lock);
+	r = radeon_dev_hardware_available(rdev);
+	if (r)
+		return r;
+
+	/* Palm shares its PCIe root complex with the embedded network
+	 * controller.  The exact development profile and Boolean override
+	 * acknowledge the link training stall caused by PCI configuration
+	 * reset.
+	 */
+	if (!radeon_palm_dev_pci_reset_unsafe(rdev)) {
 		dev_warn(rdev->dev,
 			"refusing pci-config reset on CHIP_PALM: propagates to PCIe root-complex; set radeon.palm_pci_reset_unsafe=1 to override\n");
 		return -EPERM;
 	}
 
+	radeon_dev_mark_mutation(rdev, "Palm PCI config reset");
 	dev_info(rdev->dev, "GPU pci config reset (bounded MC-wait safe variant)\n");
 
 	WREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);

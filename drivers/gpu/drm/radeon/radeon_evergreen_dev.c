@@ -4,16 +4,15 @@
 #include <linux/module.h>
 #include <linux/uaccess.h>
 
+#include <drm/drm_device.h>
+#include <drm/drm_file.h>
+
 #include "radeon.h"
 #include "radeon_asic.h"
 
-/* Debugfs trigger that lets userspace invoke
- * evergreen_gpu_pci_config_reset_safe on demand for forensic
- * experimentation on a wedged GPU. The reset is gated by the
- * CHIP_PALM refuse-by-default policy implemented inside
- * evergreen_gpu_pci_config_reset_safe; on Palm silicon a write
- * here returns -EPERM unless radeon.palm_pci_reset_unsafe=1 is
- * set.
+/* The Palm debugfs trigger invokes the bounded PCI configuration reset.
+ * Registration, the write handler, and the reset body each reject every
+ * other Radeon family.  The exact Boolean override remains required on Palm.
  */
 static ssize_t
 radeon_force_pci_reset_safe_write(struct file *file,
@@ -37,17 +36,19 @@ radeon_force_pci_reset_safe_write(struct file *file,
 	 * optional terminal newline and rejects any surplus byte. */
 	if (!sysfs_streq(input, "1"))
 		return -EINVAL;
-	/* The powered check alone gates this node: a parked engine is the
-	 * forensic target of the PCI-config reset, while a suspend-powered
-	 * or torn-down ASIC refuses. */
-	rc = radeon_dev_asic_powered(rdev);
-	if (rc)
-		return rc;
-	*ppos = 1;
 
-	if (rdev->family != CHIP_PALM)
-		radeon_dev_mark_mutation(rdev, "Evergreen debugfs PCI reset");
+	if (!rdev || rdev->family != CHIP_PALM)
+		return -ENODEV;
+
+	down_write(&rdev->exclusive_lock);
+	rc = radeon_dev_hardware_available(rdev);
+	if (rc)
+		goto out_unlock;
+	*ppos = 1;
 	rc = evergreen_gpu_pci_config_reset_safe(rdev);
+
+out_unlock:
+	up_write(&rdev->exclusive_lock);
 	return rc ? rc : (ssize_t)count;
 }
 
@@ -59,17 +60,19 @@ static const struct file_operations radeon_force_pci_reset_safe_fops = {
 	.write = radeon_force_pci_reset_safe_write,
 };
 
-void radeon_evergreen_dev_debugfs_init(struct radeon_device *rdev)
+void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)
 {
-	if (!radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE))
+	struct radeon_device *rdev;
+
+	if (!minor || minor->type != DRM_MINOR_PRIMARY || !minor->dev ||
+	    !minor->debugfs_root)
+		return;
+	rdev = minor->dev->dev_private;
+	if (!rdev || rdev->family != CHIP_PALM ||
+	    !radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE))
 		return;
 
-	/* Register the debugfs trigger for the bounded-MC-wait safe variant
-	 * of evergreen_gpu_pci_config_reset. The file is created at debugfs
-	 * root because the DRM primary minor is unavailable this early in
-	 * radeon_driver_load_kms.
-	 */
 	debugfs_create_file("radeon_force_pci_reset_safe", 0200,
-			    NULL, rdev,
+			    minor->debugfs_root, rdev,
 			    &radeon_force_pci_reset_safe_fops);
 }

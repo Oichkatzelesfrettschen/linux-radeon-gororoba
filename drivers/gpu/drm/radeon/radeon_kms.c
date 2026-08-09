@@ -163,8 +163,6 @@ int radeon_driver_load_kms(struct drm_device *dev, unsigned long flags)
 		goto out;
 	}
 
-	radeon_evergreen_dev_debugfs_init(rdev);
-
 	/* Again modeset_init should fail only on fatal error
 	 * otherwise it should provide enough functionalities
 	 * for shadowfb to run
