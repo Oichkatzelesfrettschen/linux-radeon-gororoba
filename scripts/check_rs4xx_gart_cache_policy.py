@@ -26,6 +26,7 @@ from pathlib import Path
 SUBTREE = Path("drivers/gpu/drm/radeon")
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 LINE_COMMENT = re.compile(r"//[^\n]*")
+C_LINE_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
 AGP_MODE_WRITE = re.compile(
     r"WREG32_MC\s*\(\s*RS480_AGP_MODE_CNTL\s*,",
 )
@@ -36,12 +37,13 @@ class PolicyError(Exception):
 
 
 def strip_comments(source: str) -> str:
-    """Blank comments so prose cannot satisfy a source relationship."""
+    """Apply C phase-2 splicing, then blank comments for lexical checks."""
 
     def blank(match: re.Match[str]) -> str:
         return re.sub(r"[^\n]", " ", match.group(0))
 
-    return LINE_COMMENT.sub(blank, BLOCK_COMMENT.sub(blank, source))
+    logical_source = C_LINE_SPLICE.sub("", source)
+    return LINE_COMMENT.sub(blank, BLOCK_COMMENT.sub(blank, logical_source))
 
 
 def function_body(source: str, name: str) -> str:
@@ -242,6 +244,14 @@ void radeon_gart_table_ram_free(struct radeon_device *rdev)
 }
 
 MUTATIONS = {
+    "phase-2 continued comment hides the non-PCIe guard": (
+        "radeon_object.c",
+        "\tif (!(rdev->flags & RADEON_IS_PCIE))",
+        (
+            "\t/\\\n/ hidden guard \\\n"
+            "\tif (!(rdev->flags & RADEON_IS_PCIE))"
+        ),
+    ),
     "non-PCIe flag mask inverted": (
         "radeon_object.c",
         "if (!(rdev->flags & RADEON_IS_PCIE))",

@@ -80,6 +80,36 @@ C_COMMENT_OR_LITERAL = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
 )
+C_LINE_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
+C_CONDITIONAL_DIRECTIVE = re.compile(
+    r"(?m)^[ \t\v\f]*(?:#|%:)[ \t\v\f]*"
+    r"(?P<kind>if|ifdef|ifndef|elif|else|endif)\b"
+)
+C_MACRO_OVERRIDE = re.compile(
+    r"(?m)^[ \t\v\f]*(?:#|%:)[ \t\v\f]*(?:define|undef)"
+    r"[ \t\v\f]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
+)
+C_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+PARKED_PROTECTED_MACROS = (
+    "EAGAIN",
+    "EBUSY",
+    "EIO",
+    "ERR_PTR",
+    "READ_ONCE",
+    "dma_resv_lock",
+    "dma_resv_wait_timeout",
+    "down_read",
+    "drm_gem_object_put",
+    "radeon_bo_create",
+    "radeon_cs_parser_init",
+    "radeon_gpu_reset",
+    "up_read",
+)
+DUMB_CREATE_PROTECTED_MACROS = (
+    "drm_gem_handle_create",
+    "radeon_gem_object_create",
+)
 
 
 class GuardError(Exception):
@@ -87,30 +117,76 @@ class GuardError(Exception):
 
 
 def strip_comments_and_literals(source: str) -> str:
-    """Blank C comments and literals while preserving byte positions.
+    """Apply C line splicing, then blank comments and literals.
 
     Ordering is the whole check, and a comment naming radeon_bo_create sits
     above the guard that precedes the real call. Matching that prose would
     report the guard as following the allocation it actually precedes, so
-    comments are blanked rather than deleted: deleting them would shift every
-    later line and break the position comparison instead.
+    comments are blanked rather than deleted. C phase-2 line splices are
+    deleted first because they can extend a line comment or form one token.
+    Every position comparison uses the resulting translation stream.
     """
 
     def blank(match: re.Match[str]) -> str:
         return re.sub(r"[^\n]", " ", match.group(0))
 
-    return C_COMMENT_OR_LITERAL.sub(blank, source)
+    return C_COMMENT_OR_LITERAL.sub(blank, C_LINE_SPLICE.sub("", source))
 
 
-def function_code(source: str, name: str) -> str:
+def reject_enclosing_conditional(
+    code: str,
+    definition_offset: int,
+    label: str,
+) -> None:
+    """Reject a function definition enclosed by conditional preprocessing."""
+    conditional_stack: list[str] = []
+    for directive in C_CONDITIONAL_DIRECTIVE.finditer(code, 0, definition_offset):
+        kind = directive.group("kind")
+        if kind in {"if", "ifdef", "ifndef"}:
+            conditional_stack.append(kind)
+        elif kind in {"elif", "else"}:
+            if not conditional_stack:
+                raise GuardError(f"{label} follows an unmatched #{kind}")
+        elif conditional_stack:
+            conditional_stack.pop()
+        else:
+            raise GuardError(f"{label} follows an unmatched #endif")
+    if conditional_stack:
+        raise GuardError(f"{label} is enclosed by conditional preprocessing")
+
+
+def reject_local_macro_overrides(
+    code: str,
+    protected_names: tuple[str, ...],
+    label: str,
+) -> None:
+    """Reject translation-unit overrides of protected source identifiers."""
+    overridden = sorted(
+        {
+            match.group("name")
+            for match in C_MACRO_OVERRIDE.finditer(code)
+            if match.group("name") in protected_names
+        }
+    )
+    if overridden:
+        raise GuardError(f"{label} overrides protected macros: {overridden}")
+
+
+def function_code(
+    source: str,
+    name: str,
+    protected_macros: tuple[str, ...] = (),
+) -> str:
     """Return one complete function with comments and literals blanked."""
     code = strip_comments_and_literals(source)
+    reject_local_macro_overrides(code, protected_macros, f"function {name}")
     definition = re.search(
         rf"(?m)^[A-Za-z_][^\n]*\b{re.escape(name)}\s*\(",
         code,
     )
     if definition is None:
         raise GuardError(f"function {name} not found")
+    reject_enclosing_conditional(code, definition.start(), f"function {name}")
     opening = code.find("{", definition.start())
     semicolon = code.find(";", definition.start())
     if opening < 0 or (semicolon >= 0 and semicolon < opening):
@@ -122,7 +198,19 @@ def function_code(source: str, name: str) -> str:
         elif code[offset] == "}":
             depth -= 1
             if depth == 0:
-                return code[definition.start() : offset + 1]
+                function_text = code[definition.start() : offset + 1]
+                protected_identifiers = tuple(
+                    sorted(
+                        set(protected_macros)
+                        | set(C_IDENTIFIER.findall(function_text))
+                    )
+                )
+                reject_local_macro_overrides(
+                    code,
+                    protected_identifiers,
+                    f"function {name}",
+                )
+                return function_text
             if depth < 0:
                 break
     raise GuardError(f"function {name} has no closing brace")
@@ -142,6 +230,80 @@ def brace_depth(code: str, offset: int) -> int:
             if depth < 0:
                 raise GuardError("function body has invalid brace order")
     return depth
+
+
+def direct_statement_depth(code: str, statement_start: int) -> int:
+    """Return the brace depth owned directly by one controlled statement."""
+    depth = brace_depth(code, statement_start)
+    if code[statement_start] == "{":
+        depth += 1
+    return depth
+
+
+def require_direct_statement(
+    code: str,
+    statement_start: int,
+    match_start: int,
+    label: str,
+) -> None:
+    """Require a match to begin one direct statement in a bounded scope."""
+    expected_depth = direct_statement_depth(code, statement_start)
+    if brace_depth(code, match_start) != expected_depth:
+        raise GuardError(f"{label} is nested below its required statement scope")
+
+    scan_start = statement_start + (code[statement_start] == "{")
+    boundary = scan_start
+    depth = brace_depth(code, scan_start)
+    parenthesis_depth = 0
+    bracket_depth = 0
+    for offset in range(scan_start, match_start):
+        token = code[offset]
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth -= 1
+            if depth == expected_depth:
+                boundary = offset + 1
+        elif token == "(":
+            parenthesis_depth += 1
+        elif token == ")":
+            parenthesis_depth -= 1
+            if parenthesis_depth < 0:
+                raise GuardError(f"{label} has invalid parenthesis order")
+        elif token == "[":
+            bracket_depth += 1
+        elif token == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                raise GuardError(f"{label} has invalid bracket order")
+        elif (
+            token == ";"
+            and depth == expected_depth
+            and parenthesis_depth == 0
+            and bracket_depth == 0
+        ):
+            boundary = offset + 1
+    if code[boundary:match_start].strip():
+        raise GuardError(f"{label} is controlled by an unbraced statement")
+
+
+def reject_conditional_directives(code: str, label: str) -> None:
+    """Reject conditional preprocessing inside one audited function."""
+    if C_CONDITIONAL_DIRECTIVE.search(code) is not None:
+        raise GuardError(f"{label} contains a conditional preprocessing directive")
+
+
+def require_exact_statement_sequence(
+    code: str,
+    statement_start: int,
+    statement_end: int,
+    pattern: str,
+    label: str,
+) -> None:
+    """Require one closed, target-specific statement sequence."""
+    statement = code[statement_start:statement_end]
+    if re.fullmatch(pattern, statement) is None:
+        raise GuardError(f"{label} statement sequence differs")
 
 
 def controlled_statement(code: str, condition_end: int) -> tuple[int, int]:
@@ -185,11 +347,12 @@ def prove_refusal_statement(
             f"{guard_id}: parked refusal does not return {expected_return} exactly once"
         )
     return_at = statement_start + returns[0].start()
-    required_depth = brace_depth(code, statement_start)
-    if code[statement_start] == "{":
-        required_depth += 1
-    if brace_depth(code, return_at) != required_depth:
-        raise GuardError(f"{guard_id}: parked return is conditional inside the refusal")
+    require_direct_statement(
+        code,
+        statement_start,
+        return_at,
+        f"{guard_id}: parked return",
+    )
     if "EDEADLK" in statement or "needs_reset" in statement:
         raise GuardError(f"{guard_id}: parked refusal uses reset reentry state")
     return statement_start, statement_end
@@ -215,11 +378,6 @@ def reject_forward_goto_over_interval(
             raise GuardError(f"{label}: goto target {jump.group(1)} is absent")
         if jump.start() < interval_start and target >= interval_end:
             raise GuardError(f"{label}: goto {jump.group(1)} bypasses the refusal")
-
-
-def function_body(source: str, name: str) -> list[str]:
-    """Return one blanked function as source lines."""
-    return function_code(source, name).splitlines()
 
 
 def one_match_at_depth(
@@ -260,6 +418,18 @@ def require_refusal_unlock(
     )
     if len(unlocks) != 1 or len(returns) != 1 or unlocks[0].start() > returns[0].start():
         raise GuardError(f"{label}: parked refusal does not unlock before returning")
+    require_direct_statement(
+        code,
+        statement_start,
+        statement_start + unlocks[0].start(),
+        f"{label}: refusal unlock",
+    )
+    require_direct_statement(
+        code,
+        statement_start,
+        statement_start + returns[0].start(),
+        f"{label}: refusal return",
+    )
 
 
 def check_guard(root: Path, guard: dict[str, str]) -> None:
@@ -269,7 +439,8 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
     except FileNotFoundError as exc:
         raise GuardError(f"{guard['id']}: missing source {path}") from exc
 
-    body = function_code(source, guard["function"])
+    body = function_code(source, guard["function"], PARKED_PROTECTED_MACROS)
+    reject_conditional_directives(body, guard["id"])
     guard_matches = list(PARKED_GUARD.finditer(body))
     if len(guard_matches) != 1:
         raise GuardError(
@@ -277,8 +448,13 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
             f"{guard['function']}, found {len(guard_matches)}"
         )
     guard_match = guard_matches[0]
-    if brace_depth(body, guard_match.start()) != 1:
-        raise GuardError(f"{guard['id']}: parked guard is nested in another block")
+    function_open = body.find("{")
+    require_direct_statement(
+        body,
+        function_open,
+        guard_match.start(),
+        f"{guard['id']}: parked guard",
+    )
 
     call_matches = list(re.finditer(rf"\b{re.escape(guard['precedes'])}\b", body))
     if not call_matches:
@@ -304,6 +480,14 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
         statement_end,
         guard["id"],
     )
+    if guard["id"] == "gem-create":
+        require_exact_statement_sequence(
+            body,
+            statement_start,
+            statement_end,
+            r"\s*return\s+-EIO\s*;\s*",
+            "gem-create parked refusal",
+        )
 
     # The create funnel refuses regardless of placement. A guard made
     # conditional on a VRAM request readmits the GTT traffic the measured
@@ -375,6 +559,16 @@ def check_prime_import_lock(
         "ERR_PTR(-EIO)",
         "prime-import",
     )
+    require_exact_statement_sequence(
+        body,
+        statement_start,
+        statement_end,
+        r"\s*\{\s*"
+        r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
+        r"return\s+ERR_PTR\s*\(\s*-EIO\s*\)\s*;\s*"
+        r"\}\s*",
+        "prime-import parked refusal",
+    )
 
 
 def check_wait_idle_lock(
@@ -428,6 +622,17 @@ def check_wait_idle_lock(
         statement_end,
         "-EIO",
         "wait-idle-flush",
+    )
+    require_exact_statement_sequence(
+        body,
+        statement_start,
+        statement_end,
+        r"\s*\{\s*"
+        r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
+        r"drm_gem_object_put\s*\(\s*gobj\s*\)\s*;\s*"
+        r"return\s+-EIO\s*;\s*"
+        r"\}\s*",
+        "wait-idle-flush parked refusal",
     )
 
 
@@ -504,22 +709,39 @@ def check_command_submission_lock(
         "-EIO",
         "command-submission",
     )
+    require_exact_statement_sequence(
+        body,
+        statement_start,
+        statement_end,
+        r"\s*\{\s*"
+        r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
+        r"(?:dev_err_once\s*\(\s*rdev->dev\s*,\s*\)\s*;\s*)?"
+        r"return\s+-EIO\s*;\s*"
+        r"\}\s*",
+        "command-submission parked refusal",
+    )
 
     acceleration_start, acceleration_end = controlled_statement(
         body,
         acceleration.end(),
     )
-    acceleration_statement = body[acceleration_start:acceleration_end]
-    acceleration_unlock = READ_UNLOCK.search(acceleration_statement)
-    acceleration_return = re.search(r"\breturn\s+-EBUSY\s*;", acceleration_statement)
-    if (
-        acceleration_unlock is None
-        or acceleration_return is None
-        or acceleration_unlock.start() > acceleration_return.start()
-    ):
-        raise GuardError(
-            "command-submission: acceleration refusal does not unlock before -EBUSY"
-        )
+    require_refusal_unlock(
+        body,
+        acceleration_start,
+        acceleration_end,
+        "-EBUSY",
+        "command-submission acceleration",
+    )
+    require_exact_statement_sequence(
+        body,
+        acceleration_start,
+        acceleration_end,
+        r"\s*\{\s*"
+        r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
+        r"return\s+-EBUSY\s*;\s*"
+        r"\}\s*",
+        "command-submission acceleration refusal",
+    )
 
     reset_start, reset_end = controlled_statement(body, reset.end())
     reset_statement = body[reset_start:reset_end]
@@ -560,30 +782,55 @@ def check_dumb_create_propagation(root: Path) -> None:
     except FileNotFoundError as exc:
         raise GuardError(f"dumb-create: missing source {path}") from exc
 
-    body = function_body(source, "radeon_mode_dumb_create")
-
-    call_at = [i for i, line in enumerate(body) if "radeon_gem_object_create" in line]
-    if not call_at:
+    body = function_code(
+        source,
+        "radeon_mode_dumb_create",
+        DUMB_CREATE_PROTECTED_MACROS,
+    )
+    reject_conditional_directives(body, "dumb-create")
+    calls = list(
+        re.finditer(r"\br\s*=\s*radeon_gem_object_create\s*\(", body)
+    )
+    if len(calls) != 1:
         raise GuardError(
-            "dumb-create: radeon_gem_object_create absent from radeon_mode_dumb_create"
+            "dumb-create: expected one creator result assignment, "
+            f"found {len(calls)}"
         )
-
-    check = re.compile(r"if\s*\(\s*r\s*\)")
-    for index in range(min(call_at) + 1, len(body)):
-        if check.search(body[index]):
-            window = "\n".join(body[index : index + 3])
-            if re.search(r"return\s+r\s*;", window):
-                return
-            translated = re.search(r"return\s+(-\w+|0)\s*;", window)
-            found = translated.group(1) if translated else "no return"
-            raise GuardError(
-                "dumb-create: the wrapper answers the creator's failure with "
-                f"{found} rather than forwarding r, so the parked -EIO is "
-                "masked at the ioctl boundary"
-            )
-    raise GuardError(
-        "dumb-create: the creator's result is never tested, so a failed "
-        "create falls through to handle creation"
+    result_guards = [
+        match
+        for match in re.finditer(r"\bif\s*\(\s*r\s*\)", body)
+        if match.start() > calls[0].end()
+    ]
+    if not result_guards:
+        raise GuardError(
+            "dumb-create: the creator's result is never tested, so a failed "
+            "create falls through to handle creation"
+        )
+    result_guard = result_guards[0]
+    require_direct_statement(
+        body,
+        body.find("{"),
+        result_guard.start(),
+        "dumb-create: creator result guard",
+    )
+    statement_start, statement_end = prove_refusal_statement(
+        body,
+        result_guard,
+        "r",
+        "dumb-create",
+    )
+    require_exact_statement_sequence(
+        body,
+        statement_start,
+        statement_end,
+        r"\s*return\s+r\s*;\s*",
+        "dumb-create creator result refusal",
+    )
+    reject_forward_goto_over_interval(
+        body,
+        result_guard.start(),
+        statement_end,
+        "dumb-create",
     )
 
 
@@ -598,6 +845,58 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 """
 
 FIXTURES_BAD = {
+    "disabled function precedes an active unguarded definition": (
+        "#if 0\n"
+        + FIXTURE_GOOD
+        + "#else\n"
+        + "int radeon_gem_object_create(struct radeon_device *rdev)\n"
+        + "{\n"
+        + "\tr = radeon_bo_create(rdev);\n"
+        + "\treturn 0;\n"
+        + "}\n"
+        + "#endif\n"
+    ),
+    "translation unit overrides READ_ONCE": (
+        "#undef READ_ONCE\n#define READ_ONCE(value) 0\n" + FIXTURE_GOOD
+    ),
+    "digraph conditional selects an active unguarded definition": (
+        "%:if 0\n"
+        + FIXTURE_GOOD
+        + "%:else\n"
+        + "int radeon_gem_object_create(struct radeon_device *rdev)\n"
+        + "{\n"
+        + "\tr = radeon_bo_create(rdev);\n"
+        + "\treturn 0;\n"
+        + "}\n"
+        + "%:endif\n"
+    ),
+    "form-feed conditional selects an active unguarded definition": (
+        "#\fif 0\n"
+        + FIXTURE_GOOD
+        + "#\felse\n"
+        + "int radeon_gem_object_create(struct radeon_device *rdev)\n"
+        + "{\n"
+        + "\tr = radeon_bo_create(rdev);\n"
+        + "\treturn 0;\n"
+        + "}\n"
+        + "#\fendif\n"
+    ),
+    "translation unit uses a digraph READ_ONCE override": (
+        "%:undef READ_ONCE\n%:define READ_ONCE(value) 0\n" + FIXTURE_GOOD
+    ),
+    "translation unit redirects the gpu_parked member": (
+        "#undef gpu_parked\n#define gpu_parked needs_reset\n" + FIXTURE_GOOD
+    ),
+    "continued line comment hides the guard": (
+        "int radeon_gem_object_create(struct radeon_device *rdev)\n"
+        "{\n"
+        "\t// continued comment \\\n"
+        "\tif (READ_ONCE(rdev->gpu_parked)) \\\n"
+        "\t\treturn -EIO;\n"
+        "\tr = radeon_bo_create(rdev);\n"
+        "\treturn 0;\n"
+        "}\n"
+    ),
     "guard polarity inverted": """
 int radeon_gem_object_create(struct radeon_device *rdev)
 {
@@ -650,6 +949,40 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 \t}
 \tr = radeon_bo_create(rdev);
 \treturn 0;
+}
+""",
+    "guard is controlled by an unbraced unreachable condition": """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+	if (false)
+		if (READ_ONCE(rdev->gpu_parked))
+			return -EIO;
+	r = radeon_bo_create(rdev);
+	return 0;
+}
+""",
+    "guard is disabled by a preprocessor conditional": """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+#if 0
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+#endif
+	r = radeon_bo_create(rdev);
+	return 0;
+}
+""",
+    "guard is hidden by a null-boundary preprocessor conditional": """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+#if 0
+	;
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+#endif
+	;
+	r = radeon_bo_create(rdev);
+	return 0;
 }
 """,
     "forward goto bypasses the guard": """
@@ -714,6 +1047,27 @@ int radeon_mode_dumb_create(struct drm_file *file_priv)
 """
 
 DUMB_FIXTURES_BAD = {
+    "result guard controlled by an unbraced unreachable condition": """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+	r = radeon_gem_object_create(rdev, size, 0, domain, 0, false, &gobj);
+	if (false)
+		if (r)
+			return r;
+	return 0;
+}
+""",
+    "failure return nested in an unreachable block": """
+int radeon_mode_dumb_create(struct drm_file *file_priv)
+{
+	r = radeon_gem_object_create(rdev, size, 0, domain, 0, false, &gobj);
+	if (r) {
+		if (false)
+			return r;
+	}
+	return 0;
+}
+""",
     "failure translated to -ENOMEM": """
 int radeon_mode_dumb_create(struct drm_file *file_priv)
 {
@@ -768,6 +1122,12 @@ struct drm_gem_object *radeon_gem_prime_import_sg_table(struct drm_device *dev)
 """
 
 PRIME_FIXTURE_MUTATIONS = {
+    "translation unit overrides up_read": (
+        "struct drm_gem_object *radeon_gem_prime_import_sg_table",
+        "#undef up_read\n"
+        "#define up_read(lock) do { } while (0)\n"
+        "struct drm_gem_object *radeon_gem_prime_import_sg_table",
+    ),
     "guard polarity inverted": (
         "if (READ_ONCE(rdev->gpu_parked))",
         "if (!READ_ONCE(rdev->gpu_parked))",
@@ -783,6 +1143,53 @@ PRIME_FIXTURE_MUTATIONS = {
     "guard unlock removed": (
         "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
         "\t\treturn ERR_PTR(-EIO);",
+    ),
+    "guard unlock is nested in an unreachable block": (
+        "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
+        (
+            "\t\tif (false) {\n"
+            "\t\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\t}\n"
+            "\t\treturn ERR_PTR(-EIO);"
+        ),
+    ),
+    "guard unlock is conditional without braces": (
+        "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
+        (
+            "\t\tif (false)\n"
+            "\t\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\treturn ERR_PTR(-EIO);"
+        ),
+    ),
+    "guard goto skips the unlock": (
+        "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
+        (
+            "\t\tgoto after_unlock;\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "after_unlock:\n"
+            "\t\t;\n"
+            "\t\treturn ERR_PTR(-EIO);"
+        ),
+    ),
+    "guard loops before the unlock": (
+        "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
+        (
+            "\t\tfor (;;)\n"
+            "\t\t\t;\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\treturn ERR_PTR(-EIO);"
+        ),
+    ),
+    "guard unlock is disabled by preprocessing": (
+        "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
+        (
+            "\t\t;\n"
+            "#if 0\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "#endif\n"
+            "\t\t;\n"
+            "\t\treturn ERR_PTR(-EIO);"
+        ),
     ),
     "exclusive lock released before guard": (
         "\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))",
@@ -850,6 +1257,42 @@ WAIT_FIXTURE_MUTATIONS = {
     "guard unlock removed": (
         ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
         "\t\tdrm_gem_object_put(gobj);",
+    ),
+    "guard unlock is nested in an unreachable block": (
+        ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
+        (
+            "\t\tif (false) {\n"
+            "\t\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\t}\n"
+            "\t\tdrm_gem_object_put(gobj);"
+        ),
+    ),
+    "guard unlock is conditional without braces": (
+        ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
+        (
+            "\t\tif (false)\n"
+            "\t\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\tdrm_gem_object_put(gobj);"
+        ),
+    ),
+    "guard goto skips the unlock": (
+        ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
+        (
+            "\t\tgoto after_unlock;\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "after_unlock:\n"
+            "\t\t;\n"
+            "\t\tdrm_gem_object_put(gobj);"
+        ),
+    ),
+    "guard loops before the unlock": (
+        ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
+        (
+            "\t\tfor (;;)\n"
+            "\t\t\t;\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\tdrm_gem_object_put(gobj);"
+        ),
     ),
     "exclusive lock released before guard": (
         "\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))",
@@ -1016,10 +1459,100 @@ CS_FIXTURES_BAD = {
         "\t\treturn -EIO;",
         1,
     ),
+    "parked refusal unlock is nested in an unreachable block": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EIO;",
+            "\t\tif (false) {\n"
+            "\t\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\t}\n"
+            "\t\treturn -EIO;",
+            1,
+        )
+    ),
+    "parked refusal unlock is conditional without braces": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EIO;",
+            "\t\tif (false)\n"
+            "\t\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\treturn -EIO;",
+            1,
+        )
+    ),
+    "parked refusal goto skips the unlock": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EIO;",
+            "\t\tgoto after_parked_unlock;\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "after_parked_unlock:\n"
+            "\t\t;\n"
+            "\t\treturn -EIO;",
+            1,
+        )
+    ),
+    "parked refusal loops before the unlock": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EIO;",
+            "\t\tfor (;;)\n"
+            "\t\t\t;\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\treturn -EIO;",
+            1,
+        )
+    ),
+    "parked refusal unlock is disabled by preprocessing": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EIO;",
+            "\t\t;\n"
+            "#if 0\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "#endif\n"
+            "\t\t;\n"
+            "\t\treturn -EIO;",
+            1,
+        )
+    ),
     "acceleration refusal retains read lock": CS_FIXTURE_GOOD.replace(
         "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EBUSY;",
         "\t\treturn -EBUSY;",
         1,
+    ),
+    "acceleration return is nested in an unreachable block": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\treturn -EBUSY;",
+            "\t\tif (false) {\n"
+            "\t\t\treturn -EBUSY;\n"
+            "\t\t}",
+            1,
+        )
+    ),
+    "acceleration return is conditional without braces": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\treturn -EBUSY;",
+            "\t\tif (false)\n"
+            "\t\t\treturn -EBUSY;",
+            1,
+        )
+    ),
+    "acceleration return follows an infinite loop": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn -EBUSY;",
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t\tfor (;;)\n"
+            "\t\t\t;\n"
+            "\t\treturn -EBUSY;",
+            1,
+        )
+    ),
+    "acceleration return is disabled by preprocessing": (
+        CS_FIXTURE_GOOD.replace(
+            "\t\treturn -EBUSY;",
+            "\t\t;\n"
+            "#if 0\n"
+            "\t\treturn -EBUSY;\n"
+            "#endif\n"
+            "\t\t;",
+            1,
+        )
     ),
     "reset begins before read unlock": CS_FIXTURE_GOOD.replace(
         "\t\tup_read(&rdev->exclusive_lock);\n"
