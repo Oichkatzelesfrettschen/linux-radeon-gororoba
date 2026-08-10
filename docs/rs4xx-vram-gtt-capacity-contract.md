@@ -4,7 +4,7 @@
 
 `policy/rs4xx-vram-gtt-capacity-contract.tsv` is the finite Linux source
 contract for RS482 capacity admission, placement, allocation, movement, and
-observation. The contract has three supporting denominators:
+observation. The contract has four supporting denominators:
 
 * `policy/rs482-gtt-capacity-matrix.tsv` fixes the four requested nominal GTT
   selectors and their source-derived metadata sizes.
@@ -152,8 +152,9 @@ with a fixed 128 MiB VRAM input. Each row states
 | 512 | `0x00000008` | `0x00000009` | 131,072 | 2,621,440 |
 | 1024 | `0x0000000a` | `0x0000000b` | 262,144 | 5,242,880 |
 
-The source default is 512 MiB only when RS482 resolves the shared auto request
-first. That default does not establish an optimum.
+Every family below `CHIP_RV770` resolves an auto request to 512 MiB. A shared
+512 MiB value therefore does not identify RS482 as the first probed device and
+does not establish an optimum.
 
 The exclusion ledger closes ten classes. It distinguishes supported selectors
 below the requested frontier, generic validation fallbacks, the supported but
@@ -218,12 +219,15 @@ T(V, U) = max(floor(max(floor(V / 2) - U, 0) / 2), F)
 For `V = 128 MiB`, the nonfloor segment is:
 
 ```text
-T(128 MiB, U) = 32 MiB - floor(U / 2)
+T(128 MiB, U) = 32 MiB - ceil(U / 2)
 ```
 
-The intercept is 32 MiB. The usage slope is minus one half. The one MiB floor
-begins at 62 MiB of usage, which equals 65,011,712 bytes. The validator
-rederives all three coefficients and the knee from the retained inputs.
+The intercept is 32 MiB. The usage slope is minus one half over each two-byte
+usage increment. Odd usage values add a one-byte downward rounding term. The
+one MiB floor first equals the raw threshold at 65,011,711 bytes in the full
+integer-byte domain. For page-aligned Radeon BO usage, the first reachable
+4 KiB-aligned value at the floor is 62 MiB, or 65,011,712 bytes. The validator
+rederives the coefficients and the byte-domain knee from the retained inputs.
 
 `radeon_bo_list_validate()` compares the already accumulated movement against
 the threshold with a strict `bytes_moved > threshold` test before it validates
