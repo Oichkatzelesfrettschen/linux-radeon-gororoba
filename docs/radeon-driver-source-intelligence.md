@@ -555,6 +555,26 @@ source delta.
 - The capture contains no RS482 or Palm hardware verdict. Those verdicts
   require exact target bundles in the owning evidence repository.
 
+## Live RS482 capacity-policy extension
+
+The sealed `8158297` reference remains an attestation of its original 43 roots
+and 45 declared bindings. The live policy extends the next capture to 73 unique
+roots and 55 exact declared bindings. It adds request normalization, RS400 ASIC
+initialization, selector adjustment, address fit, TTM managers, allocator
+movement, pin accounting, capacity ioctls, GEM observation, and the excluded
+raw VRAM and GTT reader boundary.
+
+The root expansion changes the producer-derived cscope denominator from 129 to
+219 raw queries. It changes the source-only command contract from 156 to 246
+rows and the complete kernel-lane command contract from 176 to 266 rows. The
+90 added rows are the three cscope queries for each of 30 new roots. The
+analyzer, kernel build, and profile command sets otherwise remain unchanged.
+
+`scripts/check_rs4xx_vram_gtt_capacity.py` owns the semantic source contract.
+The source map owns structural candidates only. A fresh capture must reproduce
+the expanded denominator before its counts replace the sealed reference
+figures in this document.
+
 ## Roadmap and completion gates
 
 The source intelligence program advances through these concrete gates:
@@ -579,14 +599,19 @@ The source intelligence program advances through these concrete gates:
 6. Any new ioctl, callback, work item, debugfs node, file operation, ASIC
    table, or passed function expands the declared indirect edge denominator
    and the self test mutation matrix.
-7. Any new hazardous path gains an exact contextual witness, maximum side
+7. The RS482 capacity source checker closes its four selectors, ten exclusions,
+   ten coefficients, 36 source functions, module request, ioctl table, and
+   register encodings before any target trial. A fresh source-only capture and
+   the required complete kernel-lane CI job close the 73-root graph.
+8. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.
-8. `steinmarder-r300` records a read only Vostro production baseline with
-   module, package, boot, device, and log identity before any attended runtime
-   escalation.
-9. `radeon-custom` advances its signed source pin and package attestation only
-   after the source branch merges. Deployment identity remains separate from
-   source and hardware acceptance.
-10. A completion claim requires a clean full verifier, all semantic checkers,
+9. `steinmarder-r300` records a read only Vostro production baseline with
+   module, package, boot, device, effective GTT interval, allocator counters,
+   and log identity before any allocation-pressure or submit trial.
+10. `radeon-custom` advances its signed source pin and package attestation only
+    when the driver source subtree identity changes. A policy-only batch does
+    not advance that pin. Deployment identity remains separate from source and
+    hardware acceptance.
+11. A completion claim requires a clean full verifier, all semantic checkers,
    both exact kernel roots, the required CI status, merged pull request, synced
    main checkout, and an explicit ledger of runtime checks that remain not run.

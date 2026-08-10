@@ -477,6 +477,10 @@ jobs:
         run: python3 scripts/check_radeon_gart_lifecycle.py --selftest
       - name: Radeon GART lifecycle contract
         run: python3 scripts/check_radeon_gart_lifecycle.py
+      - name: RS4xx VRAM and GTT capacity calibration
+        run: python3 scripts/check_rs4xx_vram_gtt_capacity.py --selftest
+      - name: RS4xx VRAM and GTT capacity contract
+        run: python3 scripts/check_rs4xx_vram_gtt_capacity.py
       - name: Radeon CS reservation and fence calibration
         run: python3 scripts/check_radeon_cs_reservation_fence_contract.py --selftest
       - name: Radeon CS reservation and fence contract

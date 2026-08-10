@@ -9468,7 +9468,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     expected_source_commands = expected_command_records(policy, [entry], set())
     check(
         "source command contract closes the analyzer command denominator",
-        len(expected_source_commands) == 156,
+        len(expected_source_commands) == 246,
     )
     expected_kernel_commands = expected_command_records(
         policy,
@@ -9480,7 +9480,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     ]
     check(
         "kernel command contract pins host make, shell, and LLVM prefix",
-        len(expected_kernel_commands) == 176
+        len(expected_kernel_commands) == 266
         and len(expected_make_commands) == 12
         and all(
             (arguments := json.loads(row[6]))[0] == "/usr/bin/make"

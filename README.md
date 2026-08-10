@@ -153,6 +153,13 @@ finite opaque control set, and assume other intervening calls return. They do
 not prove a compiler control flow graph, included header macro state, or
 runtime execution.
 
+The RS482 VRAM and GTT capacity policy expands the live source denominator to
+73 unique roots and 55 exact declared bindings. The added graph covers module
+request normalization, RS400 initialization, address fit, TTM capacity,
+allocator movement, capacity ioctls, GEM observations, and the excluded raw
+VRAM and GTT reader boundary. Previously sealed source-map bundles retain their
+historical denominators and do not acquire these rows retroactively.
+
 `docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
 the complete reference attestation, the four retained path witnesses, the
 coefficient derivations, the trust boundaries, and the next verification gates.
@@ -254,7 +261,7 @@ GPU register and reset claims.
 
 ## Memory path contracts
 
-The active RS4xx memory-path source model has two finite owners:
+The active RS4xx memory-path source model has three finite owners:
 
 * `policy/rs4xx-gart-memory-path.tsv` covers GART, TTM, BO mapping, PTE
   publication, userptr ownership, CPU mappings, and teardown. Its narrative is
@@ -263,10 +270,18 @@ The active RS4xx memory-path source model has two finite owners:
   BO reservations, dependency import, IB scheduling, r300 fence commands, and
   reservation-fence publication. Its narrative is
   `docs/radeon-cs-reservation-fence-contract.md`.
+* `policy/rs4xx-vram-gtt-capacity-contract.tsv` covers aperture admission,
+  GART metadata cost, allocator capacity, BO placement and movement, pin
+  accounting, usage counters, and fragmentation observations. Its exact
+  four-selector matrix, exclusion ledger, coefficient ledger, and narrative
+  live beside it in `policy/` and
+  `docs/rs4xx-vram-gtt-capacity-contract.md`.
 
-Both ledgers separate source status from runtime and silicon status. In
+All three ledgers separate source status from runtime and silicon status. In
 particular, reservation fences and emitted cache commands prove software and
-ring order, not cached-GTT payload visibility. Exact RS482 payload and replay
+ring order, not cached-GTT payload visibility. GTT size is virtual aperture
+capacity rather than proved physical backing, and a source-supported selector
+is not a performance result. Exact RS482 payload, allocation-pressure, and replay
 verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM, address
 domain, PAT, MTRR, and event-scoped aperture observations.
 

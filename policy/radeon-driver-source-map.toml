@@ -64,7 +64,7 @@ kconfig = "Kconfig"
 [callback_extractor]
 minimum_field_initializers = 300
 minimum_define_show_attributes = 20
-minimum_drm_ioctl_bindings = 10
+minimum_drm_ioctl_bindings = 12
 minimum_work_bindings = 5
 
 [preprocessor]
@@ -158,14 +158,44 @@ falsifier = "A changed link in the RS480 ASIC ring, parser callback, or packet z
 [[partition]]
 name = "gart-and-memory"
 roots = [
+  "radeon_gart_size_auto",
+  "radeon_check_arguments",
+  "radeon_vram_location",
+  "radeon_gtt_location",
+  "rs400_init",
+  "rs400_startup",
+  "rs400_mc_init",
+  "rs400_gart_adjust_size",
   "radeon_ttm_init",
+  "radeon_ttm_init_vram",
+  "radeon_ttm_set_active_vram_size",
+  "radeon_ttm_init_gtt",
+  "radeon_ttm_debugfs_init",
+  "radeon_ttm_vram_open",
+  "radeon_ttm_vram_read",
+  "radeon_ttm_gtt_open",
+  "radeon_ttm_gtt_read",
+  "radeon_bo_init",
+  "radeon_ttm_placement_from_domain",
+  "radeon_bo_get_threshold_for_moves",
+  "radeon_bo_list_validate",
+  "radeon_bo_pin_restricted",
+  "radeon_bo_unpin",
   "radeon_gart_init",
+  "radeon_gart_table_ram_alloc",
+  "radeon_gart_table_ram_free",
   "rs400_gart_init",
   "rs400_gart_enable",
+  "rs400_gart_fini",
   "rs400_gart_set_page",
   "rs400_gart_tlb_flush",
+  "r100_vram_init_sizes",
+  "radeon_gem_info_ioctl",
+  "radeon_gem_debugfs_init",
+  "radeon_debugfs_gem_info_show",
+  "radeon_info_ioctl",
 ]
-falsifier = "A preprocessed GART wrapper without a valid caller local rdev or a changed RS400 GART initializer invalidates the inferred edge."
+falsifier = "A changed request latch, RS400 selector, address-fit relation, allocator edge, observation binding, or GART callback invalidates the partition."
 
 [[partition]]
 name = "reset-and-park"
@@ -394,6 +424,28 @@ pattern = '(?s)static const struct drm_driver kms_driver = \{.*?\.gem_prime_impo
 expected_matches = 1
 
 [[binding]]
+name = "radeon-init-wrapper"
+partition = "gart-and-memory"
+kind = "wrapper-macro"
+scope = "match"
+caller = "radeon_init"
+callee = "rdev->asic->init"
+path = "drivers/gpu/drm/radeon/radeon.h"
+pattern = '#define radeon_init\(rdev\) \(rdev\)->asic->init\(\(rdev\)\)'
+expected_matches = 1
+
+[[binding]]
+name = "rs400-init-target"
+partition = "gart-and-memory"
+kind = "callback-table"
+scope = "brace"
+caller = "rs400_asic"
+callee = "rs400_init"
+path = "drivers/gpu/drm/radeon/radeon_asic.c"
+pattern = '(?s)static struct radeon_asic rs400_asic = \{.*?\.init = &rs400_init'
+expected_matches = 1
+
+[[binding]]
 name = "ioctl-gem-create"
 partition = "profile-and-admission"
 kind = "ioctl-macro"
@@ -435,6 +487,97 @@ caller = "drm_ioctl_dispatch"
 callee = "radeon_gem_userptr_ioctl"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
 pattern = 'DRM_IOCTL_DEF_DRV\(RADEON_GEM_USERPTR, radeon_gem_userptr_ioctl,'
+expected_matches = 1
+
+[[binding]]
+name = "ioctl-gem-info-capacity"
+partition = "gart-and-memory"
+kind = "ioctl-macro"
+scope = "match"
+caller = "drm_ioctl_dispatch"
+callee = "radeon_gem_info_ioctl"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = 'DRM_IOCTL_DEF_DRV\(RADEON_GEM_INFO, radeon_gem_info_ioctl,'
+expected_matches = 1
+
+[[binding]]
+name = "ioctl-info-capacity"
+partition = "gart-and-memory"
+kind = "ioctl-macro"
+scope = "match"
+caller = "drm_ioctl_dispatch"
+callee = "radeon_info_ioctl"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = 'DRM_IOCTL_DEF_DRV\(RADEON_INFO, radeon_info_ioctl,'
+expected_matches = 1
+
+[[binding]]
+name = "gem-info-show-attribute"
+partition = "gart-and-memory"
+kind = "show-attribute-macro"
+scope = "match"
+caller = "radeon_debugfs_gem_info_fops"
+callee = "radeon_debugfs_gem_info_show"
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+pattern = 'DEFINE_SHOW_ATTRIBUTE\(radeon_debugfs_gem_info\)'
+expected_matches = 1
+
+[[binding]]
+name = "gem-info-debugfs-registration"
+partition = "gart-and-memory"
+kind = "debugfs-registration"
+scope = "brace"
+caller = "radeon_gem_debugfs_init"
+callee = "radeon_debugfs_gem_info_fops"
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+pattern = '(?s)void radeon_gem_debugfs_init\([^;]+\)\s*\{.*?debugfs_create_file\("radeon_gem_info", 0444,\s*root, rdev,\s*&radeon_debugfs_gem_info_fops\)'
+expected_matches = 1
+match_literals = true
+
+[[binding]]
+name = "ttm-vram-debugfs-registration"
+partition = "gart-and-memory"
+kind = "debugfs-registration"
+scope = "brace"
+caller = "radeon_ttm_debugfs_init"
+callee = "radeon_ttm_vram_fops"
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+pattern = '(?s)static void radeon_ttm_debugfs_init\([^;]+\)\s*\{.*?debugfs_create_file\("radeon_vram", 0444,\s*root, rdev,\s*&radeon_ttm_vram_fops\)'
+expected_matches = 1
+match_literals = true
+
+[[binding]]
+name = "ttm-gtt-debugfs-registration"
+partition = "gart-and-memory"
+kind = "debugfs-registration"
+scope = "brace"
+caller = "radeon_ttm_debugfs_init"
+callee = "radeon_ttm_gtt_fops"
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+pattern = '(?s)static void radeon_ttm_debugfs_init\([^;]+\)\s*\{.*?debugfs_create_file\("radeon_gtt", 0444,\s*root, rdev,\s*&radeon_ttm_gtt_fops\)'
+expected_matches = 1
+match_literals = true
+
+[[binding]]
+name = "ttm-vram-fops-read"
+partition = "gart-and-memory"
+kind = "file-operations-table"
+scope = "brace"
+caller = "radeon_ttm_vram_fops"
+callee = "radeon_ttm_vram_read"
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+pattern = '(?s)static const struct file_operations radeon_ttm_vram_fops = \{.*?\.read = radeon_ttm_vram_read'
+expected_matches = 1
+
+[[binding]]
+name = "ttm-gtt-fops-read"
+partition = "gart-and-memory"
+kind = "file-operations-table"
+scope = "brace"
+caller = "radeon_ttm_gtt_fops"
+callee = "radeon_ttm_gtt_read"
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+pattern = '(?s)static const struct file_operations radeon_ttm_gtt_fops = \{.*?\.read = radeon_ttm_gtt_read'
 expected_matches = 1
 
 [[binding]]
