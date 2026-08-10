@@ -4232,11 +4232,23 @@ def build_cscope_index(
     cscope = shutil.which("cscope") or "cscope"
     entry_map = {entry.path: entry for entry in entries}
     source_path_prefix, cscope_basenames = cscope_flat_source_denominator(entries)
-    expected_source_list = "\n".join(
-        f"{source_path_prefix}/{basename}" for basename in cscope_basenames
+    c_scope_paths = sorted(
+        entry.path
+        for entry in entries
+        if entry.source_class == "c"
+        and Path(entry.path).parent.as_posix() == source_path_prefix
     )
     require(
-        source_list.read_text(encoding="utf-8") == expected_source_list + "\n",
+        len(c_scope_paths) == len(cscope_basenames),
+        "cscope source input differs from C source classifier",
+    )
+    source_list_lines = [
+        line.strip()
+        for line in source_list.read_text(encoding="utf-8").splitlines()
+        if line.strip().endswith(".c")
+    ]
+    require(
+        source_list_lines == [f"{source_path_prefix}/{basename}" for basename in cscope_basenames],
         "cscope source input differs from the analyzer denominator",
     )
     sandbox = analyzer_sandbox(
