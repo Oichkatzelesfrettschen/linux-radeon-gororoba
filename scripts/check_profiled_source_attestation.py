@@ -785,7 +785,7 @@ def changed_source_commit_paths_at(
                     parents,
                     git_reader=canonical_git_output,
                     tree_reader=canonical_tree_entry,
-                    pathspec=None,
+                    pathspec=DRIVER_SUBTREE,
                 )
             except DeltaMapError as exc:
                 raise AttestationError(str(exc)) from exc
@@ -1007,14 +1007,16 @@ def expect_union_failure(repository: Path, label: str) -> None:
             "base",
         ):
             require(
-                len(arguments) == 5 and arguments[4] in {"first", "second", "result"},
-                "self-test whole-tree merge command differs",
+                len(arguments) == 7
+                and arguments[4] in {"first", "second", "result"}
+                and arguments[5:] == ("--", DRIVER_SUBTREE),
+                "self-test source-scoped merge command differs",
             )
             return source_path + "\n"
-        raise AttestationError("self-test whole-tree merge command differs")
+        raise AttestationError("self-test source-scoped merge command differs")
 
     def merge_tree_reader(_root: Path, treeish: str, path: str) -> str:
-        require(path == source_path, "self-test whole-tree merge path differs")
+        require(path == source_path, "self-test source-scoped merge path differs")
         entries = {
             "base": "base-entry",
             "first": "first-entry",
@@ -1030,12 +1032,75 @@ def expect_union_failure(repository: Path, label: str) -> None:
             ["first", "second"],
             git_reader=merge_reader,
             tree_reader=merge_tree_reader,
-            pathspec=None,
+            pathspec=DRIVER_SUBTREE,
         )
     except DeltaMapError:
         print(f"  ok: {label}")
         return
     raise AttestationError(f"self-test accepted {label}")
+
+
+def calibrate_real_merge_history(repository: Path) -> None:
+    ledger_merge = "2edbc15b74640472778362313c44b7da5e63736d"
+    ledger_parents = canonical_git_output(
+        repository, "rev-list", "--parents", "-n", "1", ledger_merge
+    ).split()[1:]
+    try:
+        canonical_validate_union_only_merge(
+            repository,
+            ledger_merge,
+            ledger_parents,
+            git_reader=canonical_git_output,
+            tree_reader=canonical_tree_entry,
+            pathspec=None,
+        )
+    except DeltaMapError as exc:
+        require(
+            "docs/base-delta-map.tsv" in str(exc),
+            "self-test documentation merge reports the wrong whole-tree path",
+        )
+    else:
+        raise AttestationError(
+            "self-test documentation merge unexpectedly passes whole-tree union"
+        )
+    try:
+        canonical_validate_union_only_merge(
+            repository,
+            ledger_merge,
+            ledger_parents,
+            git_reader=canonical_git_output,
+            tree_reader=canonical_tree_entry,
+            pathspec=DRIVER_SUBTREE,
+        )
+    except DeltaMapError as exc:
+        raise AttestationError(
+            f"self-test source-scoped documentation merge rejected: {exc}"
+        ) from exc
+    print("  ok: documentation ledger divergence stays outside source attestation")
+
+    ec5_target = "ec5b88802441720b0b972b1b2a92e53171094f31"
+    history = source_history_commits_at(repository, ec5_target)
+    require(
+        bool(history) and history[-1] == ec5_target,
+        "self-test ec5b888 target history is incomplete",
+    )
+    changed = changed_source_commit_paths_at(repository, ec5_target)
+    require(
+        (
+            "285c87433b3fd7830806c9f47f4da5312a018cf5",
+            DRIVER_SUBTREE + "/radeon_rs4xx_dev.c",
+        )
+        in changed,
+        "self-test ec5b888 source history lost a driver path",
+    )
+    try:
+        ec5_map = canonical_parse_map(
+            git_bytes(repository, "show", f"{ec5_target}:{MAP_FILE}").decode("ascii")
+        )
+        canonical_validate_map(ec5_map, changed)
+    except (UnicodeDecodeError, DeltaMapError) as exc:
+        raise AttestationError(f"self-test ec5b888 source map differs: {exc}") from exc
+    print("  ok: ec5b888 source history and map validate through source-scoped unions")
 
 
 def expect_parse_failure(raw: bytes, label: str) -> None:
@@ -1312,7 +1377,8 @@ def self_test(repository: Path, authority: Path) -> int:
     else:
         raise AttestationError("self-test silently selected a default record scope")
 
-    expect_union_failure(repository, "whole-tree divergent merge rejected")
+    expect_union_failure(repository, "divergent driver-source merge rejected")
+    calibrate_real_merge_history(repository)
     expect_parse_failure(b'schema = 2\nvalue = "\xff"\n', "non-ASCII record")
     expect_parse_failure(b"schema = [2\n", "malformed TOML record")
 
