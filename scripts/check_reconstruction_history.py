@@ -294,6 +294,19 @@ def require_trusted_merge_parent(
         )
 
 
+def verify_post_tag_head(
+    commit: str,
+    parents: list[str],
+    trusted_base: str,
+) -> None:
+    try:
+        require_trusted_merge_parent(commit, parents, trusted_base)
+    except HistoryError as exc:
+        raise HistoryError(
+            f"{commit[:12]}: post-tag source head is not the exact-base union merge"
+        ) from exc
+
+
 def verify_post_tag_commit(
     repository: Path,
     commit: str,
@@ -539,6 +552,10 @@ def prepare(
     if not is_reconstruction_range(commits, trailers_by_commit):
         for commit in commits:
             verify_post_tag_commit(repository, commit, base)
+        head_and_parents = git(
+            repository, "rev-list", "--parents", "-n", "1", head
+        ).decode("ascii").split()
+        verify_post_tag_head(head, head_and_parents[1:], base)
         verify_source_delta_contract(repository)
         print("post-tag source range: no reconstruction matrix")
         return []
@@ -804,6 +821,7 @@ def self_test() -> int:
                 raise HistoryError("union calibration accepted invalid source content")
 
         require_trusted_merge_parent("merge", ["feature", "base"], "base")
+        verify_post_tag_head("head", ["feature", "base"], "base")
         for parents, trusted_base in (
             ([], "base"),
             (["feature"], "base"),
@@ -817,6 +835,12 @@ def self_test() -> int:
                 union_rejections += 1
             else:
                 raise HistoryError("union calibration accepted invalid parent authority")
+        try:
+            verify_post_tag_head("head", ["linear-parent"], "base")
+        except HistoryError:
+            union_rejections += 1
+        else:
+            raise HistoryError("union calibration accepted a one-parent head")
 
         verify_post_tag_paths(
             "commit",
