@@ -518,10 +518,11 @@ def check_prime_import_lock(
 ) -> None:
     """Prove PRIME checks the latch before reservation and allocation locks."""
 
+    function_open = body.find("{")
     lock = one_match_at_depth(body, READ_LOCK, 1, "prime-import read lock")
     require_direct_statement(
         body,
-        body.find("{"),
+        function_open,
         lock.start(),
         "prime-import read lock",
     )
@@ -533,7 +534,7 @@ def check_prime_import_lock(
     )
     allocation = one_match_at_depth(
         body,
-        re.compile(r"\bradeon_bo_create\s*\("),
+        re.compile(r"\bret\s*=\s*radeon_bo_create\s*\("),
         1,
         "prime-import allocation",
     )
@@ -549,6 +550,13 @@ def check_prime_import_lock(
         1,
         "prime-import final read unlock",
     )
+    for match, label in (
+        (reservation, "prime-import reservation lock"),
+        (allocation, "prime-import allocation"),
+        (reservation_unlock, "prime-import reservation unlock"),
+        (final_unlock, "prime-import final read unlock"),
+    ):
+        require_direct_statement(body, function_open, match.start(), label)
     if not (
         lock.start()
         < guard_match.start()
@@ -594,16 +602,17 @@ def check_wait_idle_lock(
 ) -> None:
     """Prove WAIT leaves the bounded reservation wait outside the read lock."""
 
+    function_open = body.find("{")
     wait = one_match_at_depth(
         body,
-        re.compile(r"\bdma_resv_wait_timeout\s*\("),
+        re.compile(r"\bret\s*=\s*dma_resv_wait_timeout\s*\("),
         1,
         "wait-idle-flush reservation wait",
     )
     lock = one_match_at_depth(body, READ_LOCK, 1, "wait-idle-flush read lock")
     require_direct_statement(
         body,
-        body.find("{"),
+        function_open,
         lock.start(),
         "wait-idle-flush read lock",
     )
@@ -625,6 +634,12 @@ def check_wait_idle_lock(
         1,
         "wait-idle-flush final read unlock",
     )
+    for match, label in (
+        (wait, "wait-idle-flush reservation wait"),
+        (placement, "wait-idle-flush placement read"),
+        (final_unlock, "wait-idle-flush final read unlock"),
+    ):
+        require_direct_statement(body, function_open, match.start(), label)
     if not (
         wait.start()
         < lock.start()
@@ -1363,6 +1378,25 @@ PRIME_FIXTURE_MUTATIONS = {
         "\tdma_resv_lock(resv, NULL);",
         "\tif (false) {\n\t\tdma_resv_lock(resv, NULL);\n\t}",
     ),
+    "reservation lock is controlled by an unreachable condition": (
+        "\tdma_resv_lock(resv, NULL);",
+        "\tif (false)\n\t\tdma_resv_lock(resv, NULL);",
+    ),
+    "allocation is controlled by an unreachable condition": (
+        "\tret = radeon_bo_create(rdev, size, align, false, domain, 0, sg, resv, &bo);",
+        "\tif (false)\n"
+        "\t\tret = radeon_bo_create(rdev, size, align, false, domain, 0, sg, resv, &bo);",
+    ),
+    "reservation unlock is controlled by an unreachable condition": (
+        "\tdma_resv_unlock(resv);",
+        "\tif (false)\n\t\tdma_resv_unlock(resv);",
+    ),
+    "final read unlock is controlled by an unreachable condition": (
+        "\tup_read(&rdev->exclusive_lock);\n\treturn &bo->tbo.base;",
+        "\tif (false)\n"
+        "\t\tup_read(&rdev->exclusive_lock);\n"
+        "\treturn &bo->tbo.base;",
+    ),
 }
 
 WAIT_FIXTURE_GOOD = """
@@ -1472,6 +1506,22 @@ WAIT_FIXTURE_MUTATIONS = {
             "\t\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);\n"
             "\t}"
         ),
+    ),
+    "reservation wait is controlled by an unreachable condition": (
+        "\tret = dma_resv_wait_timeout(resv, usage, true, timeout);",
+        "\tif (false)\n"
+        "\t\tret = dma_resv_wait_timeout(resv, usage, true, timeout);",
+    ),
+    "placement read is controlled by an unreachable condition": (
+        "\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);",
+        "\tif (false)\n"
+        "\t\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);",
+    ),
+    "final read unlock is controlled by an unreachable condition": (
+        "\tup_read(&rdev->exclusive_lock);\n\treturn r;",
+        "\tif (false)\n"
+        "\t\tup_read(&rdev->exclusive_lock);\n"
+        "\treturn r;",
     ),
 }
 
