@@ -370,7 +370,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
     runs-on: [self-hosted, linux, cachyos, workstation-host]
-    timeout-minutes: 120
+    timeout-minutes: 130
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -408,7 +408,7 @@ jobs:
                 "6.18.38-2-cachyos-lts=$LLVM_TOOLCHAIN_BIN_618" \
               --kernel-toolchain-bin \
                 "7.1.4-1-cachyos=$LLVM_TOOLCHAIN_BIN_71"
-          python3 scripts/capture_radeon_driver_source_map.py \
+          timeout 600 python3 scripts/capture_radeon_driver_source_map.py \
             --verify "$output" \
             --require-all-kernel-lanes
 

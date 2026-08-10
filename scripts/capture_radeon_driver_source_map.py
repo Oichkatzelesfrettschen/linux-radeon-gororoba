@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
@@ -75,9 +76,14 @@ MAX_SOURCE_FILES = 256
 MAX_SOURCE_BYTES = 7_000_000
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
+MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
+MAX_TOOLCHAIN_PREFIX_DEPTH = 16
+MAX_TOOLCHAIN_REGULAR_FILE_BYTES = 160_000_000
+MAX_TOOLCHAIN_REGULAR_TOTAL_BYTES = 600_000_000
 CANONICAL_PREPROCESSOR_WORK = "/gororoba/preprocessor-work"
 CANONICAL_KERNEL_BUILD_ROOT = "/gororoba/kernel-build-root"
 CANONICAL_KERNEL_TOOLCHAIN = "/gororoba/kernel-toolchain"
+TOOLCHAIN_PREFIX_TREE_SCHEMA = "gororoba-kernel-toolchain-prefix-tree-v1"
 GLOBAL_DATABASE_NAMES = ("GTAGS", "GRTAGS", "GPATH")
 LLVM_KERNEL_TOOLS = (
     "clang",
@@ -145,6 +151,7 @@ C_COMMENT_OR_LITERAL = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
 )
+C_LINE_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
 CFLOW_ROW = re.compile(r"^\s*\d+\s+\{\s*(\d+)\}\s+(\S[^:]*):\s*(.*)$")
 FIELD_INITIALIZER = re.compile(
     r"(?m)^\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*&?"
@@ -284,6 +291,7 @@ class KernelLane:
     manifest: str
     toolchain_declaration: str
     toolchain_manifest: str
+    toolchain_prefix_manifest: str
     profiles: tuple[str, ...]
 
 
@@ -300,6 +308,18 @@ class ToolchainClosureEntry:
     resolved_sha256: str
     version_first_line: str
     version_output_sha256: str
+
+
+@dataclass(frozen=True)
+class ToolchainPrefixEntry:
+    relative_path: str
+    entry_type: str
+    mode: str
+    size: int | None
+    identity_sha256: str
+    link_target: str
+    resolved_path: str
+    resolved_sha256: str
 
 
 @dataclass(frozen=True)
@@ -430,13 +450,71 @@ def regular_tree_directories(root: Path, label: str) -> set[str]:
 
 
 def read_bounded_file(path: Path, maximum_size: int, label: str) -> bytes:
+    require(maximum_size >= 0, f"{label} has an invalid size ceiling")
     try:
-        status = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | os.O_CLOEXEC
+            | os.O_NOCTTY
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK,
+        )
     except OSError as exc:
         raise SourceMapError(f"{label} is absent: {path}") from exc
-    require(stat.S_ISREG(status.st_mode), f"{label} is not a regular file")
-    require(status.st_size <= maximum_size, f"{label} exceeds its size ceiling")
-    return path.read_bytes()
+    try:
+        try:
+            status_before = os.fstat(descriptor)
+            require(
+                stat.S_ISREG(status_before.st_mode),
+                f"{label} is not a regular file",
+            )
+            require(
+                status_before.st_size <= maximum_size,
+                f"{label} exceeds its size ceiling",
+            )
+            chunks: list[bytes] = []
+            remaining = maximum_size + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1_048_576, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            content = b"".join(chunks)
+            require(
+                len(content) <= maximum_size,
+                f"{label} exceeds its size ceiling",
+            )
+            status_after = os.fstat(descriptor)
+        except OSError as exc:
+            raise SourceMapError(f"cannot read {label}: {path}") from exc
+        stable_before = (
+            status_before.st_dev,
+            status_before.st_ino,
+            status_before.st_mode,
+            status_before.st_nlink,
+            status_before.st_size,
+            status_before.st_mtime_ns,
+            status_before.st_ctime_ns,
+        )
+        stable_after = (
+            status_after.st_dev,
+            status_after.st_ino,
+            status_after.st_mode,
+            status_after.st_nlink,
+            status_after.st_size,
+            status_after.st_mtime_ns,
+            status_after.st_ctime_ns,
+        )
+        require(
+            stable_before == stable_after
+            and len(content) == status_before.st_size,
+            f"{label} changes while it is read",
+        )
+        return content
+    finally:
+        os.close(descriptor)
 
 
 def git_object_id(object_type: str, content: bytes) -> str:
@@ -556,14 +634,23 @@ def write_bytes(path: Path, content: bytes) -> None:
     path.write_bytes(content)
 
 
-def write_tsv(path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
+def canonical_tsv_bytes(
+    schema: str,
+    columns: tuple[str, ...] | list[str],
+    rows: list[tuple[Any, ...]] | list[list[str]],
+) -> bytes:
+    """Serialize one TSV through the repository canonical byte grammar."""
     stream = io.StringIO(newline="")
     stream.write(f"# schema: {schema}\n")
     writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
     writer.writerow(columns)
     for row in rows:
         writer.writerow(row)
-    write_text(path, stream.getvalue())
+    return stream.getvalue().encode("utf-8")
+
+
+def write_tsv(path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
+    write_bytes(path, canonical_tsv_bytes(schema, columns, rows))
 
 
 def read_tsv(path: Path, expected_schema: str) -> tuple[list[str], list[list[str]]]:
@@ -573,6 +660,40 @@ def read_tsv(path: Path, expected_schema: str) -> tuple[list[str], list[list[str
     parsed = list(csv.reader(lines[1:], delimiter="\t"))
     require(parsed and parsed[0], f"empty columns: {path}")
     return parsed[0], parsed[1:]
+
+
+def read_canonical_ascii_tsv(
+    path: Path,
+    expected_schema: str,
+    maximum_size: int,
+    label: str,
+    expected_sha256: str | None = None,
+) -> tuple[list[str], list[list[str]]]:
+    """Read, authenticate, and parse one bounded canonical ASCII TSV."""
+    content = read_bounded_file(path, maximum_size, label)
+    if expected_sha256 is not None:
+        require(
+            sha256_bytes(content) == expected_sha256,
+            f"{label} identity differs",
+        )
+    try:
+        text = content.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise SourceMapError(f"{label} is not ASCII") from exc
+    lines = text.splitlines()
+    require(
+        lines and lines[0] == f"# schema: {expected_schema}",
+        f"invalid schema: {path}",
+    )
+    require(len(lines) >= 2, f"missing columns: {path}")
+    parsed = list(csv.reader(lines[1:], delimiter="\t"))
+    require(parsed and parsed[0], f"empty columns: {path}")
+    columns, rows = parsed[0], parsed[1:]
+    require(
+        content == canonical_tsv_bytes(expected_schema, columns, rows),
+        f"{label} bytes are not canonical",
+    )
+    return columns, rows
 
 
 def reject_unknown(mapping: dict[str, Any], allowed: set[str], label: str) -> None:
@@ -941,6 +1062,7 @@ def load_policy(path: Path) -> Policy:
                 "manifest",
                 "toolchain_declaration",
                 "toolchain_manifest",
+                "toolchain_prefix_manifest",
                 "profiles",
             },
             label,
@@ -952,6 +1074,7 @@ def load_policy(path: Path) -> Policy:
                 string_value(kernel, "manifest", label),
                 string_value(kernel, "toolchain_declaration", label),
                 string_value(kernel, "toolchain_manifest", label),
+                string_value(kernel, "toolchain_prefix_manifest", label),
                 string_list(kernel, "profiles", label),
             )
         )
@@ -962,6 +1085,7 @@ def load_policy(path: Path) -> Policy:
             lane.manifest,
             lane.toolchain_declaration,
             lane.toolchain_manifest,
+            lane.toolchain_prefix_manifest,
         ):
             path = Path(declared_path)
             require(
@@ -1256,7 +1380,7 @@ def git_output(repository: Path, *args: str, text: bool = True) -> str | bytes:
         check=False,
         capture_output=True,
         text=text,
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+        env=command_environment_contract("/tmp"),
     )
     stderr = result.stderr if text else result.stderr.decode("utf-8", errors="replace")
     require(result.returncode == 0, f"git {' '.join(args)} failed: {stderr.strip()}")
@@ -1633,6 +1757,7 @@ def producer_input_paths(policy: Policy) -> dict[str, str]:
                 lane.manifest,
                 lane.toolchain_declaration,
                 lane.toolchain_manifest,
+                lane.toolchain_prefix_manifest,
             }
         )
     return {
@@ -1672,7 +1797,7 @@ def retain_producer_inputs(
 
 
 def strip_comments(source: str) -> str:
-    """Blank C comments while preserving literals, positions, and line count."""
+    """Apply C line splicing, then blank comments while retaining literals."""
 
     def blank_comment(match: re.Match[str]) -> str:
         token = match.group(0)
@@ -1680,16 +1805,43 @@ def strip_comments(source: str) -> str:
             return token
         return re.sub(r"[^\n]", " ", token)
 
-    return C_COMMENT_OR_LITERAL.sub(blank_comment, source)
+    return C_COMMENT_OR_LITERAL.sub(blank_comment, C_LINE_SPLICE.sub("", source))
 
 
 def strip_comments_and_literals(source: str) -> str:
-    """Blank C comments and literals while preserving positions and lines."""
+    """Apply C line splicing, then blank comments and C literals."""
 
     def blank(match: re.Match[str]) -> str:
         return re.sub(r"[^\n]", " ", match.group(0))
 
-    return C_COMMENT_OR_LITERAL.sub(blank, source)
+    return C_COMMENT_OR_LITERAL.sub(blank, C_LINE_SPLICE.sub("", source))
+
+
+def physical_offset_after_splicing(source: str, logical_offset: int) -> int:
+    """Map one phase-2 logical offset back to the physical source stream."""
+    require(logical_offset >= 0, "logical source offset is negative")
+    physical_offset = 0
+    current_logical_offset = 0
+    while physical_offset < len(source):
+        splice = C_LINE_SPLICE.match(source, physical_offset)
+        if splice is not None:
+            physical_offset = splice.end()
+            continue
+        if current_logical_offset == logical_offset:
+            return physical_offset
+        physical_offset += 1
+        current_logical_offset += 1
+    require(
+        current_logical_offset == logical_offset,
+        "logical source offset exceeds the phase-2 translation stream",
+    )
+    return physical_offset
+
+
+def physical_line_after_splicing(source: str, logical_offset: int) -> int:
+    """Return the physical one-based line for one phase-2 logical offset."""
+    physical_offset = physical_offset_after_splicing(source, logical_offset)
+    return source.count("\n", 0, physical_offset) + 1
 
 
 def missing_code_identifiers(source: str, identifiers: tuple[str, ...]) -> list[str]:
@@ -1698,6 +1850,72 @@ def missing_code_identifiers(source: str, identifiers: tuple[str, ...]) -> list[
         identifier
         for identifier in identifiers
         if re.search(rf"\b{re.escape(identifier)}\b", code) is None
+    ]
+
+
+def command_environment_contract(
+    home: str,
+    additions: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the complete allowlisted environment for retained commands."""
+    extra = additions or {}
+    require(
+        set(extra).issubset(
+            {"GTAGSDBPATH", "GTAGSROOT", "LD_LIBRARY_PATH", "PATH"}
+        ),
+        "command environment carries an unapproved variable",
+    )
+    return {
+        "HOME": home,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "TZ": "UTC",
+        **extra,
+    }
+
+
+def kernel_make_base_command(
+    profile: str,
+    kernel_root: str | Path,
+    driver_work: str | Path,
+    toolchain_bin: str | Path,
+    toolchain_prefix: str | Path,
+    preprocessor_work: str | Path,
+) -> list[str]:
+    """Build the single admitted Kbuild command prefix for one profile."""
+    kernel_root_text = str(kernel_root)
+    driver_work_text = str(driver_work)
+    toolchain_bin_text = str(toolchain_bin).rstrip("/")
+    toolchain_prefix_text = str(toolchain_prefix).rstrip("/")
+    preprocessor_work_text = str(preprocessor_work).rstrip("/")
+    include_trace = f"{preprocessor_work_text}/include/trace"
+    profile_header_path = f"{preprocessor_work_text}/radeon_build_profile.h"
+    prefix_maps = (
+        "--no-default-config "
+        f"-resource-dir={toolchain_prefix_text}/lib/clang/22 "
+        f"-ffile-prefix-map={preprocessor_work_text}="
+        f"{CANONICAL_PREPROCESSOR_WORK} "
+        f"-fmacro-prefix-map={preprocessor_work_text}="
+        f"{CANONICAL_PREPROCESSOR_WORK} "
+        f"-ffile-prefix-map={kernel_root_text}={CANONICAL_KERNEL_BUILD_ROOT} "
+        f"-fmacro-prefix-map={kernel_root_text}={CANONICAL_KERNEL_BUILD_ROOT} "
+        f"-ffile-prefix-map={toolchain_prefix_text}={CANONICAL_KERNEL_TOOLCHAIN} "
+        f"-fmacro-prefix-map={toolchain_prefix_text}={CANONICAL_KERNEL_TOOLCHAIN}"
+    )
+    kcflags = (
+        f"-I{include_trace} -include {profile_header_path} {prefix_maps}"
+    )
+    return [
+        "/usr/bin/make",
+        f"LLVM={toolchain_bin_text}/",
+        "SHELL=/usr/bin/sh",
+        "CONFIG_SHELL=/usr/bin/sh",
+        f"RADEON_BUILD_PROFILE={profile}",
+        f"KCFLAGS={kcflags}",
+        "-C",
+        kernel_root_text,
+        f"M={driver_work_text}",
     ]
 
 
@@ -1765,13 +1983,10 @@ class CommandRecorder:
             return output
 
         env_additions = environment or {}
-        command_environment = {
-            **os.environ,
-            "LC_ALL": "C",
-            "LANG": "C",
-            "TZ": "UTC",
-            **env_additions,
-        }
+        command_environment = command_environment_contract(
+            str(self.capture_root),
+            env_additions,
+        )
         result = subprocess.run(
             argv,
             cwd=cwd,
@@ -1786,8 +2001,17 @@ class CommandRecorder:
         write_text(self.capture_root / stderr_path, sanitize_runtime(stderr_text))
         record_environment = {
             key: sanitize_runtime(value)
-            for key, value in sorted({"LC_ALL": "C", "LANG": "C", "TZ": "UTC", **env_additions}.items())
+            for key, value in sorted(
+                command_environment_contract("<capture-root>", env_additions).items()
+            )
         }
+        sanitized_executable = self.sanitize(str(argv[0]))
+        retained_argv0 = (
+            sanitized_executable
+            if sanitized_executable == "/usr/bin/make"
+            or sanitized_executable.startswith("<kernel-toolchain-root>/")
+            else Path(argv[0]).name
+        )
         self.records.append(
             CommandRecord(
                 command_id,
@@ -1797,7 +2021,7 @@ class CommandRecorder:
                 stdout_path,
                 stderr_path,
                 json.dumps(
-                    [Path(argv[0]).name, *[sanitize_runtime(item) for item in argv[1:]]],
+                    [retained_argv0, *[sanitize_runtime(item) for item in argv[1:]]],
                     separators=(",", ":"),
                 ),
                 json.dumps(record_environment, separators=(",", ":")),
@@ -1866,12 +2090,10 @@ def command_record_row(
     argv: list[str],
     environment: dict[str, str] | None = None,
 ) -> tuple[str, ...]:
-    full_environment = {
-        "LC_ALL": "C",
-        "LANG": "C",
-        "TZ": "UTC",
-        **(environment or {}),
-    }
+    full_environment = command_environment_contract(
+        "<capture-root>",
+        environment,
+    )
     return (
         command_id,
         tool,
@@ -2173,7 +2395,7 @@ def expected_command_records(
         f"{Path(path).stem}.i" for path in policy.translation_units
     ]
     toolchain_environment = {
-        "PATH": "<kernel-toolchain-root>/bin:/usr/bin:/bin",
+        "PATH": "/usr/bin:/bin",
         "LD_LIBRARY_PATH": "<kernel-toolchain-root>/lib",
     }
     for lane in policy.kernel_lanes:
@@ -2200,31 +2422,14 @@ def expected_command_records(
         for profile in lane.profiles:
             lane_prefix = f"preprocessed/{release}/{profile}"
             work_source = f"<preprocessor-work>/{policy.source_root}"
-            kcflags = (
-                "-I<preprocessor-work>/include/trace "
-                "-include <preprocessor-work>/radeon_build_profile.h "
-                "-ffile-prefix-map=<preprocessor-work>="
-                f"{CANONICAL_PREPROCESSOR_WORK} "
-                "-fmacro-prefix-map=<preprocessor-work>="
-                f"{CANONICAL_PREPROCESSOR_WORK} "
-                "-ffile-prefix-map=<kernel-build-root>="
-                f"{CANONICAL_KERNEL_BUILD_ROOT} "
-                "-fmacro-prefix-map=<kernel-build-root>="
-                f"{CANONICAL_KERNEL_BUILD_ROOT} "
-                "-ffile-prefix-map=<kernel-toolchain-root>="
-                f"{CANONICAL_KERNEL_TOOLCHAIN} "
-                "-fmacro-prefix-map=<kernel-toolchain-root>="
-                f"{CANONICAL_KERNEL_TOOLCHAIN}"
-            )
-            make_base = [
-                "make",
-                "LLVM=1",
-                f"RADEON_BUILD_PROFILE={profile}",
-                f"KCFLAGS={kcflags}",
-                "-C",
+            make_base = kernel_make_base_command(
+                profile,
                 "<kernel-build-root>",
-                f"M={work_source}",
-            ]
+                work_source,
+                "<kernel-toolchain-root>/bin",
+                "<kernel-toolchain-root>",
+                "<preprocessor-work>",
+            )
             add(
                 f"preprocess-build-{release}-{profile}",
                 "make",
@@ -2241,7 +2446,7 @@ def expected_command_records(
                 f"{lane_prefix}/module-defined-symbols.txt",
                 f"diagnostics/module-symbols-{release}-{profile}.stderr",
                 [
-                    "llvm-nm",
+                    "<kernel-toolchain-root>/bin/llvm-nm",
                     "--defined-only",
                     "--extern-only",
                     "--format=posix",
@@ -2349,13 +2554,15 @@ def command_version(tool: str, executable: str) -> tuple[int, str, str]:
         "doxygen": ["--version"],
         "tree-sitter": ["--version"],
         "python3": ["--version"],
+        "make": ["--version"],
+        "sh": ["--version"],
     }
     result = subprocess.run(
         [executable, *version_args[tool]],
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+        env=command_environment_contract("/tmp"),
     )
     combined = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     combined = combined.replace(executable, Path(executable).name)
@@ -2373,6 +2580,16 @@ def capture_tool_versions(capture_root: Path, policy: Policy) -> dict[str, str]:
             require(tool not in required, f"required analyzer is absent: {tool}")
             rows.append((tool, "no", "absent", "absent", "", "absent"))
             continue
+        if tool in {"make", "sh"}:
+            require(
+                Path(executable) == Path(f"/usr/bin/{tool}")
+                and (
+                    tool != "sh"
+                    or Path(executable).resolve(strict=True)
+                    == Path("/usr/bin/bash")
+                ),
+                f"host build command path differs: {tool}",
+            )
         status, first_line, combined = command_version(tool, executable)
         require(status == 0, f"cannot read analyzer version: {tool}")
         require(first_line, f"analyzer version is empty: {tool}")
@@ -3426,7 +3643,7 @@ def verify_declared_bindings(
             f"binding {binding.name} expected {binding.expected_matches} matches, found {len(matches)}",
         )
         for match in matches:
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             normalized = " ".join(match.group(0).split())
             rows.append(
                 (
@@ -3486,41 +3703,41 @@ def extract_callback_candidates(
 
         for match in FIELD_INITIALIZER.finditer(code):
             selector, target = match.groups()
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             rows.append(("field-initializer", entry.path, line, selector, target, entry.sha256))
             counts["minimum_field_initializers"] += 1
 
         for match in DEFINE_SHOW.finditer(code):
             symbol = match.group(1)
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             rows.append(("define-show-attribute", entry.path, line, f"{symbol}_fops", f"{symbol}_show", entry.sha256))
             generated_edges.add((f"{symbol}_fops", f"{symbol}_show", "macro-generated-vfs"))
             counts["minimum_define_show_attributes"] += 1
 
         for match in DEFINE_DEBUGFS.finditer(code):
             fops, getter, setter = match.groups()
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             for selector, target in (("get", getter), ("set", setter)):
                 rows.append(("define-debugfs-attribute", entry.path, line, f"{fops}:{selector}", target, entry.sha256))
                 generated_edges.add((fops, target, "macro-generated-vfs"))
 
         for match in DRM_IOCTL.finditer(code):
             ioctl_name, target = match.groups()
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             rows.append(("drm-ioctl", entry.path, line, ioctl_name, target, entry.sha256))
             generated_edges.add((f"DRM_IOCTL_{ioctl_name}", target, "macro-generated-ioctl"))
             counts["minimum_drm_ioctl_bindings"] += 1
 
         for match in WORK_BINDING.finditer(code):
             macro, target = match.groups()
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             rows.append(("workqueue", entry.path, line, macro, target, entry.sha256))
             generated_edges.add((macro, target, "macro-generated-workqueue"))
             counts["minimum_work_bindings"] += 1
 
         for match in MODULE_BINDING.finditer(code):
             macro, target = match.groups()
-            line = source.count("\n", 0, match.start()) + 1
+            line = physical_line_after_splicing(source, match.start())
             rows.append(("module-entry", entry.path, line, macro, target, entry.sha256))
             generated_edges.add((macro, target, "macro-generated-module-entry"))
 
@@ -3757,10 +3974,8 @@ def evaluate_bounded_queries(
             source = (source_root / path).read_text(encoding="utf-8")
             code_mask = strip_comments_and_literals(source)
             for match in expression.finditer(code_mask):
-                line = source.count("\n", 0, match.start()) + 1
-                normalized = " ".join(
-                    source[match.start() : match.end()].split()
-                )
+                line = physical_line_after_splicing(source, match.start())
+                normalized = " ".join(match.group(0).split())
                 match_rows.append(
                     (
                         query.name,
@@ -4172,10 +4387,552 @@ def sanitize_preprocessor_bytes(content: bytes, replacements: list[tuple[Path, s
     return output
 
 
+def validate_toolchain_prefix_relative_path(relative_path: str, label: str) -> Path:
+    """Validate one canonical portable path below a toolchain prefix."""
+    require(
+        relative_path.isascii()
+        and relative_path
+        and relative_path not in {".", ".."}
+        and not any(
+            character == "\\" or ord(character) < 32 or ord(character) == 127
+            for character in relative_path
+        ),
+        f"{label} is not plain ASCII: {relative_path!r}",
+    )
+    path = Path(relative_path)
+    require(
+        not path.is_absolute()
+        and bool(path.parts)
+        and path.as_posix() == relative_path
+        and "." not in path.parts
+        and ".." not in path.parts,
+        f"{label} is invalid: {relative_path}",
+    )
+    return path
+
+
+def resolve_toolchain_manifest_symlink(
+    entry: ToolchainPrefixEntry,
+    entries_by_path: dict[str, ToolchainPrefixEntry],
+) -> ToolchainPrefixEntry:
+    """Resolve one retained relative symlink through the admitted path set."""
+    require(entry.entry_type == "symlink", "toolchain manifest resolver needs a symlink")
+    current_parts = list(Path(entry.relative_path).parent.parts)
+    if current_parts == ["."]:
+        current_parts = []
+    pending_parts = list(Path(entry.link_target).parts)
+    traversed_symlinks: set[str] = set()
+    final_entry: ToolchainPrefixEntry | None = None
+    while pending_parts:
+        component = pending_parts.pop(0)
+        if component in {"", "."}:
+            continue
+        if component == "..":
+            require(
+                current_parts,
+                f"kernel toolchain symlink escapes its prefix: {entry.relative_path}",
+            )
+            current_parts.pop()
+            continue
+        current_parts.append(component)
+        current_path = "/".join(current_parts)
+        current_entry = entries_by_path.get(current_path)
+        require(
+            current_entry is not None,
+            f"kernel toolchain symlink dangles: {entry.relative_path}",
+        )
+        if current_entry.entry_type == "symlink":
+            require(
+                current_path not in traversed_symlinks,
+                f"kernel toolchain symlink cycle: {entry.relative_path}",
+            )
+            traversed_symlinks.add(current_path)
+            current_parts.pop()
+            pending_parts = [
+                *Path(current_entry.link_target).parts,
+                *pending_parts,
+            ]
+            continue
+        if pending_parts:
+            require(
+                current_entry.entry_type == "directory",
+                f"kernel toolchain symlink traverses a file: {entry.relative_path}",
+            )
+        final_entry = current_entry
+    require(
+        final_entry is not None and final_entry.entry_type == "regular",
+        f"kernel toolchain symlink does not resolve to a regular file: {entry.relative_path}",
+    )
+    return final_entry
+
+
+def load_toolchain_prefix_manifest(
+    manifest: Path,
+    expected_entry_count: int | None = None,
+    expected_sha256: str | None = None,
+) -> list[ToolchainPrefixEntry]:
+    """Load the exact finite tree admitted below one LLVM prefix."""
+    if expected_entry_count is not None:
+        require(
+            0 < expected_entry_count <= MAX_TOOLCHAIN_PREFIX_ENTRIES,
+            "kernel toolchain prefix declaration exceeds its row boundary",
+        )
+    columns, rows = read_canonical_ascii_tsv(
+        manifest,
+        TOOLCHAIN_PREFIX_TREE_SCHEMA,
+        MAX_MANIFEST_BYTES,
+        "kernel toolchain prefix manifest",
+        expected_sha256,
+    )
+    require(
+        len(rows) <= MAX_TOOLCHAIN_PREFIX_ENTRIES
+        and (
+            expected_entry_count is None
+            or len(rows) == expected_entry_count
+        ),
+        "kernel toolchain prefix row denominator differs",
+    )
+    expected_columns = [
+        "relative_path",
+        "entry_type",
+        "mode",
+        "size",
+        "identity_sha256",
+        "link_target",
+        "resolved_path",
+        "resolved_sha256",
+    ]
+    require(columns == expected_columns, "kernel toolchain prefix columns differ")
+    entries: list[ToolchainPrefixEntry] = []
+    for row_number, row in enumerate(rows, 3):
+        require(
+            len(entries) < MAX_TOOLCHAIN_PREFIX_ENTRIES,
+            "kernel toolchain prefix row boundary is exceeded",
+        )
+        require(
+            len(row) == len(columns),
+            f"kernel toolchain prefix row {row_number} width differs",
+        )
+        (
+            relative_path,
+            entry_type,
+            mode,
+            size_text,
+            identity_sha256,
+            link_target,
+            resolved_path,
+            resolved_sha256,
+        ) = row
+        path = validate_toolchain_prefix_relative_path(
+            relative_path,
+            "kernel toolchain prefix path",
+        )
+        require(
+            entry_type in {"directory", "regular", "symlink"},
+            f"kernel toolchain prefix type is invalid: {relative_path}",
+        )
+        require(
+            re.fullmatch(r"0[0-7]{3}", mode) is not None,
+            f"kernel toolchain prefix mode is invalid: {relative_path}",
+        )
+        if entry_type == "directory":
+            require(
+                size_text == "-"
+                and identity_sha256 == "-"
+                and link_target == "-"
+                and resolved_path == "-"
+                and resolved_sha256 == "-",
+                f"kernel toolchain directory identity differs: {relative_path}",
+            )
+            size = None
+        elif entry_type == "regular":
+            require(
+                size_text.isdigit(),
+                f"kernel toolchain regular size is invalid: {relative_path}",
+            )
+            size = int(size_text)
+            require(
+                HEX_64.fullmatch(identity_sha256) is not None
+                and link_target == "-"
+                and resolved_path == "-"
+                and resolved_sha256 == "-",
+                f"kernel toolchain regular identity differs: {relative_path}",
+            )
+        else:
+            require(
+                size_text.isdigit(),
+                f"kernel toolchain symlink size is invalid: {relative_path}",
+            )
+            size = int(size_text)
+            require(
+                link_target.isascii()
+                and link_target not in {"", "-"}
+                and not any(
+                    character == "\\"
+                    or ord(character) < 32
+                    or ord(character) == 127
+                    for character in link_target
+                )
+                and not Path(link_target).is_absolute()
+                and size == len(os.fsencode(link_target))
+                and identity_sha256
+                == sha256_bytes(link_target.encode("ascii"))
+                and HEX_64.fullmatch(resolved_sha256) is not None,
+                f"kernel toolchain symlink identity differs: {relative_path}",
+            )
+            validate_toolchain_prefix_relative_path(
+                resolved_path,
+                "kernel toolchain resolved path",
+            )
+        entries.append(
+            ToolchainPrefixEntry(
+                relative_path,
+                entry_type,
+                mode,
+                size,
+                identity_sha256,
+                link_target,
+                resolved_path,
+                resolved_sha256,
+            )
+        )
+        if len(path.parts) > 1:
+            require(
+                path.parent.as_posix() != ".",
+                f"kernel toolchain prefix parent is invalid: {relative_path}",
+            )
+    require(entries, "kernel toolchain prefix manifest is empty")
+    require(
+        entries == sorted(entries, key=lambda entry: os.fsencode(entry.relative_path))
+        and len({entry.relative_path for entry in entries}) == len(entries),
+        "kernel toolchain prefix manifest is not a unique byte-sorted set",
+    )
+    by_path = {entry.relative_path: entry for entry in entries}
+    for entry in entries:
+        path = Path(entry.relative_path)
+        if len(path.parts) > 1:
+            parent = by_path.get(path.parent.as_posix())
+            require(
+                parent is not None and parent.entry_type == "directory",
+                f"kernel toolchain prefix parent is absent: {entry.relative_path}",
+            )
+        if entry.entry_type != "symlink":
+            continue
+        resolved = resolve_toolchain_manifest_symlink(entry, by_path)
+        require(
+            resolved.relative_path == entry.resolved_path
+            and resolved.identity_sha256 == entry.resolved_sha256,
+            f"kernel toolchain symlink resolution differs: {entry.relative_path}",
+        )
+    return entries
+
+
+def derive_toolchain_prefix_entries(
+    toolchain_prefix: Path,
+    expected_entries: list[ToolchainPrefixEntry] | None = None,
+) -> list[ToolchainPrefixEntry]:
+    """Derive the exact root-owned, nonwritable LLVM prefix tree."""
+    def require_no_extended_attributes(path: Path, label: str) -> None:
+        try:
+            extended_attributes = os.listxattr(path, follow_symlinks=False)
+        except OSError as exc:
+            raise SourceMapError(
+                f"cannot inspect kernel toolchain extended attributes: {label}"
+            ) from exc
+        require(
+            not extended_attributes,
+            f"kernel toolchain entry carries extended attributes: {label}",
+        )
+
+    require(toolchain_prefix.is_absolute(), "kernel toolchain root is not absolute")
+    unresolved_components = [Path(toolchain_prefix.anchor)]
+    for part in toolchain_prefix.parts[1:]:
+        unresolved_components.append(unresolved_components[-1] / part)
+    for component in unresolved_components:
+        try:
+            status = component.lstat()
+        except OSError as exc:
+            raise SourceMapError(
+                f"kernel toolchain ancestor is absent: {component}"
+            ) from exc
+        require(
+            stat.S_ISDIR(status.st_mode),
+            f"kernel toolchain ancestor is not a real directory: {component}",
+        )
+        require(
+            status.st_uid == 0
+            and status.st_gid == 0
+            and stat.S_IMODE(status.st_mode) & 0o7022 == 0,
+            f"kernel toolchain ancestor ownership or mode differs: {component}",
+        )
+        require(
+            not os.access(component, os.W_OK),
+            f"kernel toolchain ancestor is runner writable: {component}",
+        )
+        require_no_extended_attributes(component, str(component))
+    resolved_prefix = toolchain_prefix.resolve(strict=True)
+    require(
+        resolved_prefix == toolchain_prefix,
+        "kernel toolchain root resolves through an alias",
+    )
+    root_status = resolved_prefix.lstat()
+    root_device = root_status.st_dev
+    entries: list[ToolchainPrefixEntry] = []
+    expected_by_path = {
+        entry.relative_path: entry for entry in (expected_entries or [])
+    }
+    require(
+        len(expected_by_path) <= MAX_TOOLCHAIN_PREFIX_ENTRIES,
+        "kernel toolchain admitted prefix exceeds its row boundary",
+    )
+    regular_total_bytes = 0
+    digest_cache: dict[Path, str] = {}
+
+    def bounded_digest(path: Path) -> str:
+        resolved_path = path.resolve(strict=True)
+        digest = digest_cache.get(resolved_path)
+        if digest is None:
+            digest = sha256_file(resolved_path)
+            digest_cache[resolved_path] = digest
+        return digest
+
+    def walk(directory: Path, relative_parts: tuple[str, ...]) -> None:
+        nonlocal regular_total_bytes
+        require(
+            len(relative_parts) < MAX_TOOLCHAIN_PREFIX_DEPTH,
+            "kernel toolchain prefix exceeds its depth boundary",
+        )
+        with os.scandir(directory) as iterator:
+            children = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+        for child in children:
+            require(
+                len(entries) < MAX_TOOLCHAIN_PREFIX_ENTRIES,
+                "kernel toolchain live prefix exceeds its row boundary",
+            )
+            require(
+                child.name.isascii()
+                and not any(
+                    character in "\\\t\r\n" or ord(character) < 32
+                    for character in child.name
+                ),
+                "kernel toolchain prefix path is not plain ASCII",
+            )
+            try:
+                status = child.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise SourceMapError(
+                    f"cannot stat kernel toolchain entry: {child.path}"
+                ) from exc
+            path_parts = (*relative_parts, child.name)
+            require(
+                len(path_parts) <= MAX_TOOLCHAIN_PREFIX_DEPTH,
+                "kernel toolchain prefix path exceeds its depth boundary",
+            )
+            relative_path = "/".join(path_parts)
+            require(
+                status.st_dev == root_device,
+                f"kernel toolchain entry crosses a filesystem boundary: {relative_path}",
+            )
+            require(
+                status.st_uid == 0 and status.st_gid == 0,
+                f"kernel toolchain entry ownership differs: {relative_path}",
+            )
+            require(
+                stat.S_IMODE(status.st_mode) & 0o7000 == 0,
+                f"kernel toolchain entry carries special mode bits: {relative_path}",
+            )
+            mode = f"{stat.S_IMODE(status.st_mode):04o}"
+            path = Path(child.path)
+            if stat.S_ISDIR(status.st_mode):
+                entry_type = "directory"
+                entry_size = None
+            elif stat.S_ISREG(status.st_mode):
+                entry_type = "regular"
+                entry_size = status.st_size
+            elif stat.S_ISLNK(status.st_mode):
+                entry_type = "symlink"
+                entry_size = status.st_size
+            else:
+                raise SourceMapError(
+                    "kernel toolchain prefix contains a special file: "
+                    f"{relative_path}"
+                )
+            if expected_entries is not None:
+                expected_entry = expected_by_path.get(relative_path)
+                require(
+                    expected_entry is not None,
+                    "kernel toolchain live prefix has an unexpected path: "
+                    f"{relative_path}",
+                )
+                require(
+                    expected_entry.entry_type == entry_type
+                    and expected_entry.mode == mode
+                    and expected_entry.size == entry_size,
+                    "kernel toolchain live prefix metadata differs before hash: "
+                    f"{relative_path}",
+                )
+            require_no_extended_attributes(path, relative_path)
+            if entry_type == "directory":
+                require(
+                    stat.S_IMODE(status.st_mode) & 0o022 == 0
+                    and not os.access(path, os.W_OK),
+                    f"kernel toolchain directory is writable: {relative_path}",
+                )
+                entries.append(
+                    ToolchainPrefixEntry(
+                        relative_path,
+                        "directory",
+                        mode,
+                        None,
+                        "-",
+                        "-",
+                        "-",
+                        "-",
+                    )
+                )
+                walk(path, path_parts)
+            elif entry_type == "regular":
+                require(
+                    status.st_size <= MAX_TOOLCHAIN_REGULAR_FILE_BYTES,
+                    "kernel toolchain file exceeds its byte boundary: "
+                    f"{relative_path}",
+                )
+                regular_total_bytes += status.st_size
+                require(
+                    regular_total_bytes <= MAX_TOOLCHAIN_REGULAR_TOTAL_BYTES,
+                    "kernel toolchain regular files exceed their total byte boundary",
+                )
+                require(
+                    stat.S_IMODE(status.st_mode) & 0o022 == 0
+                    and status.st_nlink == 1
+                    and not os.access(path, os.W_OK),
+                    f"kernel toolchain file is writable: {relative_path}",
+                )
+                digest = bounded_digest(path)
+                entries.append(
+                    ToolchainPrefixEntry(
+                        relative_path,
+                        "regular",
+                        mode,
+                        status.st_size,
+                        digest,
+                        "-",
+                        "-",
+                        "-",
+                    )
+                )
+            else:
+                target = os.readlink(path)
+                require(
+                    target.isascii()
+                    and target
+                    and not any(
+                        character == "\\"
+                        or ord(character) < 32
+                        or ord(character) == 127
+                        for character in target
+                    )
+                    and not Path(target).is_absolute(),
+                    f"kernel toolchain symlink target is invalid: {relative_path}",
+                )
+                try:
+                    resolved = path.resolve(strict=True)
+                    resolved_relative = resolved.relative_to(resolved_prefix)
+                    resolved_status = resolved.lstat()
+                except (OSError, ValueError) as exc:
+                    raise SourceMapError(
+                        f"kernel toolchain symlink escapes or dangles: {relative_path}"
+                    ) from exc
+                require(
+                    stat.S_ISREG(resolved_status.st_mode)
+                    and resolved_status.st_dev == root_device
+                    and resolved_status.st_uid == 0
+                    and resolved_status.st_gid == 0
+                    and stat.S_IMODE(resolved_status.st_mode) & 0o022 == 0,
+                    f"kernel toolchain symlink resolution differs: {relative_path}",
+                )
+                require(
+                    not os.access(resolved, os.W_OK),
+                    f"kernel toolchain symlink target is writable: {relative_path}",
+                )
+                require(
+                    resolved_status.st_size <= MAX_TOOLCHAIN_REGULAR_FILE_BYTES,
+                    "kernel toolchain symlink target exceeds its byte boundary: "
+                    f"{relative_path}",
+                )
+                resolved_sha256 = bounded_digest(resolved)
+                entries.append(
+                    ToolchainPrefixEntry(
+                        relative_path,
+                        "symlink",
+                        mode,
+                        status.st_size,
+                        sha256_bytes(target.encode("ascii")),
+                        target,
+                        resolved_relative.as_posix(),
+                        resolved_sha256,
+                    )
+                )
+
+    walk(resolved_prefix, ())
+    entries.sort(key=lambda entry: os.fsencode(entry.relative_path))
+    require(entries, "kernel toolchain prefix is empty")
+    if expected_entries is not None:
+        require(
+            {entry.relative_path for entry in entries} == set(expected_by_path),
+            "kernel toolchain live prefix omits admitted paths",
+        )
+    return entries
+
+
+def toolchain_prefix_rows(
+    entries: list[ToolchainPrefixEntry],
+) -> list[tuple[Any, ...]]:
+    """Serialize one canonical prefix tree for retention and comparison."""
+    return [
+        (
+            entry.relative_path,
+            entry.entry_type,
+            entry.mode,
+            "-" if entry.size is None else entry.size,
+            entry.identity_sha256,
+            entry.link_target,
+            entry.resolved_path,
+            entry.resolved_sha256,
+        )
+        for entry in entries
+    ]
+
+
+def write_toolchain_prefix_manifest(toolchain_prefix: Path, output: Path) -> None:
+    """Write one deterministic manifest for a validated LLVM prefix."""
+    entries = derive_toolchain_prefix_entries(toolchain_prefix)
+    write_tsv(
+        output,
+        TOOLCHAIN_PREFIX_TREE_SCHEMA,
+        (
+            "relative_path",
+            "entry_type",
+            "mode",
+            "size",
+            "identity_sha256",
+            "link_target",
+            "resolved_path",
+            "resolved_sha256",
+        ),
+        toolchain_prefix_rows(entries),
+    )
+
+
 def load_toolchain_closure(
     declaration: Path,
     manifest: Path,
-) -> tuple[dict[str, Any], list[ToolchainClosureEntry]]:
+    prefix_manifest: Path,
+) -> tuple[
+    dict[str, Any],
+    list[ToolchainClosureEntry],
+    list[ToolchainPrefixEntry],
+]:
     try:
         declaration_data = tomllib.loads(declaration.read_text(encoding="ascii"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
@@ -4192,6 +4949,17 @@ def load_toolchain_closure(
         "support_count",
         "manifest",
         "manifest_sha256",
+        "prefix_tree_schema",
+        "prefix_tree_manifest",
+        "prefix_tree_manifest_sha256",
+        "prefix_entry_count",
+        "prefix_directory_count",
+        "prefix_regular_count",
+        "prefix_symlink_count",
+        "resource_directory",
+        "resource_entry_count",
+        "resource_directory_count",
+        "resource_regular_count",
         "runtime_boundary",
         "package",
         "host_policy",
@@ -4203,7 +4971,7 @@ def load_toolchain_closure(
     )
     require(
         set(declaration_data) == declaration_keys
-        and declaration_data["schema"] == 1
+        and declaration_data["schema"] == 2
         and declaration_data["family"] == "llvm"
         and isinstance(declaration_data["version"], str)
         and declaration_data["version"]
@@ -4211,14 +4979,84 @@ def load_toolchain_closure(
         "kernel toolchain declaration identity differs",
     )
     require(
-        declaration_data["runtime_boundary"]
-        == "exact-llvm-payload-with-recorded-host-runtime-closure",
+        declaration_data["prefix_tree_schema"] == TOOLCHAIN_PREFIX_TREE_SCHEMA
+        and isinstance(declaration_data["prefix_tree_manifest"], str)
+        and declaration_data["prefix_tree_manifest"]
+        and isinstance(declaration_data["prefix_entry_count"], int)
+        and 0
+        < declaration_data["prefix_entry_count"]
+        <= MAX_TOOLCHAIN_PREFIX_ENTRIES
+        and HEX_64.fullmatch(
+            declaration_data["prefix_tree_manifest_sha256"]
+        )
+        is not None
+        and all(
+            isinstance(declaration_data[key], int)
+            and declaration_data[key] > 0
+            for key in (
+                "prefix_directory_count",
+                "prefix_regular_count",
+                "prefix_symlink_count",
+                "resource_entry_count",
+                "resource_directory_count",
+                "resource_regular_count",
+            )
+        )
+        and declaration_data["resource_directory"] == "lib/clang/22"
+        and declaration_data["runtime_boundary"]
+        == "exact-llvm-prefix-tree-with-recorded-host-runtime-closure",
         "kernel toolchain runtime boundary differs",
     )
     require(
-        HEX_64.fullmatch(declaration_data["manifest_sha256"]) is not None
-        and sha256_file(manifest) == declaration_data["manifest_sha256"],
-        "kernel toolchain manifest identity differs",
+        HEX_64.fullmatch(declaration_data["manifest_sha256"]) is not None,
+        "kernel toolchain manifest digest is invalid",
+    )
+    prefix_entries = load_toolchain_prefix_manifest(
+        prefix_manifest,
+        declaration_data["prefix_entry_count"],
+        declaration_data["prefix_tree_manifest_sha256"],
+    )
+    prefix_counts = {
+        entry_type: sum(
+            entry.entry_type == entry_type for entry in prefix_entries
+        )
+        for entry_type in ("directory", "regular", "symlink")
+    }
+    resource_prefix = declaration_data["resource_directory"]
+    resource_entries = [
+        entry
+        for entry in prefix_entries
+        if entry.relative_path == resource_prefix
+        or entry.relative_path.startswith(resource_prefix + "/")
+    ]
+    require(
+        len(prefix_entries) == declaration_data["prefix_entry_count"]
+        and prefix_counts["directory"]
+        == declaration_data["prefix_directory_count"]
+        and prefix_counts["regular"]
+        == declaration_data["prefix_regular_count"]
+        and prefix_counts["symlink"]
+        == declaration_data["prefix_symlink_count"]
+        and len(resource_entries) == declaration_data["resource_entry_count"]
+        and sum(
+            entry.entry_type == "directory" for entry in resource_entries
+        )
+        == declaration_data["resource_directory_count"]
+        and sum(entry.entry_type == "regular" for entry in resource_entries)
+        == declaration_data["resource_regular_count"]
+        and all(entry.entry_type != "symlink" for entry in resource_entries),
+        "kernel toolchain prefix identity differs",
+    )
+    prefix_by_path = {
+        entry.relative_path: entry for entry in prefix_entries
+    }
+    require(
+        prefix_by_path.get(resource_prefix) is not None
+        and prefix_by_path[resource_prefix].entry_type == "directory"
+        and prefix_by_path.get(resource_prefix + "/include") is not None
+        and prefix_by_path[resource_prefix + "/include"].entry_type
+        == "directory",
+        "kernel toolchain resource directory rows differ",
     )
     packages = declaration_data["package"]
     package_keys = {
@@ -4260,12 +5098,20 @@ def load_toolchain_closure(
             "group_writable": False,
             "other_writable": False,
             "runner_directory_write": False,
+            "runner_file_write": False,
+            "extended_attributes": False,
             "special_files": False,
         },
         "kernel toolchain host policy differs",
     )
 
-    columns, rows = read_tsv(manifest, "gororoba-kernel-toolchain-closure-v1")
+    columns, rows = read_canonical_ascii_tsv(
+        manifest,
+        "gororoba-kernel-toolchain-closure-v1",
+        MAX_MANIFEST_BYTES,
+        "kernel toolchain semantic closure manifest",
+        declaration_data["manifest_sha256"],
+    )
     expected_columns = [
         "kind",
         "logical_name",
@@ -4375,74 +5221,96 @@ def load_toolchain_closure(
             and target_entry.resolved_sha256 == entry.resolved_sha256,
             f"kernel toolchain symlink target is outside the closure: {entry.relative_path}",
         )
-    return declaration_data, entries
+    validate_toolchain_semantic_closure(entries, prefix_entries)
+    return declaration_data, entries, prefix_entries
+
+
+def validate_toolchain_semantic_closure(
+    entries: list[ToolchainClosureEntry],
+    prefix_entries: list[ToolchainPrefixEntry],
+) -> None:
+    """Join every semantic command and library to the finite prefix tree."""
+    prefix_by_path = {
+        entry.relative_path: entry for entry in prefix_entries
+    }
+    for entry in entries:
+        prefix_entry = prefix_by_path.get(entry.relative_path)
+        shared_identity_matches = (
+            prefix_entry is not None
+            and prefix_entry.entry_type == entry.entry_type
+            and prefix_entry.mode == entry.mode
+            and prefix_entry.size == entry.size
+            and prefix_entry.identity_sha256 == entry.identity_sha256
+            and prefix_entry.link_target == entry.link_target
+        )
+        resolved_identity_matches = (
+            prefix_entry is not None
+            and (
+                (
+                    entry.entry_type == "regular"
+                    and entry.resolved_sha256 == prefix_entry.identity_sha256
+                )
+                or (
+                    entry.entry_type == "symlink"
+                    and entry.resolved_sha256 == prefix_entry.resolved_sha256
+                )
+            )
+        )
+        require(
+            shared_identity_matches and resolved_identity_matches,
+            "kernel toolchain semantic closure differs from prefix tree: "
+            f"{entry.relative_path}",
+        )
+
+
+def require_exact_toolchain_prefix(
+    expected_entries: list[ToolchainPrefixEntry],
+    actual_entries: list[ToolchainPrefixEntry],
+) -> None:
+    """Require exact prefix membership and identities with bounded residuals."""
+    expected_by_path = {
+        entry.relative_path: entry for entry in expected_entries
+    }
+    actual_by_path = {
+        entry.relative_path: entry for entry in actual_entries
+    }
+    missing_paths = sorted(set(expected_by_path) - set(actual_by_path))
+    unexpected_paths = sorted(set(actual_by_path) - set(expected_by_path))
+    require(
+        not missing_paths and not unexpected_paths,
+        "kernel toolchain live prefix path set differs: "
+        f"missing={missing_paths[:20]} unexpected={unexpected_paths[:20]}",
+    )
+    changed_paths = [
+        path
+        for path in sorted(expected_by_path)
+        if expected_by_path[path] != actual_by_path[path]
+    ]
+    require(
+        not changed_paths,
+        "kernel toolchain live prefix entries differ: "
+        f"changed={changed_paths[:20]}",
+    )
 
 
 def validate_toolchain_payload(
     toolchain_prefix: Path,
     entries: list[ToolchainClosureEntry],
+    prefix_entries: list[ToolchainPrefixEntry],
 ) -> None:
-    require(toolchain_prefix.is_absolute(), "kernel toolchain root is not absolute")
-    unresolved_components = [Path(toolchain_prefix.anchor)]
-    for part in toolchain_prefix.parts[1:]:
-        unresolved_components.append(unresolved_components[-1] / part)
-    for component in unresolved_components:
-        status = component.lstat()
-        require(
-            stat.S_ISDIR(status.st_mode),
-            f"kernel toolchain ancestor is not a real directory: {component}",
-        )
-        require(
-            status.st_uid == 0
-            and status.st_gid == 0
-            and stat.S_IMODE(status.st_mode) & 0o022 == 0,
-            f"kernel toolchain ancestor ownership or mode differs: {component}",
-        )
-        require(
-            not os.access(component, os.W_OK),
-            f"kernel toolchain ancestor is runner writable: {component}",
-        )
-    resolved_prefix = toolchain_prefix.resolve(strict=True)
-    require(
-        resolved_prefix == toolchain_prefix,
-        "kernel toolchain root resolves through an alias",
+    actual_prefix_entries = derive_toolchain_prefix_entries(
+        toolchain_prefix,
+        prefix_entries,
     )
-    directories = {resolved_prefix}
-    directories.update(resolved_prefix / Path(entry.relative_path).parent for entry in entries)
-    for directory in sorted(directories):
-        status = directory.lstat()
-        require(stat.S_ISDIR(status.st_mode), f"kernel toolchain parent is not a directory: {directory}")
-        require(status.st_uid == 0 and status.st_gid == 0, f"kernel toolchain parent ownership differs: {directory}")
-        require(stat.S_IMODE(status.st_mode) & 0o022 == 0, f"kernel toolchain parent is group or other writable: {directory}")
-        require(not os.access(directory, os.W_OK), f"kernel toolchain parent is runner writable: {directory}")
+    require_exact_toolchain_prefix(prefix_entries, actual_prefix_entries)
+    resolved_prefix = toolchain_prefix.resolve(strict=True)
     for entry in entries:
-        path = resolved_prefix / entry.relative_path
-        status = path.lstat()
-        require(status.st_uid == 0 and status.st_gid == 0, f"kernel toolchain entry ownership differs: {entry.relative_path}")
-        require(f"{stat.S_IMODE(status.st_mode):04o}" == entry.mode, f"kernel toolchain entry mode differs: {entry.relative_path}")
-        require(status.st_size == entry.size, f"kernel toolchain entry size differs: {entry.relative_path}")
-        if entry.entry_type == "regular":
-            require(stat.S_ISREG(status.st_mode), f"kernel toolchain entry is not regular: {entry.relative_path}")
-            require(sha256_file(path) == entry.identity_sha256, f"kernel toolchain entry digest differs: {entry.relative_path}")
-            resolved = path
-        else:
-            require(stat.S_ISLNK(status.st_mode), f"kernel toolchain entry is not a symlink: {entry.relative_path}")
-            target = os.readlink(path)
-            require(target == entry.link_target, f"kernel toolchain symlink target differs: {entry.relative_path}")
-            require(sha256_bytes(target.encode("utf-8")) == entry.identity_sha256, f"kernel toolchain symlink identity differs: {entry.relative_path}")
-            resolved = path.resolve(strict=True)
-            try:
-                resolved.relative_to(resolved_prefix)
-            except ValueError as exc:
-                raise SourceMapError(
-                    f"kernel toolchain symlink escapes its root: {entry.relative_path}"
-                ) from exc
-        require(
-            resolved.is_file() and sha256_file(resolved) == entry.resolved_sha256,
-            f"kernel toolchain resolved payload differs: {entry.relative_path}",
-        )
         if entry.kind == "command":
-            require(os.access(resolved, os.X_OK), f"kernel toolchain command is not executable: {entry.logical_name}")
+            executable = (resolved_prefix / entry.relative_path).resolve(strict=True)
+            require(
+                executable.is_file() and os.access(executable, os.X_OK),
+                f"kernel toolchain command is not executable: {entry.logical_name}",
+            )
 
 
 def validate_kernel_toolchain(
@@ -4451,12 +5319,15 @@ def validate_kernel_toolchain(
     kernel_declaration: Path,
     toolchain_declaration: Path,
     toolchain_manifest: Path,
+    toolchain_prefix_manifest: Path,
     expected_toolchain_manifest: str,
+    expected_toolchain_prefix_manifest: str,
 ) -> tuple[
     list[tuple[Any, ...]],
     dict[str, str],
     Path,
     list[ToolchainClosureEntry],
+    list[ToolchainPrefixEntry],
 ]:
     require(bin_directory.is_dir(), f"kernel toolchain bin directory is absent: {bin_directory}")
     toolchain_prefix = bin_directory.parent
@@ -4484,25 +5355,64 @@ def validate_kernel_toolchain(
         and linker_version,
         f"kernel root declaration has no LLD identity: {release}",
     )
-    closure_declaration, closure_entries = load_toolchain_closure(
+    (
+        closure_declaration,
+        closure_entries,
+        prefix_entries,
+    ) = load_toolchain_closure(
         toolchain_declaration,
         toolchain_manifest,
+        toolchain_prefix_manifest,
     )
     require(
         closure_declaration["manifest"] == expected_toolchain_manifest
+        and closure_declaration["prefix_tree_manifest"]
+        == expected_toolchain_prefix_manifest
         and closure_declaration["version"] == compiler_version == linker_version,
         f"kernel toolchain closure identity differs from policy or kernel declaration: {release}",
     )
-    validate_toolchain_payload(toolchain_prefix, closure_entries)
+    validate_toolchain_payload(toolchain_prefix, closure_entries, prefix_entries)
     command_entries = {
         entry.logical_name: entry
         for entry in closure_entries
         if entry.kind == "command"
     }
     environment = {
-        "PATH": f"{bin_directory}:/usr/bin:/bin",
+        "PATH": "/usr/bin:/bin",
         "LD_LIBRARY_PATH": str(library_directory),
     }
+    resource_queries = {
+        "resource_directory": ["--no-default-config", "-print-resource-dir"],
+        "resource_include_directory": [
+            "--no-default-config",
+            "-print-file-name=include",
+        ],
+    }
+    resource_outputs: dict[str, str] = {}
+    clang_executable = bin_directory / "clang"
+    for query_name, query_arguments in resource_queries.items():
+        query_result = subprocess.run(
+            [str(clang_executable), *query_arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=command_environment_contract("/tmp", environment),
+        )
+        require(
+            query_result.returncode == 0
+            and not query_result.stderr
+            and query_result.stdout.strip(),
+            f"cannot read kernel toolchain {query_name}: {release}",
+        )
+        resource_outputs[query_name] = query_result.stdout.strip()
+    expected_resource_directory = toolchain_prefix / "lib/clang/22"
+    require(
+        resource_outputs["resource_directory"]
+        == expected_resource_directory.as_posix()
+        and resource_outputs["resource_include_directory"]
+        == (expected_resource_directory / "include").as_posix(),
+        f"kernel toolchain Clang resource path differs: {release}",
+    )
     rows: list[tuple[Any, ...]] = []
     version_outputs: dict[str, str] = {}
     for tool in LLVM_KERNEL_TOOLS:
@@ -4516,7 +5426,7 @@ def validate_kernel_toolchain(
             check=False,
             capture_output=True,
             text=True,
-            env={**os.environ, **environment, "LC_ALL": "C", "LANG": "C", "TZ": "UTC"},
+            env=command_environment_contract("/tmp", environment),
         )
         combined = "\n".join(
             part.strip() for part in (result.stdout, result.stderr) if part.strip()
@@ -4539,6 +5449,16 @@ def validate_kernel_toolchain(
                 expected.resolved_sha256,
                 combined.splitlines()[0],
                 sha256_bytes(combined.encode("utf-8")),
+                (
+                    "<kernel-toolchain-root>/lib/clang/22"
+                    if tool == "clang"
+                    else "-"
+                ),
+                (
+                    "<kernel-toolchain-root>/lib/clang/22/include"
+                    if tool == "clang"
+                    else "-"
+                ),
             )
         )
     require(
@@ -4549,7 +5469,13 @@ def validate_kernel_toolchain(
         version_outputs["ld.lld"].splitlines()[0].startswith(f"LLD {linker_version} "),
         f"kernel toolchain linker differs from declaration: {release}",
     )
-    return rows, environment, toolchain_prefix, closure_entries
+    return (
+        rows,
+        environment,
+        toolchain_prefix,
+        closure_entries,
+        prefix_entries,
+    )
 
 
 def normalize_runtime_library_soname(
@@ -4631,13 +5557,7 @@ def capture_toolchain_runtime_libraries(
     }
     rows: set[tuple[Any, ...]] = set()
     observed_pinned: set[str] = set()
-    command_environment = {
-        **os.environ,
-        **environment,
-        "LC_ALL": "C",
-        "LANG": "C",
-        "TZ": "UTC",
-    }
+    command_environment = command_environment_contract("/tmp", environment)
     for tool in LLVM_KERNEL_TOOLS:
         executable = bin_directory / tool
         result = subprocess.run(
@@ -5139,7 +6059,7 @@ def capture_preprocessor_views(
         )
         write_tsv(
             capture_root / "metadata/kernel-toolchains.tsv",
-            "radeon-driver-kernel-toolchains-v1",
+            "radeon-driver-kernel-toolchains-v2",
             (
                 "kernel_release",
                 "tool",
@@ -5147,6 +6067,8 @@ def capture_preprocessor_views(
                 "executable_sha256",
                 "version_first_line",
                 "version_output_sha256",
+                "resource_directory",
+                "resource_include_directory",
             ),
             [],
         )
@@ -5204,8 +6126,11 @@ def capture_preprocessor_views(
         require(declaration.is_file() and manifest.is_file(), f"kernel root evidence is absent for {release}")
         toolchain_declaration = repository / lane.toolchain_declaration
         toolchain_manifest = repository / lane.toolchain_manifest
+        toolchain_prefix_manifest = repository / lane.toolchain_prefix_manifest
         require(
-            toolchain_declaration.is_file() and toolchain_manifest.is_file(),
+            toolchain_declaration.is_file()
+            and toolchain_manifest.is_file()
+            and toolchain_prefix_manifest.is_file(),
             f"kernel toolchain evidence is absent for {release}",
         )
         toolchain_bin = kernel_toolchain_bins.get(release)
@@ -5215,13 +6140,16 @@ def capture_preprocessor_views(
             toolchain_environment,
             toolchain_prefix,
             closure_entries,
+            admitted_prefix_entries,
         ) = validate_kernel_toolchain(
             release,
             toolchain_bin,
             declaration,
             toolchain_declaration,
             toolchain_manifest,
+            toolchain_prefix_manifest,
             lane.toolchain_manifest,
+            lane.toolchain_prefix_manifest,
         )
         toolchain_rows.extend(release_toolchain_rows)
         release_runtime_rows = capture_toolchain_runtime_libraries(
@@ -5269,6 +6197,10 @@ def capture_preprocessor_views(
             toolchain_manifest,
             retained_toolchain_root / f"{release}.manifest.tsv",
         )
+        shutil.copyfile(
+            toolchain_prefix_manifest,
+            retained_toolchain_root / f"{release}.prefix-tree.tsv",
+        )
 
         for profile in lane.profiles:
             with tempfile.TemporaryDirectory(prefix="radeon-preprocess-", dir=capture_root.parent) as temporary:
@@ -5290,34 +6222,14 @@ def capture_preprocessor_views(
                     ),
                 )
                 recorder.add_replacement(work, "<preprocessor-work>")
-                compiler_args: list[str] = []
-                auto_conf = kernel_root / "include/config/auto.conf"
-                compile_header = kernel_root / "include/generated/compile.h"
-                compiler_text = ""
-                if auto_conf.is_file():
-                    compiler_text += auto_conf.read_text(encoding="utf-8", errors="replace")
-                if compile_header.is_file():
-                    compiler_text += compile_header.read_text(encoding="utf-8", errors="replace")
-                if "CONFIG_CC_IS_CLANG=y" in compiler_text or "clang" in compiler_text.lower():
-                    compiler_args.append("LLVM=1")
-                prefix_maps = (
-                    f"-ffile-prefix-map={work}={CANONICAL_PREPROCESSOR_WORK} "
-                    f"-fmacro-prefix-map={work}={CANONICAL_PREPROCESSOR_WORK} "
-                    f"-ffile-prefix-map={kernel_root}={CANONICAL_KERNEL_BUILD_ROOT} "
-                    f"-fmacro-prefix-map={kernel_root}={CANONICAL_KERNEL_BUILD_ROOT} "
-                    f"-ffile-prefix-map={toolchain_prefix}={CANONICAL_KERNEL_TOOLCHAIN} "
-                    f"-fmacro-prefix-map={toolchain_prefix}={CANONICAL_KERNEL_TOOLCHAIN}"
+                make_base = kernel_make_base_command(
+                    profile,
+                    kernel_root,
+                    driver_work,
+                    toolchain_bin,
+                    toolchain_prefix,
+                    work,
                 )
-                kcflags = f"-I{include_trace} -include {header} {prefix_maps}"
-                make_base = [
-                    "make",
-                    *compiler_args,
-                    f"RADEON_BUILD_PROFILE={profile}",
-                    f"KCFLAGS={kcflags}",
-                    "-C",
-                    str(kernel_root),
-                    f"M={driver_work}",
-                ]
                 recorder.run(
                     f"preprocess-build-{release}-{profile}",
                     [*make_base, "modules"],
@@ -5411,6 +6323,11 @@ def capture_preprocessor_views(
                         "status": "complete",
                     }
                 )
+        validate_toolchain_payload(
+            toolchain_prefix,
+            closure_entries,
+            admitted_prefix_entries,
+        )
 
     require(
         set(kernel_toolchain_bins) == requested_releases,
@@ -5418,7 +6335,7 @@ def capture_preprocessor_views(
     )
     write_tsv(
         capture_root / "metadata/kernel-toolchains.tsv",
-        "radeon-driver-kernel-toolchains-v1",
+        "radeon-driver-kernel-toolchains-v2",
         (
             "kernel_release",
             "tool",
@@ -5426,6 +6343,8 @@ def capture_preprocessor_views(
             "executable_sha256",
             "version_first_line",
             "version_output_sha256",
+            "resource_directory",
+            "resource_include_directory",
         ),
         sorted(toolchain_rows),
     )
@@ -5586,6 +6505,7 @@ def expected_capture_files(
                 f"metadata/kernel-build-roots/{release}.manifest.tsv",
                 f"metadata/kernel-toolchain-closures/{release}.toml",
                 f"metadata/kernel-toolchain-closures/{release}.manifest.tsv",
+                f"metadata/kernel-toolchain-closures/{release}.prefix-tree.tsv",
             }
         )
     for row in preprocessor_rows:
@@ -6758,7 +7678,7 @@ def verify_capture(
 
     toolchain_columns, toolchain_rows = read_tsv(
         root / "metadata/kernel-toolchains.tsv",
-        "radeon-driver-kernel-toolchains-v1",
+        "radeon-driver-kernel-toolchains-v2",
     )
     require(
         toolchain_columns
@@ -6769,6 +7689,8 @@ def verify_capture(
             "executable_sha256",
             "version_first_line",
             "version_output_sha256",
+            "resource_directory",
+            "resource_include_directory",
         ],
         "kernel toolchain columns differ",
     )
@@ -6813,6 +7735,8 @@ def verify_capture(
         f"{release}.toml" for release in lane_releases
     } | {
         f"{release}.manifest.tsv" for release in lane_releases
+    } | {
+        f"{release}.prefix-tree.tsv" for release in lane_releases
     }
     observed_closure_files = (
         regular_tree_files(closure_root, "retained kernel toolchain closure")
@@ -6831,15 +7755,24 @@ def verify_capture(
             (closure_root / f"{release}.toml").read_bytes()
             == (root / f"producer/{lane.toolchain_declaration}").read_bytes()
             and (closure_root / f"{release}.manifest.tsv").read_bytes()
-            == (root / f"producer/{lane.toolchain_manifest}").read_bytes(),
+            == (root / f"producer/{lane.toolchain_manifest}").read_bytes()
+            and (closure_root / f"{release}.prefix-tree.tsv").read_bytes()
+            == (root / f"producer/{lane.toolchain_prefix_manifest}").read_bytes(),
             f"retained toolchain closure differs from producer proof: {release}",
         )
-        closure_declaration, closure_entries = load_toolchain_closure(
+        (
+            closure_declaration,
+            closure_entries,
+            _prefix_entries,
+        ) = load_toolchain_closure(
             closure_root / f"{release}.toml",
             closure_root / f"{release}.manifest.tsv",
+            closure_root / f"{release}.prefix-tree.tsv",
         )
         require(
-            closure_declaration["manifest"] == lane.toolchain_manifest,
+            closure_declaration["manifest"] == lane.toolchain_manifest
+            and closure_declaration["prefix_tree_manifest"]
+            == lane.toolchain_prefix_manifest,
             f"retained toolchain closure path differs from policy: {release}",
         )
         closure_entries_by_release[release] = closure_entries
@@ -6851,6 +7784,16 @@ def verify_capture(
                 entry.resolved_sha256,
                 entry.version_first_line,
                 entry.version_output_sha256,
+                (
+                    "<kernel-toolchain-root>/lib/clang/22"
+                    if entry.logical_name == "clang"
+                    else "-"
+                ),
+                (
+                    "<kernel-toolchain-root>/lib/clang/22/include"
+                    if entry.logical_name == "clang"
+                    else "-"
+                ),
             ]
             for entry in closure_entries
             if entry.kind == "command"
@@ -6873,11 +7816,21 @@ def verify_capture(
         )
     require(
         all(
-            len(row) == 6
+            len(row) == 8
             and row[2] == row[1]
             and HEX_64.fullmatch(row[3]) is not None
             and bool(row[4])
             and HEX_64.fullmatch(row[5]) is not None
+            and (
+                (
+                    row[1] == "clang"
+                    and row[6]
+                    == "<kernel-toolchain-root>/lib/clang/22"
+                    and row[7]
+                    == "<kernel-toolchain-root>/lib/clang/22/include"
+                )
+                or (row[1] != "clang" and row[6:] == ["-", "-"])
+            )
             for row in toolchain_rows
         ),
         "kernel toolchain identity row is invalid",
@@ -7479,24 +8432,122 @@ def self_test(repository: Path, policy_path: Path) -> int:
     )
     toolchain_closures = []
     for lane in policy.kernel_lanes:
-        closure_declaration, closure_entries = load_toolchain_closure(
+        (
+            closure_declaration,
+            closure_entries,
+            prefix_entries,
+        ) = load_toolchain_closure(
             repository / lane.toolchain_declaration,
             repository / lane.toolchain_manifest,
+            repository / lane.toolchain_prefix_manifest,
         )
-        toolchain_closures.append((lane, closure_declaration, closure_entries))
+        toolchain_closures.append(
+            (lane, closure_declaration, closure_entries, prefix_entries)
+        )
     check(
         "toolchain policies close every command, local library, and symlink target",
         len(toolchain_closures) == len(policy.kernel_lanes)
         and all(
             declaration["manifest"] == lane.toolchain_manifest
+            and declaration["prefix_tree_manifest"]
+            == lane.toolchain_prefix_manifest
             and {entry.logical_name for entry in entries if entry.kind == "command"}
             == set(LLVM_KERNEL_TOOLS)
             and {entry.logical_name for entry in entries if entry.kind == "library"}
             == set(LLVM_KERNEL_LIBRARIES)
-            for lane, declaration, entries in toolchain_closures
+            and len(prefix_entries) == declaration["prefix_entry_count"]
+            for lane, declaration, entries, prefix_entries in toolchain_closures
         ),
     )
-    runtime_lane, _runtime_declaration, runtime_entries = toolchain_closures[0]
+    (
+        runtime_lane,
+        _runtime_declaration,
+        runtime_entries,
+        runtime_prefix_entries,
+    ) = toolchain_closures[0]
+    runtime_prefix_by_path = {
+        entry.relative_path: entry for entry in runtime_prefix_entries
+    }
+    check(
+        "toolchain prefix closes directories, regular files, and symlinks",
+        len(runtime_prefix_entries) == 7174
+        and sum(entry.entry_type == "directory" for entry in runtime_prefix_entries)
+        == 355
+        and sum(entry.entry_type == "regular" for entry in runtime_prefix_entries)
+        == 6792
+        and sum(entry.entry_type == "symlink" for entry in runtime_prefix_entries)
+        == 27,
+    )
+    check(
+        "toolchain prefix retains parent traversal and transitive symlinks",
+        runtime_prefix_by_path["lib/bfd-plugins/LLVMgold.so"].link_target
+        == "../LLVMgold.so"
+        and runtime_prefix_by_path["lib/bfd-plugins/LLVMgold.so"].resolved_path
+        == "lib/LLVMgold.so"
+        and runtime_prefix_by_path["lib/libclang.so"].resolved_path
+        == "lib/libclang.so.22.1.6",
+    )
+    accepts(
+        "toolchain prefix comparator accepts the exact finite tree",
+        lambda: require_exact_toolchain_prefix(
+            runtime_prefix_entries,
+            list(runtime_prefix_entries),
+        ),
+    )
+    rejects(
+        "toolchain prefix comparator rejects an unexpected executable",
+        lambda: require_exact_toolchain_prefix(
+            runtime_prefix_entries,
+            [
+                *runtime_prefix_entries,
+                ToolchainPrefixEntry(
+                    "bin/make",
+                    "regular",
+                    "0755",
+                    1,
+                    "0" * 64,
+                    "-",
+                    "-",
+                    "-",
+                ),
+            ],
+        ),
+    )
+    rejects(
+        "toolchain prefix comparator rejects a missing resource header",
+        lambda: require_exact_toolchain_prefix(
+            runtime_prefix_entries,
+            [
+                entry
+                for entry in runtime_prefix_entries
+                if entry.relative_path != "lib/clang/22/include/stddef.h"
+            ],
+        ),
+    )
+    changed_prefix_entries = list(runtime_prefix_entries)
+    first_regular_index = next(
+        index
+        for index, entry in enumerate(changed_prefix_entries)
+        if entry.entry_type == "regular"
+    )
+    first_regular = changed_prefix_entries[first_regular_index]
+    changed_prefix_entries[first_regular_index] = ToolchainPrefixEntry(
+        first_regular.relative_path,
+        first_regular.entry_type,
+        first_regular.mode,
+        first_regular.size,
+        "0" * 64,
+        first_regular.link_target,
+        first_regular.resolved_path,
+        first_regular.resolved_sha256,
+    )
+    rejects(
+        "toolchain prefix comparator rejects a changed file identity",
+        lambda: require_exact_toolchain_prefix(
+            runtime_prefix_entries,
+            changed_prefix_entries,
+        ),
+    )
     runtime_fixture_rows: list[tuple[Any, ...]] = [
         (
             runtime_lane.release,
@@ -7652,9 +8703,10 @@ def self_test(repository: Path, policy_path: Path) -> int:
     )
 
     synthetic_kernel_lanes = (
-        KernelLane("kernel-a", "", "", "", "", ("prod", "mutate-dev")),
+        KernelLane("kernel-a", "", "", "", "", "", ("prod", "mutate-dev")),
         KernelLane(
             "kernel-b",
+            "",
             "",
             "",
             "",
@@ -8244,8 +9296,48 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "required Palm path rejects a terminal before radeon_pci_config_reset",
         lambda: validate_required_path_witnesses(truncated_required_witnesses),
     )
-    tricky = 'const char *a = "/*"; .member = target,\nconst char *b = "//"; .other = next,\n'
-    check("combined lexer preserves code after comment tokens inside strings", ".member = target" in strip_comments_and_literals(tricky) and ".other = next" in strip_comments_and_literals(tricky))
+    tricky = (
+        'const char *a = "/*"; .member = target,\n'
+        'const char *b = "//"; .other = next,\n'
+    )
+    check(
+        "combined lexer preserves code after comment tokens inside strings",
+        ".member = target" in strip_comments_and_literals(tricky)
+        and ".other = next" in strip_comments_and_literals(tricky),
+    )
+    spliced = (
+        "REA\\\nD_ONCE(real_guard);\n"
+        "// continued comment \\\n"
+        "if (commented_guard) \\\n"
+        "return;\n"
+        "next_statement();\n"
+    )
+    spliced_code = strip_comments_and_literals(spliced)
+    check(
+        "combined lexer applies C line splicing before comment removal",
+        "READ_ONCE(real_guard)" in spliced_code
+        and "commented_guard" not in spliced_code
+        and "next_statement" in spliced_code,
+    )
+    spliced_binding_source = (
+        "REA\\\nD_ONCE(real_guard);\n"
+        ".member = target,\n"
+    )
+    spliced_binding_code = strip_comments_and_literals(spliced_binding_source)
+    spliced_binding_match = FIELD_INITIALIZER.search(spliced_binding_code)
+    check(
+        "phase-2 offsets retain physical lines and logical match identities",
+        spliced_binding_match is not None
+        and physical_line_after_splicing(
+            spliced_binding_source,
+            spliced_binding_match.start(),
+        )
+        == 3
+        and sha256_bytes(
+            " ".join(spliced_binding_match.group(0).split()).encode("ascii")
+        )
+        == sha256_bytes(b".member = target,"),
+    )
     guard_fixture = 'if (real_guard) return; /* comment_guard */ const char *text = "literal_guard";\n'
     check(
         "guard identifier census accepts code identifiers and rejects prose decoys",
@@ -8336,6 +9428,79 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "source command contract closes the analyzer command denominator",
         len(expected_source_commands) == 156,
     )
+    expected_kernel_commands = expected_command_records(
+        policy,
+        [entry],
+        {lane.release for lane in policy.kernel_lanes},
+    )
+    expected_make_commands = [
+        row for row in expected_kernel_commands if row[1] == "make"
+    ]
+    check(
+        "kernel command contract pins host make, shell, and LLVM prefix",
+        len(expected_kernel_commands) == 176
+        and len(expected_make_commands) == 12
+        and all(
+            (arguments := json.loads(row[6]))[0] == "/usr/bin/make"
+            and any(
+                argument == "LLVM=<kernel-toolchain-root>/bin/"
+                for argument in arguments
+            )
+            and "LLVM=1" not in arguments
+            and "SHELL=/usr/bin/sh" in arguments
+            and "CONFIG_SHELL=/usr/bin/sh" in arguments
+            and json.loads(row[7])["PATH"] == "/usr/bin:/bin"
+            for row in expected_make_commands
+        ),
+    )
+    canonical_make_row = expected_make_commands[0]
+    bare_make_row = list(canonical_make_row)
+    bare_make_arguments = json.loads(bare_make_row[6])
+    bare_make_arguments[0] = "make"
+    bare_make_row[6] = json.dumps(bare_make_arguments, separators=(",", ":"))
+    rejects(
+        "kernel command contract rejects bare make",
+        lambda: verify_command_records(
+            command_columns,
+            [bare_make_row],
+            [canonical_make_row],
+        ),
+    )
+    implicit_llvm_row = list(canonical_make_row)
+    implicit_llvm_arguments = json.loads(implicit_llvm_row[6])
+    implicit_llvm_arguments = [
+        "LLVM=1" if argument.startswith("LLVM=") else argument
+        for argument in implicit_llvm_arguments
+    ]
+    implicit_llvm_row[6] = json.dumps(
+        implicit_llvm_arguments,
+        separators=(",", ":"),
+    )
+    rejects(
+        "kernel command contract rejects implicit LLVM discovery",
+        lambda: verify_command_records(
+            command_columns,
+            [implicit_llvm_row],
+            [canonical_make_row],
+        ),
+    )
+    prefix_path_row = list(canonical_make_row)
+    prefix_path_environment = json.loads(prefix_path_row[7])
+    prefix_path_environment["PATH"] = (
+        "<kernel-toolchain-root>/bin:/usr/bin:/bin"
+    )
+    prefix_path_row[7] = json.dumps(
+        dict(sorted(prefix_path_environment.items())),
+        separators=(",", ":"),
+    )
+    rejects(
+        "kernel command contract rejects a toolchain-prefixed PATH",
+        lambda: verify_command_records(
+            command_columns,
+            [prefix_path_row],
+            [canonical_make_row],
+        ),
+    )
     accepts(
         "command verifier accepts the exact producer-derived rows",
         lambda: verify_command_records(
@@ -8411,6 +9576,47 @@ def self_test(repository: Path, policy_path: Path) -> int:
 
     with tempfile.TemporaryDirectory(prefix="radeon-source-map-selftest-") as temporary:
         temp = Path(temporary)
+        bounded_reader_path = temp / "bounded-reader"
+        bounded_reader_content = b"x" * 32
+        write_bytes(bounded_reader_path, bounded_reader_content)
+        original_path_read_bytes = Path.read_bytes
+
+        def grow_file_on_path_reopen(candidate: Path) -> bytes:
+            if candidate == bounded_reader_path:
+                write_bytes(candidate, bounded_reader_content + b"x")
+            return original_path_read_bytes(candidate)
+
+        with mock.patch.object(Path, "read_bytes", grow_file_on_path_reopen):
+            bounded_result = read_bounded_file(
+                bounded_reader_path,
+                len(bounded_reader_content),
+                "bounded reader fixture",
+            )
+        check(
+            "bounded reader retains one no-follow file descriptor",
+            bounded_result == bounded_reader_content
+            and bounded_reader_path.stat().st_size == len(bounded_reader_content),
+        )
+        original_os_open = os.open
+        observed_open_flags = 0
+
+        def record_bounded_open_flags(path: Path, flags: int) -> int:
+            nonlocal observed_open_flags
+            observed_open_flags = flags
+            return original_os_open(path, flags)
+
+        with mock.patch.object(os, "open", record_bounded_open_flags):
+            read_bounded_file(
+                bounded_reader_path,
+                len(bounded_reader_content),
+                "bounded reader flag fixture",
+            )
+        check(
+            "bounded reader opens special files without blocking or terminals",
+            bool(observed_open_flags & os.O_NONBLOCK)
+            and bool(observed_open_flags & os.O_NOCTTY)
+            and bool(observed_open_flags & os.O_NOFOLLOW),
+        )
         comparison_left = temp / "comparison-left"
         comparison_right = temp / "comparison-right"
         comparison_left.mkdir()
@@ -9130,6 +10336,232 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: load_toolchain_closure(
                 repository / live_lane.toolchain_declaration,
                 changed_toolchain_manifest,
+                repository / live_lane.toolchain_prefix_manifest,
+            ),
+        )
+        toolchain_declaration_text = (
+            repository / live_lane.toolchain_declaration
+        ).read_text(encoding="ascii")
+        for field in ("runner_file_write", "extended_attributes"):
+            permissive_declaration = temp / f"permissive-{field}.toml"
+            write_text(
+                permissive_declaration,
+                toolchain_declaration_text.replace(
+                    f"{field} = false",
+                    f"{field} = true",
+                    1,
+                ),
+            )
+            rejects(
+                f"toolchain closure rejects permissive {field}",
+                lambda declaration_path=permissive_declaration: (
+                    load_toolchain_closure(
+                        declaration_path,
+                        repository / live_lane.toolchain_manifest,
+                        repository / live_lane.toolchain_prefix_manifest,
+                    )
+                ),
+            )
+        oversized_count_declaration = temp / "oversized-prefix-count.toml"
+        write_text(
+            oversized_count_declaration,
+            toolchain_declaration_text.replace(
+                "prefix_entry_count = 7174",
+                f"prefix_entry_count = {MAX_TOOLCHAIN_PREFIX_ENTRIES + 1}",
+                1,
+            ),
+        )
+        rejects(
+            "toolchain closure rejects an oversized prefix row declaration",
+            lambda: load_toolchain_closure(
+                oversized_count_declaration,
+                repository / live_lane.toolchain_manifest,
+                repository / live_lane.toolchain_prefix_manifest,
+            ),
+        )
+        prefix_manifest_lines = (
+            repository / live_lane.toolchain_prefix_manifest
+        ).read_text(encoding="ascii").splitlines()
+        unsorted_prefix_manifest = temp / "unsorted-prefix-tree.tsv"
+        unsorted_lines = list(prefix_manifest_lines)
+        unsorted_lines[2], unsorted_lines[3] = (
+            unsorted_lines[3],
+            unsorted_lines[2],
+        )
+        write_text(unsorted_prefix_manifest, "\n".join(unsorted_lines) + "\n")
+        rejects(
+            "toolchain prefix manifest rejects unsorted rows",
+            lambda: load_toolchain_prefix_manifest(unsorted_prefix_manifest),
+        )
+        duplicate_prefix_manifest = temp / "duplicate-prefix-tree.tsv"
+        write_text(
+            duplicate_prefix_manifest,
+            "\n".join([*prefix_manifest_lines, prefix_manifest_lines[-1]])
+            + "\n",
+        )
+        rejects(
+            "toolchain prefix manifest rejects a duplicate row",
+            lambda: load_toolchain_prefix_manifest(duplicate_prefix_manifest),
+        )
+        oversized_prefix_manifest = temp / "oversized-prefix-tree.tsv"
+        write_text(
+            oversized_prefix_manifest,
+            "# schema: gororoba-kernel-toolchain-prefix-tree-v1\n"
+            + "x" * MAX_MANIFEST_BYTES,
+        )
+        rejects(
+            "toolchain prefix manifest rejects an oversized byte stream",
+            lambda: load_toolchain_prefix_manifest(oversized_prefix_manifest),
+        )
+        dot_prefix_manifest = temp / "dot-prefix-tree.tsv"
+        dot_lines = list(prefix_manifest_lines)
+        dot_fields = dot_lines[2].split("\t")
+        dot_fields[0] = "."
+        dot_lines[2] = "\t".join(dot_fields)
+        write_text(dot_prefix_manifest, "\n".join(dot_lines) + "\n")
+        rejects(
+            "toolchain prefix manifest rejects a dot path",
+            lambda: load_toolchain_prefix_manifest(dot_prefix_manifest),
+        )
+        del_prefix_manifest = temp / "del-prefix-tree.tsv"
+        del_lines = list(prefix_manifest_lines)
+        del_fields = del_lines[2].split("\t")
+        del_fields[0] += "\x7f"
+        del_lines[2] = "\t".join(del_fields)
+        write_text(del_prefix_manifest, "\n".join(del_lines) + "\n")
+        rejects(
+            "toolchain prefix manifest rejects ASCII DEL",
+            lambda: load_toolchain_prefix_manifest(del_prefix_manifest),
+        )
+        changed_prefix_manifest = temp / "changed-prefix-semantic-row.tsv"
+        changed_prefix_text = "\n".join(prefix_manifest_lines) + "\n"
+        require(
+            changed_prefix_text.count("bin/clang\tsymlink\t0777\t") == 1,
+            "toolchain semantic-prefix fixture anchor differs",
+        )
+        changed_prefix_text = changed_prefix_text.replace(
+            "bin/clang\tsymlink\t0777\t",
+            "bin/clang\tsymlink\t0700\t",
+            1,
+        )
+        write_text(changed_prefix_manifest, changed_prefix_text)
+        changed_prefix_declaration = temp / "changed-prefix-declaration.toml"
+        original_prefix_sha256 = sha256_file(
+            repository / live_lane.toolchain_prefix_manifest
+        )
+        changed_prefix_sha256 = sha256_file(changed_prefix_manifest)
+        require(
+            toolchain_declaration_text.count(original_prefix_sha256) == 1,
+            "toolchain prefix declaration hash fixture differs",
+        )
+        write_text(
+            changed_prefix_declaration,
+            toolchain_declaration_text.replace(
+                original_prefix_sha256,
+                changed_prefix_sha256,
+                1,
+            ),
+        )
+        rejects(
+            "toolchain closure rejects a semantic-prefix identity mismatch",
+            lambda: load_toolchain_closure(
+                changed_prefix_declaration,
+                repository / live_lane.toolchain_manifest,
+                changed_prefix_manifest,
+            ),
+        )
+        unicode_size_prefix_manifest = temp / "unicode-size-prefix-tree.tsv"
+        unicode_size = "".join(
+            chr(0xFF10 + int(digit)) for digit in "798216"
+        )
+        canonical_prefix_text = "\n".join(prefix_manifest_lines) + "\n"
+        require(
+            canonical_prefix_text.count(
+                "bin/FileCheck\tregular\t0755\t798216\t"
+            )
+            == 1,
+            "toolchain Unicode-size fixture anchor differs",
+        )
+        write_text(
+            unicode_size_prefix_manifest,
+            canonical_prefix_text.replace(
+                "bin/FileCheck\tregular\t0755\t798216\t",
+                f"bin/FileCheck\tregular\t0755\t{unicode_size}\t",
+                1,
+            ),
+        )
+        unicode_prefix_declaration = temp / "unicode-prefix-declaration.toml"
+        write_text(
+            unicode_prefix_declaration,
+            toolchain_declaration_text.replace(
+                original_prefix_sha256,
+                sha256_file(unicode_size_prefix_manifest),
+                1,
+            ),
+        )
+        rejects(
+            "toolchain prefix rejects a Unicode numeric alias",
+            lambda: load_toolchain_closure(
+                unicode_prefix_declaration,
+                repository / live_lane.toolchain_manifest,
+                unicode_size_prefix_manifest,
+            ),
+        )
+        crlf_semantic_manifest = temp / "crlf-semantic-closure.tsv"
+        semantic_manifest_bytes = (
+            repository / live_lane.toolchain_manifest
+        ).read_bytes()
+        write_bytes(
+            crlf_semantic_manifest,
+            semantic_manifest_bytes.replace(b"\n", b"\r\n"),
+        )
+        crlf_semantic_declaration = temp / "crlf-semantic-declaration.toml"
+        write_text(
+            crlf_semantic_declaration,
+            toolchain_declaration_text.replace(
+                sha256_bytes(semantic_manifest_bytes),
+                sha256_file(crlf_semantic_manifest),
+                1,
+            ),
+        )
+        rejects(
+            "toolchain semantic closure rejects a noncanonical CRLF alias",
+            lambda: load_toolchain_closure(
+                crlf_semantic_declaration,
+                crlf_semantic_manifest,
+                repository / live_lane.toolchain_prefix_manifest,
+            ),
+        )
+        mutable_prefix_manifest = temp / "mutable-prefix-tree.tsv"
+        write_text(
+            mutable_prefix_manifest,
+            "\n".join(prefix_manifest_lines) + "\n",
+        )
+        admitted_prefix_entries = load_toolchain_prefix_manifest(
+            mutable_prefix_manifest
+        )
+        mutable_prefix_text = mutable_prefix_manifest.read_text(encoding="ascii")
+        require(
+            mutable_prefix_text.count("bin/FileCheck\tregular\t0755\t") == 1,
+            "toolchain mutable-prefix fixture anchor differs",
+        )
+        write_text(
+            mutable_prefix_manifest,
+            mutable_prefix_text.replace(
+                "bin/FileCheck\tregular\t0755\t",
+                "bin/FileCheck\tregular\t0555\t",
+                1,
+            ),
+        )
+        reloaded_prefix_entries = load_toolchain_prefix_manifest(
+            mutable_prefix_manifest
+        )
+        check(
+            "post-build toolchain expectation retains pre-admitted entries",
+            admitted_prefix_entries != reloaded_prefix_entries
+            and any(
+                entry.relative_path == "bin/FileCheck" and entry.mode == "0755"
+                for entry in admitted_prefix_entries
             ),
         )
         fake_toolchain = temp / "fake-toolchain/usr"
@@ -9149,7 +10581,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 repository / live_lane.declaration,
                 repository / live_lane.toolchain_declaration,
                 repository / live_lane.toolchain_manifest,
+                repository / live_lane.toolchain_prefix_manifest,
                 live_lane.toolchain_manifest,
+                live_lane.toolchain_prefix_manifest,
             ),
         )
         check(
@@ -9195,6 +10629,7 @@ def main() -> int:
     )
     parser.add_argument("--verify", type=Path)
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("LEFT", "RIGHT"))
+    parser.add_argument("--inventory-toolchain-prefix", type=Path)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--require-all-kernel-lanes", action="store_true")
     args = parser.parse_args()
@@ -9208,7 +10643,15 @@ def main() -> int:
             for name in names
         )
 
-    selected_modes = sum(bool(item) for item in (args.self_test, args.verify, args.compare))
+    selected_modes = sum(
+        bool(item)
+        for item in (
+            args.self_test,
+            args.verify,
+            args.compare,
+            args.inventory_toolchain_prefix,
+        )
+    )
     if selected_modes > 1:
         parser.error("select only one of --self-test, --verify, or --compare")
     if args.self_test:
@@ -9257,6 +10700,28 @@ def main() -> int:
                 "--compare accepts only two capture paths and --output"
             )
         compare_captures(args.compare[0], args.compare[1], args.output.resolve())
+        return 0
+    if args.inventory_toolchain_prefix:
+        if not args.output:
+            parser.error("--inventory-toolchain-prefix requires --output")
+        if (
+            args.kernel_build_root
+            or args.kernel_toolchain_bin
+            or args.require_all_kernel_lanes
+            or option_present("--repository", "--policy", "--treeish")
+        ):
+            parser.error(
+                "--inventory-toolchain-prefix accepts only one prefix and --output"
+            )
+        write_toolchain_prefix_manifest(
+            args.inventory_toolchain_prefix.resolve(),
+            args.output.resolve(),
+        )
+        entries = load_toolchain_prefix_manifest(args.output.resolve())
+        print(
+            "LLVM prefix manifest: "
+            f"{len(entries)} entries {sha256_file(args.output.resolve())}"
+        )
         return 0
     if not args.output:
         parser.error("live capture requires --output")

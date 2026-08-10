@@ -24,8 +24,8 @@ The evidence ranks remain separate:
    framework edges that lexical tools do not resolve.
 4. Preprocessed translation units and linked modules prove named build lane
    inclusion.
-5. Mutation calibrated source checkers prove the exact semantic source
-   invariants that they declare.
+5. Mutation calibrated source checkers prove the exact source invariants that
+   they declare under their documented lexical assumptions.
 6. A retained target bundle proves only the exact runtime observation it
    records.
 
@@ -46,7 +46,9 @@ named Git commit
      -> bounded code masked queries
      -> lizard and scc measurements
   -> 21 selected translation units per declared profile lane
-     -> exact kernel root and exact LLVM toolchain closure
+     -> exact kernel root
+     -> 7,174 entry LLVM prefix tree and 19 row semantic closure
+     -> fixed make, shell, LLVM, PATH, and resource directory inputs
      -> normalized preprocessor output
      -> linked radeon.ko
      -> raw and canonical module symbol sets
@@ -74,7 +76,7 @@ kernel lanes. A manifest supplied file list cannot widen that denominator.
 | Complexity | `analysis/lizard.csv`, `analysis/scc.json`, `analysis/coefficient-vectors.tsv` | Function NLOC, CCN, graph degree, indirect edges, side effect class, guard census, and evidence rank remain separately inspectable. |
 | Build lanes | `preprocessed/<release>/<profile>/` | Every declared lane retains 21 normalized translation units, one linked module, raw symbols, canonical symbols, and build metadata. |
 | Profile deltas | `analysis/profile-symbol-delta-summary.tsv`, `analysis/profile-symbol-delta-members.tsv` | Canonical symbols strip only a terminal `.llvm.<digits>` suffix, reject collisions, and preserve exact additions and removals. |
-| Tool provenance | `metadata/tool-versions.tsv`, `metadata/kernel-toolchains.tsv`, `metadata/toolchain-runtime-libraries.tsv` | Required analyzer executables and all nine LLVM command nodes carry exact hashes. Toolchain local libraries carry path type, symlink target, and content identities. |
+| Tool provenance | `metadata/tool-versions.tsv`, `metadata/kernel-toolchains.tsv`, `metadata/kernel-toolchain-closures/`, `metadata/toolchain-runtime-libraries.tsv` | Required analyzer executables carry exact hashes. Each LLVM lane retains the 7,174 entry prefix tree, the 19 row semantic execution closure, resource paths, and recorded host runtime rows. |
 | Execution record | `metadata/command-metadata.tsv`, `diagnostics/` | Every producer command has an exact identifier, tool, working directory, status, output ownership, argument vector, and environment. |
 | Seal | `capture-hashes.sha256` | Every expected regular file except the ledger itself has one content digest. |
 
@@ -444,11 +446,23 @@ python3 scripts/capture_radeon_driver_source_map.py \
   `scripts/check_parked_admission_guards.py`, and
   `scripts/check_parked_entry_policy.py` own their declared semantic source
   invariants through calibrated positive and negative fixtures.
+- The reset source checks bind exact primary source intervals, enclosing
+  condition identifiers, return sets, lock transitions, and a finite kernel
+  nonlocal exit and inline assembly denominator. They assume other intervening
+  calls return. They do not prove a compiler control flow graph, included
+  header macro state, or runtime execution.
 - A linked module proves compilation, link, metadata, and selected symbol
   projection. It does not prove module loading or target behavior.
-- Toolchain local commands and libraries have exact closure identities. Host
-  runtime library rows remain recorded capture facts. Offline verification
-  binds those rows but does not reconstruct the original host package state.
+- Every LLVM prefix descendant has an exact retained identity. Admission
+  rejects effective runner writes, special modes, extended attributes, path
+  escapes, and changed symlink resolution before execution. The semantic
+  command and library rows join to that tree during capture and offline
+  verification.
+- Kbuild uses `/usr/bin/make`, `/usr/bin/sh`, an absolute LLVM bin prefix, and
+  `PATH=/usr/bin:/bin`. The capture does not trace every child host helper that
+  kernel Makefiles execute. Host runtime library rows remain recorded capture
+  facts, and offline verification does not reconstruct the original host
+  package state.
 - The bundle is sealed, not immutable. Any writer can alter the directory, and
   the ledger plus verifier detect rather than prevent that alteration.
 - The capture contains no RS482 or Palm hardware verdict. Those verdicts

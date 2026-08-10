@@ -1,4 +1,4 @@
-schema = 1
+schema = 2
 family = "llvm"
 version = "22.1.6"
 architecture = "x86_64_v3"
@@ -7,7 +7,18 @@ library_count = 8
 support_count = 2
 manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-closure.tsv"
 manifest_sha256 = "4ececf99ed823827688b893f0e142e52e046f7d6888b04357c9260203d0ad541"
-runtime_boundary = "exact-llvm-payload-with-recorded-host-runtime-closure"
+prefix_tree_schema = "gororoba-kernel-toolchain-prefix-tree-v1"
+prefix_tree_manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-prefix-tree.tsv"
+prefix_tree_manifest_sha256 = "7e9a49f730736b24cb2a9ca88be58a6203e94f5df693e72f61f1a4d836b1c8f2"
+prefix_entry_count = 7174
+prefix_directory_count = 355
+prefix_regular_count = 6792
+prefix_symlink_count = 27
+resource_directory = "lib/clang/22"
+resource_entry_count = 295
+resource_directory_count = 11
+resource_regular_count = 284
+runtime_boundary = "exact-llvm-prefix-tree-with-recorded-host-runtime-closure"
 
 [[package]]
 component = "clang"
@@ -51,4 +62,6 @@ gid = 0
 group_writable = false
 other_writable = false
 runner_directory_write = false
+runner_file_write = false
+extended_attributes = false
 special_files = false

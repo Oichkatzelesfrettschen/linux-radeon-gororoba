@@ -20,6 +20,8 @@ required_tools = [
   "ldd",
   "pacman",
   "python3",
+  "make",
+  "sh",
 ]
 
 optional_tools = [
@@ -96,6 +98,7 @@ declaration = "ci/kernel-build-roots/6.18.38-2-cachyos-lts.toml"
 manifest = "ci/kernel-build-roots/6.18.38-2-cachyos-lts.manifest.tsv"
 toolchain_declaration = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-closure.toml"
 toolchain_manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-closure.tsv"
+toolchain_prefix_manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-prefix-tree.tsv"
 profiles = ["prod", "mutate-dev"]
 
 [[preprocessor.kernel]]
@@ -104,6 +107,7 @@ declaration = "ci/kernel-build-roots/7.1.4-1-cachyos.toml"
 manifest = "ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv"
 toolchain_declaration = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-closure.toml"
 toolchain_manifest = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-closure.tsv"
+toolchain_prefix_manifest = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-prefix-tree.tsv"
 profiles = ["prod", "observe-dev", "probe-dev", "mutate-dev"]
 
 [[partition]]

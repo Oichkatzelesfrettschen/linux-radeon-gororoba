@@ -105,10 +105,21 @@ derived file denominator, the ledger, and offline artifact replay.
 
 The optional kernel roots add preprocessed views for every declared kernel and
 profile lane. Each root requires a matching toolchain bin directory. The
-capture verifies the Clang and LLD versions against the retained kernel root
-declaration and records every kernel tool executable hash. Kbuild then compiles
-the module and emits the selected translation units with temporary, toolchain,
-and kernel-root paths normalized in the retained products.
+parent LLVM prefix has a tracked manifest for all 7,174 descendants, including
+355 directories, 6,792 regular files, 27 symlinks, and the 295 entry Clang
+resource tree. Before execution, the capture verifies the exact path set,
+content identities, symlink resolution, ownership, effective writability,
+special mode bits, and extended attributes. The 19 row semantic execution
+closure then binds all nine LLVM commands, eight local libraries, and two
+support targets to that finite tree.
+
+Kbuild runs through `/usr/bin/make`, an absolute `LLVM` bin prefix,
+`/usr/bin/sh`, and `PATH=/usr/bin:/bin`. The capture retains that command and
+environment denominator, compiles the module, emits the selected translation
+units, and normalizes temporary, toolchain, and kernel root paths. A second
+tree scan compares against the same in-memory entries admitted before the
+build. This contract identifies the LLVM prefix. It does not trace every host
+helper process that Kbuild starts.
 
 ```sh
 source_commit=$(git rev-parse HEAD)
@@ -136,7 +147,11 @@ resolve named build lanes without changing that boundary. Contextual path
 witnesses preserve ordered source edges, required conditions, and typed
 callback or debugfs event joins without collapsing registration time into later
 dispatch. `analysis/hazard-guard-identifier-census.tsv` remains a lexical
-census. The mutation-calibrated semantic checkers own executable guard claims.
+census. The mutation calibrated semantic checkers own their declared primary
+source contracts. The reset checkers pin exact lexical intervals, reject a
+finite opaque control set, and assume other intervening calls return. They do
+not prove a compiler control flow graph, included header macro state, or
+runtime execution.
 
 `docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
 the complete reference attestation, the four retained path witnesses, the
