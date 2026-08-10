@@ -123,7 +123,7 @@ helper process that Kbuild starts.
 
 ```sh
 source_commit=$(git rev-parse HEAD)
-output="/var/tmp/linux-radeon-gororoba-source-intelligence/radeon-driver-lifecycle-admission-reset-source-map/${source_commit}"
+output="/var/tmp/linux-radeon-gororoba-source-intelligence/radeon-driver-source-map-control-admission/${source_commit}"
 python3 scripts/capture_radeon_driver_source_map.py \
   --treeish "$source_commit" \
   --output "$output" \
@@ -165,6 +165,14 @@ python3 scripts/capture_radeon_driver_source_map.py \
   --compare "$left_capture" "$right_capture" \
   --output "$comparison_output"
 ```
+
+A source delta uses captures with the same producer commit, policy hashes,
+analyzer identities, kernel roots, and toolchain closures. The comparison
+command verifies each input and seals its normalized output, but it does not
+yet enforce or record that matched-generation precondition. The reference
+comparison in `docs/radeon-driver-source-intelligence.md` proves the input
+identities independently. The retained native bundle and admitted recapture
+supply the same-source producer control.
 
 ## Build profiles
 

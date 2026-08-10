@@ -85,8 +85,8 @@ kernel lanes. A manifest supplied file list cannot widen that denominator.
 ## Reference capture attestation
 
 The complete reference capture identifies source and producer commit
-`7a353a84d863a4ef2326a81cc837fb3d03408665`. Its local bundle name is
-`radeon-driver-lifecycle-admission-reset-source-map/7a353a8-complete-kernel-lanes`.
+`8158297e70cdea90b69149d700c25957a91f764d`. Its local bundle name is
+`radeon-driver-source-map-control-admission/8158297-complete-kernel-lanes`.
 The name is a convenience label. The Git proofs and manifest identify the
 content.
 
@@ -96,12 +96,12 @@ content.
 | --- | --- |
 | Capture schema | `gororoba-radeon-driver-source-map-v2` |
 | Source files | 222 |
-| Source bytes | 6,907,264 |
-| Regular files | 897 |
-| Ledger rows | 896 |
-| Bundle size | 958 MiB on the capture filesystem |
-| Lexical rows | 98,353 |
-| Call candidates | 15,616 |
+| Source bytes | 6,909,890 |
+| Regular files | 901 |
+| Ledger rows | 900 |
+| Bundle size | 961 MiB on the capture filesystem |
+| Lexical rows | 98,390 |
+| Call candidates | 15,633 |
 | Declared indirect bindings | 45 |
 | Contextual witnesses | 4 |
 | Contextual witness edges | 29 |
@@ -109,12 +109,12 @@ content.
 | Profile comparisons | 7 |
 | Profile delta members | 178 |
 | Producer commands | 176 |
-| Manifest SHA-256 | `3e2ce7b4d4be3ea38dad4d0e0b78d873acf8eddc2021d0c032b056a941eac92b` |
-| Ledger SHA-256 | `1c52018a227921a67eab061cc518d8796d50a3ead35d5908448ecb88d44c17b2` |
+| Manifest SHA-256 | `47d61a02e7df2718ca80e971accad2ab67237836c8a0b383253c8d10208c0363` |
+| Ledger SHA-256 | `8bc55ea31649a7c76f813288c277acd45842ca3870fcac81f1d660b96e91f20c` |
 
 <!-- markdownlint-enable MD013 -->
 
-The 896 ledger rows cover every regular file except
+The 900 ledger rows cover every regular file except
 `capture-hashes.sha256`. The independent verifier passes with
 `--require-all-kernel-lanes`. The producer self test rejects changed content,
 extra top level and nested files, incomplete command records, changed raw
@@ -127,27 +127,29 @@ prove that verification does not reduce to self consistent hashing.
 The unified candidate graph has the exact decomposition:
 
 ```text
-15,475 GNU cflow lexical edges
+15,492 GNU cflow lexical edges
     96 syntax extracted indirect candidates
     45 policy declared indirect bindings
 ------
-15,616 total call candidates
+15,633 total call candidates
 ```
 
-The lexical portion classifies 6,760 callees as driver symbols and 8,715 as
-external symbols. The remaining rows carry precise callback, table, macro,
-wrapper, registration, family selection, reset mode, and event classifications.
-The 96 extracted rows remain candidates. The 45 declared rows pass exact
-policy and brace containment checks.
+The lexical portion classifies 6,774 edge rows as calls to driver symbols and
+8,718 edge rows as calls to external symbols. The remaining call candidate
+rows carry precise callback, table, macro, wrapper, registration, family
+selection, and reset mode classifications. The four event joins remain in the
+separate contextual path product. The 96 extracted rows remain candidates.
+All 45 declared rows pass exact matching, and the 28 brace scoped rows also
+pass containment checks.
 
-The seven focused partitions contain 3,146 lexical rows:
+The seven focused partitions contain 3,149 lexical rows:
 
 <!-- markdownlint-disable MD013 -->
 
 | Partition | Lexical rows | Architecture surface |
 | --- | ---: | --- |
 | Module lifecycle | 1,344 | Module load, PCI probe, KMS load, device initialization, unload, and module exit. |
-| Reset and park | 846 | Detected reset, forced reset, ASIC reset dispatch, lockup work, parked containment, and reset probes. |
+| Reset and park | 849 | Detected reset, forced reset, ASIC reset dispatch, lockup work, parked containment, and reset probes. |
 | Command submission | 674 | DRM ioctl entry, parser initialization, IB chunks, ring parser selection, and packet zero validation. |
 | GART and memory | 102 | TTM initialization, common GART ownership, RS400 table setup, PTE writes, and TLB flush. |
 | KMS and debugfs | 85 | DRM minor debugfs registration, RS480 development nodes, and Palm reset node ownership. |
@@ -159,7 +161,7 @@ The seven focused partitions contain 3,146 lexical rows:
 `cflow/full-call-candidates.txt` and
 `cflow/full-call-candidates.dot` retain the full lexical tree. Each partition
 has corresponding text and DOT output under `cflow/partitions/`.
-`queries/cscope-root-symbols.tsv` retains 696 parsed rows for 43 root symbols
+`queries/cscope-root-symbols.tsv` retains 689 parsed rows for 43 root symbols
 across definition, calls, and callers queries. The verifier reruns all 129
 queries against the retained cscope database and requires byte exact raw
 output plus exact parsed summary equality.
@@ -244,10 +246,10 @@ radeon_force_pci_reset_safe
 ```
 
 The path requires the mutate capable compiled ceiling and runtime profile,
-`CHIP_PALM`, unavailable hardware state, the exact unsafe module parameter
-value `1`, file position zero, and the exact command `1`. Its maximum side
-effect remains a PCI configuration reset. The exact gates constrain entry but
-do not lower the side effect classification.
+`CHIP_PALM`, `radeon_dev_hardware_available` to return zero, the exact unsafe
+module parameter value `1`, file position zero, and the exact command `1`. Its
+maximum side effect remains a PCI configuration reset. The exact gates
+constrain entry but do not lower the side effect classification.
 
 ## Coefficient derivation
 
@@ -390,7 +392,7 @@ The source only capture runs without kernel roots:
 ```sh
 source_commit=$(git rev-parse HEAD)
 capture_parent="/var/tmp/linux-radeon-gororoba-source-intelligence"
-mechanism="radeon-driver-lifecycle-admission-reset-source-map"
+mechanism="radeon-driver-source-map-control-admission"
 output="${capture_parent}/${mechanism}/${source_commit}-source-only"
 python3 scripts/capture_radeon_driver_source_map.py \
   --treeish "$source_commit" \
@@ -404,7 +406,7 @@ root owned toolchain closures:
 ```sh
 source_commit=$(git rev-parse HEAD)
 capture_parent="/var/tmp/linux-radeon-gororoba-source-intelligence"
-mechanism="radeon-driver-lifecycle-admission-reset-source-map"
+mechanism="radeon-driver-source-map-control-admission"
 output="${capture_parent}/${mechanism}/${source_commit}-complete-kernel-lanes"
 python3 scripts/capture_radeon_driver_source_map.py \
   --treeish "$source_commit" \
@@ -422,7 +424,7 @@ python3 scripts/capture_radeon_driver_source_map.py \
 ```
 
 Long captures and verification runs execute inside tmux. The output stays
-outside Git because the complete reference bundle occupies 958 MiB and
+outside Git because the complete reference bundle occupies 961 MiB and
 contains build products.
 
 Two sealed captures compare through normalized products:
@@ -432,6 +434,89 @@ python3 scripts/capture_radeon_driver_source_map.py \
   --compare "$left_capture" "$right_capture" \
   --output "$comparison_output"
 ```
+
+## Matched-generation source comparison
+
+The reference comparison uses two captures produced by commit
+`8158297e70cdea90b69149d700c25957a91f764d`. Their producer tree, source-map
+policy, build-feature policy, tool versions, kernel build-root evidence,
+toolchain closure evidence, and retained producer inputs are byte identical.
+Among admitted identities, only the source commit, source tree, and driver
+subtree differ. Derived source products differ accordingly. Every
+producer-side admission field listed above is equal. This equality is an
+explicit admission check because comparison schema v2 records input source
+commits and ledger hashes but does not record or enforce producer and policy
+equality.
+
+The left input recaptures source commit
+`7a353a84d863a4ef2326a81cc837fb3d03408665` under the admitted producer. Its
+bundle name is
+`radeon-driver-source-map-control-admission/7a353a8-source-under-8158297-producer-complete-kernel-lanes`.
+It contains 901 regular files and 900 ledger rows. Its manifest SHA-256 is
+`599d5f31f80f06f8f5da8df0a593d6bc6de8c884049ea6eebe37f8fa254c01bc`,
+and its ledger SHA-256 is
+`15bed05438b9e06847b5bcf6a4e97f179301b04c68d1d5eda07fd369467cf42d`.
+The all-lane verifier passes independently.
+
+The comparison bundle name is
+`radeon-driver-source-map-control-admission/7a353a8-to-8158297-matched-producer-comparison`.
+The comparison producer uses Git blob
+`efa5bab8e0e15be7ce4205de37ba8ec2fc434d26`, whose file SHA-256 is
+`d9a64a002dcbc4d87c181119efc877c8975499bb94378add6bf1e9e83caff1a1`.
+Its manifest SHA-256 is
+`06d96ab974ca1a5d403b4db00cb7550a1c5d7d3e4efeda023ebd726771efe40d`,
+and its nine-row ledger SHA-256 is
+`000a02da13016a61c37c2d31491e76f64d09ef3abce71d218cac25b9b2ae2e17`.
+Independent `sha256sum --check` verification passes.
+The profile member product uses schema
+`radeon-driver-profile-symbol-delta-member-delta-v2` and keeps the outer
+`capture_change` column distinct from the inner profile `change` column.
+
+<!-- markdownlint-disable MD013 -->
+
+| Product | Removed | Added | Changed | Result |
+| --- | ---: | ---: | ---: | --- |
+| Source files | 0 | 0 | 1 | One file changes in place: `drivers/gpu/drm/radeon/radeon_rs4xx_dev.c`, from 117,969 to 120,595 bytes. |
+| Call candidates | 3 | 20 | 0 | The candidate graph grows by 17 edges. |
+| Declared binding evidence | 5 | 5 | 0 | Five stable binding IDs retain their matched text and move with the changed file identity and line positions. |
+| Contextual path edges | 0 | 0 | 0 | The four contextual witness topologies remain unchanged. |
+| Contextual path joins | 0 | 0 | 0 | The four typed event and callback joins remain unchanged. |
+| Profile delta summaries | 0 | 0 | 0 | All seven within-capture profile comparisons retain their canonical counts and set hashes. |
+| Profile delta members | 4 | 4 | 0 | Only the raw terminal LLVM suffix for `rs400_gart_page_table_lock` changes in four profile pairs. |
+| Coefficient vectors | 1 | 1 | 0 | `rs480_wedged_3d_reset` moves from line 1788 to 1876 with every numeric and categorical coefficient unchanged. |
+
+<!-- markdownlint-enable MD013 -->
+
+The source grows by 2,626 bytes. The lexical index grows from 98,353 to
+98,390 rows. The cscope root-query product changes from 696 to 689 rows while
+retaining the same 43-symbol and 129-query denominator. The call graph makes
+schema emission, parked or suspended refusal, and CP-ME terminal selection
+explicit through `rs480_debugfs_emit_schema`,
+`rs480_debugfs_refuse_hardware_access`,
+`rs480_cp_me_ram_seq_terminal_position`,
+`rs480_cp_me_ram_seq_is_terminal`, and
+`rs480_cp_me_ram_seq_emit_terminal`. This decomposition adds structural edges
+without changing the selected reset coefficient vector. It does not establish
+runtime reachability or target behavior.
+
+The native `7a353a8` bundle remains valid under its retained native verifier,
+with ledger SHA-256
+`1c52018a227921a67eab061cc518d8796d50a3ead35d5908448ecb88d44c17b2`.
+The `8158297` verifier rejects it because its schema v1 lane policy lacks the
+full LLVM prefix manifests. All 176 native command rows also differ from the
+admitted command contract. The native bundle therefore supplies legacy
+producer evidence, not a source-comparison endpoint.
+
+The same-source producer control compares that native bundle with the
+`7a353a8` recapture. Every one of the six module hashes changes. The raw
+defined-symbol name sets replace 30 names in each production lane, 31 names
+in the 7.1 observe and probe lanes, and 33 names in each mutate lane. Every
+replacement changes only a terminal `.llvm.<digits>` suffix. Removing only
+that suffix produces zero added names, zero removed names, and zero canonical
+collisions in all six lanes. Module bytes and raw LLVM suffixes are therefore
+producer-sensitive evidence even when source and compiler executables match.
+The matched-generation comparison keeps that producer effect outside the
+source delta.
 
 ## Trust boundaries
 
@@ -474,26 +559,32 @@ The source intelligence program advances through these concrete gates:
 
 1. The protected branch defines
    `RADEON_LLVM_TOOLCHAIN_BIN_618` and `RADEON_LLVM_TOOLCHAIN_BIN_71` as the
-   two `/opt/gororoba/toolchains/` bin directories. The
-   `source-map-kernel-lanes` job passes before it becomes a required status.
-2. The active ruleset requires the green `source-map-kernel-lanes` status so a
-   source map regression blocks integration.
-3. A future capture retains raw `ldd`, ELF dependency, SONAME, and package
+   two `/opt/gororoba/toolchains/` bin directories. The active ruleset requires
+   the green `source-map-kernel-lanes` status, so a source map regression blocks
+   integration.
+2. The complete reference capture and matched-generation comparison retain
+   the six lane modules, profile deltas, source graph deltas, and exact hash
+   ledgers described above. The retained native bundle and admitted recapture
+   supply the separate same-source producer control.
+3. The comparison command next rejects unequal producer commits, producer
+   trees, policy hashes, analyzer identities, kernel-root evidence, or
+   toolchain closures and records those identities in its manifest.
+4. A future capture retains raw `ldd`, ELF dependency, SONAME, and package
    owner command outputs when it claims portable replay of host runtime
    closure. Until then, the manifest states the recorded host boundary.
-4. Parser safety work adds a hardware free packet corpus and calibrated
+5. Parser safety work adds a hardware free packet corpus and calibrated
    mutations around `r300_packet0_check` before changing its command policy.
-5. Any new ioctl, callback, work item, debugfs node, file operation, ASIC
+6. Any new ioctl, callback, work item, debugfs node, file operation, ASIC
    table, or passed function expands the declared indirect edge denominator
    and the self test mutation matrix.
-6. Any new hazardous path gains an exact contextual witness, maximum side
+7. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.
-7. `steinmarder-r300` records a read only Vostro production baseline with
+8. `steinmarder-r300` records a read only Vostro production baseline with
    module, package, boot, device, and log identity before any attended runtime
    escalation.
-8. `radeon-custom` advances its signed source pin and package attestation only
+9. `radeon-custom` advances its signed source pin and package attestation only
    after the source branch merges. Deployment identity remains separate from
    source and hardware acceptance.
-9. A completion claim requires a clean full verifier, all semantic checkers,
+10. A completion claim requires a clean full verifier, all semantic checkers,
    both exact kernel roots, the required CI status, merged pull request, synced
    main checkout, and an explicit ledger of runtime checks that remain not run.
