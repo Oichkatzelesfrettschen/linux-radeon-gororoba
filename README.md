@@ -25,35 +25,41 @@ source for blame and commit archaeology.
 
 Packaging targets Arch and CachyOS alone.
 
-## Transitional authority
+## Source, package, and loaded deployment authority
 
-`linux-radeon-gororoba` is the canonical modified-source authority from
-`radeon-unified-0.3-pkgrel91-source-equivalent` onward.
+`linux-radeon-gororoba` is the canonical modified source authority from
+`radeon-unified-0.3-pkgrel91-source-equivalent` onward. `radeon-custom` owns
+the source pin, package, DKMS lifecycle, and deployment policy.
 
-`radeon-custom` has completed the signed source-pin cutover and remains the
-deployment and packaging authority. Its active 0.7-1 packages pin this
-repository's signed profiled-source checkpoint (tag
-`radeon-unified-0.7-profiled-source`, tag object
-7f500d682aad600ca443c7f26e913b6b4034c834, peeled source commit
-293a4ae3fe82cd03585ef3157e82b0b59b641b47, and driver tree
-d57a22ad5356637d7075cb2aba83e22af71f7bfb) across split production capability,
-development capability, and RS482 board policy. The package attestation records
-signed artifacts and successful dual-kernel DKMS lifecycles. That attestation
-itself records target contact, installation, module load, and hardware operation
-as NOT RUN for 0.7-1. A later read-only live cross-check establishes deployment
-identity only. The bound PCI device resolves to `/sys/module/radeon`, and the
-loaded module `srcversion` `A7F72BE636B52D7EED42415` matches the on-disk DKMS
-0.7 module. The on-disk metadata pins source commit
-`293a4ae3fe82cd03585ef3157e82b0b59b641b47` and driver tree
-`d57a22ad5356637d7075cb2aba83e22af71f7bfb`. This cross-check does not amend the
-attestation or establish retained behavioral acceptance. Later repository
-commits may supersede source mechanisms without superseding the signed
-deployment pin; they remain unshipped until radeon-custom records a new source
-pin, package attestation, and module lifecycle. The retained 0.6-1 parked-device
-bundle remains the last retained parked-behavior silicon verdict; it is not a
-general current runtime authority. The signed 0.5-1 and 0.4-3 sets remain deeper
-rollback authorities, and the 0.3-96 legacy-equivalent acceptance remains the
-deeper retained baseline.
+The active `radeon-custom` recipe is 0.8-1. It pins the signed
+`radeon-unified-0.8-profiled-source` tag object
+`c3745d24ea7481ec56c5c0b1aa397be4b8788b72`, peeled source commit
+`2433cbd69cd99d1dd002447bb4d481ed66141562`, and driver tree
+`e3432f8dda41e2fcb93fad23a0f3825541c15e93`. Its package gates build and
+verify the split package set, and its target kernel gate compiles the verified
+production package on RS482. The repository carries no 0.8-1 signed release
+attestation or loaded module identity, so 0.8-1 remains package and target
+compile evidence rather than loaded deployment authority.
+
+The live RS482 target runs the signed 0.7-1 production and board policy
+packages. The retained read only identity bundle joins PCI `1002:5974` to the
+loaded `radeon` module, installed DKMS file, package, and source pin. The
+loaded module carries srcversion `A7F72BE636B52D7EED42415`, GNU build ID
+`a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, compressed module SHA256
+`6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`,
+source commit `293a4ae3fe82cd03585ef3157e82b0b59b641b47`, and driver tree
+`d57a22ad5356637d7075cb2aba83e22af71f7bfb`. The module exposes the `prod`
+profile and zero development parameters. Steinmarder retains this evidence at
+`src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/`.
+
+The identity capture observes successful boot ring and indirect buffer tests.
+It runs no controlled graphics workload and establishes no conformance, reset,
+register, performance, or silicon safety verdict. The retained 0.6-1 parked
+device bundle remains the last parked behavior silicon verdict. The signed
+0.6-1, 0.5-1, and 0.4-3 package sets remain rollback authorities, and the
+0.3-96 legacy equivalent acceptance remains the deeper retained baseline.
+Source commits after the 0.8 pin remain unshipped until `radeon-custom`
+advances its source pin and records a new release and loaded module identity.
 
 The retained parked-device silicon verdict covers the older 0.6-1 module. An
 attended RS482 park latched `gpu_parked`; fresh native GEM creates, USERPTR
