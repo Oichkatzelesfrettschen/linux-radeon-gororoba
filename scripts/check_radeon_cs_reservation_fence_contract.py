@@ -1161,6 +1161,10 @@ SOURCE_EXPECTED_ERRORS = {
         "reset backup, reset, replay, and force-completion structure: "
         "missing or out of order: down_write(&rdev->exclusive_lock)"
     ),
+    "parked CS condition is inverted": (
+        "command-submission: expected one unconditional parked guard in "
+        "radeon_cs_ioctl, found 0"
+    ),
     "relocation chunk accepts a partial record": (
         "relocation chunk length admission guard differs: "
         "exact condition match count is 0"
@@ -1207,38 +1211,36 @@ SOURCE_EXPECTED_ERRORS = {
         "relocation-only admission dominance: exact direct statement prefix differs"
     ),
     "validated submission lacks final fence admission": (
-        "validated submission success fence guard differs: "
-        "exact condition match count is 0"
+        "command-submission validated-BO fence guard: "
+        "expected one match at depth 1, found 0"
     ),
     "validated submission fence guard is disabled": (
-        "validated submission success fence guard differs: "
-        "exact condition match count is 0"
+        "command-submission validated-BO fence guard: "
+        "expected one match at depth 1, found 0"
     ),
     "validated submission fence guard is negated": (
-        "validated submission success fence guard differs: "
-        "exact condition match count is 0"
+        "command-submission validated-BO fence guard: "
+        "expected one match at depth 1, found 0"
     ),
     "validated submission fence action is nested under false": (
-        "validated submission success fence guard differs: "
-        "guarded action is not the final top-level statement"
+        "command-submission validated-BO fence failure statement sequence differs"
     ),
     "validated submission fence action is overridden later": (
-        "validated submission success fence guard differs: "
-        "guarded action is not the final top-level statement"
+        "command-submission validated-BO fence failure statement sequence differs"
     ),
     "validated submission fence action is bypassed inside the guard": (
-        "validated submission success fence guard differs: exact guard body differs"
+        "command-submission validated-BO fence failure statement sequence differs"
     ),
     "validated submission fence guard is inside an outer disabled block": (
-        "validated submission success fence guard differs: "
-        "exact condition match count is 0"
+        "command-submission validated-BO fence guard: "
+        "expected one match at depth 1, found 0"
     ),
     "validated submission fence guard is bypassed by a goto": (
-        "validated submission success fence guard differs: "
-        "direct statement index 23 != 22"
+        "command-submission VM-failure-to-fence-guard "
+        "contains an intervening source token"
     ),
     "CS ioctl declaration hides a statement-expression return": (
-        "validated submission fence dominance: exact direct statement prefix differs"
+        "command-submission declaration and lock prefix statement sequence differs"
     ),
     "relocation index accepts unaligned records": (
         "relocation record index admission guard differs: "
