@@ -156,7 +156,9 @@ def read_manifest(path: Path) -> dict[str, str]:
         raise SchemaError(f"{path} declares no manifest schema")
     token = declared.split(":", 1)[1].strip()
     if token != SCHEMA:
-        raise SchemaError(f"{path} declares schema {token!r}, and this tool speaks {SCHEMA!r}")
+        raise SchemaError(
+            f"{path} declares schema {token!r}, and this tool speaks {SCHEMA!r}"
+        )
     rows = [ln for ln in lines if ln and not ln.startswith("#")]
     if not rows or rows[0] != COLUMNS:
         raise SchemaError(f"{path} carries no {COLUMNS!r} header")
@@ -196,7 +198,7 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "source-closure.toml").write_text(
-            'schema = 1\n'
+            "schema = 1\n"
             '[[excluded]]\npattern = "*_reg_safe.h"\nreason = "generated"\n'
             '[[repository_only]]\npath = ".gitignore"\nreason = "metadata"\n',
             encoding="utf-8",
@@ -205,7 +207,9 @@ def self_test() -> int:
 
         tree = root / "tree"
         tree.mkdir()
-        (tree / "r300.c").write_text("int probe(void) { return 0; }\n", encoding="utf-8")
+        (tree / "r300.c").write_text(
+            "int probe(void) { return 0; }\n", encoding="utf-8"
+        )
         (tree / "reg_srcs").mkdir()
         (tree / "reg_srcs" / "r300").write_text("r300 0x4000\n", encoding="utf-8")
         (tree / "gen_reg_safe.h").write_text("generated\n", encoding="utf-8")
@@ -226,16 +230,22 @@ def self_test() -> int:
 
         check("generated pattern excluded", "gen_reg_safe.h" not in paths)
         check("repository-only path excluded", ".gitignore" not in paths)
-        check("regular file recorded 100644",
-              any(r.startswith("r300.c\t100644\t") for r in base))
-        check("executable recorded 100755",
-              any(r.startswith("tool.sh\t100755\t") for r in base))
+        check(
+            "regular file recorded 100644",
+            any(r.startswith("r300.c\t100644\t") for r in base),
+        )
+        check(
+            "executable recorded 100755",
+            any(r.startswith("tool.sh\t100755\t") for r in base),
+        )
 
         # Symlink: identity is its target, and its mode is distinct.
         (tree / "link.c").symlink_to("r300.c")
         with_link = manifest(tree, policy)
-        check("symlink recorded 120000",
-              any(r.startswith("link.c\t120000\t") for r in with_link))
+        check(
+            "symlink recorded 120000",
+            any(r.startswith("link.c\t120000\t") for r in with_link),
+        )
         (tree / "link.c").unlink()
 
         def mutate(label: str, fn) -> None:
@@ -247,12 +257,15 @@ def self_test() -> int:
             finally:
                 shutil.rmtree(snapshot)
 
-        mutate("changed content detected",
-               lambda t: (t / "r300.c").write_text("int probe(void) { return 1; }\n"))
-        mutate("changed executable bit detected",
-               lambda t: (t / "r300.c").chmod(0o755))
-        mutate("unexpected file detected",
-               lambda t: (t / "extra.c").write_text("void x(void) {}\n"))
+        mutate(
+            "changed content detected",
+            lambda t: (t / "r300.c").write_text("int probe(void) { return 1; }\n"),
+        )
+        mutate("changed executable bit detected", lambda t: (t / "r300.c").chmod(0o755))
+        mutate(
+            "unexpected file detected",
+            lambda t: (t / "extra.c").write_text("void x(void) {}\n"),
+        )
         mutate("missing file detected", lambda t: (t / "r300.c").unlink())
 
         # A damaged declaration is fatal rather than a fallback to defaults.
@@ -283,8 +296,10 @@ def self_test() -> int:
 
         for label, mutated in (
             ("absent schema token rejected", text.replace(SCHEMA_LINE + "\n", "")),
-            ("foreign schema token rejected",
-             text.replace(SCHEMA, "some-other-tree-v9")),
+            (
+                "foreign schema token rejected",
+                text.replace(SCHEMA, "some-other-tree-v9"),
+            ),
             ("absent column header rejected", text.replace(COLUMNS + "\n", "")),
         ):
             other = root / "other.tsv"
@@ -298,8 +313,10 @@ def self_test() -> int:
     if failures:
         print(f"source-manifest calibration: FAIL ({failures})")
         return 1
-    print("source-manifest calibration: every class detected, "
-          "fail-closed on policy and schema")
+    print(
+        "source-manifest calibration: every class detected, "
+        "fail-closed on policy and schema"
+    )
     return 0
 
 
@@ -308,8 +325,12 @@ def main() -> int:
     parser.add_argument("--tree", type=Path, help="emit a manifest for this tree")
     parser.add_argument("--out", type=Path, help="write the manifest here")
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("A", "B"))
-    parser.add_argument("--root", type=Path, default=Path("."),
-                        help="repository root holding source-closure.toml")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path("."),
+        help="repository root holding source-closure.toml",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 

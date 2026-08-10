@@ -129,8 +129,7 @@ def load_plans(root: Path) -> dict[str, dict[str, str]]:
 
 def load_guard_scope(root: Path) -> dict[str, dict[str, str]]:
     return {
-        row["guard_id"]: row
-        for row in read_tsv(root / "policy/rs4xx-guard-scope.tsv")
+        row["guard_id"]: row for row in read_tsv(root / "policy/rs4xx-guard-scope.tsv")
     }
 
 
@@ -179,7 +178,9 @@ def validate_feature_shape(
     require(isinstance(feature_id, str), "feature lacks a string id")
     missing = REQUIRED_FIELDS - feature.keys()
     require(not missing, f"{feature_id}: missing fields {','.join(sorted(missing))}")
-    require(KEBAB.fullmatch(feature_id) is not None, f"{feature_id}: invalid feature ID")
+    require(
+        KEBAB.fullmatch(feature_id) is not None, f"{feature_id}: invalid feature ID"
+    )
 
     setting = feature["setting"]
     tier = feature["tier"]
@@ -207,7 +208,9 @@ def validate_feature_shape(
             availability == "present-in-prod",
             f"{feature_id}: production feature is absent by default",
         )
-        require(runtime_default == "active", f"{feature_id}: prod runtime is not active")
+        require(
+            runtime_default == "active", f"{feature_id}: prod runtime is not active"
+        )
         require(
             feature["package_projection"] == "production",
             f"{feature_id}: prod package projection is invalid",
@@ -217,7 +220,9 @@ def validate_feature_shape(
             availability == "absent-in-prod",
             f"{feature_id}: development feature is present in prod",
         )
-        require(runtime_default == "off", f"{feature_id}: dev runtime default is not off")
+        require(
+            runtime_default == "off", f"{feature_id}: dev runtime default is not off"
+        )
         require(
             feature["package_projection"] == "development",
             f"{feature_id}: dev package projection is invalid",
@@ -280,7 +285,9 @@ def validate_feature_shape(
             f"{feature_id}: invalid source object path {source}",
         )
         if files:
-            require((root / path).is_file(), f"{feature_id}: missing source object {source}")
+            require(
+                (root / path).is_file(), f"{feature_id}: missing source object {source}"
+            )
 
     source_mechanisms = string_list(feature, "source_mechanisms")
     require(bool(source_mechanisms), f"{feature_id}: source_mechanisms is empty")
@@ -311,7 +318,9 @@ def validate_feature_shape(
         )
         relations = set()
         for guard_id in scope_refs:
-            require(guard_id in guard_scope, f"{feature_id}: unknown scope ref {guard_id}")
+            require(
+                guard_id in guard_scope, f"{feature_id}: unknown scope ref {guard_id}"
+            )
             relations.add(guard_scope[guard_id]["scope_relation"])
             require(
                 bool(guard_scope[guard_id]["scope_decision"]),
@@ -345,17 +354,17 @@ def validate_feature_shape(
             "parked-entry-containment: initialization sources are incomplete",
         )
         if files:
-            radeon_driver = (
-                root / "drivers/gpu/drm/radeon/radeon_drv.c"
-            ).read_text(encoding="ascii")
+            radeon_driver = (root / "drivers/gpu/drm/radeon/radeon_drv.c").read_text(
+                encoding="ascii"
+            )
             require(
                 "rdev = devm_drm_dev_alloc(" in radeon_driver,
                 "parked-entry-containment: allocation site no longer uses "
                 "devm_drm_dev_alloc",
             )
-            radeon_header = (
-                root / "drivers/gpu/drm/radeon/radeon.h"
-            ).read_text(encoding="ascii")
+            radeon_header = (root / "drivers/gpu/drm/radeon/radeon.h").read_text(
+                encoding="ascii"
+            )
             require(
                 re.search(r"\bbool\s+gpu_parked;", radeon_header) is not None,
                 "parked-entry-containment: gpu_parked field is absent",
@@ -365,7 +374,9 @@ def validate_feature_shape(
 def validate_dependencies(features: dict[str, dict[str, object]]) -> None:
     for feature_id, feature in features.items():
         for dependency in string_list(feature, "dependencies"):
-            require(dependency in features, f"{feature_id}: unknown dependency {dependency}")
+            require(
+                dependency in features, f"{feature_id}: unknown dependency {dependency}"
+            )
             require(
                 PROFILE_RANK[features[dependency]["tier"]]
                 <= PROFILE_RANK[feature["tier"]],
@@ -405,12 +416,20 @@ def validate_plan_coverage(
     for feature_id, feature in features.items():
         for token in string_list(feature, "source_mechanisms"):
             commit_id, part = mechanism_parts(token)
-            require(commit_id in plans, f"{feature_id}: unknown source mechanism {commit_id}")
+            require(
+                commit_id in plans,
+                f"{feature_id}: unknown source mechanism {commit_id}",
+            )
             expected_parts = SPLIT_MECHANISMS.get(commit_id)
             if expected_parts is None:
-                require(part is None, f"{feature_id}: unexpected split mechanism {token}")
+                require(
+                    part is None, f"{feature_id}: unexpected split mechanism {token}"
+                )
             else:
-                require(part in expected_parts, f"{feature_id}: invalid mechanism part {token}")
+                require(
+                    part in expected_parts,
+                    f"{feature_id}: invalid mechanism part {token}",
+                )
             require(token not in owners, f"{token}: duplicated source mechanism")
             owners[token] = feature_id
             tiers[commit_id].append(feature["tier"])
@@ -420,7 +439,9 @@ def validate_plan_coverage(
 
     for commit_id, plan in plans.items():
         expected_parts = SPLIT_MECHANISMS.get(commit_id, {None})
-        require(parts[commit_id] == expected_parts, f"{commit_id}: missing source mechanism")
+        require(
+            parts[commit_id] == expected_parts, f"{commit_id}: missing source mechanism"
+        )
         if commit_id in SPLIT_TIERS:
             require(
                 part_tiers[commit_id] == SPLIT_TIERS[commit_id],
@@ -474,80 +495,114 @@ def self_test(root: Path) -> int:
     def add(label: str, mutation: Callable[[dict[str, object]], None]) -> None:
         cases.append((label, mutation))
 
-    add("duplicate feature ID", lambda value: value["feature"][1].update(
-        id=value["feature"][0]["id"]
-    ))
-    add("missing dev suffix", lambda value: value["feature"][3].update(
-        setting="palm-reset"
-    ))
-    add("too many setting words", lambda value: value["feature"][3].update(
-        setting="palm-unsafe-reset-trigger-dev"
-    ))
-    add("unknown tier", lambda value: value["feature"][3].update(tier="unsafe-dev"))
-    add("missing operation gate", lambda value: value["feature"][3].update(
-        operation_gate=""
-    ))
-    add("mutation below mutate", lambda value: value["feature"][3].update(
-        tier="probe-dev", runtime_profile="probe-dev"
-    ))
-    add("raw reader in prod", lambda value: value["feature"][5].update(
-        tier="prod",
-        setting="prod",
-        runtime_profile="prod",
-        availability_default="present-in-prod",
-        runtime_profile_default="active",
-        package_projection="production",
-    ))
-    add("prod dependency on dev", lambda value: value["feature"][1].update(
-        dependencies=["safe-registers"]
-    ))
-    add("broader scope without decision", lambda value: value["feature"][6].update(
-        scope_decision=""
-    ))
-    add("unknown dependency", lambda value: value["feature"][3].update(
-        dependencies=["missing-feature"]
-    ))
-    add("dependency cycle", lambda value: value["feature"][4].update(
-        dependencies=["safe-registers"]
-    ))
-    add("unknown mechanism", lambda value: value["feature"][1].update(
-        source_mechanisms=["B99"]
-    ))
-    add("missing mechanism", lambda value: value["feature"][0].update(
-        source_mechanisms=value["feature"][0]["source_mechanisms"][1:]
-    ))
-    add("plan tier mismatch", lambda value: value["feature"][17].update(
-        tier="observe-dev",
-        setting="cs-parser-dev",
-        runtime_profile="observe-dev",
-        availability_default="absent-in-prod",
-        runtime_profile_default="off",
-        package_projection="development",
-    ))
-    add("missing prod exception", lambda value: value["feature"][2].update(
-        profile_exception="none", exception_basis="none"
-    ))
-    add("missing adversarial test", lambda value: value["feature"][3].update(
-        tests=value["feature"][3]["tests"][:3]
-    ))
-    add("guard relation mismatch", lambda value: value["feature"][4].update(
-        scope_relation="equal"
-    ))
-    add("unknown scope relation", lambda value: value["feature"][0].update(
-        scope_relation="approximate"
-    ))
-    add("duplicated source mechanism", lambda value: value["feature"][1].update(
-        source_mechanisms=["B10", "B01"]
-    ))
-    add("swapped split tiers", lambda value: (
-        value["feature"][2].update(source_mechanisms=["B11.unsafe"]),
-        value["feature"][3].update(
-            source_mechanisms=["B11.production", "B12"]
+    add(
+        "duplicate feature ID",
+        lambda value: value["feature"][1].update(id=value["feature"][0]["id"]),
+    )
+    add(
+        "missing dev suffix",
+        lambda value: value["feature"][3].update(setting="palm-reset"),
+    )
+    add(
+        "too many setting words",
+        lambda value: value["feature"][3].update(
+            setting="palm-unsafe-reset-trigger-dev"
         ),
-    ))
-    add("missing parked initialization", lambda value: value["feature"][10].update(
-        state_initialization=""
-    ))
+    )
+    add("unknown tier", lambda value: value["feature"][3].update(tier="unsafe-dev"))
+    add(
+        "missing operation gate",
+        lambda value: value["feature"][3].update(operation_gate=""),
+    )
+    add(
+        "mutation below mutate",
+        lambda value: value["feature"][3].update(
+            tier="probe-dev", runtime_profile="probe-dev"
+        ),
+    )
+    add(
+        "raw reader in prod",
+        lambda value: value["feature"][5].update(
+            tier="prod",
+            setting="prod",
+            runtime_profile="prod",
+            availability_default="present-in-prod",
+            runtime_profile_default="active",
+            package_projection="production",
+        ),
+    )
+    add(
+        "prod dependency on dev",
+        lambda value: value["feature"][1].update(dependencies=["safe-registers"]),
+    )
+    add(
+        "broader scope without decision",
+        lambda value: value["feature"][6].update(scope_decision=""),
+    )
+    add(
+        "unknown dependency",
+        lambda value: value["feature"][3].update(dependencies=["missing-feature"]),
+    )
+    add(
+        "dependency cycle",
+        lambda value: value["feature"][4].update(dependencies=["safe-registers"]),
+    )
+    add(
+        "unknown mechanism",
+        lambda value: value["feature"][1].update(source_mechanisms=["B99"]),
+    )
+    add(
+        "missing mechanism",
+        lambda value: value["feature"][0].update(
+            source_mechanisms=value["feature"][0]["source_mechanisms"][1:]
+        ),
+    )
+    add(
+        "plan tier mismatch",
+        lambda value: value["feature"][17].update(
+            tier="observe-dev",
+            setting="cs-parser-dev",
+            runtime_profile="observe-dev",
+            availability_default="absent-in-prod",
+            runtime_profile_default="off",
+            package_projection="development",
+        ),
+    )
+    add(
+        "missing prod exception",
+        lambda value: value["feature"][2].update(
+            profile_exception="none", exception_basis="none"
+        ),
+    )
+    add(
+        "missing adversarial test",
+        lambda value: value["feature"][3].update(
+            tests=value["feature"][3]["tests"][:3]
+        ),
+    )
+    add(
+        "guard relation mismatch",
+        lambda value: value["feature"][4].update(scope_relation="equal"),
+    )
+    add(
+        "unknown scope relation",
+        lambda value: value["feature"][0].update(scope_relation="approximate"),
+    )
+    add(
+        "duplicated source mechanism",
+        lambda value: value["feature"][1].update(source_mechanisms=["B10", "B01"]),
+    )
+    add(
+        "swapped split tiers",
+        lambda value: (
+            value["feature"][2].update(source_mechanisms=["B11.unsafe"]),
+            value["feature"][3].update(source_mechanisms=["B11.production", "B12"]),
+        ),
+    )
+    add(
+        "missing parked initialization",
+        lambda value: value["feature"][10].update(state_initialization=""),
+    )
 
     for label, mutation in cases:
         candidate = copy.deepcopy(policy)

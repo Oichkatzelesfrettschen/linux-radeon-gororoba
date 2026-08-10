@@ -239,7 +239,9 @@ def validate_assignments(
     for atom in BASE_SPLITS:
         known_base.update({f"{atom}.palm", f"{atom}.safe"})
     assigned_base = [row["effect_atom"] for row in base_assignments]
-    require(len(assigned_base) == len(set(assigned_base)), "duplicated base effect atom")
+    require(
+        len(assigned_base) == len(set(assigned_base)), "duplicated base effect atom"
+    )
     require(set(assigned_base) == known_base, "missing or unknown base effect atom")
 
     known_mechanism = {row["effect_atom"] for row in mechanism_map}
@@ -288,18 +290,18 @@ def validate_assignments(
     for commit_id, row in plans.items():
         if commit_id.startswith("M"):
             assigned_patches = sorted(
-                {item["effect_atom"].split(".", 1)[0]
-                 for item in mechanism_assignments
-                 if item["commit_id"] == commit_id}
+                {
+                    item["effect_atom"].split(".", 1)[0]
+                    for item in mechanism_assignments
+                    if item["commit_id"] == commit_id
+                }
             )
             require(
                 sorted(split_list(row["legacy_patches"])) == assigned_patches,
                 f"{commit_id}: commit patch list inconsistent with assigned atoms",
             )
 
-    frozen_patches = {
-        row["effect_atom"].split(".", 1)[0] for row in mechanism_map
-    }
+    frozen_patches = {row["effect_atom"].split(".", 1)[0] for row in mechanism_map}
     represented_patches = {
         patch
         for row in state["mechanism_plan"]
@@ -383,8 +385,7 @@ def validate_prefix_artifacts(
     require(
         (root / mechanism_plan[-1]["expected_manifest"]).read_bytes()
         == (
-            root
-            / "migration/input/migration-oracle-0.3-91-exact-context-manifest.tsv"
+            root / "migration/input/migration-oracle-0.3-91-exact-context-manifest.tsv"
         ).read_bytes(),
         "M24 manifest differs from the migration oracle",
     )
@@ -401,12 +402,15 @@ def validate_input_inventory(root: Path) -> None:
         "legacy-base-source-manifest.tsv": migration["base_manifest_sha256"],
         "legacy-patch-mechanism-map.tsv": migration["mechanism_map_sha256"],
         "legacy-patch-transitions.tsv": migration["patch_transitions_sha256"],
-        "legacy-payload-0.3-91-exact-context-manifest.tsv":
-            migration["legacy_payload_manifest_sha256"],
-        "migration-oracle-0.3-91-exact-context-manifest.tsv":
-            migration["migration_manifest_sha256"],
-        "migration-oracle-0.3-91-exact-context-normalization.tsv":
-            migration["generated_output_proof_sha256"],
+        "legacy-payload-0.3-91-exact-context-manifest.tsv": migration[
+            "legacy_payload_manifest_sha256"
+        ],
+        "migration-oracle-0.3-91-exact-context-manifest.tsv": migration[
+            "migration_manifest_sha256"
+        ],
+        "migration-oracle-0.3-91-exact-context-normalization.tsv": migration[
+            "generated_output_proof_sha256"
+        ],
     }
     for row in inventory:
         copied = root / row["copied_path"]
@@ -424,7 +428,9 @@ def validate_input_inventory(root: Path) -> None:
         )
 
 
-def validate(state: dict[str, object], *, files: bool = True) -> tuple[Counter[str], Counter[str]]:
+def validate(
+    state: dict[str, object], *, files: bool = True
+) -> tuple[Counter[str], Counter[str]]:
     root = state["root"]
     base_plan = state["base_plan"]
     mechanism_plan = state["mechanism_plan"]
@@ -448,9 +454,9 @@ def self_test(root: Path) -> int:
         cases = []
 
         duplicate = copy.deepcopy(state)
-        duplicate["mechanism_assignments"][1]["effect_atom"] = (
-            duplicate["mechanism_assignments"][0]["effect_atom"]
-        )
+        duplicate["mechanism_assignments"][1]["effect_atom"] = duplicate[
+            "mechanism_assignments"
+        ][0]["effect_atom"]
         cases.append(("duplicated effect atom", duplicate))
 
         cycle = copy.deepcopy(state)
@@ -462,8 +468,9 @@ def self_test(root: Path) -> int:
         cases.append(("invalid profile", profile))
 
         mutation = copy.deepcopy(state)
-        row = next(item for item in mutation["mechanism_plan"]
-                   if item["commit_id"] == "M12")
+        row = next(
+            item for item in mutation["mechanism_plan"] if item["commit_id"] == "M12"
+        )
         row["future_profile"] = "probe-dev"
         cases.append(("mutation tier", mutation))
 
@@ -476,8 +483,9 @@ def self_test(root: Path) -> int:
         cases.append(("kernel lanes", lanes))
 
         exception = copy.deepcopy(state)
-        row = next(item for item in exception["mechanism_plan"]
-                   if item["commit_id"] == "M16")
+        row = next(
+            item for item in exception["mechanism_plan"] if item["commit_id"] == "M16"
+        )
         row["profile_exception"] = "none"
         cases.append(("production exception", exception))
 
@@ -485,11 +493,13 @@ def self_test(root: Path) -> int:
         for assignment in gated_read["mechanism_assignments"]:
             if assignment["effect_atom"].startswith("0031."):
                 assignment["commit_id"] = "M09"
-        row = next(item for item in gated_read["mechanism_plan"]
-                   if item["commit_id"] == "M09")
+        row = next(
+            item for item in gated_read["mechanism_plan"] if item["commit_id"] == "M09"
+        )
         row["legacy_patches"] = "0015,0022,0031"
-        row = next(item for item in gated_read["mechanism_plan"]
-                   if item["commit_id"] == "M11")
+        row = next(
+            item for item in gated_read["mechanism_plan"] if item["commit_id"] == "M11"
+        )
         row["legacy_patches"] = "0025,0029,0030,0032,0033,0034,0035,0037"
         cases.append(("gated read ownership", gated_read))
 
@@ -504,8 +514,7 @@ def self_test(root: Path) -> int:
 
         probe_order = copy.deepcopy(state)
         row = next(
-            item for item in probe_order["mechanism_plan"]
-            if item["commit_id"] == "M22"
+            item for item in probe_order["mechanism_plan"] if item["commit_id"] == "M22"
         )
         row["depends_on"] = "M04,M16,M17,M18"
         cases.append(("reset probe containment dependency", probe_order))
@@ -543,9 +552,7 @@ def main() -> int:
         return 1
 
     base_order = " ".join(row["commit_id"] for row in state["base_plan"])
-    mechanism_order = " ".join(
-        row["commit_id"] for row in state["mechanism_plan"]
-    )
+    mechanism_order = " ".join(row["commit_id"] for row in state["mechanism_plan"])
     print(f"base topological order: {base_order}")
     print(f"mechanism topological order: {mechanism_order}")
     for commit_id in BASE_IDS:

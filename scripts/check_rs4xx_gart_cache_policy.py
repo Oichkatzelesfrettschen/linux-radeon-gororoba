@@ -247,10 +247,7 @@ MUTATIONS = {
     "phase-2 continued comment hides the non-PCIe guard": (
         "radeon_object.c",
         "\tif (!(rdev->flags & RADEON_IS_PCIE))",
-        (
-            "\t/\\\n/ hidden guard \\\n"
-            "\tif (!(rdev->flags & RADEON_IS_PCIE))"
-        ),
+        ("\t/\\\n/ hidden guard \\\n\tif (!(rdev->flags & RADEON_IS_PCIE))"),
     ),
     "non-PCIe flag mask inverted": (
         "radeon_object.c",
