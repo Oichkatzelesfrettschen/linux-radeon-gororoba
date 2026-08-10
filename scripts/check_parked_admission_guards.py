@@ -395,12 +395,15 @@ def one_match_at_depth(
     return matches[0]
 
 
-def one_identifier_match(code: str, identifier: str, label: str) -> re.Match[str]:
-    """Return one lexical identifier occurrence from a blanked function."""
-    matches = list(re.finditer(rf"\b{re.escape(identifier)}\b", code))
-    if len(matches) != 1:
-        raise GuardError(f"{label}: expected one {identifier}, found {len(matches)}")
-    return matches[0]
+def require_lock_held_at_guard(
+    code: str,
+    lock_end: int,
+    guard_start: int,
+    label: str,
+) -> None:
+    """Reject any read unlock between acquisition and the parked latch read."""
+    if READ_UNLOCK.search(code, lock_end, guard_start) is not None:
+        raise GuardError(f"{label}: exclusive_lock is released before the parked test")
 
 
 def require_refusal_unlock(
@@ -516,6 +519,12 @@ def check_prime_import_lock(
     """Prove PRIME checks the latch before reservation and allocation locks."""
 
     lock = one_match_at_depth(body, READ_LOCK, 1, "prime-import read lock")
+    require_direct_statement(
+        body,
+        body.find("{"),
+        lock.start(),
+        "prime-import read lock",
+    )
     reservation = one_match_at_depth(
         body,
         re.compile(r"\bdma_resv_lock\s*\("),
@@ -552,6 +561,12 @@ def check_prime_import_lock(
             "prime-import: expected exclusive lock, parked guard, dma_resv "
             "lock, allocation, dma_resv unlock, and exclusive unlock order"
         )
+    require_lock_held_at_guard(
+        body,
+        lock.end(),
+        guard_match.start(),
+        "prime-import",
+    )
     require_refusal_unlock(
         body,
         statement_start,
@@ -586,6 +601,12 @@ def check_wait_idle_lock(
         "wait-idle-flush reservation wait",
     )
     lock = one_match_at_depth(body, READ_LOCK, 1, "wait-idle-flush read lock")
+    require_direct_statement(
+        body,
+        body.find("{"),
+        lock.start(),
+        "wait-idle-flush read lock",
+    )
     placement = one_match_at_depth(
         body,
         re.compile(r"\bcur_placement\s*=\s*READ_ONCE\s*\("),
@@ -616,6 +637,12 @@ def check_wait_idle_lock(
             "wait-idle-flush: expected reservation wait, exclusive lock, "
             "parked guard, placement, flush, and unlock order"
         )
+    require_lock_held_at_guard(
+        body,
+        lock.end(),
+        guard_match.start(),
+        "wait-idle-flush",
+    )
     require_refusal_unlock(
         body,
         statement_start,
@@ -665,20 +692,60 @@ def check_command_submission_lock(
     )
     parser_init = one_match_at_depth(
         body,
-        re.compile(r"\bradeon_cs_parser_init\s*\("),
+        re.compile(
+            r"\br\s*=\s*radeon_cs_parser_init\s*"
+            r"\(\s*&parser\s*,\s*data\s*\)\s*;"
+        ),
         1,
         "command-submission parser initialization",
     )
-    ib_fill = one_identifier_match(body, "radeon_cs_ib_fill", "command-submission")
-    relocations = one_identifier_match(
+    ib_fill = one_match_at_depth(
         body,
-        "radeon_cs_parser_relocs",
-        "command-submission",
+        re.compile(
+            r"\br\s*=\s*radeon_cs_ib_fill\s*"
+            r"\(\s*rdev\s*,\s*&parser\s*\)\s*;"
+        ),
+        1,
+        "command-submission IB fill call",
     )
-    ib_schedule = one_identifier_match(
+    relocation_calls = list(
+        re.finditer(
+            r"\br\s*=\s*radeon_cs_parser_relocs\s*"
+            r"\(\s*&parser\s*\)\s*;",
+            body,
+        )
+    )
+    if len(relocation_calls) != 1:
+        raise GuardError(
+            "command-submission relocation call: expected one direct call, "
+            f"found {len(relocation_calls)}"
+        )
+    relocations = relocation_calls[0]
+    relocation_guard = one_match_at_depth(
         body,
-        "radeon_cs_ib_chunk",
-        "command-submission",
+        re.compile(r"\bif\s*\(\s*!\s*r\s*\)"),
+        1,
+        "command-submission relocation result guard",
+    )
+    relocation_start, relocation_end = controlled_statement(
+        body,
+        relocation_guard.end(),
+    )
+    if not (
+        relocation_start <= relocations.start()
+        and relocations.end() <= relocation_end
+    ):
+        raise GuardError(
+            "command-submission relocation call is outside its success guard"
+        )
+    ib_schedule = one_match_at_depth(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_cs_ib_chunk\s*"
+            r"\(\s*rdev\s*,\s*&parser\s*\)\s*;"
+        ),
+        1,
+        "command-submission IB schedule call",
     )
     final_unlock = one_match_at_depth(
         body,
@@ -702,6 +769,73 @@ def check_command_submission_lock(
             "command-submission: lock, parked, acceleration, reset, parser, "
             "relocation, and schedule order differs"
         )
+    require_lock_held_at_guard(
+        body,
+        lock.end(),
+        guard_match.start(),
+        "command-submission",
+    )
+    function_open = body.find("{")
+    require_direct_statement(
+        body,
+        function_open,
+        lock.start(),
+        "command-submission read lock",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        acceleration.start(),
+        "command-submission acceleration guard",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        reset.start(),
+        "command-submission reset guard",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        parser_zero.start(),
+        "command-submission parser zeroing",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        parser_init.start(),
+        "command-submission parser initialization",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        ib_fill.start(),
+        "command-submission IB fill call",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        relocation_guard.start(),
+        "command-submission relocation result guard",
+    )
+    require_direct_statement(
+        body,
+        relocation_start,
+        relocations.start(),
+        "command-submission relocation call",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        ib_schedule.start(),
+        "command-submission IB schedule call",
+    )
+    require_direct_statement(
+        body,
+        function_open,
+        final_unlock.start(),
+        "command-submission final read unlock",
+    )
     require_refusal_unlock(
         body,
         statement_start,
@@ -1140,6 +1274,10 @@ PRIME_FIXTURE_MUTATIONS = {
         "\tdown_read(&rdev->exclusive_lock);",
         "\tremoved_down_read();",
     ),
+    "read lock is controlled by an unreachable condition": (
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tif (false)\n\t\tdown_read(&rdev->exclusive_lock);",
+    ),
     "guard unlock removed": (
         "\t\tup_read(&rdev->exclusive_lock);\n\t\treturn ERR_PTR(-EIO);",
         "\t\treturn ERR_PTR(-EIO);",
@@ -1199,6 +1337,16 @@ PRIME_FIXTURE_MUTATIONS = {
             "\tif (READ_ONCE(rdev->gpu_parked))"
         ),
     ),
+    "nested read unlock precedes guard": (
+        "\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))",
+        (
+            "\tdown_read(&rdev->exclusive_lock);\n"
+            "\tif (false) {\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t}\n"
+            "\tif (READ_ONCE(rdev->gpu_parked))"
+        ),
+    ),
     "parked errno changed": (
         "return ERR_PTR(-EIO);",
         "return ERR_PTR(-EBUSY);",
@@ -1254,6 +1402,10 @@ WAIT_FIXTURE_MUTATIONS = {
             "\tret = dma_resv_wait_timeout(resv, usage, true, timeout);"
         ),
     ),
+    "read lock is controlled by an unreachable condition": (
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tif (false)\n\t\tdown_read(&rdev->exclusive_lock);",
+    ),
     "guard unlock removed": (
         ("\t\tup_read(&rdev->exclusive_lock);\n\t\tdrm_gem_object_put(gobj);"),
         "\t\tdrm_gem_object_put(gobj);",
@@ -1299,6 +1451,16 @@ WAIT_FIXTURE_MUTATIONS = {
         (
             "\tdown_read(&rdev->exclusive_lock);\n"
             "\tup_read(&rdev->exclusive_lock);\n"
+            "\tif (READ_ONCE(rdev->gpu_parked))"
+        ),
+    ),
+    "nested read unlock precedes guard": (
+        "\tdown_read(&rdev->exclusive_lock);\n\tif (READ_ONCE(rdev->gpu_parked))",
+        (
+            "\tdown_read(&rdev->exclusive_lock);\n"
+            "\tif (false) {\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\t}\n"
             "\tif (READ_ONCE(rdev->gpu_parked))"
         ),
     ),
@@ -1448,6 +1610,50 @@ CS_FIXTURES_BAD = {
         "\tup_read(&rdev->exclusive_lock);\n"
         "\tif (READ_ONCE(rdev->gpu_parked)) {",
         1,
+    ),
+    "nested read unlock precedes parked refusal": CS_FIXTURE_GOOD.replace(
+        "\tdown_read(&rdev->exclusive_lock);\n"
+        "\tif (READ_ONCE(rdev->gpu_parked)) {",
+        "\tdown_read(&rdev->exclusive_lock);\n"
+        "\tif (false) {\n"
+        "\t\tup_read(&rdev->exclusive_lock);\n"
+        "\t}\n"
+        "\tif (READ_ONCE(rdev->gpu_parked)) {",
+        1,
+    ),
+    "read lock is controlled by an unreachable condition": CS_FIXTURE_GOOD.replace(
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tif (false)\n\t\tdown_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "acceleration guard is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tif (!rdev->accel_working) {",
+            "\tif (false)\n\t\tif (!rdev->accel_working) {",
+            1,
+        )
+    ),
+    "reset guard is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tif (rdev->in_reset) {",
+            "\tif (false)\n\t\tif (rdev->in_reset) {",
+            1,
+        )
+    ),
+    "parser zeroing is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tmemset(&parser, 0, sizeof(parser));",
+            "\tif (false)\n\t\tmemset(&parser, 0, sizeof(parser));",
+            1,
+        )
+    ),
+    "parser initialization is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tr = radeon_cs_parser_init(&parser, data);",
+            "\tif (false)\n"
+            "\t\tr = radeon_cs_parser_init(&parser, data);",
+            1,
+        )
     ),
     "parked refusal returns busy": CS_FIXTURE_GOOD.replace(
         "\t\treturn -EIO;",
@@ -1605,6 +1811,67 @@ CS_FIXTURES_BAD = {
         "\tif (!r)\n\t\tr = radeon_cs_parser_relocs(&parser);\n"
         "\tif (READ_ONCE(rdev->gpu_parked)) {",
         1,
+    ),
+    "IB fill call is nested in an unreachable block": CS_FIXTURE_GOOD.replace(
+        "\tr = radeon_cs_ib_fill(rdev, &parser);",
+        "\tif (false) {\n"
+        "\t\tr = radeon_cs_ib_fill(rdev, &parser);\n"
+        "\t}",
+        1,
+    ),
+    "IB fill call is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tr = radeon_cs_ib_fill(rdev, &parser);",
+            "\tif (false)\n"
+            "\t\tr = radeon_cs_ib_fill(rdev, &parser);",
+            1,
+        )
+    ),
+    "relocation call is nested in an unreachable block": (
+        CS_FIXTURE_GOOD.replace(
+            "\tif (!r)\n"
+            "\t\tr = radeon_cs_parser_relocs(&parser);",
+            "\tif (!r) {\n"
+            "\t\tif (false) {\n"
+            "\t\t\tr = radeon_cs_parser_relocs(&parser);\n"
+            "\t\t}\n"
+            "\t}",
+            1,
+        )
+    ),
+    "relocation guard is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tif (!r)\n"
+            "\t\tr = radeon_cs_parser_relocs(&parser);",
+            "\tif (false)\n"
+            "\t\tif (!r)\n"
+            "\t\t\tr = radeon_cs_parser_relocs(&parser);",
+            1,
+        )
+    ),
+    "IB schedule call is nested in an unreachable block": CS_FIXTURE_GOOD.replace(
+        "\tr = radeon_cs_ib_chunk(rdev, &parser);",
+        "\tif (false) {\n"
+        "\t\tr = radeon_cs_ib_chunk(rdev, &parser);\n"
+        "\t}",
+        1,
+    ),
+    "IB schedule call is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tr = radeon_cs_ib_chunk(rdev, &parser);",
+            "\tif (false)\n"
+            "\t\tr = radeon_cs_ib_chunk(rdev, &parser);",
+            1,
+        )
+    ),
+    "final unlock is controlled by an unreachable condition": (
+        CS_FIXTURE_GOOD.replace(
+            "\tup_read(&rdev->exclusive_lock);\n\treturn r;",
+            "\tif (false)\n"
+            "\t\tup_read(&rdev->exclusive_lock);\n"
+            "\treturn r;",
+            1,
+        )
     ),
     "IB schedule precedes parked refusal": CS_FIXTURE_GOOD.replace(
         "\tr = radeon_cs_ib_chunk(rdev, &parser);\n",
