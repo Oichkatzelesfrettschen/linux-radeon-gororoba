@@ -201,9 +201,7 @@ EXPECTED_LINEAGE_ROWS = (
         "preserved_row_count": "4",
         "added_identity": "NONE",
         "integration_status": "reviewed-current-source-expansion",
-        "nonclaim": (
-            "The intake identity does not promote runtime or silicon status."
-        ),
+        "nonclaim": ("The intake identity does not promote runtime or silicon status."),
     },
     {
         "artifact_id": "RS4XX_VRAM_GTT_SOURCE_CONTRACT",
@@ -542,8 +540,7 @@ def read_bounded_file(path: Path, maximum_size: int) -> bytes:
             "st_ctime_ns",
         )
         if any(
-            getattr(before, field) != getattr(after, field)
-            for field in stable_fields
+            getattr(before, field) != getattr(after, field) for field in stable_fields
         ):
             raise CapacityError(f"{path}: input changed while being read")
         if len(content) != before.st_size:
@@ -600,6 +597,7 @@ def read_ascii_source(path: Path) -> str:
         return data.decode("ascii")
     except UnicodeDecodeError as error:
         raise CapacityError(f"{path}: source is not ASCII") from error
+
 
 def framed_row_sha256(row: dict[str, str], fields: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
@@ -736,8 +734,7 @@ def validate_lineage_rows(
         raise CapacityError("capacity intake policy row denominator differs")
 
     matrix_projection = tuple(
-        tuple(row[field] for field in INTAKE_MATRIX_FIELDS)
-        for row in matrix_rows
+        tuple(row[field] for field in INTAKE_MATRIX_FIELDS) for row in matrix_rows
     )
     if matrix_projection != INTAKE_MATRIX_PROJECTION:
         raise CapacityError("capacity intake matrix projection differs")
@@ -753,9 +750,7 @@ def validate_exclusion_rows(rows: list[dict[str, str]]) -> None:
         input_class = row["input_class"]
         digest = framed_row_sha256(row, EXCLUSION_HEADER)
         if digest != EXPECTED_EXCLUSION_ROW_SHA256[input_class]:
-            raise CapacityError(
-                f"{input_class}: exact exclusion row identity differs"
-            )
+            raise CapacityError(f"{input_class}: exact exclusion row identity differs")
 
 
 def coefficient_row(
@@ -1018,13 +1013,7 @@ def validate_gart_parameter_declaration(source: str) -> None:
             raise CapacityError("radeon_drv.c: gartsize declaration is conditional")
         lines.append(match.group(0).rstrip())
     declaration_identifiers = tuple(
-        sorted(
-            set(
-                C_IDENTIFIER.findall(
-                    strip_comments_and_literals("\n".join(lines))
-                )
-            )
-        )
+        sorted(set(C_IDENTIFIER.findall(strip_comments_and_literals("\n".join(lines)))))
     )
     try:
         require_no_local_macro_overrides(
@@ -1148,7 +1137,7 @@ def validate_capacity_ioctl_bindings(source: str) -> None:
                 break
     if closing < 0:
         raise CapacityError("radeon_drv.c: radeon_ioctls_kms has no closing brace")
-    body = code[definition.start():closing]
+    body = code[definition.start() : closing]
     if C_CONDITIONAL_DIRECTIVE.search(strip_comments_and_literals(body)):
         raise CapacityError(
             "radeon_drv.c: capacity ioctl table contains a conditional directive"
@@ -1173,21 +1162,15 @@ def validate_capacity_ioctl_bindings(source: str) -> None:
         ),
     )
     for command, callback in expected_bindings:
-        command_pattern = re.compile(
-            rf"\bDRM_IOCTL_DEF_DRV\(\s*{command}\b"
-        )
+        command_pattern = re.compile(rf"\bDRM_IOCTL_DEF_DRV\(\s*{command}\b")
         if len(command_pattern.findall(body)) != 1:
-            raise CapacityError(
-                f"radeon_drv.c: {command} command denominator differs"
-            )
+            raise CapacityError(f"radeon_drv.c: {command} command denominator differs")
         pattern = re.compile(
             rf"\bDRM_IOCTL_DEF_DRV\(\s*{command}\s*,\s*"
             rf"{callback}\s*,"
         )
         if len(pattern.findall(body)) != 1:
-            raise CapacityError(
-                f"radeon_drv.c: {command} callback binding differs"
-            )
+            raise CapacityError(f"radeon_drv.c: {command} callback binding differs")
 
 
 def validate_source(root: Path) -> None:
@@ -1220,6 +1203,7 @@ def validate_source(root: Path) -> None:
 
     header = read_ascii_source(root / SUBTREE / "r500_reg.h")
     validate_register_macros(header)
+
 
 def check_tree(root: Path) -> None:
     policy_rows = read_tsv(root / POLICY, POLICY_HEADER)
@@ -1289,9 +1273,7 @@ def selftest(root: Path) -> None:
         ("runtime-promotion", lambda: validate_policy_rows(promoted_runtime))
     )
     reversed_nonclaim = copy.deepcopy(policy_rows)
-    reversed_nonclaim[-1]["nonclaim"] = (
-        "The largest aperture is automatically optimal."
-    )
+    reversed_nonclaim[-1]["nonclaim"] = "The largest aperture is automatically optimal."
     mutations.append(
         ("optimum-promotion", lambda: validate_policy_rows(reversed_nonclaim))
     )
@@ -1301,9 +1283,7 @@ def selftest(root: Path) -> None:
         for row in cyclic_policy
         if row["row_id"] == "RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE"
     )["depends_on"] = "RS482_CAPACITY_OPTIMUM"
-    mutations.append(
-        ("dependency-cycle", lambda: validate_policy_rows(cyclic_policy))
-    )
+    mutations.append(("dependency-cycle", lambda: validate_policy_rows(cyclic_policy)))
 
     missing_matrix = copy.deepcopy(matrix_rows[:-1])
     mutations.append(
@@ -1320,9 +1300,7 @@ def selftest(root: Path) -> None:
     )
     wrong_vram = copy.deepcopy(matrix_rows)
     wrong_vram[0]["vram_mib"] = "256"
-    mutations.append(
-        ("wrong-fixed-vram", lambda: validate_matrix_rows(wrong_vram))
-    )
+    mutations.append(("wrong-fixed-vram", lambda: validate_matrix_rows(wrong_vram)))
     promoted_effective_capacity = copy.deepcopy(matrix_rows)
     promoted_effective_capacity[0]["effective_capacity_status"] = "runtime-proven"
     mutations.append(
@@ -1333,9 +1311,7 @@ def selftest(root: Path) -> None:
     )
     false_default = copy.deepcopy(matrix_rows)
     false_default[0]["rs482_first_probe_auto_default"] = "yes"
-    mutations.append(
-        ("multiple-defaults", lambda: validate_matrix_rows(false_default))
-    )
+    mutations.append(("multiple-defaults", lambda: validate_matrix_rows(false_default)))
 
     missing_exclusion = copy.deepcopy(exclusion_rows[:-1])
     mutations.append(
@@ -1448,9 +1424,7 @@ def selftest(root: Path) -> None:
         )
     )
     missing_intake_policy = [
-        row
-        for row in policy_rows
-        if row["row_id"] != "RS482_GTT_PARAMETER_ADMISSION"
+        row for row in policy_rows if row["row_id"] != "RS482_GTT_PARAMETER_ADMISSION"
     ]
     mutations.append(
         (
@@ -1499,9 +1473,7 @@ def selftest(root: Path) -> None:
     mutations.append(
         (
             "overridden-module-parameter-declaration",
-            lambda: validate_gart_parameter_declaration(
-                overridden_module_parameter
-            ),
+            lambda: validate_gart_parameter_declaration(overridden_module_parameter),
         )
     )
 
@@ -1519,9 +1491,7 @@ def selftest(root: Path) -> None:
                 "radeon_device.c",
                 "radeon_device_init",
                 changed_device_init,
-                EXPECTED_FUNCTION_SHA256[
-                    ("radeon_device.c", "radeon_device_init")
-                ],
+                EXPECTED_FUNCTION_SHA256[("radeon_device.c", "radeon_device_init")],
             ),
         )
     )
@@ -1533,8 +1503,7 @@ def selftest(root: Path) -> None:
         device_source,
         good_check_arguments,
         "#undef is_power_of_2\n"
-        "#define is_power_of_2(value) true\n"
-        + good_check_arguments,
+        "#define is_power_of_2(value) true\n" + good_check_arguments,
         "overridden power-of-two check",
     )
     mutations.append(
@@ -1544,9 +1513,7 @@ def selftest(root: Path) -> None:
                 "radeon_device.c",
                 "radeon_check_arguments",
                 overridden_power_check,
-                EXPECTED_FUNCTION_SHA256[
-                    ("radeon_device.c", "radeon_check_arguments")
-                ],
+                EXPECTED_FUNCTION_SHA256[("radeon_device.c", "radeon_check_arguments")],
             ),
         )
     )
@@ -1563,9 +1530,7 @@ def selftest(root: Path) -> None:
                 "radeon_device.c",
                 "radeon_gart_size_auto",
                 changed_auto_default,
-                EXPECTED_FUNCTION_SHA256[
-                    ("radeon_device.c", "radeon_gart_size_auto")
-                ],
+                EXPECTED_FUNCTION_SHA256[("radeon_device.c", "radeon_gart_size_auto")],
             ),
         )
     )
@@ -1583,11 +1548,7 @@ def selftest(root: Path) -> None:
     conditional_auto_twin = replace_once(
         device_source,
         good_auto_body,
-        "#if 0\n"
-        + good_auto_body
-        + "\n#else\n"
-        + bad_auto_body
-        + "\n#endif",
+        "#if 0\n" + good_auto_body + "\n#else\n" + bad_auto_body + "\n#endif",
         "inactive good active bad function",
     )
     mutations.append(
@@ -1597,9 +1558,7 @@ def selftest(root: Path) -> None:
                 "radeon_device.c",
                 "radeon_gart_size_auto",
                 conditional_auto_twin,
-                EXPECTED_FUNCTION_SHA256[
-                    ("radeon_device.c", "radeon_gart_size_auto")
-                ],
+                EXPECTED_FUNCTION_SHA256[("radeon_device.c", "radeon_gart_size_auto")],
             ),
         )
     )
@@ -1728,9 +1687,7 @@ def selftest(root: Path) -> None:
         mutations.append(
             (
                 "fifo-input",
-                lambda: validate_matrix_rows(
-                    read_tsv(fifo_path, MATRIX_HEADER)
-                ),
+                lambda: validate_matrix_rows(read_tsv(fifo_path, MATRIX_HEADER)),
             )
         )
         symlink_path = temporary_root / "symlink.tsv"
@@ -1738,9 +1695,7 @@ def selftest(root: Path) -> None:
         mutations.append(
             (
                 "symlink-input",
-                lambda: validate_matrix_rows(
-                    read_tsv(symlink_path, MATRIX_HEADER)
-                ),
+                lambda: validate_matrix_rows(read_tsv(symlink_path, MATRIX_HEADER)),
             )
         )
 
@@ -1751,9 +1706,7 @@ def selftest(root: Path) -> None:
             except CapacityError:
                 failures += 1
             else:
-                raise CapacityError(
-                    f"selftest accepted known-bad mutation: {name}"
-                )
+                raise CapacityError(f"selftest accepted known-bad mutation: {name}")
 
     print(f"capacity contract selftest: 1 good, {failures} bad")
 
