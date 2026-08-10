@@ -13,6 +13,19 @@ observation. The contract has three supporting denominators:
 * `policy/rs482-vram-gtt-capacity-coefficients.tsv` retains each linear or
   piecewise coefficient, its evaluation input, its valid domain, and its
   nonclaim.
+* `policy/rs482-vram-gtt-capacity-source-lineage.tsv` binds the reviewed input
+  commit, Git blob, and content SHA-256 identities to the projections
+  preserved by this contract.
+
+The reviewed source-policy input is commit
+`6667d7561617debdc62cf99c62fb47bd67f95043`. It contributes four selector
+rows and 14 contract row identifiers. The integrated policy preserves the
+numeric selector fields from `config_id` through `static_metadata_bytes` for
+all four rows and preserves every input contract row identifier. It adds
+`RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE`, expands the source observation
+surface, and corrects the module-global auto state and address-fit relations
+against the current source tree. The input commit is policy authority, not a
+driver C change or a runtime result.
 
 This repository owns the source policy and its calibrated verifier. It does
 not change driver C behavior in this batch. It does not produce a hardware
@@ -293,8 +306,9 @@ largest aperture and the highest fill ratio never win by definition.
 The work proceeds through explicit gates:
 
 1. The source checker closes the 15 contract rows, four selector rows, ten
-   exclusion rows, ten coefficient rows, 36 source functions, module request,
-   two ioctl bindings, and eight register encodings.
+   exclusion rows, ten coefficient rows, two lineage rows, 36 source
+   functions, module request, two ioctl bindings, and eight register
+   encodings.
 2. The source-map policy closes the request, selector, address-fit, allocator,
    GART, ioctl, debugfs, and raw-reader structural boundaries. A fresh source
    map remains a lexical candidate graph rather than runtime proof.

@@ -30,6 +30,7 @@ POLICY = Path("policy/rs4xx-vram-gtt-capacity-contract.tsv")
 MATRIX = Path("policy/rs482-gtt-capacity-matrix.tsv")
 EXCLUSIONS = Path("policy/rs482-gtt-capacity-exclusions.tsv")
 COEFFICIENTS = Path("policy/rs482-vram-gtt-capacity-coefficients.tsv")
+LINEAGE = Path("policy/rs482-vram-gtt-capacity-source-lineage.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 MAX_TSV_BYTES = 256 * 1024
 MAX_TSV_ROWS = 64
@@ -95,6 +96,135 @@ COEFFICIENT_HEADER = (
     "valid_domain",
     "source_status",
     "nonclaim",
+)
+LINEAGE_HEADER = (
+    "artifact_id",
+    "input_commit",
+    "input_path",
+    "input_blob_sha1",
+    "input_content_sha256",
+    "input_row_count",
+    "preservation_contract",
+    "current_path",
+    "current_row_count",
+    "preserved_row_count",
+    "added_identity",
+    "integration_status",
+    "nonclaim",
+)
+
+INTAKE_COMMIT = "6667d7561617debdc62cf99c62fb47bd67f95043"
+INTAKE_POLICY_ROW_IDS = (
+    "RS482_GTT_PARAMETER_ADMISSION",
+    "RS482_GTT_SIZE_REGISTER_ENCODING",
+    "RS482_GTT_ADDRESS_PLACEMENT",
+    "RS482_GART_METADATA_CAPACITY",
+    "RS482_VRAM_CARVEOUT_ACCOUNTING",
+    "RADEON_VRAMLIMIT_TEST_BOUNDARY",
+    "RADEON_TTM_MANAGER_CAPACITY",
+    "RADEON_BO_DOMAIN_PLACEMENT_ORDER",
+    "RADEON_VRAM_RELOCATION_THRESHOLD",
+    "RADEON_SINGLE_BO_GTT_CEILING",
+    "RADEON_PINNED_CAPACITY_ACCOUNTING",
+    "RADEON_CAPACITY_USAGE_AND_MOVE_COUNTERS",
+    "RADEON_FRAGMENTATION_AND_PLACEMENT_DEBUGFS",
+    "RS482_CAPACITY_OPTIMUM",
+)
+INTAKE_MATRIX_FIELDS = MATRIX_HEADER[:11]
+INTAKE_MATRIX_PROJECTION = (
+    (
+        "RS482_GTT_128",
+        "128",
+        "128",
+        "0x00000004",
+        "0x00000005",
+        "32768",
+        "32768",
+        "131072",
+        "262144",
+        "262144",
+        "655360",
+    ),
+    (
+        "RS482_GTT_256",
+        "256",
+        "128",
+        "0x00000006",
+        "0x00000007",
+        "65536",
+        "65536",
+        "262144",
+        "524288",
+        "524288",
+        "1310720",
+    ),
+    (
+        "RS482_GTT_512",
+        "512",
+        "128",
+        "0x00000008",
+        "0x00000009",
+        "131072",
+        "131072",
+        "524288",
+        "1048576",
+        "1048576",
+        "2621440",
+    ),
+    (
+        "RS482_GTT_1024",
+        "1024",
+        "128",
+        "0x0000000a",
+        "0x0000000b",
+        "262144",
+        "262144",
+        "1048576",
+        "2097152",
+        "2097152",
+        "5242880",
+    ),
+)
+EXPECTED_LINEAGE_ROWS = (
+    {
+        "artifact_id": "RS482_GTT_SELECTOR_MATRIX",
+        "input_commit": INTAKE_COMMIT,
+        "input_path": "policy/rs482-gtt-capacity-matrix.tsv",
+        "input_blob_sha1": "958c53002ee967ac0d14ad2d3b1f8d38182c543b",
+        "input_content_sha256": (
+            "9c790ddba06a10ef7bad0ade6e7dfef4c94198220711d07be9570247222d4038"
+        ),
+        "input_row_count": "4",
+        "preservation_contract": "config-id-through-static-metadata-bytes-exact",
+        "current_path": "policy/rs482-gtt-capacity-matrix.tsv",
+        "current_row_count": "4",
+        "preserved_row_count": "4",
+        "added_identity": "NONE",
+        "integration_status": "reviewed-current-source-expansion",
+        "nonclaim": (
+            "The intake identity does not promote runtime or silicon status."
+        ),
+    },
+    {
+        "artifact_id": "RS4XX_VRAM_GTT_SOURCE_CONTRACT",
+        "input_commit": INTAKE_COMMIT,
+        "input_path": "policy/rs4xx-vram-gtt-capacity-contract.tsv",
+        "input_blob_sha1": "7e4ee26cdb2294531610db131c3f020d47bf801f",
+        "input_content_sha256": (
+            "2350d41ac9c329e133ece8f9c15a68ce81988446e772e54f7eac1b5b255da1e4"
+        ),
+        "input_row_count": "14",
+        "preservation_contract": "original-row-id-denominator-exact",
+        "current_path": "policy/rs4xx-vram-gtt-capacity-contract.tsv",
+        "current_row_count": "15",
+        "preserved_row_count": "14",
+        "added_identity": "RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE",
+        "integration_status": "reviewed-current-source-expansion",
+        "nonclaim": (
+            "The added source row does not change driver C behavior or "
+            "establish a target optimum."
+        ),
+    },
 )
 
 EXPECTED_ROWS = {
@@ -588,6 +718,31 @@ def validate_matrix_rows(matrix_rows: list[dict[str, str]]) -> None:
             raise CapacityError(f"{gtt_mib} MiB matrix fields differ: {differing}")
 
 
+def validate_lineage_rows(
+    lineage_rows: list[dict[str, str]],
+    policy_rows: list[dict[str, str]],
+    matrix_rows: list[dict[str, str]],
+) -> None:
+    """Bind the reviewed intake identities to exact current projections."""
+    if tuple(lineage_rows) != EXPECTED_LINEAGE_ROWS:
+        raise CapacityError("capacity source lineage rows differ")
+
+    retained_policy_ids = tuple(
+        row["row_id"]
+        for row in policy_rows
+        if row["row_id"] != "RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE"
+    )
+    if retained_policy_ids != INTAKE_POLICY_ROW_IDS:
+        raise CapacityError("capacity intake policy row denominator differs")
+
+    matrix_projection = tuple(
+        tuple(row[field] for field in INTAKE_MATRIX_FIELDS)
+        for row in matrix_rows
+    )
+    if matrix_projection != INTAKE_MATRIX_PROJECTION:
+        raise CapacityError("capacity intake matrix projection differs")
+
+
 def validate_exclusion_rows(rows: list[dict[str, str]]) -> None:
     input_classes = [row["input_class"] for row in rows]
     if len(input_classes) != len(set(input_classes)):
@@ -1071,10 +1226,12 @@ def check_tree(root: Path) -> None:
     matrix_rows = read_tsv(root / MATRIX, MATRIX_HEADER)
     exclusion_rows = read_tsv(root / EXCLUSIONS, EXCLUSION_HEADER)
     coefficient_rows = read_tsv(root / COEFFICIENTS, COEFFICIENT_HEADER)
+    lineage_rows = read_tsv(root / LINEAGE, LINEAGE_HEADER)
     validate_policy_rows(policy_rows)
     validate_matrix_rows(matrix_rows)
     validate_exclusion_rows(exclusion_rows)
     validate_coefficient_rows(coefficient_rows)
+    validate_lineage_rows(lineage_rows, policy_rows, matrix_rows)
     validate_source(root)
 
 
@@ -1104,10 +1261,12 @@ def selftest(root: Path) -> None:
     matrix_rows = read_tsv(root / MATRIX, MATRIX_HEADER)
     exclusion_rows = read_tsv(root / EXCLUSIONS, EXCLUSION_HEADER)
     coefficient_rows = read_tsv(root / COEFFICIENTS, COEFFICIENT_HEADER)
+    lineage_rows = read_tsv(root / LINEAGE, LINEAGE_HEADER)
     validate_policy_rows(policy_rows)
     validate_matrix_rows(matrix_rows)
     validate_exclusion_rows(exclusion_rows)
     validate_coefficient_rows(coefficient_rows)
+    validate_lineage_rows(lineage_rows, policy_rows, matrix_rows)
     validate_source(root)
 
     mutations: list[tuple[str, Callable[[], None]]] = []
@@ -1228,6 +1387,92 @@ def selftest(root: Path) -> None:
     wrong_knee[7]["derived_value"] = str(64 * 1024 * 1024)
     mutations.append(
         ("wrong-movement-knee", lambda: validate_coefficient_rows(wrong_knee))
+    )
+
+    changed_lineage_commit = copy.deepcopy(lineage_rows)
+    changed_lineage_commit[0]["input_commit"] = "0" * 40
+    mutations.append(
+        (
+            "changed-intake-commit",
+            lambda: validate_lineage_rows(
+                changed_lineage_commit,
+                policy_rows,
+                matrix_rows,
+            ),
+        )
+    )
+    changed_lineage_blob = copy.deepcopy(lineage_rows)
+    changed_lineage_blob[0]["input_blob_sha1"] = "0" * 40
+    mutations.append(
+        (
+            "changed-intake-blob",
+            lambda: validate_lineage_rows(
+                changed_lineage_blob,
+                policy_rows,
+                matrix_rows,
+            ),
+        )
+    )
+    changed_lineage_content = copy.deepcopy(lineage_rows)
+    changed_lineage_content[0]["input_content_sha256"] = "0" * 64
+    mutations.append(
+        (
+            "changed-intake-content-sha256",
+            lambda: validate_lineage_rows(
+                changed_lineage_content,
+                policy_rows,
+                matrix_rows,
+            ),
+        )
+    )
+    changed_preserved_count = copy.deepcopy(lineage_rows)
+    changed_preserved_count[1]["preserved_row_count"] = "15"
+    mutations.append(
+        (
+            "changed-intake-preserved-count",
+            lambda: validate_lineage_rows(
+                changed_preserved_count,
+                policy_rows,
+                matrix_rows,
+            ),
+        )
+    )
+    mutations.append(
+        (
+            "missing-intake-lineage-row",
+            lambda: validate_lineage_rows(
+                lineage_rows[:-1],
+                policy_rows,
+                matrix_rows,
+            ),
+        )
+    )
+    missing_intake_policy = [
+        row
+        for row in policy_rows
+        if row["row_id"] != "RS482_GTT_PARAMETER_ADMISSION"
+    ]
+    mutations.append(
+        (
+            "missing-intake-policy-row",
+            lambda: validate_lineage_rows(
+                lineage_rows,
+                missing_intake_policy,
+                matrix_rows,
+            ),
+        )
+    )
+    changed_intake_matrix = copy.deepcopy(matrix_rows)
+    changed_intake_matrix[0]["static_metadata_bytes"] = "0"
+    mutations.append(
+        (
+            "changed-intake-matrix-projection",
+            lambda: validate_lineage_rows(
+                lineage_rows,
+                policy_rows,
+                changed_intake_matrix,
+            ),
+        )
     )
 
     driver_source = read_ascii_source(root / SUBTREE / "radeon_drv.c")
@@ -1512,6 +1757,7 @@ def selftest(root: Path) -> None:
 
     print(f"capacity contract selftest: 1 good, {failures} bad")
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", action="store_true")
@@ -1528,8 +1774,9 @@ def main() -> int:
             check_tree(root)
             print(
                 "RS482 capacity contract: 15 rows, 4 configurations, "
-                "10 exclusions, 10 coefficients, 36 source functions, "
-                "1 module declaration, 2 ioctl bindings, 8 register encodings"
+                "10 exclusions, 10 coefficients, 2 lineage rows, "
+                "36 source functions, 1 module declaration, "
+                "2 ioctl bindings, 8 register encodings"
             )
     except CapacityError as error:
         print(f"capacity contract failed: {error}", file=sys.stderr)

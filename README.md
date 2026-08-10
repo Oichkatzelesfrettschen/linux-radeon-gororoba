@@ -273,8 +273,8 @@ The active RS4xx memory-path source model has three finite owners:
 * `policy/rs4xx-vram-gtt-capacity-contract.tsv` covers aperture admission,
   GART metadata cost, allocator capacity, BO placement and movement, pin
   accounting, usage counters, and fragmentation observations. Its exact
-  four-selector matrix, exclusion ledger, coefficient ledger, and narrative
-  live beside it in `policy/` and
+  four-selector matrix, exclusion ledger, coefficient ledger, source-lineage
+  ledger, and narrative live beside it in `policy/` and
   `docs/rs4xx-vram-gtt-capacity-contract.md`.
 
 All three ledgers separate source status from runtime and silicon status. In
