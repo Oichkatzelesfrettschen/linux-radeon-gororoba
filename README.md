@@ -146,16 +146,27 @@ hardware behavior, or completeness of indirect bindings. Preprocessed views
 resolve named build lanes without changing that boundary. Contextual path
 witnesses preserve ordered source edges, required conditions, and typed
 callback or debugfs event joins without collapsing registration time into later
-dispatch. `analysis/hazard-guard-identifier-census.tsv` remains a lexical
-census. The mutation calibrated semantic checkers own their declared primary
-source contracts. The reset checkers pin exact lexical intervals, reject a
-finite opaque control set, and assume other intervening calls return. They do
-not prove a compiler control flow graph, included header macro state, or
-runtime execution.
+dispatch. `analysis/hazard-guard-identifier-census.tsv` records guard tokens.
+The retained source-map policy records separate effect token censuses, and the
+verifier replays them without relabeling them as guards. Both surfaces remain
+lexical censuses. The mutation calibrated semantic checkers own their declared
+primary source contracts. The reset checkers pin exact lexical intervals,
+reject a finite opaque control set, and assume other intervening calls return.
+They do not prove a compiler control flow graph, included header macro state,
+or runtime execution.
+
+The RS482 VRAM and GTT capacity policy expands the live source denominator to
+73 partition bound roots, 13 exact hazards, and 55 exact declared bindings.
+The added graph covers module request normalization, RS400 initialization,
+address fit, TTM capacity, allocator movement, capacity ioctls, GEM
+observations, and the excluded raw VRAM and GTT reader boundary. Previously
+sealed source-map bundles retain their historical denominators and do not
+acquire these rows retroactively.
 
 `docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
-the complete reference attestation, the four retained path witnesses, the
-coefficient derivations, the trust boundaries, and the next verification gates.
+the complete reference attestation, its four retained path witnesses, the two
+live capacity payload-reader witnesses, the coefficient derivations, the trust
+boundaries, and the next verification gates.
 
 Two captures compare through normalized tables rather than analyzer database
 bytes:
@@ -254,7 +265,7 @@ GPU register and reset claims.
 
 ## Memory path contracts
 
-The active RS4xx memory-path source model has two finite owners:
+The active RS4xx memory-path source model has three finite owners:
 
 * `policy/rs4xx-gart-memory-path.tsv` covers GART, TTM, BO mapping, PTE
   publication, userptr ownership, CPU mappings, and teardown. Its narrative is
@@ -263,10 +274,18 @@ The active RS4xx memory-path source model has two finite owners:
   BO reservations, dependency import, IB scheduling, r300 fence commands, and
   reservation-fence publication. Its narrative is
   `docs/radeon-cs-reservation-fence-contract.md`.
+* `policy/rs4xx-vram-gtt-capacity-contract.tsv` covers aperture admission,
+  GART metadata cost, allocator capacity, BO placement and movement, pin
+  accounting, usage counters, and fragmentation observations. Its exact
+  four-selector matrix, exclusion ledger, coefficient ledger, source-lineage
+  ledger, and narrative live beside it in `policy/` and
+  `docs/rs4xx-vram-gtt-capacity-contract.md`.
 
-Both ledgers separate source status from runtime and silicon status. In
+All three ledgers separate source status from runtime and silicon status. In
 particular, reservation fences and emitted cache commands prove software and
-ring order, not cached-GTT payload visibility. Exact RS482 payload and replay
+ring order, not cached-GTT payload visibility. GTT size is virtual aperture
+capacity rather than proved physical backing, and a source-supported selector
+is not a performance result. Exact RS482 payload, allocation-pressure, and replay
 verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM, address
 domain, PAT, MTRR, and event-scoped aperture observations.
 

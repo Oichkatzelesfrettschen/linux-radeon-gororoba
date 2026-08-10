@@ -72,7 +72,8 @@ kernel lanes. A manifest supplied file list cannot widen that denominator.
 | Indirect graph | `radeon-driver-declared-bindings.tsv`, `analysis/extracted-binding-candidates.tsv` | Brace bounded policy bindings and syntax extracted candidates preserve callback, macro, table, and file operation discontinuities. |
 | Unified graph | `analysis/call-candidates.tsv` | The exact union keeps edge kind, caller, callee, partition, provenance, and classification. |
 | Contextual paths | `analysis/contextual-path-witnesses.tsv`, `analysis/contextual-path-joins.tsv` | Ordered axes and typed joins preserve required family, profile, ring, token, and event context. |
-| Hazard census | `analysis/hazard-guard-identifier-census.tsv` | Policy named identifiers occur in bounded owner functions. The product is not a control flow proof. |
+| Guard census | `analysis/hazard-guard-identifier-census.tsv` | Policy named guard identifiers occur in bounded owner functions. The product is not a control flow proof. |
+| Effect census | `policy/radeon-driver-source-map.toml` | Policy named effect identifiers replay against bounded owner functions without entering the guard product. The census is not a side effect proof. |
 | Complexity | `analysis/lizard.csv`, `analysis/scc.json`, `analysis/coefficient-vectors.tsv` | Function NLOC, CCN, graph degree, indirect edges, side effect class, guard census, and evidence rank remain separately inspectable. |
 | Build lanes | `preprocessed/<release>/<profile>/` | Every declared lane retains 21 normalized translation units, one linked module, raw symbols, canonical symbols, and build metadata. |
 | Profile deltas | `analysis/profile-symbol-delta-summary.tsv`, `analysis/profile-symbol-delta-members.tsv` | Canonical symbols strip only a terminal `.llvm.<digits>` suffix, reject collisions, and preserve exact additions and removals. |
@@ -555,6 +556,84 @@ source delta.
 - The capture contains no RS482 or Palm hardware verdict. Those verdicts
   require exact target bundles in the owning evidence repository.
 
+## Live RS482 capacity-policy extension
+
+The sealed `8158297` reference remains an attestation of its original 43 roots
+and 45 declared bindings. The live policy extends the next capture to 73 roots,
+13 hazards, and 55 exact declared bindings. It adds request normalization,
+RS400 ASIC initialization, selector adjustment, address fit, TTM managers,
+allocator movement, pin accounting, capacity ioctls, GEM observation, and the
+excluded raw VRAM and GTT reader boundary.
+
+The producer pins every partition and root pair with SHA-256
+`a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814`,
+every hazard record with SHA-256
+`79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5`,
+and every normalized binding record with SHA-256
+`e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77`.
+Policy loading rejects a missing, added, moved, or changed member before
+capture.
+
+Policy schema 2 owns these exact live denominators and the separate effect
+identifier census. New capture production accepts schema 2 only. Retained
+capture verification also accepts schema 1 and replays its original product
+set without applying schema 2 counts or adding a new analysis file.
+The live topology carries six contextual witnesses. The two added witnesses
+separate TTM debugfs registration from later `radeon_vram` and `radeon_gtt`
+read dispatch. The VRAM reader carries an MMIO index write plus a data read;
+the GTT reader copies host backing-page content. Neither path is promoted to a
+runtime event or admitted capacity-trial input.
+
+The root expansion changes the producer-derived cscope denominator from 129 to
+219 raw queries. It changes the source-only command contract from 156 to 246
+rows and the complete kernel-lane command contract from 176 to 266 rows. The
+90 added rows are the three cscope queries for each of 30 new roots. The
+analyzer, kernel build, and profile command sets otherwise remain unchanged.
+
+`scripts/check_rs4xx_vram_gtt_capacity.py` owns the semantic source contract.
+The source map owns structural candidates only. The source-only attestation
+below reproduces the expanded denominator. It does not replace the sealed
+six-lane reference figures.
+
+### RS482 capacity source-only attestation
+
+The retained bundle uses this mechanism path beneath the source-intelligence
+root:
+
+```text
+rs482-vram-gtt-capacity-source-map/c4f41777616d3d568e4929d9711d61dfd3db9c65-source-only
+```
+
+The producer creates the bundle and then verifies it offline with exit zero.
+The capture contains 779 regular files. Its ledger covers the other 778 files.
+
+<!-- markdownlint-disable MD013 -->
+
+| Field | Exact value |
+| --- | --- |
+| Source commit | `c4f41777616d3d568e4929d9711d61dfd3db9c65` |
+| Source tree | `d3cb95a7c9baaf0e7df0d87f2d740a5747f0054f` |
+| Driver tree | `6fd8d3c6ec245c31f195ef86c15fadf5e206642d` |
+| Driver-source inputs | 222 files and 6,909,890 bytes |
+| Lexical map | 98,390 rows |
+| Cscope denominator | 73 root symbols, 219 raw queries, and 1,053 parsed rows |
+| Command denominator | 246 rows: 226 bwrap, 16 cflow, and one each for ctags, readtags, lizard, and scc |
+| Declared bindings | 55 total and 14 in GART and memory |
+| Hazard denominator | 13 exact policy identities |
+| Contextual paths | Six witnesses, 37 ordered edges, and six typed joins |
+| Unified call candidates | 15,643 rows |
+| Policy SHA-256 | `42ad90a3ad1e3eb31351b8ea9deae66fea18171a64ee41d02948e8221097ba53` |
+| Manifest SHA-256 | `0fe0de69a821003fd474b62e0a5fda21a3cb1765c7f25ba0aa04419e453106a0` |
+| Ledger SHA-256 | `329640d61baac0ebf53e8a83b5a07c8da2f0b701fcd5b372317c41efe256dd06` |
+
+<!-- markdownlint-enable MD013 -->
+
+The driver tree equals the sealed six-lane reference driver tree. The ten-row
+call-candidate increase comes from the ten new declared bindings. The source
+capture carries no kernel lane, linked module, profile delta, runtime event, or
+hardware verdict. Required CI still runs the complete two-kernel, six-profile
+producer after publication.
+
 ## Roadmap and completion gates
 
 The source intelligence program advances through these concrete gates:
@@ -579,14 +658,20 @@ The source intelligence program advances through these concrete gates:
 6. Any new ioctl, callback, work item, debugfs node, file operation, ASIC
    table, or passed function expands the declared indirect edge denominator
    and the self test mutation matrix.
-7. Any new hazardous path gains an exact contextual witness, maximum side
+7. The RS482 capacity source checker closes its four selectors, ten exclusions,
+   ten coefficients, 36 source functions, module request, ioctl table, and
+   register encodings before any target trial. A fresh source-only capture and
+   the required complete kernel-lane CI job close the 73-root, 13-hazard,
+   55-binding, six-witness graph.
+8. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.
-8. `steinmarder-r300` records a read only Vostro production baseline with
-   module, package, boot, device, and log identity before any attended runtime
-   escalation.
-9. `radeon-custom` advances its signed source pin and package attestation only
-   after the source branch merges. Deployment identity remains separate from
-   source and hardware acceptance.
-10. A completion claim requires a clean full verifier, all semantic checkers,
+9. `steinmarder-r300` records a read only Vostro production baseline with
+   module, package, boot, device, effective GTT interval, allocator counters,
+   and log identity before any allocation-pressure or submit trial.
+10. `radeon-custom` advances its signed source pin and package attestation only
+    when the driver source subtree identity changes. A policy-only batch does
+    not advance that pin. Deployment identity remains separate from source and
+    hardware acceptance.
+11. A completion claim requires a clean full verifier, all semantic checkers,
    both exact kernel roots, the required CI status, merged pull request, synced
    main checkout, and an explicit ledger of runtime checks that remain not run.
