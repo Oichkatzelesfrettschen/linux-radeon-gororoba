@@ -47,6 +47,9 @@ PROFILE_SYMBOL_DELTA_SUMMARY_SCHEMA = (
 PROFILE_SYMBOL_DELTA_MEMBERS_SCHEMA = (
     "radeon-driver-profile-symbol-delta-members-v1"
 )
+PROFILE_SYMBOL_DELTA_MEMBER_COMPARISON_SCHEMA = (
+    "radeon-driver-profile-symbol-delta-member-delta-v2"
+)
 PROFILE_SYMBOL_DELTA_SUMMARY_COLUMNS = (
     "kernel_release",
     "baseline_profile",
@@ -640,6 +643,7 @@ def canonical_tsv_bytes(
     rows: list[tuple[Any, ...]] | list[list[str]],
 ) -> bytes:
     """Serialize one TSV through the repository canonical byte grammar."""
+    require_unique_tsv_columns(columns, schema)
     stream = io.StringIO(newline="")
     stream.write(f"# schema: {schema}\n")
     writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
@@ -647,6 +651,16 @@ def canonical_tsv_bytes(
     for row in rows:
         writer.writerow(row)
     return stream.getvalue().encode("utf-8")
+
+
+def require_unique_tsv_columns(
+    columns: tuple[str, ...] | list[str],
+    label: str,
+) -> None:
+    duplicates = sorted(
+        column for column in set(columns) if columns.count(column) > 1
+    )
+    require(not duplicates, f"{label} repeats columns: {', '.join(duplicates)}")
 
 
 def write_tsv(path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
@@ -659,6 +673,7 @@ def read_tsv(path: Path, expected_schema: str) -> tuple[list[str], list[list[str
     require(len(lines) >= 2, f"missing columns: {path}")
     parsed = list(csv.reader(lines[1:], delimiter="\t"))
     require(parsed and parsed[0], f"empty columns: {path}")
+    require_unique_tsv_columns(parsed[0], str(path))
     return parsed[0], parsed[1:]
 
 
@@ -689,6 +704,7 @@ def read_canonical_ascii_tsv(
     parsed = list(csv.reader(lines[1:], delimiter="\t"))
     require(parsed and parsed[0], f"empty columns: {path}")
     columns, rows = parsed[0], parsed[1:]
+    require_unique_tsv_columns(columns, label)
     require(
         content == canonical_tsv_bytes(expected_schema, columns, rows),
         f"{label} bytes are not canonical",
@@ -8338,8 +8354,8 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
         )
         write_tsv(
             stage / "profile-symbol-delta-member-delta.tsv",
-            "radeon-driver-profile-symbol-delta-member-delta-v1",
-            ("change", *symbol_member_columns),
+            PROFILE_SYMBOL_DELTA_MEMBER_COMPARISON_SCHEMA,
+            ("capture_change", *symbol_member_columns),
             symbol_member_rows,
         )
 
@@ -9617,6 +9633,32 @@ def self_test(repository: Path, policy_path: Path) -> int:
             bool(observed_open_flags & os.O_NONBLOCK)
             and bool(observed_open_flags & os.O_NOCTTY)
             and bool(observed_open_flags & os.O_NOFOLLOW),
+        )
+        duplicate_writer_path = temp / "duplicate-writer.tsv"
+        rejects(
+            "TSV writer rejects duplicate column names",
+            lambda: write_tsv(
+                duplicate_writer_path,
+                "duplicate-column-fixture-v1",
+                ("change", "change"),
+                [],
+            ),
+        )
+        check(
+            "rejected duplicate TSV is not written",
+            not duplicate_writer_path.exists(),
+        )
+        duplicate_reader_path = temp / "duplicate-reader.tsv"
+        write_text(
+            duplicate_reader_path,
+            "# schema: duplicate-column-fixture-v1\nchange\tchange\n",
+        )
+        rejects(
+            "TSV reader rejects duplicate column names",
+            lambda: read_tsv(
+                duplicate_reader_path,
+                "duplicate-column-fixture-v1",
+            ),
         )
         comparison_left = temp / "comparison-left"
         comparison_right = temp / "comparison-right"
