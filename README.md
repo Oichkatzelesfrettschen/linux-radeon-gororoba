@@ -157,10 +157,11 @@ or runtime execution.
 
 The RS482 VRAM and GTT capacity contract contributes 73 partition bound roots,
 13 exact hazards, 55 exact declared bindings, and six contextual witnesses.
-The integrated RS4xx policy closes 119 roots, 30 hazards, 63 bindings, and
+The integrated RS4xx policy closes 125 roots, 31 hazards, 70 bindings, and
 eight witnesses. The added failed-reset graph covers terminal state
 publication, hardware-access admission, retained GART and TTM ownership, PCI
-runtime rollback, and deferred debugfs registration. Previously sealed
+runtime and system resume rollback, system power callbacks, switcheroo state,
+failed RS400 startup refusal, and deferred debugfs registration. Previously sealed
 source-map bundles retain their historical denominators and do not acquire
 these rows retroactively.
 

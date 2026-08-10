@@ -113,7 +113,7 @@ directory in `src/build.c` and reads database-backed source lines through
 database-alignment hypothesis;
 they do not prove a general upstream root cause. The self-test rebuilds the
 database in the canonical sandbox, executes every definition, calls, and
-callers query for all 119 roots, compares every nonempty row against exported
+callers query for all 125 roots, compares every nonempty row against exported
 source, and requires the exact eight-call `radeon_mode_dumb_create` control.
 Offline replay binds the retained source to the same canonical cscope working
 directory. A nested C or header path, a repeated basename, a mixed raw path
@@ -668,21 +668,23 @@ producer after publication.
 
 ### RS4xx failed-reset ownership union
 
-The current policy closes 119 partition bound roots, 30 exact hazards, 63
+The current policy closes 125 partition bound roots, 31 exact hazards, 70
 declared bindings, and eight contextual witnesses across 222 source files and
 7,022,537 bytes. Its eight witnesses contain 41 ordered edges and seven typed
 joins. The added rows cover terminal state publication, hardware-access
-admission, retained GART and TTM ownership, PCI runtime rollback, deferred
-debugfs registration, and PCI remove retention. The source-only command
-contract contains 386 rows, including 357 cscope queries. A complete capture
-with both kernel lanes contains 406 command rows.
+admission, retained GART and TTM ownership, PCI runtime and system resume
+rollback, system power callbacks, switcheroo state, deferred debugfs
+registration, and PCI remove retention. The source-only command contract
+contains 404 rows, including 375 cscope queries. A complete capture with both
+kernel lanes contains 424 command rows. The built-in calibration rejects 252
+adversarial mutations.
 
 The producer pins every current partition and root pair with SHA-256
-`e05f959e228dd37d64156a239ed81915d80fc8a2f8a5f666a47c1d550e27b243`,
+`5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5`,
 every current hazard record with SHA-256
-`79caef3c4c570beaef5430110bfadfc2cc431e189872a5d95f8e51b6449259b2`,
+`3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3`,
 and every current normalized binding with SHA-256
-`e7674df3c0cdb43ccad8a62a2a1a3b5345a0705355f7f6b8ff779465eca0845f`.
+`4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c`.
 Policy loading rejects a missing, added, moved, or changed member before
 capture. Policy schema 2 owns the current denominators and the separate effect
 identifier census. New capture production accepts schema 2. Retained capture
@@ -716,8 +718,8 @@ The source intelligence program advances through these concrete gates:
 7. The RS482 capacity source checker closes its four selectors, ten exclusions,
    ten coefficients, 36 source functions, module request, ioctl table, and
    register encodings before any target trial. A fresh source-only capture and
-   the required complete kernel-lane CI job close the integrated 119-root,
-   30-hazard, 63-binding, eight-witness graph. The retained capacity subset
+   the required complete kernel-lane CI job close the integrated 125-root,
+   31-hazard, 70-binding, eight-witness graph. The retained capacity subset
    remains 73 roots, 13 hazards, 55 bindings, and six witnesses.
 8. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.

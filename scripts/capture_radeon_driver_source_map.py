@@ -88,19 +88,19 @@ CANONICAL_CSCOPE_SOURCE_ROOT = (
 )
 MAX_SOURCE_FILES = 256
 MAX_SOURCE_BYTES = 7_100_000
-EXPECTED_ROOT_DENOMINATOR_COUNT = 119
+EXPECTED_ROOT_DENOMINATOR_COUNT = 125
 EXPECTED_ROOT_DENOMINATOR_SHA256 = (
-    "e05f959e228dd37d64156a239ed81915d80fc8a2f8a5f666a47c1d550e27b243"
+    "5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5"
 )
-EXPECTED_HAZARD_DENOMINATOR_COUNT = 30
+EXPECTED_HAZARD_DENOMINATOR_COUNT = 31
 EXPECTED_HAZARD_DENOMINATOR_SHA256 = (
-    "79caef3c4c570beaef5430110bfadfc2cc431e189872a5d95f8e51b6449259b2"
+    "3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3"
 )
-EXPECTED_BINDING_DENOMINATOR_COUNT = 63
+EXPECTED_BINDING_DENOMINATOR_COUNT = 70
 EXPECTED_BINDING_DENOMINATOR_SHA256 = (
-    "e7674df3c0cdb43ccad8a62a2a1a3b5345a0705355f7f6b8ff779465eca0845f"
+    "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 )
-EXPECTED_SELFTEST_VERDICT_COUNT = 245
+EXPECTED_SELFTEST_VERDICT_COUNT = 252
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -217,6 +217,76 @@ REQUIRED_FRAMEWORK_CALLBACK_BINDINGS = {
         "radeon_pci_shutdown",
         "drivers/gpu/drm/radeon/radeon_drv.c",
         r"(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.shutdown = radeon_pci_shutdown\s*,",
+        1,
+    ),
+    "vga-switcheroo-state": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "vga_switcheroo_client_ops.set_gpu_state",
+        "radeon_switcheroo_set_state",
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        r"(?s)static const struct vga_switcheroo_client_ops radeon_switcheroo_ops = \{.*?\.set_gpu_state = radeon_switcheroo_set_state",
+        1,
+    ),
+    "device-pm-suspend": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "device_pm_suspend",
+        "radeon_pmops_suspend",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.suspend = radeon_pmops_suspend",
+        1,
+    ),
+    "device-pm-resume": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "device_pm_resume",
+        "radeon_pmops_resume",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.resume = radeon_pmops_resume",
+        1,
+    ),
+    "device-pm-freeze": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "device_pm_freeze",
+        "radeon_pmops_freeze",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.freeze = radeon_pmops_freeze",
+        1,
+    ),
+    "device-pm-thaw": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "device_pm_thaw",
+        "radeon_pmops_thaw",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.thaw = radeon_pmops_thaw",
+        1,
+    ),
+    "device-pm-poweroff": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "device_pm_poweroff",
+        "radeon_pmops_freeze",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.poweroff = radeon_pmops_freeze",
+        1,
+    ),
+    "device-pm-restore": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "device_pm_restore",
+        "radeon_pmops_resume",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.restore = radeon_pmops_resume",
         1,
     ),
 }
@@ -11390,7 +11460,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     expected_source_commands = expected_command_records(policy, [entry], set())
     check(
         "source command contract closes the analyzer command denominator",
-        len(expected_source_commands) == 386,
+        len(expected_source_commands) == 404,
     )
     expected_kernel_commands = expected_command_records(
         policy,
@@ -11402,7 +11472,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     ]
     check(
         "kernel command contract pins host make, shell, and LLVM prefix",
-        len(expected_kernel_commands) == 406
+        len(expected_kernel_commands) == 424
         and len(expected_make_commands) == 12
         and all(
             (arguments := json.loads(row[6]))[0] == "/usr/bin/make"
@@ -13230,6 +13300,97 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 'kind = "callback-table"\n'
                 'scope = "brace"\n'
                 'caller = "pci_core_shutdown"',
+            ),
+            (
+                "vga-switcheroo-dispatcher-alias",
+                'name = "vga-switcheroo-state"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "vga_switcheroo_client_ops.set_gpu_state"',
+                'name = "vga-switcheroo-state"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "vga_switcheroo_state_dispatch"',
+            ),
+            (
+                "device-pm-suspend-dispatcher-alias",
+                'name = "device-pm-suspend"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_suspend"',
+                'name = "device-pm-suspend"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_suspend_alias"',
+            ),
+            (
+                "device-pm-resume-dispatcher-alias",
+                'name = "device-pm-resume"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_resume"',
+                'name = "device-pm-resume"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_resume_alias"',
+            ),
+            (
+                "device-pm-freeze-dispatcher-alias",
+                'name = "device-pm-freeze"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_freeze"',
+                'name = "device-pm-freeze"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_freeze_alias"',
+            ),
+            (
+                "device-pm-thaw-dispatcher-alias",
+                'name = "device-pm-thaw"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_thaw"',
+                'name = "device-pm-thaw"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_thaw_alias"',
+            ),
+            (
+                "device-pm-poweroff-dispatcher-alias",
+                'name = "device-pm-poweroff"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_poweroff"',
+                'name = "device-pm-poweroff"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_poweroff_alias"',
+            ),
+            (
+                "device-pm-restore-dispatcher-alias",
+                'name = "device-pm-restore"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_restore"',
+                'name = "device-pm-restore"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "device_pm_restore_alias"',
             ),
         )
         for label, original, replacement in framework_binding_mutations:

@@ -4,12 +4,12 @@ comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
 max_source_bytes = 7100000
-root_denominator_count = 119
-root_denominator_sha256 = "e05f959e228dd37d64156a239ed81915d80fc8a2f8a5f666a47c1d550e27b243"
-hazard_denominator_count = 30
-hazard_denominator_sha256 = "79caef3c4c570beaef5430110bfadfc2cc431e189872a5d95f8e51b6449259b2"
-binding_denominator_count = 63
-binding_denominator_sha256 = "e7674df3c0cdb43ccad8a62a2a1a3b5345a0705355f7f6b8ff779465eca0845f"
+root_denominator_count = 125
+root_denominator_sha256 = "5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5"
+hazard_denominator_count = 31
+hazard_denominator_sha256 = "3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3"
+binding_denominator_count = 70
+binding_denominator_sha256 = "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 
 required_tools = [
   "bwrap",
@@ -327,6 +327,12 @@ roots = [
   "radeon_pci_probe",
   "radeon_driver_load_kms",
   "radeon_device_init",
+  "radeon_switcheroo_set_state",
+  "radeon_pmops_suspend",
+  "radeon_pmops_resume",
+  "radeon_pmops_freeze",
+  "radeon_pmops_thaw",
+  "radeon_rs4xx_system_resume_rollback",
   "radeon_runtime_pm_restore_resume_failure",
   "radeon_pmops_runtime_suspend",
   "radeon_pmops_runtime_resume",
@@ -684,6 +690,15 @@ guard_identifier_census = [
 evidence_rank = "kernel-source"
 
 [[hazard]]
+symbol = "radeon_rs4xx_system_resume_rollback"
+side_effect_class = "pci-command-and-power-write"
+guard_identifier_census = []
+effect_identifier_census = [
+  { owner = "radeon_rs4xx_system_resume_rollback", identifiers = ["pci_clear_master", "pci_save_state", "pci_set_power_state", "PCI_D3hot"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
 symbol = "radeon_ttm_tt_destroy"
 side_effect_class = "terminal-memory-ownership-write"
 guard_identifier_census = [
@@ -787,6 +802,83 @@ caller = "pci_device_remove"
 callee = "radeon_pci_remove"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
 pattern = '(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.remove = radeon_pci_remove\s*,'
+expected_matches = 1
+
+[[binding]]
+name = "vga-switcheroo-state"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "vga_switcheroo_client_ops.set_gpu_state"
+callee = "radeon_switcheroo_set_state"
+path = "drivers/gpu/drm/radeon/radeon_device.c"
+pattern = '(?s)static const struct vga_switcheroo_client_ops radeon_switcheroo_ops = \{.*?\.set_gpu_state = radeon_switcheroo_set_state'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-suspend"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_suspend"
+callee = "radeon_pmops_suspend"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.suspend = radeon_pmops_suspend'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-resume"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_resume"
+callee = "radeon_pmops_resume"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.resume = radeon_pmops_resume'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-freeze"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_freeze"
+callee = "radeon_pmops_freeze"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.freeze = radeon_pmops_freeze'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-thaw"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_thaw"
+callee = "radeon_pmops_thaw"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.thaw = radeon_pmops_thaw'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-poweroff"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_poweroff"
+callee = "radeon_pmops_freeze"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.poweroff = radeon_pmops_freeze'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-restore"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_restore"
+callee = "radeon_pmops_resume"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.restore = radeon_pmops_resume'
 expected_matches = 1
 
 [[binding]]

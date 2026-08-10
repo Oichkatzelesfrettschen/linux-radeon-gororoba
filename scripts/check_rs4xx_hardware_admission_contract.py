@@ -11,7 +11,7 @@ balances a successful begin with an end after its final hardware operation,
 and keeps the hardware operation after admission. The parked latch remains a
 terminal -EIO outcome at the central root. Four direct latch callers cover
 teardown refusal, full parked-state publication, reset ring-restore failure,
-and RS400 initialization reset failure. Four teardown refusal callers cover
+and RS400 initialization reset and startup failure. Four teardown refusal callers cover
 BO destruction, TTM backend unbind, TTM unpopulation, and GEM object release.
 The refusal wrapper latches before it records pending publication, and the
 publisher drains admitted transactions and readers before CPU-only cleanup.
@@ -1130,6 +1130,13 @@ def check_terminal_parked_state(root: Path) -> None:
         r"radeon_rs4xx_hardware_transition_end \( rdev , "
         r"RADEON_RS4XX_HARDWARE_RUNNING \) ;",
     )
+    require_pattern(
+        "RS400 startup failure aborts device admission",
+        body_text(initialize),
+        r"rdev -> accel_working = true ; "
+        r"r = rs400_startup \( rdev \) ; if \( r \) \{ .*?"
+        r"rdev -> accel_working = false ; return r ; \} return 0 ;",
+    )
 
 
 def check_terminal_modeset(root: Path) -> None:
@@ -2061,6 +2068,12 @@ int rs400_init(struct radeon_device *rdev)
 \t}
 \tradeon_rs4xx_hardware_transition_end(
 \t\trdev, RADEON_RS4XX_HARDWARE_RUNNING);
+\trdev->accel_working = true;
+\tr = rs400_startup(rdev);
+\tif (r) {
+\t\trdev->accel_working = false;
+\t\treturn r;
+\t}
 \treturn 0;
 }
 """,
@@ -2475,6 +2488,20 @@ def selftest(root: Path) -> int:
             "\t\tdev_err(rdev->dev, \"reset failed\");",
             "\tif (r) {\n"
             "\t\tdev_err(rdev->dev, \"reset failed\");",
+        ),
+        (
+            "RS400 startup failure returns success",
+            SUBTREE / "rs400.c",
+            "\tr = rs400_startup(rdev);\n"
+            "\tif (r) {\n"
+            "\t\trdev->accel_working = false;\n"
+            "\t\treturn r;\n"
+            "\t}",
+            "\tr = rs400_startup(rdev);\n"
+            "\tif (r) {\n"
+            "\t\trdev->accel_working = false;\n"
+            "\t\treturn 0;\n"
+            "\t}",
         ),
         (
             "cursor cleanup end removed",

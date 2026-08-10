@@ -949,6 +949,96 @@ def check_rs400_startup_hardware_epoch(root: Path) -> None:
     )
 
 
+def check_system_resume_failure_restoration(root: Path) -> None:
+    rollback = function_source(
+        root,
+        RADEON / "radeon_device.c",
+        "radeon_rs4xx_system_resume_rollback",
+    )
+    require_order(
+        rollback.masked_body,
+        "system resume PCI rollback",
+        (
+            r"pci_clear_master\s*\(\s*pdev\s*\)",
+            r"pci_save_state\s*\(\s*pdev\s*\)",
+            r"pci_set_power_state\s*\(\s*pdev\s*,\s*PCI_D3hot\s*\)",
+        ),
+    )
+    rollback_shape = re.sub(r"\s+", " ", rollback.masked_body).strip()
+    require(
+        rollback_shape
+        == (
+            "pci_clear_master(pdev); pci_save_state(pdev); "
+            "pci_set_power_state(pdev, PCI_D3hot);"
+        ),
+        "system resume PCI rollback direct shape differs",
+    )
+    for forbidden in (
+        "pci_disable_device(",
+        "radeon_resume(",
+        "radeon_suspend(",
+        "RREG32(",
+        "WREG32(",
+    ):
+        require(
+            forbidden not in rollback.masked_body,
+            f"system resume PCI rollback reaches a forbidden operation: {forbidden}",
+        )
+
+    resume = function_source(root, RADEON / "radeon_device.c", "radeon_resume_kms")
+    require_order(
+        resume.masked_body,
+        "system resume PCI failure route",
+        (
+            r"if\s*\(\s*resume\s*\)\s*\{",
+            r"pci_set_power_state\s*\(\s*pdev\s*,\s*PCI_D0\s*\)",
+            r"pci_restore_state\s*\(\s*pdev\s*\)",
+            r"r\s*=\s*pci_enable_device\s*\(\s*pdev\s*\)",
+            r"if\s*\(\s*r\s*\)\s*\{",
+            r"if\s*\(\s*radeon_rs4xx_hardware_target\s*\(\s*rdev\s*\)\s*\)\s*\{",
+            r"radeon_rs4xx_system_resume_rollback\s*\(\s*pdev\s*\)",
+            r"radeon_rs4xx_hardware_transition_end\s*\(\s*rdev\s*,\s*"
+            r"RADEON_RS4XX_HARDWARE_SUSPENDED\s*\)",
+            r"return\s+r\s*;",
+            r"if\s*\(\s*radeon_rs4xx_hardware_target\s*\(\s*rdev\s*\)\s*\)",
+            r"pci_set_master\s*\(\s*pdev\s*\)",
+            r"radeon_agp_resume\s*\(\s*rdev\s*\)",
+        ),
+    )
+    require(
+        resume.masked_body.count("radeon_rs4xx_system_resume_rollback(pdev)") == 1,
+        "system resume PCI rollback call denominator differs",
+    )
+    require(
+        resume.masked_body.count("pci_set_master(pdev)") == 1,
+        "system resume PCI master restoration denominator differs",
+    )
+
+
+def check_rs400_startup_failure_propagation(root: Path) -> None:
+    initialize = function_source(root, RADEON / "rs400.c", "rs400_init")
+    require_order_from(
+        initialize.masked_body,
+        "RS400 startup failure propagation",
+        r"r\s*=\s*rs400_startup\s*\(\s*rdev\s*\)",
+        (
+            r"r\s*=\s*rs400_startup\s*\(\s*rdev\s*\)",
+            r"if\s*\(\s*r\s*\)\s*\{",
+            r"r100_cp_fini\s*\(\s*rdev\s*\)",
+            r"radeon_wb_fini\s*\(\s*rdev\s*\)",
+            r"radeon_ib_pool_fini\s*\(\s*rdev\s*\)",
+            r"fini_r\s*=\s*rs400_gart_fini\s*\(\s*rdev\s*\)",
+            r"if\s*\(\s*fini_r\s*\)\s*\{",
+            r"rdev->accel_working\s*=\s*false",
+            r"return\s+fini_r\s*;",
+            r"radeon_irq_kms_fini\s*\(\s*rdev\s*\)",
+            r"rdev->accel_working\s*=\s*false",
+            r"return\s+r\s*;",
+            r"return\s+0\s*;",
+        ),
+    )
+
+
 def check_repository(root: Path) -> list[dict[str, str]]:
     rows = load_policy(root)
     check_policy_edges(root, rows)
@@ -956,6 +1046,8 @@ def check_repository(root: Path) -> list[dict[str, str]]:
     check_ib_failure_propagation(root)
     check_runtime_pm_failure_restoration(root)
     check_rs400_startup_hardware_epoch(root)
+    check_system_resume_failure_restoration(root)
+    check_rs400_startup_failure_propagation(root)
     return rows
 
 
@@ -1032,12 +1124,58 @@ def selftest(repository: Path) -> int:
             "resume PCI failure publishes the wrong state",
             RADEON / "radeon_device.c",
             "radeon_resume_kms",
-            "if (pci_enable_device(pdev)) {\n"
-            "\t\t\tradeon_rs4xx_hardware_transition_end(\n"
-            "\t\t\t\trdev, RADEON_RS4XX_HARDWARE_SUSPENDED);",
-            "if (pci_enable_device(pdev)) {\n"
-            "\t\t\tradeon_rs4xx_hardware_transition_end(\n"
-            "\t\t\t\trdev, RADEON_RS4XX_HARDWARE_RUNNING);",
+            "\t\t\t\tradeon_rs4xx_system_resume_rollback(pdev);\n"
+            "\t\t\t\tradeon_rs4xx_hardware_transition_end(\n"
+            "\t\t\t\t\trdev, RADEON_RS4XX_HARDWARE_SUSPENDED);",
+            "\t\t\t\tradeon_rs4xx_system_resume_rollback(pdev);\n"
+            "\t\t\t\tradeon_rs4xx_hardware_transition_end(\n"
+            "\t\t\t\t\trdev, RADEON_RS4XX_HARDWARE_RUNNING);",
+        ),
+        (
+            "system resume PCI failure bypasses rollback",
+            RADEON / "radeon_device.c",
+            "radeon_resume_kms",
+            "\t\t\t\tradeon_rs4xx_system_resume_rollback(pdev);\n",
+            "",
+        ),
+        (
+            "system resume rollback leaves bus mastering enabled",
+            RADEON / "radeon_device.c",
+            "radeon_rs4xx_system_resume_rollback",
+            "\tpci_clear_master(pdev);\n",
+            "",
+        ),
+        (
+            "system resume rollback drops the cleaned retry image",
+            RADEON / "radeon_device.c",
+            "radeon_rs4xx_system_resume_rollback",
+            "\tpci_save_state(pdev);\n",
+            "",
+        ),
+        (
+            "system resume rollback restores the wrong power state",
+            RADEON / "radeon_device.c",
+            "radeon_rs4xx_system_resume_rollback",
+            "\tpci_set_power_state(pdev, PCI_D3hot);\n",
+            "\tpci_set_power_state(pdev, PCI_D0);\n",
+        ),
+        (
+            "system resume retry omits bus master restoration",
+            RADEON / "radeon_device.c",
+            "radeon_resume_kms",
+            "\t\t\tpci_set_master(pdev);\n",
+            "",
+        ),
+        (
+            "system resume PCI failure replaces the original error",
+            RADEON / "radeon_device.c",
+            "radeon_resume_kms",
+            "\t\t\t\treturn r;\n"
+            "\t\t\t}\n"
+            "\t\t\treturn -1;",
+            "\t\t\t\treturn -EIO;\n"
+            "\t\t\t}\n"
+            "\t\t\treturn -1;",
         ),
         (
             "reset loses the state spinlock",
@@ -1370,6 +1508,17 @@ def selftest(repository: Path) -> int:
             "\trdev->config.r300.hdp_cntl = RREG32(RADEON_HOST_PATH_CNTL);",
             "\tif (r)\n\t\tr = 0;\n"
             "\trdev->config.r300.hdp_cntl = RREG32(RADEON_HOST_PATH_CNTL);",
+        ),
+        (
+            "RS400 initialization admits a degraded startup",
+            RADEON / "rs400.c",
+            "rs400_init",
+            "\t\tradeon_irq_kms_fini(rdev);\n"
+            "\t\trdev->accel_working = false;\n"
+            "\t\treturn r;",
+            "\t\tradeon_irq_kms_fini(rdev);\n"
+            "\t\trdev->accel_working = false;\n"
+            "\t\treturn 0;",
         ),
         (
             "policy loses one terminal branch row",

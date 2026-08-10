@@ -229,6 +229,11 @@ memory-controller programming through clock, GART, writeback, fence, IRQ,
 host-path, command-processor, and indirect-buffer initialization. Every
 post-admission error reaches one release label. The host-path register read and
 each initialization callback therefore execute under the same reader epoch.
+`rs400_init` unwinds command processor, writeback, indirect-buffer, GART, and
+IRQ ownership after a startup error, clears `accel_working`, and returns the
+startup error. Device load therefore stops before debugfs materialization and
+ring tests can admit a degraded RS400 device. A GART unwind error retains its
+exact terminal ownership result.
 
 ## Suspend and resume
 
@@ -242,9 +247,12 @@ They wait for resume instead of retaining an object until reboot. `PARKED`,
 and the caller chooses release or terminal retention.
 
 Resume owns `RESUMING` through PCI restoration, ASIC resume, ring tests, cursor
-pinning, encoder state, HPD, modeset, and power state. PCI enable failure
-returns to `SUSPENDED`. ASIC resume failure publishes `PARKED`. Complete resume
-publishes `RUNNING` before asynchronous flip cleanup restarts.
+pinning, encoder state, HPD, modeset, and power state. An RS4xx PCI enable
+failure clears bus mastering, saves the cleared PCI command state, restores
+`PCI_D3hot`, publishes `SUSPENDED`, and returns the exact enable error. A later
+successful retry calls `pci_set_master` only after `pci_enable_device`
+succeeds. ASIC resume failure publishes `PARKED`. Complete resume publishes
+`RUNNING` before asynchronous flip cleanup restarts.
 
 Runtime resume checks terminal ownership before `pci_set_power_state`,
 `pci_restore_state`, `pci_enable_device`, and `pci_set_master`. A terminal retry
@@ -401,9 +409,11 @@ target.
 `policy/rs4xx-ttm-retention-authority.toml` pins the Linux 6.18 and 7.1 TTM,
 GEM, PRIME, and AGP sources that define callback return types, cleanup order,
 resource release, SG ownership, and accounting. The PCI runtime authority file
-pins the matching PCI core and runtime-PM implementations. The source checkers
-verify every declared commit and file digest before admitting their derived
-contracts.
+pins the matching PCI core and runtime-PM implementations. Its PCI core rows
+also ground the enable counter, restored command register, disable
+precondition, and saved retry image used by the system resume rollback. The
+source checkers verify every declared commit and file digest before admitting
+their derived contracts.
 
 The local source gates run with these commands:
 
@@ -476,6 +486,11 @@ falsifiers:
 * Runtime resume reaches PCI restoration after terminal ownership is retained,
   or a nonterminal failure leaves bus mastering, enablement, polling, or the
   retry state inconsistent with its acquisition point.
+* System resume enable failure leaves bus mastering set, remains in D0, loses
+  the cleaned retry image, replaces the PCI error, or a successful retry omits
+  explicit bus-master restoration.
+* RS400 acceleration startup failure returns success and permits later device,
+  debugfs, or ring-test admission with `accel_working` cleared.
 * Unload or remove releases a BO, BAR, DRM device, parent device, or module
   reference after hardware-safe destruction fails.
 * A second probe binds the same terminally retained PCI identity before reboot.

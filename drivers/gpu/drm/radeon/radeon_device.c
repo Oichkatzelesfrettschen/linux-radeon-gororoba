@@ -2541,6 +2541,17 @@ rs4xx_suspend_parked:
 	return r;
 }
 
+static void radeon_rs4xx_system_resume_rollback(struct pci_dev *pdev)
+{
+	/* pci_restore_state may restore PCI_COMMAND_MASTER before enablement
+	 * fails. Save the cleared command register so a later resume retry
+	 * restores a device without bus mastering until enablement succeeds.
+	 */
+	pci_clear_master(pdev);
+	pci_save_state(pdev);
+	pci_set_power_state(pdev, PCI_D3hot);
+}
+
 /*
  * radeon_resume_kms - initiate device resume
  *
@@ -2574,11 +2585,18 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 	if (resume) {
 		pci_set_power_state(pdev, PCI_D0);
 		pci_restore_state(pdev);
-		if (pci_enable_device(pdev)) {
-			radeon_rs4xx_hardware_transition_end(
-				rdev, RADEON_RS4XX_HARDWARE_SUSPENDED);
+		r = pci_enable_device(pdev);
+		if (r) {
+			if (radeon_rs4xx_hardware_target(rdev)) {
+				radeon_rs4xx_system_resume_rollback(pdev);
+				radeon_rs4xx_hardware_transition_end(
+					rdev, RADEON_RS4XX_HARDWARE_SUSPENDED);
+				return r;
+			}
 			return -1;
 		}
+		if (radeon_rs4xx_hardware_target(rdev))
+			pci_set_master(pdev);
 	}
 	/* resume AGP if in use */
 	radeon_agp_resume(rdev);

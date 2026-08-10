@@ -657,8 +657,8 @@ int rs400_init(struct radeon_device *rdev)
 	if (r) {
 		int fini_r;
 
-		/* Somethings want wront with the accel init stop accel */
-		dev_err(rdev->dev, "Disabling GPU acceleration\n");
+		dev_err(rdev->dev,
+			"RS400 acceleration startup failed: %d\n", r);
 		r100_cp_fini(rdev);
 		radeon_wb_fini(rdev);
 		radeon_ib_pool_fini(rdev);
@@ -669,6 +669,7 @@ int rs400_init(struct radeon_device *rdev)
 		}
 		radeon_irq_kms_fini(rdev);
 		rdev->accel_working = false;
+		return r;
 	}
 	return 0;
 }

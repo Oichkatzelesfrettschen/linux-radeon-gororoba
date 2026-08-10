@@ -418,7 +418,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_device.c",
         "radeon_device_init",
-    ): "fb7e859a1d8502aba6877591350c29c1ef6420316d6b73429e6f5c4145955632",
+    ): "9dc4c447b431b6bf354b78504d4ed597dd9b186479b86d62849fa1025ee6df0b",
     (
         "radeon_device.c",
         "radeon_vram_location",
@@ -446,7 +446,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_gart.c",
         "radeon_gart_init",
-    ): "3efae848cc1b40c5236e1ca226c824e89c67d47af310607e01024d5f18c926e6",
+    ): "b1fac546c419634c22f6db61ed43ee31bd51d37dfb5ba371c439a6a5c544133d",
     (
         "r100.c",
         "r100_vram_init_sizes",
@@ -470,7 +470,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_ttm.c",
         "radeon_ttm_debugfs_init",
-    ): "93221ca4be1de9a8c1a07572c10dc47f86365d46d752e5b754e6c642de6437de",
+    ): "c9508058e3fb3eb6600d893030bda618bad3870ab5161933c2f01049e5e883b0",
     (
         "radeon_object.c",
         "radeon_ttm_placement_from_domain",
@@ -494,7 +494,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_gem.c",
         "radeon_gem_object_create",
-    ): "e9290b1846cb58447116400e5aa40baf27dc95691249eb87c10bc7b5e6181989",
+    ): "17693c70cd86042ee45274528d3c51753effde1fe17b919133eb2df3704e535c",
     (
         "radeon_gem.c",
         "radeon_gem_info_ioctl",
@@ -502,23 +502,23 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_gem.c",
         "radeon_debugfs_gem_info_show",
-    ): "5e4f70df5ace40929431124da928dba0da2bc25e6794e995a61c47eff439553e",
+    ): "547888eb5d02f9f91583fffa58fcb594c133c0ba9291528189ce13034eb3125e",
     (
         "radeon_kms.c",
         "radeon_info_ioctl",
-    ): "a78028871b0a4c9eb3dc1587453e0735a54f02fe4d86efbebb6bb4eaedca3815",
+    ): "9ad1d905a47f0feafa5ee908e0e7422138201e72caa5e8175abb8e86436bb3f7",
     (
         "rs400.c",
         "rs400_init",
-    ): "3c7083e4e68795a93a88589f20784b55c7b255c02e8f547593af79ac85c54b67",
+    ): "435f4ce1fef7c07327d5cb31e1d2df691afa43b63639980bb7b1529d8a7caf3e",
     (
         "rs400.c",
         "rs400_startup",
-    ): "0a9421306e437ea32ec59efe779d07e590b5ef8f4a99dccbac60faa0ca21724f",
+    ): "504684fe5e5c9411f891a288d9efc1d7bf264cc13c5d833a39ef3281ace17a23",
     (
         "rs400.c",
         "rs400_gart_fini",
-    ): "7b686ffb63018dab43638b8a70bb750bf48732a6106651de2e80d7e9e589c73f",
+    ): "f9d8b4f3a12a772eb74281fa9c8551ec59ee9d1c9f469ddebfa5e364528d5a6b",
     (
         "radeon_object.c",
         "radeon_bo_init",
@@ -534,7 +534,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_gem.c",
         "radeon_gem_debugfs_init",
-    ): "758acf54e8d009ca23239d05dc4a6d40fa1c43bdd9ce646887fcc9d9494fde43",
+    ): "a4fe051f3c7185591d9bdb68cad550fac9e220344f0d96e5e9d5c8808fba3e84",
     (
         "radeon_ttm.c",
         "radeon_ttm_vram_open",
@@ -542,7 +542,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_ttm.c",
         "radeon_ttm_vram_read",
-    ): "d0bda720be584bcb1d846f53580a3ee3f958f75635434d1b3464b9d76b23be9f",
+    ): "8ccd14fd685d6429be1de659f2efa42f24be326555232caa01f3505c1cab6239",
     (
         "radeon_ttm.c",
         "radeon_ttm_gtt_open",
@@ -550,7 +550,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_ttm.c",
         "radeon_ttm_gtt_read",
-    ): "0983c4f0b9a4de47c03f315ffa3863d02fe3fe9e83ab48a961b27107b9dde0d4",
+    ): "a3a22e664d23a465e1bb42805fe6147bbd84541612641c4adce1472345bbc8ec",
 }
 EXPECTED_DEBUGFS_CONDITIONAL_FUNCTIONS = {
     ("radeon_gem.c", "radeon_debugfs_gem_info_show"),
