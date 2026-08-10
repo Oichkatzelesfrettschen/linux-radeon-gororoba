@@ -25,35 +25,42 @@ source for blame and commit archaeology.
 
 Packaging targets Arch and CachyOS alone.
 
-## Transitional authority
+## Source, package, and loaded deployment authority
 
-`linux-radeon-gororoba` is the canonical modified-source authority from
-`radeon-unified-0.3-pkgrel91-source-equivalent` onward.
+`linux-radeon-gororoba` is the canonical modified source authority from
+`radeon-unified-0.3-pkgrel91-source-equivalent` onward. `radeon-custom` owns
+the source pin, package, DKMS lifecycle, and deployment policy.
 
-`radeon-custom` has completed the signed source-pin cutover and remains the
-deployment and packaging authority. Its active 0.7-1 packages pin this
-repository's signed profiled-source checkpoint (tag
-`radeon-unified-0.7-profiled-source`, tag object
-7f500d682aad600ca443c7f26e913b6b4034c834, peeled source commit
-293a4ae3fe82cd03585ef3157e82b0b59b641b47, and driver tree
-d57a22ad5356637d7075cb2aba83e22af71f7bfb) across split production capability,
-development capability, and RS482 board policy. The package attestation records
-signed artifacts and successful dual-kernel DKMS lifecycles. That attestation
-itself records target contact, installation, module load, and hardware operation
-as NOT RUN for 0.7-1. A later read-only live cross-check establishes deployment
-identity only. The bound PCI device resolves to `/sys/module/radeon`, and the
-loaded module `srcversion` `A7F72BE636B52D7EED42415` matches the on-disk DKMS
-0.7 module. The on-disk metadata pins source commit
-`293a4ae3fe82cd03585ef3157e82b0b59b641b47` and driver tree
-`d57a22ad5356637d7075cb2aba83e22af71f7bfb`. This cross-check does not amend the
-attestation or establish retained behavioral acceptance. Later repository
-commits may supersede source mechanisms without superseding the signed
-deployment pin; they remain unshipped until radeon-custom records a new source
-pin, package attestation, and module lifecycle. The retained 0.6-1 parked-device
-bundle remains the last retained parked-behavior silicon verdict; it is not a
-general current runtime authority. The signed 0.5-1 and 0.4-3 sets remain deeper
-rollback authorities, and the 0.3-96 legacy-equivalent acceptance remains the
-deeper retained baseline.
+The active `radeon-custom` recipe is 0.8-1. It pins the signed
+`radeon-unified-0.8-profiled-source` tag object
+`c3745d24ea7481ec56c5c0b1aa397be4b8788b72`, peeled source commit
+`2433cbd69cd99d1dd002447bb4d481ed66141562`, and driver tree
+`e3432f8dda41e2fcb93fad23a0f3825541c15e93`. Its package gates build and
+verify the split package set, and its target kernel gate compiles the verified
+production package on RS482. The repository carries no 0.8-1 signed release
+attestation or loaded module identity, so 0.8-1 remains package and target
+compile evidence rather than loaded deployment authority.
+
+The live RS482 target records installed production and board policy package
+version 0.7-1. The retained read only identity bundle joins PCI `1002:5974` to
+the loaded `radeon` module, installed DKMS file, package version, and source
+pin. It does not bind the installed files to the signed release archive bytes.
+The loaded module carries srcversion `A7F72BE636B52D7EED42415`, GNU build ID
+`a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, compressed module SHA256
+`6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`,
+source commit `293a4ae3fe82cd03585ef3157e82b0b59b641b47`, and driver tree
+`d57a22ad5356637d7075cb2aba83e22af71f7bfb`. The module exposes the `prod`
+profile and zero development parameters. Steinmarder retains this evidence at
+`src/re/r300/results/cachyos-vostro1000-rs482-radeon-unified-0.7-1-production-identity/`.
+
+The identity capture observes successful boot ring and indirect buffer tests.
+It runs no controlled graphics workload and establishes no conformance, reset,
+register, performance, or silicon safety verdict. The retained 0.6-1 parked
+device bundle remains the last parked behavior silicon verdict. The signed
+0.6-1, 0.5-1, and 0.4-3 package sets remain rollback authorities, and the
+0.3-96 legacy equivalent acceptance remains the deeper retained baseline.
+Source commits after the 0.8 pin remain unshipped until `radeon-custom`
+advances its source pin and records a new release and loaded module identity.
 
 The retained parked-device silicon verdict covers the older 0.6-1 module. An
 attended RS482 park latched `gpu_parked`; fresh native GEM creates, USERPTR
@@ -80,6 +87,92 @@ acceptance the legacy tree expressed only as a bit inside a generated header.
 
 A clean checkout therefore builds every generated header from source, and no
 tracked file is a build output.
+
+## Radeon driver source map
+
+`scripts/capture_radeon_driver_source_map.py` exports a named commit through
+Git, applies the tracked source closure, and writes a sealed deterministic
+source intelligence bundle outside the repository. The bundle retains all 222
+source inputs, the complete C and header denominator, Git object proofs, GNU
+Global definitions and references with stable database dumps, ctags, the
+portable cscope cross reference, GNU cflow indexes, partitioned cflow trees,
+declared and extracted callback bindings, bounded queries, contextual path
+witnesses, complexity measurements, coefficient vectors, linked profile
+modules, canonical profile symbol deltas, command metadata, analyzer
+diagnostics, and a complete SHA-256 ledger. The directory remains an ordinary
+mutable filesystem object. The verifier detects changes through an independently
+derived file denominator, the ledger, and offline artifact replay.
+
+The optional kernel roots add preprocessed views for every declared kernel and
+profile lane. Each root requires a matching toolchain bin directory. The
+parent LLVM prefix has a tracked manifest for all 7,174 descendants, including
+355 directories, 6,792 regular files, 27 symlinks, and the 295 entry Clang
+resource tree. Before execution, the capture verifies the exact path set,
+content identities, symlink resolution, ownership, effective writability,
+special mode bits, and extended attributes. The 19 row semantic execution
+closure then binds all nine LLVM commands, eight local libraries, and two
+support targets to that finite tree.
+
+Kbuild runs through `/usr/bin/make`, an absolute `LLVM` bin prefix,
+`/usr/bin/sh`, and `PATH=/usr/bin:/bin`. The capture retains that command and
+environment denominator, compiles the module, emits the selected translation
+units, and normalizes temporary, toolchain, and kernel root paths. A second
+tree scan compares against the same in-memory entries admitted before the
+build. This contract identifies the LLVM prefix. It does not trace every host
+helper process that Kbuild starts.
+
+```sh
+source_commit=$(git rev-parse HEAD)
+output="/var/tmp/linux-radeon-gororoba-source-intelligence/radeon-driver-source-map-control-admission/${source_commit}"
+python3 scripts/capture_radeon_driver_source_map.py \
+  --treeish "$source_commit" \
+  --output "$output" \
+  --kernel-build-root /opt/gororoba/kernel-builds/6.18.38-2-cachyos-lts \
+  --kernel-build-root /opt/gororoba/kernel-builds/7.1.4-1-cachyos \
+  --kernel-toolchain-bin \
+    6.18.38-2-cachyos-lts=/opt/gororoba/toolchains/llvm-22.1.6/usr/bin \
+  --kernel-toolchain-bin \
+    7.1.4-1-cachyos=/opt/gororoba/toolchains/llvm-22.1.8/usr/bin
+python3 scripts/capture_radeon_driver_source_map.py \
+  --verify "$output" \
+  --require-all-kernel-lanes
+```
+
+The union of `radeon-driver-lexical-map.tsv`,
+`radeon-driver-declared-bindings.tsv`, and `analysis/call-candidates.tsv` is a
+candidate research graph. It never proves runtime reachability, build-profile
+inclusion, preprocessor activation, callback invocation, framework ordering,
+hardware behavior, or completeness of indirect bindings. Preprocessed views
+resolve named build lanes without changing that boundary. Contextual path
+witnesses preserve ordered source edges, required conditions, and typed
+callback or debugfs event joins without collapsing registration time into later
+dispatch. `analysis/hazard-guard-identifier-census.tsv` remains a lexical
+census. The mutation calibrated semantic checkers own their declared primary
+source contracts. The reset checkers pin exact lexical intervals, reject a
+finite opaque control set, and assume other intervening calls return. They do
+not prove a compiler control flow graph, included header macro state, or
+runtime execution.
+
+`docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
+the complete reference attestation, the four retained path witnesses, the
+coefficient derivations, the trust boundaries, and the next verification gates.
+
+Two captures compare through normalized tables rather than analyzer database
+bytes:
+
+```sh
+python3 scripts/capture_radeon_driver_source_map.py \
+  --compare "$left_capture" "$right_capture" \
+  --output "$comparison_output"
+```
+
+A source delta uses captures with the same producer commit, policy hashes,
+analyzer identities, kernel roots, and toolchain closures. The comparison
+command verifies each input and seals its normalized output, but it does not
+yet enforce or record that matched-generation precondition. The reference
+comparison in `docs/radeon-driver-source-intelligence.md` proves the input
+identities independently. The retained native bundle and admitted recapture
+supply the same-source producer control.
 
 ## Build profiles
 
