@@ -37,6 +37,13 @@ from unittest import mock
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
 COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
+CURRENT_COMPARISON_SCHEMAS = frozenset((COMPARISON_SCHEMA,))
+RETAINED_CAPTURE_COMPARISON_SCHEMAS = frozenset(
+    (
+        "gororoba-radeon-driver-source-map-comparison-v2",
+        COMPARISON_SCHEMA,
+    )
+)
 LEXICAL_SCHEMA = "radeon-driver-lexical-map-v1"
 DECLARED_BINDING_SCHEMA = "radeon-driver-declared-bindings-v2"
 PATH_WITNESS_SCHEMA = "radeon-driver-contextual-path-witnesses-v2"
@@ -935,7 +942,11 @@ def validate_required_path_witnesses(
     )
 
 
-def load_policy(path: Path) -> Policy:
+def load_policy(
+    path: Path,
+    *,
+    accepted_comparison_schemas: frozenset[str] = CURRENT_COMPARISON_SCHEMAS,
+) -> Policy:
     try:
         content = path.read_bytes()
         content.decode("ascii")
@@ -967,7 +978,10 @@ def load_policy(path: Path) -> Policy:
     capture_schema = string_value(data, "capture_schema", "policy")
     comparison_schema = string_value(data, "comparison_schema", "policy")
     require(capture_schema == CAPTURE_SCHEMA, "policy capture schema differs from the producer")
-    require(comparison_schema == COMPARISON_SCHEMA, "policy comparison schema differs from the producer")
+    require(
+        comparison_schema in accepted_comparison_schemas,
+        "policy comparison schema differs from the producer",
+    )
     source_root = string_value(data, "source_root", "policy")
     require(
         source_root == CANONICAL_SOURCE_ROOT,
@@ -6830,7 +6844,10 @@ def verify_capture(
         "retained source-map policy",
     )
     require(sha256_bytes(policy_content) == manifest["policy_sha256"], "retained source-map policy digest differs")
-    policy = load_policy(policy_path)
+    policy = load_policy(
+        policy_path,
+        accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+    )
     require(policy.capture_schema == manifest["schema"], "retained policy schema differs")
     require(
         manifest["source_file_count"] <= policy.max_source_files
@@ -10406,6 +10423,42 @@ def self_test(repository: Path, policy_path: Path) -> int:
         wrong_schema = temp / "wrong-schema.toml"
         write_text(wrong_schema, live_policy.replace("schema = 1", "schema = 2", 1))
         rejects("policy rejects a foreign schema", lambda: load_policy(wrong_schema))
+        legacy_comparison_policy = temp / "legacy-comparison-policy.toml"
+        write_text(
+            legacy_comparison_policy,
+            live_policy.replace(
+                f'comparison_schema = "{COMPARISON_SCHEMA}"',
+                'comparison_schema = "gororoba-radeon-driver-source-map-comparison-v2"',
+                1,
+            ),
+        )
+        rejects(
+            "live policy rejects legacy comparison production",
+            lambda: load_policy(legacy_comparison_policy),
+        )
+        accepts(
+            "retained capture policy accepts comparison schema v2",
+            lambda: load_policy(
+                legacy_comparison_policy,
+                accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+            ),
+        )
+        unsupported_comparison_policy = temp / "unsupported-comparison-policy.toml"
+        write_text(
+            unsupported_comparison_policy,
+            live_policy.replace(
+                f'comparison_schema = "{COMPARISON_SCHEMA}"',
+                'comparison_schema = "gororoba-radeon-driver-source-map-comparison-v1"',
+                1,
+            ),
+        )
+        rejects(
+            "retained capture policy rejects comparison schema v1",
+            lambda: load_policy(
+                unsupported_comparison_policy,
+                accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+            ),
+        )
         unknown_key = temp / "unknown-key.toml"
         write_text(unknown_key, live_policy + '\nunknown_policy_key = "rejected"\n')
         rejects("policy rejects an unknown key", lambda: load_policy(unknown_key))
