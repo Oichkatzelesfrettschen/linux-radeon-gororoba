@@ -17,15 +17,21 @@ observation. The contract has four supporting denominators:
   commit, Git blob, and content SHA-256 identities to the projections
   preserved by this contract.
 
-The reviewed source-policy input is commit
+The reviewed source-policy input is signed annotated tag
+`rs482-vram-gtt-capacity-source-policy-authority`, tag object
+`38c49adcba27a5ddac82b9978683227b91cf3c46`, which peels to commit
 `6667d7561617debdc62cf99c62fb47bd67f95043`. It contributes four selector
-rows and 14 contract row identifiers. The integrated policy preserves the
-numeric selector fields from `config_id` through `static_metadata_bytes` for
-all four rows and preserves every input contract row identifier. It adds
+rows and 14 contract row identifiers. The verifier binds the tag object,
+peeled commit, exact `100644` tree entries, blob identities, content hashes,
+canonical schemas, row counts, and integrated projections. The integrated
+policy preserves the numeric selector fields from `config_id` through
+`static_metadata_bytes` for all four rows and preserves every input contract
+row identifier. It adds
 `RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE`, expands the source observation
 surface, and corrects the module-global auto state and address-fit relations
 against the current source tree. The input commit is policy authority, not a
-driver C change or a runtime result.
+driver C change or a runtime result. Signature trust remains a repository
+publication property rather than a source or hardware verdict.
 
 This repository owns the source policy and its calibrated verifier. It does
 not change driver C behavior in this batch. It does not produce a hardware
@@ -269,9 +275,11 @@ The minimum allocator capture uses these read-only query surfaces:
 These surfaces do not prove the firmware carveout, payload correctness,
 largest free extent across a concurrent mutation, or end-to-end performance.
 The raw `radeon_vram` and `radeon_gtt` files access mapped payload or backing
-pages. Their bounds do not establish the visible-VRAM, parked, suspended, and
-lifetime contract required by this allocator-only lane, so the exclusion
-ledger keeps them out.
+pages. The VRAM reader writes the MMIO index selector before reading the data
+register. The GTT reader copies present host backing pages and clears ranges
+whose page pointer is absent. Their bounds do not establish the visible-VRAM,
+parked, suspended, and lifetime contract required by this allocator-only lane,
+so the exclusion ledger keeps them out.
 
 ## Research-quality selection method
 
@@ -313,8 +321,8 @@ The work proceeds through explicit gates:
    exclusion rows, ten coefficient rows, two lineage rows, 36 source
    functions, module request, two ioctl bindings, and eight register
    encodings.
-2. The source-map policy closes the request, selector, address-fit, allocator,
-   GART, ioctl, debugfs, and raw-reader structural boundaries. A fresh source
+2. The source-map policy closes the request, selector, address fit, allocator,
+   GART, ioctl, debugfs, and raw reader structural boundaries. A fresh source
    map remains a lexical candidate graph rather than runtime proof.
 3. A read-only exact-target production baseline records the loaded request,
    effective GTT interval, GART state, allocator counters, device identity,

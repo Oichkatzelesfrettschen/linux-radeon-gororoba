@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
@@ -36,7 +37,8 @@ MAX_TSV_BYTES = 256 * 1024
 MAX_TSV_ROWS = 64
 MAX_TSV_LINE_BYTES = 16 * 1024
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
-EXPECTED_SELFTEST_BAD_COUNT = 47
+MAX_GIT_METADATA_BYTES = 64 * 1024
+EXPECTED_SELFTEST_BAD_COUNT = 56
 
 EXPECTED_SELFTEST_ERRORS = {
     "missing-policy-row": "capacity policy denominator differs",
@@ -83,6 +85,15 @@ EXPECTED_SELFTEST_ERRORS = {
     "missing-intake-lineage-row": "capacity source lineage rows differ",
     "missing-intake-policy-row": "capacity intake policy row denominator differs",
     "changed-intake-matrix-projection": ("capacity intake matrix projection differs"),
+    "missing-authority-tag": "authority Git command failed",
+    "wrong-authority-tag-object": "authority tag object identity differs",
+    "wrong-authority-peeled-commit": ("authority tag peels to a different commit"),
+    "wrong-authority-path": "authority tree entry differs",
+    "wrong-authority-mode": "authority tree entry differs",
+    "wrong-authority-blob": "authority tree entry differs",
+    "wrong-authority-content-sha256": "authority content SHA-256 differs",
+    "wrong-authority-row-count": "authority row count differs",
+    "no-git-authority-root": "authority Git command failed",
     "changed-module-default": "exact gartsize declaration identity differs",
     "overridden-module-parameter-declaration": (
         "gartsize declaration overrides protected macros"
@@ -152,6 +163,13 @@ MATRIX_HEADER = (
     "source_status",
     "nonclaim",
 )
+INTAKE_MATRIX_HEADER = MATRIX_HEADER[:11] + (
+    "auto_default_rs482",
+    "model_scope",
+    "effective_capacity_status",
+    "source_status",
+    "nonclaim",
+)
 EXCLUSION_HEADER = (
     "input_class",
     "source_disposition",
@@ -178,6 +196,8 @@ COEFFICIENT_HEADER = (
 )
 LINEAGE_HEADER = (
     "artifact_id",
+    "input_ref",
+    "input_ref_object_sha1",
     "input_commit",
     "input_path",
     "input_blob_sha1",
@@ -193,6 +213,8 @@ LINEAGE_HEADER = (
 )
 
 INTAKE_COMMIT = "6667d7561617debdc62cf99c62fb47bd67f95043"
+INTAKE_TAG = "rs482-vram-gtt-capacity-source-policy-authority"
+INTAKE_TAG_OBJECT = "38c49adcba27a5ddac82b9978683227b91cf3c46"
 INTAKE_POLICY_ROW_IDS = (
     "RS482_GTT_PARAMETER_ADMISSION",
     "RS482_GTT_SIZE_REGISTER_ENCODING",
@@ -267,6 +289,8 @@ INTAKE_MATRIX_PROJECTION = (
 EXPECTED_LINEAGE_ROWS = (
     {
         "artifact_id": "RS482_GTT_SELECTOR_MATRIX",
+        "input_ref": f"refs/tags/{INTAKE_TAG}",
+        "input_ref_object_sha1": INTAKE_TAG_OBJECT,
         "input_commit": INTAKE_COMMIT,
         "input_path": "policy/rs482-gtt-capacity-matrix.tsv",
         "input_blob_sha1": "958c53002ee967ac0d14ad2d3b1f8d38182c543b",
@@ -284,6 +308,8 @@ EXPECTED_LINEAGE_ROWS = (
     },
     {
         "artifact_id": "RS4XX_VRAM_GTT_SOURCE_CONTRACT",
+        "input_ref": f"refs/tags/{INTAKE_TAG}",
+        "input_ref_object_sha1": INTAKE_TAG_OBJECT,
         "input_commit": INTAKE_COMMIT,
         "input_path": "policy/rs4xx-vram-gtt-capacity-contract.tsv",
         "input_blob_sha1": "7e4ee26cdb2294531610db131c3f020d47bf801f",
@@ -556,7 +582,7 @@ EXPECTED_EXCLUSION_ROW_SHA256 = {
     "power-of-two-above-2048MiB": "b019b3bffcd5484499ae0ad99a06b533ef65e6d08380a938c8fd8deba2f824a3",
     "post-probe-gartsize-write": "b38b43b9886925f25f288227668d4866e5b8488a1682518a0079d0f762731904",
     "vramlimit-below-firmware-carveout": "30589553b5facd26f520a55532ef92342aeb21bf6f0336dc80d3494350197178",
-    "raw-radeon-vram-gtt-debugfs": "fdce6825c6ac4b97e979379eee6bca0058fc1202ac6dd1d1c7273051be88d86d",
+    "raw-radeon-vram-gtt-debugfs": "a7644290fedeb6dd8c1d305f6e95cd354a02eae3c4cd74f85740555aeda92e66",
 }
 EXPECTED_GART_PARAMETER_DECLARATION_SHA256 = (
     "1a635a55c515857d37bdada24a462c370c39145c46002ea61c5aae61fea644c5"
@@ -631,31 +657,34 @@ def read_bounded_file(path: Path, maximum_size: int) -> bytes:
         os.close(descriptor)
 
 
-def read_tsv(path: Path, header: tuple[str, ...]) -> list[dict[str, str]]:
-    data = read_bounded_file(path, MAX_TSV_BYTES)
+def parse_tsv_bytes(
+    data: bytes,
+    source_name: str,
+    header: tuple[str, ...],
+) -> list[dict[str, str]]:
     try:
         text = data.decode("ascii")
     except UnicodeDecodeError as error:
-        raise CapacityError(f"{path}: TSV is not ASCII") from error
+        raise CapacityError(f"{source_name}: TSV is not ASCII") from error
     if not data.endswith(b"\n") or b"\r" in data:
-        raise CapacityError(f"{path}: TSV must use canonical LF termination")
+        raise CapacityError(f"{source_name}: TSV must use canonical LF termination")
     lines = text[:-1].split("\n")
     if any(not line for line in lines):
-        raise CapacityError(f"{path}: TSV contains an empty physical row")
+        raise CapacityError(f"{source_name}: TSV contains an empty physical row")
     if any(len(line.encode("ascii")) > MAX_TSV_LINE_BYTES for line in lines):
-        raise CapacityError(f"{path}: TSV line exceeds the byte ceiling")
+        raise CapacityError(f"{source_name}: TSV line exceeds the byte ceiling")
     fields = tuple(lines[0].split("\t"))
     if fields != header or len(fields) != len(set(fields)):
-        raise CapacityError(f"{path}: unexpected or duplicate schema columns")
+        raise CapacityError(f"{source_name}: unexpected or duplicate schema columns")
     if not 1 <= len(lines) - 1 <= MAX_TSV_ROWS:
-        raise CapacityError(f"{path}: TSV row count exceeds the finite bound")
+        raise CapacityError(f"{source_name}: TSV row count exceeds the finite bound")
     rows: list[dict[str, str]] = []
     for line_number, line in enumerate(lines[1:], 2):
         values = line.split("\t")
         if len(values) != len(header):
-            raise CapacityError(f"{path}:{line_number}: TSV field count differs")
+            raise CapacityError(f"{source_name}:{line_number}: TSV field count differs")
         if any(not value.strip() for value in values):
-            raise CapacityError(f"{path}:{line_number}: incomplete row")
+            raise CapacityError(f"{source_name}:{line_number}: incomplete row")
         rows.append(dict(zip(header, values, strict=True)))
     canonical = (
         "\t".join(header)
@@ -664,10 +693,14 @@ def read_tsv(path: Path, header: tuple[str, ...]) -> list[dict[str, str]]:
         + "\n"
     ).encode("ascii")
     if data != canonical:
-        raise CapacityError(f"{path}: TSV serialization is not canonical")
+        raise CapacityError(f"{source_name}: TSV serialization is not canonical")
     if not rows:
-        raise CapacityError(f"{path}: empty denominator")
+        raise CapacityError(f"{source_name}: empty denominator")
     return rows
+
+
+def read_tsv(path: Path, header: tuple[str, ...]) -> list[dict[str, str]]:
+    return parse_tsv_bytes(read_bounded_file(path, MAX_TSV_BYTES), str(path), header)
 
 
 def read_ascii_source(path: Path) -> str:
@@ -795,7 +828,118 @@ def validate_matrix_rows(matrix_rows: list[dict[str, str]]) -> None:
             raise CapacityError(f"{gtt_mib} MiB matrix fields differ: {differing}")
 
 
+def git_output(
+    repository: Path,
+    *arguments: str,
+    maximum_size: int = MAX_GIT_METADATA_BYTES,
+) -> bytes:
+    environment = {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=False,
+            capture_output=True,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise CapacityError(
+            f"authority Git command cannot run: git {' '.join(arguments)}: {error}"
+        ) from error
+    if result.returncode != 0:
+        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
+        raise CapacityError(
+            f"authority Git command failed: git {' '.join(arguments)}: {diagnostic}"
+        )
+    if result.stderr:
+        diagnostic = result.stderr.decode("utf-8", errors="replace").strip()
+        raise CapacityError(f"authority Git command emitted a diagnostic: {diagnostic}")
+    if len(result.stdout) > maximum_size:
+        raise CapacityError(
+            f"authority Git output exceeds {maximum_size} bytes: "
+            f"git {' '.join(arguments)}"
+        )
+    return result.stdout
+
+
+def resolve_authority_commit(
+    repository: Path,
+    tag_name: str = INTAKE_TAG,
+    expected_tag_object: str = INTAKE_TAG_OBJECT,
+    expected_commit: str = INTAKE_COMMIT,
+) -> str:
+    tag_reference = f"refs/tags/{tag_name}"
+    tag_object = git_output(repository, "rev-parse", "--verify", tag_reference)
+    try:
+        tag_object_text = tag_object.decode("ascii").strip()
+    except UnicodeDecodeError as error:
+        raise CapacityError("authority tag object identity is not ASCII") from error
+    if tag_object_text != expected_tag_object:
+        raise CapacityError("authority tag object identity differs")
+    if git_output(repository, "cat-file", "-t", tag_object_text) != b"tag\n":
+        raise CapacityError("authority reference is not an annotated tag")
+    peeled = git_output(
+        repository, "rev-parse", "--verify", f"{tag_reference}^{{commit}}"
+    )
+    try:
+        commit = peeled.decode("ascii").strip()
+    except UnicodeDecodeError as error:
+        raise CapacityError("authority commit identity is not ASCII") from error
+    if commit != expected_commit:
+        raise CapacityError("authority tag peels to a different commit")
+    if git_output(repository, "cat-file", "-t", commit) != b"commit\n":
+        raise CapacityError("authority object is not a commit")
+    return commit
+
+
+def read_authority_artifact(
+    repository: Path,
+    lineage_row: dict[str, str],
+    header: tuple[str, ...],
+    expected_mode: str = "100644",
+) -> list[dict[str, str]]:
+    commit = lineage_row["input_commit"]
+    path = lineage_row["input_path"]
+    blob = lineage_row["input_blob_sha1"]
+    expected_tree_row = f"{expected_mode} blob {blob}\t{path}\n".encode("ascii")
+    tree_row = git_output(repository, "ls-tree", commit, "--", path)
+    if tree_row != expected_tree_row:
+        raise CapacityError(f"authority tree entry differs: {path}")
+
+    object_specification = f"{commit}:{path}"
+    raw_size = git_output(repository, "cat-file", "-s", object_specification)
+    try:
+        size = int(raw_size.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError) as error:
+        raise CapacityError(f"authority blob size is invalid: {path}") from error
+    if not 0 < size <= MAX_TSV_BYTES:
+        raise CapacityError(f"authority blob size exceeds the finite bound: {path}")
+    content = git_output(
+        repository,
+        "cat-file",
+        "blob",
+        object_specification,
+        maximum_size=MAX_TSV_BYTES,
+    )
+    if len(content) != size:
+        raise CapacityError(f"authority blob length differs: {path}")
+    if hashlib.sha256(content).hexdigest() != lineage_row["input_content_sha256"]:
+        raise CapacityError(f"authority content SHA-256 differs: {path}")
+    rows = parse_tsv_bytes(content, f"{commit}:{path}", header)
+    if len(rows) != int(lineage_row["input_row_count"]):
+        raise CapacityError(f"authority row count differs: {path}")
+    return rows
+
+
 def validate_lineage_rows(
+    root: Path,
     lineage_rows: list[dict[str, str]],
     policy_rows: list[dict[str, str]],
     matrix_rows: list[dict[str, str]],
@@ -804,18 +948,42 @@ def validate_lineage_rows(
     if tuple(lineage_rows) != EXPECTED_LINEAGE_ROWS:
         raise CapacityError("capacity source lineage rows differ")
 
+    commit = resolve_authority_commit(root)
+    if any(row["input_commit"] != commit for row in lineage_rows):
+        raise CapacityError("capacity lineage commit differs from the authority tag")
+    authority_matrix_rows = read_authority_artifact(
+        root,
+        lineage_rows[0],
+        INTAKE_MATRIX_HEADER,
+    )
+    authority_policy_rows = read_authority_artifact(
+        root,
+        lineage_rows[1],
+        POLICY_HEADER,
+    )
+
+    authority_policy_ids = tuple(row["row_id"] for row in authority_policy_rows)
+    if authority_policy_ids != INTAKE_POLICY_ROW_IDS:
+        raise CapacityError("authority policy row denominator differs")
+    authority_matrix_projection = tuple(
+        tuple(row[field] for field in INTAKE_MATRIX_FIELDS)
+        for row in authority_matrix_rows
+    )
+    if authority_matrix_projection != INTAKE_MATRIX_PROJECTION:
+        raise CapacityError("authority matrix projection differs")
+
     retained_policy_ids = tuple(
         row["row_id"]
         for row in policy_rows
         if row["row_id"] != "RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE"
     )
-    if retained_policy_ids != INTAKE_POLICY_ROW_IDS:
+    if retained_policy_ids != authority_policy_ids:
         raise CapacityError("capacity intake policy row denominator differs")
 
     matrix_projection = tuple(
         tuple(row[field] for field in INTAKE_MATRIX_FIELDS) for row in matrix_rows
     )
-    if matrix_projection != INTAKE_MATRIX_PROJECTION:
+    if matrix_projection != authority_matrix_projection:
         raise CapacityError("capacity intake matrix projection differs")
 
 
@@ -1294,7 +1462,7 @@ def check_tree(root: Path) -> None:
     validate_matrix_rows(matrix_rows)
     validate_exclusion_rows(exclusion_rows)
     validate_coefficient_rows(coefficient_rows)
-    validate_lineage_rows(lineage_rows, policy_rows, matrix_rows)
+    validate_lineage_rows(root, lineage_rows, policy_rows, matrix_rows)
     validate_source(root)
 
 
@@ -1319,6 +1487,64 @@ def raw_function_text(source: str, name: str) -> str:
     raise CapacityError(f"selftest function has no closing brace: {name}")
 
 
+def authority_mutations(
+    root: Path,
+    lineage_rows: list[dict[str, str]],
+) -> list[tuple[str, Callable[[], None]]]:
+    matrix_lineage = lineage_rows[0]
+    wrong_path = copy.deepcopy(matrix_lineage)
+    wrong_path["input_path"] = "policy/missing-capacity-authority.tsv"
+    wrong_blob = copy.deepcopy(matrix_lineage)
+    wrong_blob["input_blob_sha1"] = "0" * 40
+    wrong_content = copy.deepcopy(matrix_lineage)
+    wrong_content["input_content_sha256"] = "0" * 64
+    wrong_count = copy.deepcopy(matrix_lineage)
+    wrong_count["input_row_count"] = "5"
+    return [
+        (
+            "missing-authority-tag",
+            lambda: resolve_authority_commit(root, tag_name=f"{INTAKE_TAG}-missing"),
+        ),
+        (
+            "wrong-authority-tag-object",
+            lambda: resolve_authority_commit(root, expected_tag_object="0" * 40),
+        ),
+        (
+            "wrong-authority-peeled-commit",
+            lambda: resolve_authority_commit(root, expected_commit="0" * 40),
+        ),
+        (
+            "wrong-authority-path",
+            lambda: read_authority_artifact(root, wrong_path, INTAKE_MATRIX_HEADER),
+        ),
+        (
+            "wrong-authority-mode",
+            lambda: read_authority_artifact(
+                root,
+                matrix_lineage,
+                INTAKE_MATRIX_HEADER,
+                expected_mode="100755",
+            ),
+        ),
+        (
+            "wrong-authority-blob",
+            lambda: read_authority_artifact(root, wrong_blob, INTAKE_MATRIX_HEADER),
+        ),
+        (
+            "wrong-authority-content-sha256",
+            lambda: read_authority_artifact(
+                root,
+                wrong_content,
+                INTAKE_MATRIX_HEADER,
+            ),
+        ),
+        (
+            "wrong-authority-row-count",
+            lambda: read_authority_artifact(root, wrong_count, INTAKE_MATRIX_HEADER),
+        ),
+    ]
+
+
 def selftest(root: Path) -> None:
     policy_rows = read_tsv(root / POLICY, POLICY_HEADER)
     matrix_rows = read_tsv(root / MATRIX, MATRIX_HEADER)
@@ -1329,7 +1555,7 @@ def selftest(root: Path) -> None:
     validate_matrix_rows(matrix_rows)
     validate_exclusion_rows(exclusion_rows)
     validate_coefficient_rows(coefficient_rows)
-    validate_lineage_rows(lineage_rows, policy_rows, matrix_rows)
+    validate_lineage_rows(root, lineage_rows, policy_rows, matrix_rows)
     validate_source(root)
 
     mutations: list[tuple[str, Callable[[], None]]] = []
@@ -1451,6 +1677,7 @@ def selftest(root: Path) -> None:
         (
             "changed-intake-commit",
             lambda: validate_lineage_rows(
+                root,
                 changed_lineage_commit,
                 policy_rows,
                 matrix_rows,
@@ -1463,6 +1690,7 @@ def selftest(root: Path) -> None:
         (
             "changed-intake-blob",
             lambda: validate_lineage_rows(
+                root,
                 changed_lineage_blob,
                 policy_rows,
                 matrix_rows,
@@ -1475,6 +1703,7 @@ def selftest(root: Path) -> None:
         (
             "changed-intake-content-sha256",
             lambda: validate_lineage_rows(
+                root,
                 changed_lineage_content,
                 policy_rows,
                 matrix_rows,
@@ -1487,6 +1716,7 @@ def selftest(root: Path) -> None:
         (
             "changed-intake-preserved-count",
             lambda: validate_lineage_rows(
+                root,
                 changed_preserved_count,
                 policy_rows,
                 matrix_rows,
@@ -1497,6 +1727,7 @@ def selftest(root: Path) -> None:
         (
             "missing-intake-lineage-row",
             lambda: validate_lineage_rows(
+                root,
                 lineage_rows[:-1],
                 policy_rows,
                 matrix_rows,
@@ -1510,6 +1741,7 @@ def selftest(root: Path) -> None:
         (
             "missing-intake-policy-row",
             lambda: validate_lineage_rows(
+                root,
                 lineage_rows,
                 missing_intake_policy,
                 matrix_rows,
@@ -1522,12 +1754,14 @@ def selftest(root: Path) -> None:
         (
             "changed-intake-matrix-projection",
             lambda: validate_lineage_rows(
+                root,
                 lineage_rows,
                 policy_rows,
                 changed_intake_matrix,
             ),
         )
     )
+    mutations.extend(authority_mutations(root, lineage_rows))
 
     run_capacity_mutation_matrix(root, mutations)
 
@@ -1783,6 +2017,12 @@ def run_capacity_mutation_matrix(
             (
                 "symlink-input",
                 lambda: validate_matrix_rows(read_tsv(symlink_path, MATRIX_HEADER)),
+            )
+        )
+        mutations.append(
+            (
+                "no-git-authority-root",
+                lambda: resolve_authority_commit(temporary_root),
             )
         )
 
