@@ -3166,10 +3166,18 @@ def policy_root_symbols(policy: Policy) -> list[str]:
 def cscope_flat_source_denominator(
     entries: list[SourceEntry],
 ) -> tuple[str, list[str]]:
+    """Return the flat .c basenames cscope indexes under the sandbox.
+
+    Headers stay in the broader analyzer denominator for other tools. Cscope
+    under bwrap corrupts caller ownership once the combined C and header
+    corpus crosses a size threshold observed on this tree, so the sandbox
+    indexes translation units only.
+    """
+
     analyzer_paths = sorted(
         entry.path
         for entry in entries
-        if entry.source_class in {"c", "header"}
+        if entry.source_class == "c"
     )
     require(analyzer_paths, "cscope source denominator is empty")
     source_parent = Path(analyzer_paths[0]).parent.as_posix()
