@@ -68,12 +68,8 @@ GUARDS = [
 PARKED_GUARD = re.compile(r"\bif\s*\(\s*READ_ONCE\s*\(\s*rdev->gpu_parked\s*\)\s*\)")
 READ_LOCK = re.compile(r"\bdown_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;")
 READ_UNLOCK = re.compile(r"\bup_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;")
-DEVICE_UNLOCK = re.compile(
-    r"\bradeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;"
-)
-ACCESS_END = re.compile(
-    r"\bradeon_rs4xx_hardware_access_end\s*\(\s*rdev\s*\)\s*;"
-)
+DEVICE_UNLOCK = re.compile(r"\bradeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;")
+ACCESS_END = re.compile(r"\bradeon_rs4xx_hardware_access_end\s*\(\s*rdev\s*\)\s*;")
 RESET_TRANSACTION = re.compile(
     r"\{\s*"
     r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
@@ -2162,7 +2158,9 @@ def check_projected_wait_idle(body: str) -> None:
         < final_return.start()
     ):
         raise GuardError("wait-idle-flush projected transaction order differs")
-    if re.search(r"\breturn\b", body[admission_failure.statement_end : release.start()]):
+    if re.search(
+        r"\breturn\b", body[admission_failure.statement_end : release.start()]
+    ):
         raise GuardError("wait-idle-flush admitted region returns before release")
     if re.search(r"\bgoto\b", body[wait.start() : release.end()]):
         raise GuardError("wait-idle-flush projected transaction contains goto")
@@ -2245,7 +2243,9 @@ def check_projected_dumb_create(body: str) -> None:
         <= handle.start()
     ):
         raise GuardError("dumb-create projected transaction order differs")
-    if re.search(r"\breturn\b", body[admission_failure.statement_end : release.start()]):
+    if re.search(
+        r"\breturn\b", body[admission_failure.statement_end : release.start()]
+    ):
         raise GuardError("dumb-create admitted region returns before release")
     if re.search(r"\bgoto\b", body[admission.start() : release.end()]):
         raise GuardError("dumb-create projected transaction contains goto")
@@ -4534,9 +4534,7 @@ def project_command_submission_fixture(source: str) -> str:
 
     projected = source.replace(
         "\tdown_read(&rdev->exclusive_lock);",
-        "\tr = radeon_device_lock_hardware(rdev);\n"
-        "\tif (r)\n"
-        "\t\treturn r;",
+        "\tr = radeon_device_lock_hardware(rdev);\n\tif (r)\n\t\treturn r;",
         1,
     )
     projected = projected.replace(
@@ -4968,14 +4966,10 @@ def selftest(tmp: Path) -> int:
             )
             check_projected_command_submission(projected_body)
         except GuardError:
-            print(
-                "selftest known-bad rejected: projected command-submission "
-                f"{name}"
-            )
+            print(f"selftest known-bad rejected: projected command-submission {name}")
         else:
             print(
-                "selftest known-bad ACCEPTED: projected command-submission "
-                f"{name}",
+                f"selftest known-bad ACCEPTED: projected command-submission {name}",
                 file=sys.stderr,
             )
             failures += 1

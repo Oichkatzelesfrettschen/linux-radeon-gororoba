@@ -360,9 +360,7 @@ def get_function(root: Path, path: Path, name: str) -> SourceFunction:
         if function.name == name
     ]
     if len(matches) != 1:
-        raise GuardError(
-            f"{path}:{name}: expected one function, found {len(matches)}"
-        )
+        raise GuardError(f"{path}:{name}: expected one function, found {len(matches)}")
     return matches[0]
 
 
@@ -399,12 +397,24 @@ def expected_call_sites() -> dict[tuple[Path, str, str], int]:
         expected[(root.path, root.function, TRANSACTION_END)] = root.end_count
 
     helper_calls = {
-        (SUBTREE / "radeon_device.c", "radeon_rs4xx_hardware_transaction_wait_begin", TRANSACTION_BEGIN): 1,
-        (SUBTREE / "radeon_device.c", "radeon_rs4xx_hardware_transaction_try_begin", TRANSACTION_BEGIN): 1,
+        (
+            SUBTREE / "radeon_device.c",
+            "radeon_rs4xx_hardware_transaction_wait_begin",
+            TRANSACTION_BEGIN,
+        ): 1,
+        (
+            SUBTREE / "radeon_device.c",
+            "radeon_rs4xx_hardware_transaction_try_begin",
+            TRANSACTION_BEGIN,
+        ): 1,
         (SUBTREE / "radeon.h", "radeon_device_lock_hardware", TRANSACTION_BEGIN): 1,
         (SUBTREE / "radeon.h", "radeon_device_lock_hardware", TRANSACTION_END): 1,
         (SUBTREE / "radeon.h", "radeon_device_unlock_hardware", TRANSACTION_END): 1,
-        (SUBTREE / "radeon.h", "radeon_device_trylock_hardware", TRANSACTION_TRY_BEGIN): 1,
+        (
+            SUBTREE / "radeon.h",
+            "radeon_device_trylock_hardware",
+            TRANSACTION_TRY_BEGIN,
+        ): 1,
         (SUBTREE / "radeon.h", "radeon_device_trylock_hardware", TRANSACTION_END): 2,
     }
     for key, count in helper_calls.items():
@@ -479,9 +489,7 @@ def check_call_denominator(root: Path) -> None:
         missing = sorted(set(expected) - set(actual), key=str)
         extra = sorted(set(actual) - set(expected), key=str)
         changed = sorted(
-            key
-            for key in set(expected) & set(actual)
-            if expected[key] != actual[key]
+            key for key in set(expected) & set(actual) if expected[key] != actual[key]
         )
         details = []
         if missing:
@@ -490,8 +498,7 @@ def check_call_denominator(root: Path) -> None:
             details.append(f"extra {extra}")
         if changed:
             details.append(
-                "counts "
-                + str([(key, expected[key], actual[key]) for key in changed])
+                "counts " + str([(key, expected[key], actual[key]) for key in changed])
             )
         raise GuardError("transaction call denominator differs: " + "; ".join(details))
 
@@ -509,9 +516,7 @@ def check_latch_call_denominator(root: Path) -> None:
         missing = sorted(set(expected) - set(actual), key=str)
         extra = sorted(set(actual) - set(expected), key=str)
         changed = sorted(
-            key
-            for key in set(expected) & set(actual)
-            if expected[key] != actual[key]
+            key for key in set(expected) & set(actual) if expected[key] != actual[key]
         )
         details = []
         if missing:
@@ -520,8 +525,7 @@ def check_latch_call_denominator(root: Path) -> None:
             details.append(f"extra {extra}")
         if changed:
             details.append(
-                "counts "
-                + str([(key, expected[key], actual[key]) for key in changed])
+                "counts " + str([(key, expected[key], actual[key]) for key in changed])
             )
         raise GuardError("parked-latch call denominator differs: " + "; ".join(details))
 
@@ -539,9 +543,7 @@ def check_refusal_latch_call_denominator(root: Path) -> None:
         missing = sorted(set(expected) - set(actual), key=str)
         extra = sorted(set(actual) - set(expected), key=str)
         changed = sorted(
-            key
-            for key in set(expected) & set(actual)
-            if expected[key] != actual[key]
+            key for key in set(expected) & set(actual) if expected[key] != actual[key]
         )
         details = []
         if missing:
@@ -550,8 +552,7 @@ def check_refusal_latch_call_denominator(root: Path) -> None:
             details.append(f"extra {extra}")
         if changed:
             details.append(
-                "counts "
-                + str([(key, expected[key], actual[key]) for key in changed])
+                "counts " + str([(key, expected[key], actual[key]) for key in changed])
             )
         raise GuardError(
             "teardown refusal latch call denominator differs: " + "; ".join(details)
@@ -572,9 +573,7 @@ def check_reader_call_denominator(root: Path) -> None:
         missing = sorted(set(expected) - set(actual), key=str)
         extra = sorted(set(actual) - set(expected), key=str)
         changed = sorted(
-            key
-            for key in set(expected) & set(actual)
-            if expected[key] != actual[key]
+            key for key in set(expected) & set(actual) if expected[key] != actual[key]
         )
         details = []
         if missing:
@@ -583,8 +582,7 @@ def check_reader_call_denominator(root: Path) -> None:
             details.append(f"extra {extra}")
         if changed:
             details.append(
-                "counts "
-                + str([(key, expected[key], actual[key]) for key in changed])
+                "counts " + str([(key, expected[key], actual[key]) for key in changed])
             )
         raise GuardError("reader-core call denominator differs: " + "; ".join(details))
 
@@ -658,9 +656,7 @@ def check_bo_create(root: Path) -> None:
 def check_bo_destroy(root: Path) -> None:
     """Keep delayed destruction, refusal retention, and final counting ordered."""
 
-    function = get_function(
-        root, SUBTREE / "radeon_object.c", "radeon_ttm_bo_destroy"
-    )
+    function = get_function(root, SUBTREE / "radeon_object.c", "radeon_ttm_bo_destroy")
     text = body_text(function)
     wait_begin = token_position(function, TRANSACTION_WAIT_BEGIN)
     gart_wait = token_position(function, "radeon_rs4xx_gart_teardown_wait")
@@ -701,8 +697,7 @@ def check_bo_move(root: Path) -> None:
         (
             index
             for index in range(len(values) - 4)
-            if values[index : index + 5]
-            == ("if", "(", "r", "&&", "newly_bound")
+            if values[index : index + 5] == ("if", "(", "r", "&&", "newly_bound")
         ),
         -1,
     )
@@ -711,7 +706,9 @@ def check_bo_move(root: Path) -> None:
     if rollback_guard < 0 or len(unbinds) < 2:
         raise GuardError("ttm-bo-move: newly-bound rollback is absent")
     if not unbinds[-1] > rollback_guard:
-        raise GuardError("ttm-bo-move: rollback unbind does not follow the failure guard")
+        raise GuardError(
+            "ttm-bo-move: rollback unbind does not follow the failure guard"
+        )
     if not unbinds[-1] < end:
         raise GuardError("ttm-bo-move: rollback unbind follows transaction end")
     require_pattern(
@@ -730,9 +727,7 @@ def check_bo_move(root: Path) -> None:
 
 
 def check_transaction_begin(root: Path) -> None:
-    function = get_function(
-        root, SUBTREE / "radeon_device.c", TRANSACTION_BEGIN
-    )
+    function = get_function(root, SUBTREE / "radeon_device.c", TRANSACTION_BEGIN)
     text = body_text(function)
     parked = "READ_ONCE ( rdev -> gpu_parked )"
     first_parked = text.find(parked)
@@ -745,9 +740,13 @@ def check_transaction_begin(root: Path) -> None:
         r"if \( READ_ONCE \( rdev -> gpu_parked \) \) return - EIO ;",
     )
     if text.count(parked) < 2:
-        raise GuardError("transaction-begin: post-increment parked revalidation is absent")
+        raise GuardError(
+            "transaction-begin: post-increment parked revalidation is absent"
+        )
     if "needs_reset" in text:
-        raise GuardError("transaction-begin: reset-progress state replaces terminal parking")
+        raise GuardError(
+            "transaction-begin: reset-progress state replaces terminal parking"
+        )
     require_pattern(
         "transaction-begin state refusal",
         text,
@@ -792,9 +791,7 @@ def check_transaction_begin(root: Path) -> None:
 
 
 def check_transaction_wait_begin(root: Path) -> None:
-    function = get_function(
-        root, SUBTREE / "radeon_device.c", TRANSACTION_WAIT_BEGIN
-    )
+    function = get_function(root, SUBTREE / "radeon_device.c", TRANSACTION_WAIT_BEGIN)
     text = body_text(function)
     require_pattern(
         "transaction-wait-begin retry",
@@ -919,9 +916,7 @@ def check_access_helpers(root: Path) -> None:
     internal_begin = get_function(
         root, SUBTREE / "radeon_device.c", INTERNAL_ACCESS_BEGIN
     )
-    internal_end = get_function(
-        root, SUBTREE / "radeon_device.c", INTERNAL_ACCESS_END
-    )
+    internal_end = get_function(root, SUBTREE / "radeon_device.c", INTERNAL_ACCESS_END)
     wait_begin = get_function(root, SUBTREE / "radeon_device.c", ACCESS_WAIT_BEGIN)
     public_begin = get_function(root, SUBTREE / "radeon.h", ACCESS_BEGIN)
     public_end = get_function(root, SUBTREE / "radeon.h", ACCESS_END)
@@ -935,8 +930,7 @@ def check_access_helpers(root: Path) -> None:
     ):
         raise GuardError("access-begin: public target projection differs")
     if body_text(public_end) != (
-        "if ( radeon_rs4xx_hardware_target ( rdev ) ) "
-        f"{INTERNAL_ACCESS_END} ( rdev ) ;"
+        f"if ( radeon_rs4xx_hardware_target ( rdev ) ) {INTERNAL_ACCESS_END} ( rdev ) ;"
     ):
         raise GuardError("access-end: public target projection differs")
     wait_text = body_text(wait_begin)
@@ -1000,15 +994,13 @@ def check_terminal_parked_state(root: Path) -> None:
         root, SUBTREE / "radeon_device.c", "radeon_rs4xx_hardware_disposition_available"
     )
     latch = get_function(root, SUBTREE / "radeon_device.c", LATCH_PARKED)
-    publish = get_function(
-        root, SUBTREE / "radeon_device.c", PUBLISH_PARKED
-    )
-    reset = get_function(
-        root, SUBTREE / "radeon_device.c", "radeon_gpu_reset_internal"
-    )
+    publish = get_function(root, SUBTREE / "radeon_device.c", PUBLISH_PARKED)
+    reset = get_function(root, SUBTREE / "radeon_device.c", "radeon_gpu_reset_internal")
     initialize = get_function(root, SUBTREE / "rs400.c", "rs400_init")
     if body_text(begin).find("READ_ONCE ( rdev -> gpu_parked )") < 0:
-        raise GuardError("terminal parked state: transaction root lacks gpu_parked refusal")
+        raise GuardError(
+            "terminal parked state: transaction root lacks gpu_parked refusal"
+        )
     if "RADEON_RS4XX_HARDWARE_PARKED" not in body_text(disposition):
         raise GuardError("terminal parked state: parked disposition is unavailable")
 
@@ -1033,7 +1025,9 @@ def check_terminal_parked_state(root: Path) -> None:
     )
     latch_positions = tuple(latch_text.find(marker) for marker in latch_markers)
     if any(position < 0 for position in latch_positions):
-        raise GuardError("terminal parked latch: one or more latch operations are absent")
+        raise GuardError(
+            "terminal parked latch: one or more latch operations are absent"
+        )
     if latch_positions != tuple(sorted(latch_positions)):
         raise GuardError("terminal parked latch: latch operations are out of order")
     require_pattern(
@@ -1073,18 +1067,31 @@ def check_terminal_parked_state(root: Path) -> None:
         "mutex_unlock ( & rdev -> rs4xx_parked_publish_lock ) ;",
         "mutex_unlock ( & rdev -> rs4xx_hardware_transition_lock ) ;",
     )
-    publisher_positions = tuple(publish_text.find(marker) for marker in publisher_markers)
+    publisher_positions = tuple(
+        publish_text.find(marker) for marker in publisher_markers
+    )
     if any(position < 0 for position in publisher_positions):
         raise GuardError("terminal parked publisher: one or more operations are absent")
     if publisher_positions != tuple(sorted(publisher_positions)):
         raise GuardError("terminal parked publisher: drain and cleanup order differs")
-    if publish_text.count("mutex_lock ( & rdev -> rs4xx_hardware_transition_lock ) ;") != 1:
+    if (
+        publish_text.count("mutex_lock ( & rdev -> rs4xx_hardware_transition_lock ) ;")
+        != 1
+    ):
         raise GuardError("terminal parked publisher: transition lock count differs")
     if publish_text.count("mutex_lock ( & rdev -> rs4xx_parked_publish_lock ) ;") != 1:
         raise GuardError("terminal parked publisher: publisher lock count differs")
-    if publish_text.count("mutex_unlock ( & rdev -> rs4xx_hardware_transition_lock ) ;") != 1:
+    if (
+        publish_text.count(
+            "mutex_unlock ( & rdev -> rs4xx_hardware_transition_lock ) ;"
+        )
+        != 1
+    ):
         raise GuardError("terminal parked publisher: transition unlock count differs")
-    if publish_text.count("mutex_unlock ( & rdev -> rs4xx_parked_publish_lock ) ;") != 1:
+    if (
+        publish_text.count("mutex_unlock ( & rdev -> rs4xx_parked_publish_lock ) ;")
+        != 1
+    ):
         raise GuardError("terminal parked publisher: publisher unlock count differs")
     require_pattern(
         "terminal parked publisher ownership",
@@ -1140,7 +1147,9 @@ def check_terminal_parked_state(root: Path) -> None:
 
 
 def check_terminal_modeset(root: Path) -> None:
-    function = get_function(root, SUBTREE / "radeon_display.c", "radeon_crtc_set_config")
+    function = get_function(
+        root, SUBTREE / "radeon_display.c", "radeon_crtc_set_config"
+    )
     text = body_text(function)
     require_pattern(
         "terminal modeset behavior",
@@ -1170,7 +1179,9 @@ def check_async_publisher(root: Path) -> None:
     if any(position < 0 for position in refusal_positions):
         raise GuardError("teardown refusal: latch, pending state, or queue is absent")
     if refusal_positions != tuple(sorted(refusal_positions)):
-        raise GuardError("teardown refusal: latch, pending state, and queue order differs")
+        raise GuardError(
+            "teardown refusal: latch, pending state, and queue order differs"
+        )
     if refusal_text.count(f"{LATCH_PARKED} ( rdev ) ;") != 1:
         raise GuardError("teardown refusal: parked latch count differs")
     if refusal_text != (
@@ -1178,7 +1189,9 @@ def check_async_publisher(root: Path) -> None:
         "atomic_xchg ( & rdev -> rs4xx_parked_publish_pending , 1 ) ; "
         f"{QUEUE_PARKED} ( rdev ) ;"
     ):
-        raise GuardError("teardown refusal: callback performs work beyond publication request")
+        raise GuardError(
+            "teardown refusal: callback performs work beyond publication request"
+        )
     if PUBLISH_PARKED in refusal_text:
         raise GuardError("teardown refusal: callback invokes the blocking publisher")
 
@@ -1208,7 +1221,9 @@ def check_async_publisher(root: Path) -> None:
     )
     worker_positions = tuple(worker_text.find(marker) for marker in worker_markers)
     if any(position < 0 for position in worker_positions):
-        raise GuardError("parked publisher work: coalescing or lifetime guard is absent")
+        raise GuardError(
+            "parked publisher work: coalescing or lifetime guard is absent"
+        )
     pending_marker = "atomic_set ( & rdev -> rs4xx_parked_publish_pending , 0 ) ;"
     pending_positions = []
     search_start = 0
@@ -1223,7 +1238,9 @@ def check_async_publisher(root: Path) -> None:
         < worker_positions[3]
         < worker_positions[4]
     ):
-        raise GuardError("parked publisher work: release does not preserve a later request")
+        raise GuardError(
+            "parked publisher work: release does not preserve a later request"
+        )
     if len(call_positions(worker, QUEUE_PARKED)) != 1:
         raise GuardError("parked publisher work: final queue count differs")
 
@@ -1237,7 +1254,9 @@ def check_async_publisher(root: Path) -> None:
         r"atomic_set \( & rdev -> rs4xx_parked_publish_running , 0 \) ;",
     )
     if "cancel_work_sync" in terminal_text:
-        raise GuardError("terminal parked publisher work lifetime uses cancellation without disable")
+        raise GuardError(
+            "terminal parked publisher work lifetime uses cancellation without disable"
+        )
 
     initialize_text = body_text(initialize)
     require_pattern(
@@ -2438,8 +2457,7 @@ def selftest(root: Path) -> int:
             SUBTREE / "radeon_ttm.c",
             "\tr = radeon_rs4xx_hardware_transaction_wait_begin(rdev);\n"
             "\tif (r == -ESHUTDOWN)",
-            "\tr = 0;\n"
-            "\tif (r == -ESHUTDOWN)",
+            "\tr = 0;\n\tif (r == -ESHUTDOWN)",
         ),
         (
             "TTM unpopulate drops terminal backing retention",
@@ -2465,8 +2483,7 @@ def selftest(root: Path) -> int:
         (
             "unexpected teardown refusal latch caller",
             SUBTREE / "radeon_ttm.c",
-            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
-            "\t\treturn r;",
+            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n\t\treturn r;",
             "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
             "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
             "\t\treturn r;",
@@ -2477,17 +2494,15 @@ def selftest(root: Path) -> int:
             "\t\t\tr = restore_result;\n"
             "\t\t\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\t\t\tgpu_parked = true;",
-            "\t\t\tr = restore_result;\n"
-            "\t\t\tgpu_parked = true;",
+            "\t\t\tr = restore_result;\n\t\t\tgpu_parked = true;",
         ),
         (
             "RS400 initialization parked latch removed",
             SUBTREE / "rs400.c",
             "\tif (r) {\n"
             "\t\tradeon_rs4xx_latch_parked_state(rdev);\n"
-            "\t\tdev_err(rdev->dev, \"reset failed\");",
-            "\tif (r) {\n"
-            "\t\tdev_err(rdev->dev, \"reset failed\");",
+            '\t\tdev_err(rdev->dev, "reset failed");',
+            '\tif (r) {\n\t\tdev_err(rdev->dev, "reset failed");',
         ),
         (
             "RS400 startup failure returns success",
@@ -2540,9 +2555,7 @@ def selftest(root: Path) -> int:
             "\tif (r)\n"
             "\t\treturn r;\n"
             "\tbo = kzalloc",
-            "\tif (r)\n"
-            "\t\treturn r;\n"
-            "\tbo = kzalloc",
+            "\tif (r)\n\t\treturn r;\n\tbo = kzalloc",
         ),
         (
             "BO constructor admission follows allocation",

@@ -391,9 +391,7 @@ def check_state_machine(root: Path) -> None:
     )
     require(enum_match is not None, "RS4xx hardware state enum is absent")
     enum_members = tuple(
-        member.strip()
-        for member in enum_match.group(1).split(",")
-        if member.strip()
+        member.strip() for member in enum_match.group(1).split(",") if member.strip()
     )
     require(
         enum_members
@@ -410,12 +408,13 @@ def check_state_machine(root: Path) -> None:
         "RS4xx hardware state denominator differs",
     )
     require(
-        re.search(r"spinlock_t\s+rs4xx_hardware_state_lock\s*;", header)
-        is not None,
+        re.search(r"spinlock_t\s+rs4xx_hardware_state_lock\s*;", header) is not None,
         "RS4xx state spinlock declaration is absent",
     )
 
-    initialization = function_source(root, RADEON / "radeon_device.c", "radeon_device_init")
+    initialization = function_source(
+        root, RADEON / "radeon_device.c", "radeon_device_init"
+    )
     require_order(
         initialization.masked_body,
         "hardware state initialization",
@@ -584,8 +583,7 @@ def check_state_machine(root: Path) -> None:
     )
     wrapper = re.sub(r"\s+", " ", latch_wrapper.masked_body).strip()
     require(
-        wrapper
-        == "radeon_rs4xx_latch_parked_state(rdev); "
+        wrapper == "radeon_rs4xx_latch_parked_state(rdev); "
         "atomic_xchg(&rdev->rs4xx_parked_publish_pending, 1); "
         "radeon_rs4xx_queue_parked_publish(rdev);",
         "latch-only teardown refusal gained blocking cleanup",
@@ -613,7 +611,10 @@ def check_state_machine(root: Path) -> None:
         ),
     )
     for forbidden in ("radeon_rs4xx_hardware_transition_end", "wait_event_timeout"):
-        require(forbidden not in publisher.masked_body, f"full publisher contains {forbidden}")
+        require(
+            forbidden not in publisher.masked_body,
+            f"full publisher contains {forbidden}",
+        )
 
 
 def check_ib_failure_propagation(root: Path) -> None:
@@ -640,7 +641,9 @@ def check_ib_failure_propagation(root: Path) -> None:
         is not None,
         "RS4xx IB failure branch differs from the centralized publisher route",
     )
-    device_init = function_source(root, RADEON / "radeon_device.c", "radeon_device_init")
+    device_init = function_source(
+        root, RADEON / "radeon_device.c", "radeon_device_init"
+    )
     require_order(
         device_init.masked_body,
         "init IB failure propagation",
@@ -707,8 +710,7 @@ def check_runtime_pm_failure_restoration(root: Path) -> None:
     except UnicodeDecodeError as exc:
         raise ContractError("PCI runtime rollback authority is not ASCII") from exc
     require(
-        hashlib.sha256(authority_raw).hexdigest()
-        == EXPECTED_PCI_AUTHORITY_SHA256,
+        hashlib.sha256(authority_raw).hexdigest() == EXPECTED_PCI_AUTHORITY_SHA256,
         "PCI runtime rollback authority identity differs",
     )
     authority = tomllib.loads(authority_text)
@@ -729,14 +731,12 @@ def check_runtime_pm_failure_restoration(root: Path) -> None:
         observed_paths = {file_entry["path"] for file_entry in files}
         require(
             len(files) == 2
-            and observed_paths
-            == {"drivers/pci/pci.c", "drivers/base/power/runtime.c"},
+            and observed_paths == {"drivers/pci/pci.c", "drivers/base/power/runtime.c"},
             f"PCI runtime rollback authority file set differs for {entry['kernel']}",
         )
         require(
             all(
-                re.fullmatch(r"[0-9a-f]{64}", file_entry["sha256"])
-                is not None
+                re.fullmatch(r"[0-9a-f]{64}", file_entry["sha256"]) is not None
                 for file_entry in files
             ),
             f"PCI runtime rollback authority digest differs for {entry['kernel']}",
@@ -891,7 +891,9 @@ def check_runtime_pm_failure_restoration(root: Path) -> None:
     terminal_retry_position = runtime_resume.masked_body.find(
         "if (radeon_rs4xx_terminal_ownership_retained(rdev))"
     )
-    require(terminal_retry_position >= 0, "runtime resume terminal retry gate is absent")
+    require(
+        terminal_retry_position >= 0, "runtime resume terminal retry gate is absent"
+    )
     for pci_call in (
         "pci_set_power_state(",
         "pci_restore_state(",
@@ -1170,12 +1172,8 @@ def selftest(repository: Path) -> int:
             "system resume PCI failure replaces the original error",
             RADEON / "radeon_device.c",
             "radeon_resume_kms",
-            "\t\t\t\treturn r;\n"
-            "\t\t\t}\n"
-            "\t\t\treturn -1;",
-            "\t\t\t\treturn -EIO;\n"
-            "\t\t\t}\n"
-            "\t\t\treturn -1;",
+            "\t\t\t\treturn r;\n\t\t\t}\n\t\t\treturn -1;",
+            "\t\t\t\treturn -EIO;\n\t\t\t}\n\t\t\treturn -1;",
         ),
         (
             "reset loses the state spinlock",
@@ -1250,7 +1248,7 @@ def selftest(repository: Path) -> int:
             "\t\tif (radeon_rs4xx_hardware_target(rdev))\n"
             "\t\t\tgoto rs4xx_resume_parked;",
             "\t\tif (radeon_rs4xx_hardware_target(rdev))\n"
-            "\t\t\tDRM_ERROR(\"RS4xx IB failure\");",
+            '\t\t\tDRM_ERROR("RS4xx IB failure");',
         ),
         (
             "reset IB failure bypasses parked branch",
@@ -1258,21 +1256,14 @@ def selftest(repository: Path) -> int:
             "radeon_gpu_reset_internal",
             "\t\tif (rs4xx_reset && READ_ONCE(rdev->gpu_parked))\n"
             "\t\t\tgoto rs4xx_reset_parked_after_downgrade;",
-            "\t\tif (rs4xx_reset && READ_ONCE(rdev->gpu_parked))\n"
-            "\t\t\treturn r;",
+            "\t\tif (rs4xx_reset && READ_ONCE(rdev->gpu_parked))\n\t\t\treturn r;",
         ),
         (
             "terminal runtime suspend failure publishes ON",
             RADEON / "radeon_drv.c",
             "radeon_runtime_pm_restore_suspend_failure",
-            (
-                "\t\tdrm_dev->switch_power_state = DRM_SWITCH_POWER_OFF;\n"
-                "\t\treturn;"
-            ),
-            (
-                "\t\tdrm_dev->switch_power_state = DRM_SWITCH_POWER_ON;\n"
-                "\t\treturn;"
-            ),
+            ("\t\tdrm_dev->switch_power_state = DRM_SWITCH_POWER_OFF;\n\t\treturn;"),
+            ("\t\tdrm_dev->switch_power_state = DRM_SWITCH_POWER_ON;\n\t\treturn;"),
         ),
         (
             "nonterminal runtime suspend failure leaves polling disabled",
@@ -1394,11 +1385,7 @@ def selftest(repository: Path) -> int:
                 "\t\treturn ret;\n"
                 "\t}"
             ),
-            (
-                "\tret = pci_enable_device(pdev);\n"
-                "\tif (ret)\n"
-                "\t\treturn ret;"
-            ),
+            ("\tret = pci_enable_device(pdev);\n\tif (ret)\n\t\treturn ret;"),
         ),
         (
             "PCI enable failure claims successful enablement",
@@ -1477,10 +1464,7 @@ def selftest(repository: Path) -> int:
             RADEON / "rs400.c",
             "rs400_startup",
             "\trs400_mc_program(rdev);",
-            (
-                "\tradeon_rs4xx_hardware_access_end(rdev);\n"
-                "\trs400_mc_program(rdev);"
-            ),
+            ("\tradeon_rs4xx_hardware_access_end(rdev);\n\trs400_mc_program(rdev);"),
         ),
         (
             "RS400 host-path read escapes the hardware reader epoch",
@@ -1545,7 +1529,9 @@ def selftest(repository: Path) -> int:
 
     for label, path, function, old, new in mutations:
         checks += 1
-        with tempfile.TemporaryDirectory(prefix="rs4xx-transition-mutation-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix="rs4xx-transition-mutation-"
+        ) as directory:
             root = Path(directory)
             copy_fixture(repository, root)
             try:
@@ -1578,7 +1564,9 @@ def selftest(repository: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--root", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()

@@ -22,15 +22,30 @@ STATIC_COMPONENTS = {
     "r100_rbbm_info": ("r100.c", "0444", "rdev", "r100_debugfs_rbbm_info_fops"),
     "r420_pipes_info": ("r420.c", "0444", "rdev", "r420_debugfs_pipes_info_fops"),
     "r600_mc_info": ("r600.c", "0444", "rdev", "r600_debugfs_mc_info_fops"),
-    "radeon_fence_info": ("radeon_fence.c", "0444", "rdev", "radeon_debugfs_fence_info_fops"),
+    "radeon_fence_info": (
+        "radeon_fence.c",
+        "0444",
+        "rdev",
+        "radeon_debugfs_fence_info_fops",
+    ),
     "radeon_gem_info": ("radeon_gem.c", "0444", "rdev", "radeon_debugfs_gem_info_fops"),
-    "radeon_gpu_reset": ("radeon_fence.c", "0444", "rdev", "radeon_debugfs_gpu_reset_fops"),
+    "radeon_gpu_reset": (
+        "radeon_fence.c",
+        "0444",
+        "rdev",
+        "radeon_debugfs_gpu_reset_fops",
+    ),
     "radeon_gtt": ("radeon_ttm.c", "0444", "rdev", "radeon_ttm_gtt_fops"),
     "radeon_pm_info": ("radeon_pm.c", "0444", "rdev", "radeon_debugfs_pm_info_fops"),
     "radeon_sa_info": ("radeon_ib.c", "0444", "rdev", "radeon_debugfs_sa_info_fops"),
     "radeon_vram": ("radeon_ttm.c", "0444", "rdev", "radeon_ttm_vram_fops"),
     "rs400_gart_info": ("rs400.c", "0444", "rdev", "rs400_debugfs_gart_info_fops"),
-    "rv370_pcie_gart_info": ("r300.c", "0444", "rdev", "rv370_debugfs_pcie_gart_info_fops"),
+    "rv370_pcie_gart_info": (
+        "r300.c",
+        "0444",
+        "rdev",
+        "rv370_debugfs_pcie_gart_info_fops",
+    ),
     "rv515_ga_info": ("rv515.c", "0444", "rdev", "rv515_debugfs_ga_info_fops"),
     "rv515_pipes_info": ("rv515.c", "0444", "rdev", "rv515_debugfs_pipes_info_fops"),
     "ttm_page_pool": ("radeon_ttm.c", "0444", "rdev", "radeon_ttm_page_pool_fops"),
@@ -95,9 +110,9 @@ def load_texts(root: Path) -> dict[str, str]:
         for path in sorted(source_root.glob("*.c"))
     }
     texts["radeon.h"] = (root / HEADER_PATH).read_text(encoding="utf-8")
-    texts["radeon_ttm.h"] = (
-        root / RADEON_SOURCE_DIRECTORY / "radeon_ttm.h"
-    ).read_text(encoding="utf-8")
+    texts["radeon_ttm.h"] = (root / RADEON_SOURCE_DIRECTORY / "radeon_ttm.h").read_text(
+        encoding="utf-8"
+    )
     return texts
 
 
@@ -120,7 +135,9 @@ def function_body(source: str, name: str) -> str:
     raise ContractError(f"function {name} has an unterminated body")
 
 
-def conditional_stack_at(source: str, offset: int, label: str) -> list[tuple[str, str, str]]:
+def conditional_stack_at(
+    source: str, offset: int, label: str
+) -> list[tuple[str, str, str]]:
     stack: list[tuple[str, str, str]] = []
     for directive in C_CONDITIONAL_DIRECTIVE.finditer(source, 0, offset):
         kind = directive.group("kind")
@@ -169,7 +186,8 @@ def validate_static_components(texts: dict[str, str]) -> None:
     ring_names_body = function_body(ring_source, "radeon_debugfs_ring_idx_to_name")
     ring_names = re.findall(r'return\s+"radeon_ring_[^"]+"\s*;', ring_names_body)
     require(
-        len(ring_names) == RING_COMPONENT_COUNT and len(set(ring_names)) == len(ring_names),
+        len(ring_names) == RING_COMPONENT_COUNT
+        and len(set(ring_names)) == len(ring_names),
         "ring debugfs component denominator differs",
     )
 
@@ -180,7 +198,9 @@ def validate_direct_creation_topology(texts: dict[str, str]) -> None:
         if not filename.endswith(".c"):
             continue
         call_count = len(
-            re.findall(r"\bdebugfs_create_file\s*\(", strip_comments_and_literals(source))
+            re.findall(
+                r"\bdebugfs_create_file\s*\(", strip_comments_and_literals(source)
+            )
         )
         if call_count:
             observed_counts[filename] = call_count
@@ -252,7 +272,9 @@ def validate_component_registry(texts: dict[str, str]) -> None:
     ):
         require(re.search(pattern, add_body, re.DOTALL) is not None, f"{label} differs")
     refusal = add_body.find("rdev->debugfs_registration_complete")
-    insertion = add_body.find("rdev->debugfs_components[rdev->debugfs_component_count++]")
+    insertion = add_body.find(
+        "rdev->debugfs_components[rdev->debugfs_component_count++]"
+    )
     require(0 <= refusal < insertion, "component insertion precedes fail-closed checks")
 
     dispatcher_body = function_body(driver_source, "radeon_dev_debugfs_register")
@@ -262,7 +284,10 @@ def validate_component_registry(texts: dict[str, str]) -> None:
             ("primary-minor validation", r"minor->type\s*!=\s*DRM_MINOR_PRIMARY"),
             ("debugfs root validation", r"!minor->debugfs_root"),
             ("driver-private validation", r"if\s*\(!rdev\)"),
-            ("dispatcher registry lock", r"mutex_lock\(&rdev->debugfs_component_lock\);"),
+            (
+                "dispatcher registry lock",
+                r"mutex_lock\(&rdev->debugfs_component_lock\);",
+            ),
             ("duplicate dispatcher refusal", r"rdev->debugfs_registration_complete"),
             (
                 "finite component loop",
@@ -277,7 +302,10 @@ def validate_component_registry(texts: dict[str, str]) -> None:
                 "registration completion publication",
                 r"rdev->debugfs_registration_complete\s*=\s*true;",
             ),
-            ("dispatcher registry unlock", r"mutex_unlock\(&rdev->debugfs_component_lock\);"),
+            (
+                "dispatcher registry unlock",
+                r"mutex_unlock\(&rdev->debugfs_component_lock\);",
+            ),
             (
                 "TTM manager registration",
                 r"radeon_ttm_debugfs_register_managers\(rdev, minor->debugfs_root\);",
@@ -290,7 +318,9 @@ def validate_component_registry(texts: dict[str, str]) -> None:
     )
     require(callback_match is not None, "DRM debugfs callback is absent")
     require(
-        conditional_stack_at(driver_source, callback_match.start(), "DRM debugfs callback")
+        conditional_stack_at(
+            driver_source, callback_match.start(), "DRM debugfs callback"
+        )
         == [],
         "DRM debugfs callback is profile-conditional",
     )
@@ -300,12 +330,18 @@ def validate_component_registry(texts: dict[str, str]) -> None:
     require_order(
         device_init_body,
         (
-            ("component denominator initialization", r"debugfs_component_count\s*=\s*0;"),
+            (
+                "component denominator initialization",
+                r"debugfs_component_count\s*=\s*0;",
+            ),
             (
                 "component registration state initialization",
                 r"debugfs_registration_complete\s*=\s*false;",
             ),
-            ("component mutex initialization", r"mutex_init\(&rdev->debugfs_component_lock\);"),
+            (
+                "component mutex initialization",
+                r"mutex_init\(&rdev->debugfs_component_lock\);",
+            ),
             ("ASIC initialization", r"r\s*=\s*radeon_init\(rdev\);"),
         ),
     )
@@ -449,7 +485,9 @@ def selftest(root: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--root", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 

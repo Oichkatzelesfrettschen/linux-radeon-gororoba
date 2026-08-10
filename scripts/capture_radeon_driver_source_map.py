@@ -313,9 +313,7 @@ C_COMMENT_OR_LITERAL = re.compile(
     re.DOTALL,
 )
 C_LINE_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
-C_PREPROCESSOR_DIRECTIVE = re.compile(
-    r"^[ \t]*#[ \t]*([A-Za-z_][A-Za-z0-9_]*)"
-)
+C_PREPROCESSOR_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
 CFLOW_ROW = re.compile(r"^\s*\d+\s+\{\s*(\d+)\}\s+(\S[^:]*):\s*(.*)$")
 FIELD_INITIALIZER = re.compile(
     r"(?m)^\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*&?"
@@ -1294,8 +1292,7 @@ def canonical_admission_contract() -> AdmissionContract:
     """Return the transaction caller and call-site denominator."""
 
     operational_callers = tuple(
-        f"{root.path.as_posix()}:{root.function}"
-        for root in parked_admission.ROOTS
+        f"{root.path.as_posix()}:{root.function}" for root in parked_admission.ROOTS
     )
     call_sites = tuple(
         AdmissionCallSite(
@@ -1385,9 +1382,7 @@ def parse_admission_contract(
             type(expected_calls) is int and expected_calls > 0,
             f"{call_site_label}.expected_calls must be positive",
         )
-        call_sites.append(
-            AdmissionCallSite(path, function, callee, expected_calls)
-        )
+        call_sites.append(AdmissionCallSite(path, function, callee, expected_calls))
     contract = AdmissionContract(
         operational_callers,
         call_site_shape_count,
@@ -1444,8 +1439,7 @@ def verify_declared_hazard_guard_identifiers(
             require(
                 not missing_identifiers,
                 f"hazard {hazard.symbol} guard census owner "
-                f"{census.owner} lost identifiers: "
-                + ", ".join(missing_identifiers),
+                f"{census.owner} lost identifiers: " + ", ".join(missing_identifiers),
             )
 
 
@@ -2678,7 +2672,9 @@ def c_preprocessor_split(expression: str, operator: str) -> tuple[str, ...]:
         if character == "(":
             depth += 1
         elif character == ")":
-            require(depth > 0, "preprocessor expression has an unmatched close parenthesis")
+            require(
+                depth > 0, "preprocessor expression has an unmatched close parenthesis"
+            )
             depth -= 1
         elif depth == 0 and expression.startswith(operator, offset):
             parts.append(expression[start:offset])
@@ -2778,8 +2774,7 @@ def c_preprocessor_regions(
             expression = line[directive_match.end() :].strip()
             if directive in {"if", "ifdef", "ifndef"}:
                 parent_inactive = bool(
-                    conditional_stack
-                    and conditional_stack[-1].current_inactive
+                    conditional_stack and conditional_stack[-1].current_inactive
                 )
                 truth = (
                     c_preprocessor_constant_truth(expression)
@@ -2787,7 +2782,11 @@ def c_preprocessor_regions(
                     else None
                 )
                 prior_branch_state = (
-                    "definite" if truth is True else "none" if truth is False else "possible"
+                    "definite"
+                    if truth is True
+                    else "none"
+                    if truth is False
+                    else "possible"
                 )
                 conditional_stack.append(
                     PreprocessorConditionalState(
@@ -2835,7 +2834,9 @@ def c_ranges_overlap(
 ) -> bool:
     """Return whether one logical source span intersects a recorded range."""
 
-    return any(start < range_end and range_start < end for range_start, range_end in ranges)
+    return any(
+        start < range_end and range_start < end for range_start, range_end in ranges
+    )
 
 
 def require_source_match_is_active(
@@ -3175,15 +3176,15 @@ def cscope_flat_source_denominator(
     """
 
     analyzer_paths = sorted(
-        entry.path
-        for entry in entries
-        if entry.source_class == "c"
+        entry.path for entry in entries if entry.source_class == "c"
     )
     require(analyzer_paths, "cscope source denominator is empty")
     source_parent = Path(analyzer_paths[0]).parent.as_posix()
     require(
         source_parent == CANONICAL_SOURCE_ROOT
-        and all(Path(path).parent.as_posix() == source_parent for path in analyzer_paths),
+        and all(
+            Path(path).parent.as_posix() == source_parent for path in analyzer_paths
+        ),
         "cscope source denominator is not one flat directory",
     )
     basenames = [Path(path).name for path in analyzer_paths]
@@ -4145,8 +4146,7 @@ def parse_cscope_rows(
             )
             require(
                 Path(raw_source_path).name == raw_source_path,
-                f"cscope emitted a non-flat path for {query_symbol}: "
-                f"{raw_source_path}",
+                f"cscope emitted a non-flat path for {query_symbol}: {raw_source_path}",
             )
             source_path = f"{source_path_prefix}/{raw_source_path}"
         else:
@@ -4236,8 +4236,7 @@ def build_cscope_index(
         f"{source_path_prefix}/{basename}" for basename in cscope_basenames
     )
     require(
-        source_list.read_text(encoding="utf-8")
-        == expected_source_list + "\n",
+        source_list.read_text(encoding="utf-8") == expected_source_list + "\n",
         "cscope source input differs from the analyzer denominator",
     )
     sandbox = analyzer_sandbox(
@@ -4969,14 +4968,16 @@ def binding_matches(source: str, binding: Binding) -> list[re.Match[str]]:
                 C_IDENTIFIER.fullmatch(macro_symbol) is not None,
                 f"show-attribute binding {binding.name} has an invalid generated callee",
             )
-            return re.search(
-                rf"\bDEFINE_SHOW_ATTRIBUTE\s*\(\s*"
-                rf"{re.escape(macro_symbol)}\s*\)",
-                matched_code,
-            ) is not None
+            return (
+                re.search(
+                    rf"\bDEFINE_SHOW_ATTRIBUTE\s*\(\s*"
+                    rf"{re.escape(macro_symbol)}\s*\)",
+                    matched_code,
+                )
+                is not None
+            )
         return any(
-            match.start() <= callee_match.start()
-            and callee_match.end() <= match.end()
+            match.start() <= callee_match.start() and callee_match.end() <= match.end()
             for callee_match in re.finditer(
                 rf"(?<![A-Za-z0-9_]){re.escape(binding.callee)}"
                 rf"(?![A-Za-z0-9_])",
@@ -5393,8 +5394,7 @@ def matching_c_delimiter(
     """Return the matching delimiter offset in comment-free C source."""
 
     require(
-        opening_offset < len(code_mask)
-        and code_mask[opening_offset] == opening,
+        opening_offset < len(code_mask) and code_mask[opening_offset] == opening,
         f"C delimiter scan does not start at {opening}",
     )
     depth = 0
@@ -5492,9 +5492,7 @@ def evaluate_bounded_queries(
                 )
                 search_text = code_mask[search_start:search_end]
                 provenance = "lexical-function-code-mask"
-                semantic_limit = (
-                    "lexical-function-code-mask-not-runtime-reachability"
-                )
+                semantic_limit = "lexical-function-code-mask-not-runtime-reachability"
             for match in expression.finditer(search_text):
                 logical_offset = search_start + match.start()
                 require_source_match_is_active(
@@ -11015,15 +11013,15 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         ),
         (
-                PathWitnessJoin(
-                    "callback-selection",
-                    "execution",
-                    "callback_slot",
-                    "family-selection",
-                    "family",
-                    (path_binding.name,),
-                ),
+            PathWitnessJoin(
+                "callback-selection",
+                "execution",
+                "callback_slot",
+                "family-selection",
+                "family",
+                (path_binding.name,),
             ),
+        ),
     )
     path_policy = Policy(
         **{
@@ -11657,6 +11655,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             and bool(observed_open_flags & os.O_NOCTTY)
             and bool(observed_open_flags & os.O_NOFOLLOW),
         )
+
         class DuplicateColumnsWithoutCount(list[str]):
             def count(self, value: str) -> int:
                 raise AssertionError(f"quadratic count invoked for {value}")
@@ -12332,7 +12331,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "}\n"
             "#endif\n"
         )
-        write_text(cscope_source_root / conditional_function_path, conditional_function_content)
+        write_text(
+            cscope_source_root / conditional_function_path, conditional_function_content
+        )
         conditional_function_entry = SourceEntry(
             conditional_function_path,
             "100644",
@@ -12359,9 +12360,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         macro_function_path = f"{policy.source_root}/macro_bounded.c"
-        macro_function_content = (
-            "#define macro_bounded() static int macro_bounded(void) { real_target(); }\n"
-        )
+        macro_function_content = "#define macro_bounded() static int macro_bounded(void) { real_target(); }\n"
         write_text(cscope_source_root / macro_function_path, macro_function_content)
         macro_function_entry = SourceEntry(
             macro_function_path,
@@ -12397,7 +12396,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "#endif\n"
             "}\n"
         )
-        write_text(cscope_source_root / conditional_query_path, conditional_query_content)
+        write_text(
+            cscope_source_root / conditional_query_path, conditional_query_content
+        )
         conditional_query_entry = SourceEntry(
             conditional_query_path,
             "100644",
@@ -12424,11 +12425,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         global_conditional_path = f"{policy.source_root}/global_conditional_query.c"
-        global_conditional_content = (
-            "#if 0\n"
-            "real_target();\n"
-            "#endif\n"
-        )
+        global_conditional_content = "#if 0\nreal_target();\n#endif\n"
         write_text(
             cscope_source_root / global_conditional_path,
             global_conditional_content,
@@ -12459,9 +12456,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         global_unknown_content = (
-            "#if defined(CONFIG_SYNTHETIC_TARGET)\n"
-            "real_target();\n"
-            "#endif\n"
+            "#if defined(CONFIG_SYNTHETIC_TARGET)\nreal_target();\n#endif\n"
         )
         write_text(
             cscope_source_root / global_conditional_path,
@@ -12584,11 +12579,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             replacement: str,
             source_name: str = "radeon_cs.c",
         ) -> None:
-            source_path = (
-                blob_export_root
-                / policy.source_root
-                / source_name
-            )
+            source_path = blob_export_root / policy.source_root / source_name
             source = source_path.read_text(encoding="utf-8")
             require(
                 source.count(original) == 1,
@@ -12632,11 +12623,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             replacement: str,
             source_name: str = "radeon_fbdev.c",
         ) -> None:
-            source_path = (
-                blob_export_root
-                / policy.source_root
-                / source_name
-            )
+            source_path = blob_export_root / policy.source_root / source_name
             source = source_path.read_text(encoding="utf-8")
             require(
                 source.count(original) == 1,
@@ -12719,18 +12706,15 @@ def self_test(repository: Path, policy_path: Path) -> int:
         rejects(
             "live binding verifier rejects removed RS4xx mmap refusal",
             lambda: verify_mutated_live_bindings(
-                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
-                "\t\treturn -ENODEV;\n",
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n\t\treturn -ENODEV;\n",
                 "",
             ),
         )
         rejects(
             "live binding verifier rejects changed RS4xx mmap errno",
             lambda: verify_mutated_live_bindings(
-                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
-                "\t\treturn -ENODEV;\n",
-                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
-                "\t\treturn -EIO;\n",
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n\t\treturn -ENODEV;\n",
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n\t\treturn -EIO;\n",
             ),
         )
         rejects(
@@ -12773,11 +12757,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         def verify_mutated_live_bounded_query_replacements(
             replacements: tuple[tuple[str, str], ...],
         ) -> None:
-            source_path = (
-                blob_export_root
-                / policy.source_root
-                / "radeon_fbdev.c"
-            )
+            source_path = blob_export_root / policy.source_root / "radeon_fbdev.c"
             source = source_path.read_text(encoding="utf-8")
             for original, _replacement in replacements:
                 require(
@@ -12801,9 +12781,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             original: str,
             replacement: str,
         ) -> None:
-            verify_mutated_live_bounded_query_replacements(
-                ((original, replacement),)
-            )
+            verify_mutated_live_bounded_query_replacements(((original, replacement),))
 
         fbops_assignment = "\tinfo->fbops = &radeon_fbdev_fb_ops;"
         rejects(
@@ -12836,9 +12814,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 (
                     (fbops_assignment, ""),
                     (
-                        "\treturn ret;\n"
-                        "}\n\n"
-                        "bool radeon_fbdev_robj_is_fb",
+                        "\treturn ret;\n}\n\nbool radeon_fbdev_robj_is_fb",
                         "\treturn ret;\n"
                         "\t}\n\n"
                         "static void fbops_assignment_decoy(struct fb_info *info)\n"
@@ -12868,8 +12844,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "live bounded queries reject a string-only fbops decoy",
             lambda: verify_mutated_live_bounded_queries(
                 fbops_assignment,
-                "\tconst char *fbops_decoy = "
-                '"info->fbops = &radeon_fbdev_fb_ops;";',
+                '\tconst char *fbops_decoy = "info->fbops = &radeon_fbdev_fb_ops;";',
             ),
         )
         fbops_query = next(
@@ -13504,9 +13479,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "policy rejects a nonidentifier callee outside wrapper macros",
             lambda: load_policy(invalid_callee),
         )
-        bounded_function_anchor = (
-            'function = "radeon_fbdev_driver_fbdev_probe"\n'
-        )
+        bounded_function_anchor = 'function = "radeon_fbdev_driver_fbdev_probe"\n'
         require(
             live_policy.count(bounded_function_anchor) == 1,
             "bounded function mutation anchor differs",

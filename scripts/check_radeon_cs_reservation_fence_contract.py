@@ -846,9 +846,7 @@ def check_failed_reset_fence_publication(root: Path) -> None:
         ("dma_fence_signal", "WRITE_ONCE"),
     )
 
-    signal_error = function(
-        root, "radeon_fence.c", "radeon_fence_signal_error_locked"
-    )
+    signal_error = function(root, "radeon_fence.c", "radeon_fence_signal_error_locked")
     require_order(
         "fence error precedes signaling",
         signal_error,
@@ -888,9 +886,7 @@ def check_failed_reset_fence_publication(root: Path) -> None:
         ),
     )
 
-    signal_terminal = function(
-        root, "radeon_fence.c", "radeon_fence_signal_terminal"
-    )
+    signal_terminal = function(root, "radeon_fence.c", "radeon_fence_signal_terminal")
     require_order(
         "terminal fence lock and retained-reference release",
         signal_terminal,
@@ -1006,9 +1002,13 @@ def check_failed_reset_fence_publication(root: Path) -> None:
 
     wait_seq = function(root, "radeon_fence.c", "radeon_fence_wait_seq_timeout")
     if wait_seq.count("radeon_irq_kms_sw_irq_get(rdev, i)") != 1:
-        raise ContractError("fence wait must acquire one logical IRQ reference per ring")
+        raise ContractError(
+            "fence wait must acquire one logical IRQ reference per ring"
+        )
     if wait_seq.count("radeon_irq_kms_sw_irq_put(rdev, i)") != 1:
-        raise ContractError("fence wait must release one logical IRQ reference per ring")
+        raise ContractError(
+            "fence wait must release one logical IRQ reference per ring"
+        )
     require_order(
         "RS4xx fence wait state exit",
         wait_seq,
@@ -1726,10 +1726,7 @@ SOURCE_MUTATIONS = {
     ),
     "DMA fence completion peek publishes terminal error": (
         "drivers/gpu/drm/radeon/radeon_fence.c",
-        (
-            "\tif (radeon_fence_rs4xx_terminal_error(rdev))\n"
-            "\t\treturn false;"
-        ),
+        ("\tif (radeon_fence_rs4xx_terminal_error(rdev))\n\t\treturn false;"),
         (
             "\tif (radeon_fence_rs4xx_terminal_error(rdev)) {\n"
             "\t\tradeon_fence_set_error_locked(fence, -EIO);\n"
@@ -1739,14 +1736,8 @@ SOURCE_MUTATIONS = {
     ),
     "DMA fence completion peek reports incomplete terminal work": (
         "drivers/gpu/drm/radeon/radeon_fence.c",
-        (
-            "\tif (radeon_fence_rs4xx_terminal_error(rdev))\n"
-            "\t\treturn false;"
-        ),
-        (
-            "\tif (radeon_fence_rs4xx_terminal_error(rdev))\n"
-            "\t\treturn true;"
-        ),
+        ("\tif (radeon_fence_rs4xx_terminal_error(rdev))\n\t\treturn false;"),
+        ("\tif (radeon_fence_rs4xx_terminal_error(rdev))\n\t\treturn true;"),
     ),
     "RS4xx fence wait drops initial state refusal": (
         "drivers/gpu/drm/radeon/radeon_fence.c",
