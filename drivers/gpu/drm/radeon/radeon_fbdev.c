@@ -43,11 +43,16 @@ static void radeon_fbdev_destroy_pinned_object(struct drm_gem_object *gobj)
 	struct radeon_bo *rbo = gem_to_radeon_bo(gobj);
 	int ret;
 
+	radeon_bo_kunmap(rbo);
 	ret = radeon_bo_reserve(rbo, false);
 	if (likely(ret == 0)) {
-		radeon_bo_kunmap(rbo);
-		radeon_bo_unpin(rbo);
+		if (rbo->tbo.pin_count > 0)
+			radeon_bo_unpin(rbo);
 		radeon_bo_unreserve(rbo);
+	} else {
+		/* reservation can fail while another path still owns this BO */
+		if (rbo->tbo.pin_count > 0)
+			radeon_bo_unpin(rbo);
 	}
 	drm_gem_object_put(gobj);
 }
