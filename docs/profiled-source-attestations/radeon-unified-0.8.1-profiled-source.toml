@@ -1,0 +1,57 @@
+# Strict source identity for the radeon-unified 0.8.1 profiled checkpoint.
+# Workflow, published-object, clean-tree, profile, and parked-guard values are
+# explicit declarations. The verifier checks their types and bindings without
+# turning those declarations into independent execution evidence.
+
+schema = 2
+
+tag_name = "radeon-unified-0.8.1-profiled-source"
+tag_object = "6fb7e506bfc04d51baea7bd13f764d9ad8874bf9"
+peeled_commit = "ec5b88802441720b0b972b1b2a92e53171094f31"
+
+repository_tree = "3560f881a3775405c773e3cfd5574ebb532b09f2"
+driver_subtree = "drivers/gpu/drm/radeon"
+driver_tree = "6fd8d3c6ec245c31f195ef86c15fadf5e206642d"
+feature_policy_tree = "7b3ddd1295cd9121d94781071cd8c052a72b02c0"
+feature_policy_sha256 = "d14711fbc6e3f6e5aa61ae16957e06b5b6ff210e5c5b2965d858f559cee5945b"
+upstream_commit = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+upstream_subtree = "06a00c78fc5be13ed90c2a2c6973f272d993b6a3"
+
+signing_format = "ssh"
+signer_principal = "151315375+Oichkatzelesfrettschen@users.noreply.github.com"
+signer_fingerprint = "SHA256:wD1s3tsUVHvjrLUruNtYVv/K1/4b7sJA4W7DTdMn8SA"
+allowed_signers_sha256 = "2133f7e0926032a91d8c55211a4dad9cdf16d188e2bab24c2b70f68d464c24b0"
+allowed_signers_path = "radeon-custom packaging/arch/radeon-unified-dkms/radeon-source-tag-allowed-signers"
+verification_command = "git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=ALLOWED_SIGNERS verify-tag radeon-unified-0.8.1-profiled-source"
+local_verification = "PASS"
+published_object_matches_local_declared = true
+
+profile_workflow_run = 31347347248
+profile_workflow_head = "ec5b88802441720b0b972b1b2a92e53171094f31"
+profile_workflow_clean_tree = true
+source_commit_6_18_build = "PASS"
+source_commit_7_1_build = "PASS"
+prod_profile = "PASS"
+all_dev_profile = "PASS"
+
+local_parked_guard_commit = "ec5b88802441720b0b972b1b2a92e53171094f31"
+local_parked_guard_checker_command = "python3 scripts/check_parked_admission_guards.py"
+local_parked_guard_checker_result = "PASS"
+local_parked_guard_selftest_command = "python3 scripts/check_parked_admission_guards.py --selftest"
+local_parked_guard_selftest_result = "PASS"
+local_parked_guard_clean_tree = true
+
+kernel_6_18 = "6.18.38-2-cachyos-lts"
+kernel_7_1 = "7.1.4-1-cachyos"
+
+package_artifacts = "NOT RUN"
+package_signatures = "NOT RUN"
+target_install = "NOT RUN"
+hardware_operation = "NOT RUN"
+
+source_delta_coverage = "PASS"
+source_delta_map_path = "docs/base-delta-map.tsv"
+source_delta_map_sha256 = "fb852dbfbe6da7ce27609b1c55036f765b966ce3c40eede8cd48241f7e1ea828"
+source_delta_baseline_tag = "radeon-unified-0.7-profiled-source"
+source_delta_baseline_tag_object = "7f500d682aad600ca443c7f26e913b6b4034c834"
+source_delta_baseline_commit = "293a4ae3fe82cd03585ef3157e82b0b59b641b47"
