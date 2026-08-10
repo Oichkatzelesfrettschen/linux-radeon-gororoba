@@ -444,9 +444,11 @@ toolchain closure evidence, and retained producer inputs are byte identical.
 Among admitted identities, only the source commit, source tree, and driver
 subtree differ. Derived source products differ accordingly. Every
 producer-side admission field listed above is equal. This equality is an
-explicit admission check because comparison schema v2 records input source
+explicit admission check because comparison schema v3 records input source
 commits and ledger hashes but does not record or enforce producer and policy
-equality.
+equality. The v3 verifier authenticates retained comparison-v2 capture
+policies through the exact supported set of v2 and v3. New capture production
+accepts only comparison v3, and retained comparison v1 remains rejected.
 
 The left input recaptures source commit
 `7a353a84d863a4ef2326a81cc837fb3d03408665` under the admitted producer. Its
@@ -459,14 +461,14 @@ and its ledger SHA-256 is
 The all-lane verifier passes independently.
 
 The comparison bundle name is
-`radeon-driver-source-map-control-admission/7a353a8-to-8158297-matched-producer-comparison`.
+`radeon-driver-source-map-unique-tsv-columns/7a353a8-to-8158297-matched-capture-v3-comparison`.
 The comparison producer uses Git blob
-`efa5bab8e0e15be7ce4205de37ba8ec2fc434d26`, whose file SHA-256 is
-`d9a64a002dcbc4d87c181119efc877c8975499bb94378add6bf1e9e83caff1a1`.
+`b417ab2411527be82e58cb077171c02fa3dbb92d`, whose file SHA-256 is
+`45a8a4b02c807701e58a53a326d0d29b1acf8c2e4b6d46d8d1c91c2e3f414317`.
 Its manifest SHA-256 is
-`06d96ab974ca1a5d403b4db00cb7550a1c5d7d3e4efeda023ebd726771efe40d`,
+`f57596bd6ee90c763e5f35bc65a386d29c375cd31a8f31f85cba4ffd4485227a`,
 and its nine-row ledger SHA-256 is
-`000a02da13016a61c37c2d31491e76f64d09ef3abce71d218cac25b9b2ae2e17`.
+`932ca33e4c26dbe87c79c842b25096c184a90a94b403ce38c9ee8cf0b4691dc3`.
 Independent `sha256sum --check` verification passes.
 The profile member product uses schema
 `radeon-driver-profile-symbol-delta-member-delta-v2` and keeps the outer
