@@ -4586,6 +4586,33 @@ def normalize_runtime_library_soname(
     return soname
 
 
+def parse_ldd_runtime_row(row: str) -> tuple[str, str] | None:
+    """Parse one C locale ldd dependency row.
+
+    The virtual DSO has no file identity. Ordinary dependencies use the
+    requested-name arrow resolved-path form. Dynamic loaders may instead use
+    one direct absolute path, which serves as both the request and resolution
+    and remains subject to ELF SONAME validation.
+    """
+    if re.fullmatch(r"linux-vdso\.so\.1\s+\(0x[0-9a-fA-F]+\)", row):
+        return None
+    missing = re.fullmatch(r"(\S+)\s+=>\s+not found", row)
+    if missing is not None:
+        raise SourceMapError(
+            f"kernel tool runtime library is absent: {missing.group(1)}"
+        )
+    indirect = re.fullmatch(
+        r"(\S+)\s+=>\s+(\S+)\s+\(0x[0-9a-fA-F]+\)",
+        row,
+    )
+    if indirect is not None:
+        return indirect.groups()
+    direct = re.fullmatch(r"(/\S+)\s+\(0x[0-9a-fA-F]+\)", row)
+    require(direct is not None, f"ldd emitted an unparsed row: {row}")
+    path = direct.group(1)
+    return path, path
+
+
 def capture_toolchain_runtime_libraries(
     release: str,
     bin_directory: Path,
@@ -4626,7 +4653,8 @@ def capture_toolchain_runtime_libraries(
         )
         for line in result.stdout.splitlines():
             stripped = line.strip()
-            if stripped.startswith("linux-vdso.so.1 "):
+            parsed = parse_ldd_runtime_row(stripped)
+            if parsed is None:
                 rows.add(
                     (
                         release,
@@ -4640,16 +4668,7 @@ def capture_toolchain_runtime_libraries(
                     )
                 )
                 continue
-            match = re.fullmatch(
-                r"(\S+)\s+=>\s+(\S+)\s+\(0x[0-9a-fA-F]+\)",
-                stripped,
-            )
-            require(match is not None, f"ldd emitted an unparsed row: {stripped}")
-            requested_name, raw_path = match.groups()
-            require(
-                raw_path != "not",
-                f"kernel tool runtime library is absent: {requested_name}",
-            )
+            requested_name, raw_path = parsed
             resolved = Path(raw_path).resolve(strict=True)
             status = resolved.stat()
             require(
@@ -7198,7 +7217,24 @@ def row_set(path: Path, schema: str) -> tuple[list[str], set[tuple[str, ...]]]:
     return columns, normalized
 
 
+def require_comparison_output_separate(
+    left: Path,
+    right: Path,
+    output: Path,
+) -> None:
+    """Keep a comparison product outside both immutable input captures."""
+    resolved_output = output.resolve()
+    for label, capture in (("left", left), ("right", right)):
+        resolved_capture = capture.resolve()
+        require(
+            resolved_output != resolved_capture
+            and resolved_capture not in resolved_output.parents,
+            f"comparison output is inside the {label} input capture",
+        )
+
+
 def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
+    require_comparison_output_separate(left, right, output)
     left_manifest = verify_capture(left)
     right_manifest = verify_capture(right)
     require(not output.exists(), f"comparison output already exists: {output}")
@@ -7520,6 +7556,26 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "[ld-linux-x86-64.so.2]\n",
         )
         == "ld-linux-x86-64.so.2",
+    )
+    check(
+        "ldd parser accepts a direct absolute dynamic loader row",
+        parse_ldd_runtime_row(
+            "/usr/lib/ld-linux-x86-64.so.2 (0x00007f0000000000)"
+        )
+        == (
+            "/usr/lib/ld-linux-x86-64.so.2",
+            "/usr/lib/ld-linux-x86-64.so.2",
+        ),
+    )
+    rejects(
+        "ldd parser rejects a relative direct dependency row",
+        lambda: parse_ldd_runtime_row(
+            "ld-linux-x86-64.so.2 (0x00007f0000000000)"
+        ),
+    )
+    rejects(
+        "ldd parser rejects an unresolved dependency",
+        lambda: parse_ldd_runtime_row("libmissing.so.1 => not found"),
     )
     rejects(
         "ELF SONAME rejects a mismatched loader name",
@@ -8355,6 +8411,54 @@ def self_test(repository: Path, policy_path: Path) -> int:
 
     with tempfile.TemporaryDirectory(prefix="radeon-source-map-selftest-") as temporary:
         temp = Path(temporary)
+        comparison_left = temp / "comparison-left"
+        comparison_right = temp / "comparison-right"
+        comparison_left.mkdir()
+        comparison_right.mkdir()
+        accepts(
+            "comparison output accepts a sibling of both inputs",
+            lambda: require_comparison_output_separate(
+                comparison_left,
+                comparison_right,
+                temp / "comparison-output",
+            ),
+        )
+
+        def compare_rejects_without_output(
+            label: str,
+            output: Path,
+            expected_message: str,
+        ) -> None:
+            try:
+                compare_captures(comparison_left, comparison_right, output)
+            except SourceMapError as exc:
+                check(
+                    label,
+                    str(exc) == expected_message and not output.parent.exists(),
+                )
+            else:
+                check(label, False)
+
+        compare_rejects_without_output(
+            "comparison rejects a left descendant before input verification",
+            comparison_left / "nested" / "comparison-output",
+            "comparison output is inside the left input capture",
+        )
+        compare_rejects_without_output(
+            "comparison rejects a right descendant before input verification",
+            comparison_right / "nested" / "comparison-output",
+            "comparison output is inside the right input capture",
+        )
+        comparison_left_alias = temp / "comparison-left-alias"
+        comparison_left_alias.symlink_to(comparison_left, target_is_directory=True)
+        rejects(
+            "comparison output rejects a symlink alias into the left input",
+            lambda: require_comparison_output_separate(
+                comparison_left,
+                comparison_right,
+                comparison_left_alias / "comparison-output",
+            ),
+        )
         recorder = CommandRecorder(temp / "capture", repository, repository)
         accepts(
             "cflow diagnostic policy accepts structured conditional definitions",

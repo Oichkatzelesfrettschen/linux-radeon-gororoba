@@ -41,10 +41,11 @@ production package on RS482. The repository carries no 0.8-1 signed release
 attestation or loaded module identity, so 0.8-1 remains package and target
 compile evidence rather than loaded deployment authority.
 
-The live RS482 target runs the signed 0.7-1 production and board policy
-packages. The retained read only identity bundle joins PCI `1002:5974` to the
-loaded `radeon` module, installed DKMS file, package, and source pin. The
-loaded module carries srcversion `A7F72BE636B52D7EED42415`, GNU build ID
+The live RS482 target records installed production and board policy package
+version 0.7-1. The retained read only identity bundle joins PCI `1002:5974` to
+the loaded `radeon` module, installed DKMS file, package version, and source
+pin. It does not bind the installed files to the signed release archive bytes.
+The loaded module carries srcversion `A7F72BE636B52D7EED42415`, GNU build ID
 `a5f1ae7e6e040b20c53278d2978ea7a17a29b696`, compressed module SHA256
 `6d058f68aefab94350e96a9e376e3ff577512cd4d4919b627e85b678ca1b0301`,
 source commit `293a4ae3fe82cd03585ef3157e82b0b59b641b47`, and driver tree

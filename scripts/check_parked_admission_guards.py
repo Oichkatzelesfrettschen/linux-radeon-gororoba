@@ -67,6 +67,15 @@ PARKED_GUARD = re.compile(
 )
 READ_LOCK = re.compile(r"\bdown_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;")
 READ_UNLOCK = re.compile(r"\bup_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;")
+RESET_TRANSACTION = re.compile(
+    r"\{\s*"
+    r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
+    r"r\s*=\s*radeon_gpu_reset\s*\(\s*rdev\s*\)\s*;\s*"
+    r"if\s*\(\s*!\s*r\s*\)\s*"
+    r"r\s*=\s*-EAGAIN\s*;\s*"
+    r"return\s+r\s*;\s*"
+    r"\}"
+)
 C_COMMENT_OR_LITERAL = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
@@ -514,17 +523,10 @@ def check_command_submission_lock(
 
     reset_start, reset_end = controlled_statement(body, reset.end())
     reset_statement = body[reset_start:reset_end]
-    reset_unlock = READ_UNLOCK.search(reset_statement)
-    reset_call = re.search(r"\bradeon_gpu_reset\s*\(", reset_statement)
-    reset_return = re.search(r"\breturn\s+r\s*;", reset_statement)
-    if (
-        reset_unlock is None
-        or reset_call is None
-        or reset_return is None
-        or not reset_unlock.start() < reset_call.start() < reset_return.start()
-    ):
+    if RESET_TRANSACTION.fullmatch(reset_statement) is None:
         raise GuardError(
-            "command-submission: reset path does not unlock before reset and return"
+            "command-submission: reset path is not the direct unlock, reset, "
+            "success translation, and return transaction"
         )
 
     prefix = body[lock.end() : guard_match.start()]
@@ -1024,6 +1026,41 @@ CS_FIXTURES_BAD = {
         "\t\tr = radeon_gpu_reset(rdev);",
         "\t\tr = radeon_gpu_reset(rdev);\n"
         "\t\tup_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "reset unlock is nested in an unreachable block": CS_FIXTURE_GOOD.replace(
+        "\t\tup_read(&rdev->exclusive_lock);\n"
+        "\t\tr = radeon_gpu_reset(rdev);",
+        "\t\tif (false) {\n"
+        "\t\t\tup_read(&rdev->exclusive_lock);\n"
+        "\t\t}\n"
+        "\t\tr = radeon_gpu_reset(rdev);",
+        1,
+    ),
+    "reset unlock is conditional without braces": CS_FIXTURE_GOOD.replace(
+        "\tif (rdev->in_reset) {\n"
+        "\t\tup_read(&rdev->exclusive_lock);",
+        "\tif (rdev->in_reset) {\n"
+        "\t\tif (false)\n"
+        "\t\t\tup_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "reset call is nested in an unreachable block": CS_FIXTURE_GOOD.replace(
+        "\t\tr = radeon_gpu_reset(rdev);\n"
+        "\t\tif (!r)",
+        "\t\tif (false) {\n"
+        "\t\t\tr = radeon_gpu_reset(rdev);\n"
+        "\t\t}\n"
+        "\t\tif (!r)",
+        1,
+    ),
+    "reset return is nested in an unreachable block": CS_FIXTURE_GOOD.replace(
+        "\t\treturn r;\n"
+        "\t}",
+        "\t\tif (false) {\n"
+        "\t\t\treturn r;\n"
+        "\t\t}\n"
+        "\t}",
         1,
     ),
     "relocation validation precedes parked refusal": CS_FIXTURE_GOOD.replace(
