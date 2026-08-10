@@ -103,9 +103,7 @@ def run(
             result.stdout.decode("utf-8", errors="replace")
             + result.stderr.decode("utf-8", errors="replace")
         ).strip()
-        raise HistoryError(
-            f"{' '.join(command)} exited {result.returncode}: {detail}"
-        )
+        raise HistoryError(f"{' '.join(command)} exited {result.returncode}: {detail}")
     return result.stdout
 
 
@@ -168,9 +166,7 @@ def verify_oracle(control_root: Path, oracle_root: Path) -> None:
             raise HistoryError(f"downloaded oracle file is missing: {path.name}")
         actual = sha256_file(path)
         if actual != row["sha256"]:
-            raise HistoryError(
-                f"downloaded oracle {path.name} has SHA-256 {actual}"
-            )
+            raise HistoryError(f"downloaded oracle {path.name} has SHA-256 {actual}")
 
 
 def parse_trailer_lines(text: str) -> dict[str, list[str]]:
@@ -224,13 +220,10 @@ def is_reconstruction_range(
     trailers_by_commit: list[dict[str, list[str]]],
 ) -> bool:
     marked = [
-        bool(trailers.get("Reconstruction-id"))
-        for trailers in trailers_by_commit
+        bool(trailers.get("Reconstruction-id")) for trailers in trailers_by_commit
     ]
     if any(marked) and not all(marked):
-        raise HistoryError(
-            "one range cannot mix reconstruction and post-tag commits"
-        )
+        raise HistoryError("one range cannot mix reconstruction and post-tag commits")
     if not any(marked):
         return False
     for commit, trailers in zip(commits, trailers_by_commit, strict=True):
@@ -274,8 +267,7 @@ def verify_post_tag_paths(commit: str, paths: list[str]) -> None:
     generated = generated_source_paths(paths)
     if generated:
         raise HistoryError(
-            f"{commit[:12]}: generated source is tracked: "
-            + ", ".join(generated)
+            f"{commit[:12]}: generated source is tracked: " + ", ".join(generated)
         )
 
 
@@ -285,9 +277,7 @@ def require_trusted_merge_parent(
     trusted_base: str,
 ) -> None:
     if len(parents) != 2:
-        raise HistoryError(
-            f"{commit[:12]}: post-tag source merge requires two parents"
-        )
+        raise HistoryError(f"{commit[:12]}: post-tag source merge requires two parents")
     if parents.count(trusted_base) != 1:
         raise HistoryError(
             f"{commit[:12]}: post-tag source merge lacks the exact trusted base parent"
@@ -312,9 +302,11 @@ def verify_post_tag_commit(
     commit: str,
     trusted_base: str,
 ) -> None:
-    commit_and_parents = git(
-        repository, "rev-list", "--parents", "-n", "1", commit
-    ).decode("ascii").split()
+    commit_and_parents = (
+        git(repository, "rev-list", "--parents", "-n", "1", commit)
+        .decode("ascii")
+        .split()
+    )
     parents = commit_and_parents[1:]
     generated = tracked_generated_source(repository, commit)
     if generated:
@@ -374,9 +366,7 @@ def verify_commit_metadata(
             raise HistoryError(f"{commit_id}: requires exactly one {key} trailer")
     if trailers["Reconstruction-id"][0] != commit_id:
         raise HistoryError(f"{commit_id}: Reconstruction-id trailer differs")
-    if split_csv(trailers["Legacy-patches"][0]) != split_csv(
-        plan["legacy_patches"]
-    ):
+    if split_csv(trailers["Legacy-patches"][0]) != split_csv(plan["legacy_patches"]):
         raise HistoryError(f"{commit_id}: Legacy-patches trailer differs")
     if split_csv(trailers["Legacy-effects"][0]) != effects:
         raise HistoryError(f"{commit_id}: Legacy-effects trailer differs")
@@ -405,13 +395,18 @@ def verify_commit_metadata(
         origin, expected_name, expected_email = UPSTREAM_COMMITS[commit_id]
         if trailers.get("Upstream-origin") != [origin]:
             raise HistoryError(f"{commit_id}: Upstream-origin differs")
-        author = git(
-            repository,
-            "show",
-            "-s",
-            "--format=%an%x00%ae",
-            commit,
-        ).decode("utf-8").strip().split("\0")
+        author = (
+            git(
+                repository,
+                "show",
+                "-s",
+                "--format=%an%x00%ae",
+                commit,
+            )
+            .decode("utf-8")
+            .strip()
+            .split("\0")
+        )
         if author != [expected_name, expected_email]:
             raise HistoryError(f"{commit_id}: original author identity differs")
     elif trailers.get("Upstream-origin"):
@@ -426,15 +421,18 @@ def verify_commit_content(
     compatibility_files: set[str],
 ) -> None:
     commit_id = plan["commit_id"]
-    actual_tree = git(
-        repository,
-        "rev-parse",
-        f"{commit}:drivers/gpu/drm/radeon",
-    ).decode("ascii").strip()
+    actual_tree = (
+        git(
+            repository,
+            "rev-parse",
+            f"{commit}:drivers/gpu/drm/radeon",
+        )
+        .decode("ascii")
+        .strip()
+    )
     if actual_tree != plan["expected_driver_tree"]:
         raise HistoryError(
-            f"{commit_id}: driver tree {actual_tree} != "
-            f"{plan['expected_driver_tree']}"
+            f"{commit_id}: driver tree {actual_tree} != {plan['expected_driver_tree']}"
         )
 
     paths = changed_paths(repository, commit)
@@ -472,9 +470,7 @@ def verify_commit_content(
     compat_changes = compatibility_files.intersection(source_changes)
     pre_frontier = commit_id.startswith("B") and int(commit_id[1:]) <= 8
     if compat_changes and not pre_frontier and plan["kernel_lanes"] != "6.18,7.1":
-        raise HistoryError(
-            f"{commit_id}: compatibility change lacks both kernel lanes"
-        )
+        raise HistoryError(f"{commit_id}: compatibility change lacks both kernel lanes")
 
     parent = git(repository, "rev-parse", f"{commit}^").decode("ascii").strip()
     run(
@@ -538,23 +534,22 @@ def prepare(
     assert isinstance(effects, dict)
     compatibility_files = {
         line
-        for line in (
-            control_root / "policy/kernel-compat-files.txt"
-        ).read_text(encoding="ascii").splitlines()
+        for line in (control_root / "policy/kernel-compat-files.txt")
+        .read_text(encoding="ascii")
+        .splitlines()
         if line and not line.startswith("#")
     }
 
     commits = range_commits(repository, base, head)
-    trailers_by_commit = [
-        commit_trailers(repository, commit)
-        for commit in commits
-    ]
+    trailers_by_commit = [commit_trailers(repository, commit) for commit in commits]
     if not is_reconstruction_range(commits, trailers_by_commit):
         for commit in commits:
             verify_post_tag_commit(repository, commit, base)
-        head_and_parents = git(
-            repository, "rev-list", "--parents", "-n", "1", head
-        ).decode("ascii").split()
+        head_and_parents = (
+            git(repository, "rev-list", "--parents", "-n", "1", head)
+            .decode("ascii")
+            .split()
+        )
         verify_post_tag_head(head, head_and_parents[1:], base)
         verify_source_delta_contract(repository)
         print("post-tag source range: no reconstruction matrix")
@@ -597,9 +592,7 @@ def verify_worktree_manifest(
         )
     actual_hash = hashlib.sha256(actual).hexdigest()
     if actual_hash != plan["expected_manifest_sha256"]:
-        raise HistoryError(
-            f"{plan['commit_id']}: worktree manifest SHA-256 differs"
-        )
+        raise HistoryError(f"{plan['commit_id']}: worktree manifest SHA-256 differs")
 
 
 def registered_worktree(repository: Path, worktree: Path) -> bool:
@@ -639,9 +632,7 @@ def run_build(
             )
         except subprocess.TimeoutExpired as exc:
             log_path.write_bytes(exc.stdout or b"")
-            raise HistoryError(
-                f"module build timed out against {kernel_root}"
-            ) from exc
+            raise HistoryError(f"module build timed out against {kernel_root}") from exc
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     log_path.write_bytes(result.stdout)
@@ -683,8 +674,9 @@ def build_one(
         head,
         require_complete=False,
     )
-    matches = [(item_id, commit) for item_id, commit in prepared
-               if item_id == commit_id]
+    matches = [
+        (item_id, commit) for item_id, commit in prepared if item_id == commit_id
+    ]
     if len(matches) != 1:
         raise HistoryError(f"range does not contain exactly one {commit_id}")
     commit = matches[0][1]
@@ -703,19 +695,22 @@ def build_one(
         added = True
         if not registered_worktree(repository, worktree):
             raise HistoryError("temporary worktree is not registered at the exact path")
-        actual = git(
-            worktree,
-            "rev-parse",
-            "HEAD:drivers/gpu/drm/radeon",
-        ).decode("ascii").strip()
+        actual = (
+            git(
+                worktree,
+                "rev-parse",
+                "HEAD:drivers/gpu/drm/radeon",
+            )
+            .decode("ascii")
+            .strip()
+        )
         if actual != plan["expected_driver_tree"]:
             raise HistoryError(f"{commit_id}: detached worktree tree differs")
         verify_worktree_manifest(worktree, control_root, plan)
         if commit_id in {"B14", "M24"}:
             legacy_count, target_count, compiler = verify_outputs(
                 worktree / "drivers/gpu/drm/radeon",
-                oracle_root
-                / "legacy-payload-0.3-91-exact-context-manifest.tsv",
+                oracle_root / "legacy-payload-0.3-91-exact-context-manifest.tsv",
             )
             print(
                 f"{commit_id}: {legacy_count} legacy generated outputs match; "
@@ -756,9 +751,7 @@ def append_matrix(path: Path, prepared: list[tuple[str, str]]) -> None:
 def self_test() -> int:
     union_rejections = 0
     try:
-        parsed = parse_trailer_lines(
-            "Reconstruction-id: B01\nKernel-lanes: 6.18\n"
-        )
+        parsed = parse_trailer_lines("Reconstruction-id: B01\nKernel-lanes: 6.18\n")
         if parsed["Reconstruction-id"] != ["B01"]:
             raise HistoryError("trailer parser lost Reconstruction-id")
         if not is_control_path("migration/input/oracle.tsv"):
@@ -834,7 +827,9 @@ def self_test() -> int:
             except HistoryError:
                 union_rejections += 1
             else:
-                raise HistoryError("union calibration accepted invalid parent authority")
+                raise HistoryError(
+                    "union calibration accepted invalid parent authority"
+                )
         try:
             verify_post_tag_head("head", ["linear-parent"], "base")
         except HistoryError:
@@ -923,14 +918,13 @@ def main() -> int:
             )
             if args.github_output:
                 append_matrix(args.github_output, prepared)
-            print("approved reconstruction order: " + " ".join(
-                commit_id for commit_id, _ in prepared
-            ))
+            print(
+                "approved reconstruction order: "
+                + " ".join(commit_id for commit_id, _ in prepared)
+            )
         elif args.reconstruction_id:
             if not args.root_6_18 or not args.root_7_1 or not args.log_root:
-                parser.error(
-                    "--reconstruction-id requires both roots and --log-root"
-                )
+                parser.error("--reconstruction-id requires both roots and --log-root")
             build_one(
                 repository,
                 control_root,

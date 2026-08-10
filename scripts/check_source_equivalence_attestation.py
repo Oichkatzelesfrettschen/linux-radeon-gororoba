@@ -100,9 +100,7 @@ def public_key_identity(
             "allowed signers entry must contain principal, key type, and key"
         )
     if fields[0] != principal:
-        raise AttestationError(
-            f"allowed signers principal {fields[0]} != {principal}"
-        )
+        raise AttestationError(f"allowed signers principal {fields[0]} != {principal}")
     key_bytes = f"{fields[1]} {fields[2]}\n".encode("ascii")
     result = subprocess.run(
         ["ssh-keygen", "-lf", "-", "-E", "sha256"],
@@ -142,15 +140,9 @@ def validate_attestation(
         raise AttestationError("signing_format must be ssh")
     principal = require_string(attestation, "signer_principal")
     fingerprint = require_string(attestation, "signer_fingerprint", FINGERPRINT)
-    public_key_sha256 = require_string(
-        attestation, "public_key_sha256", SHA256
-    )
-    entry_sha256 = require_string(
-        attestation, "allowed_signers_entry_sha256", SHA256
-    )
-    allowed_signers_name = require_string(
-        attestation, "allowed_signers_file"
-    )
+    public_key_sha256 = require_string(attestation, "public_key_sha256", SHA256)
+    entry_sha256 = require_string(attestation, "allowed_signers_entry_sha256", SHA256)
+    allowed_signers_name = require_string(attestation, "allowed_signers_file")
     allowed_signers = relative_file(repository, allowed_signers_name)
 
     if git_output(repository, "cat-file", "-t", tag_name) != "tag":
@@ -273,7 +265,9 @@ def self_test(repository: Path, attestation_path: Path) -> int:
         wrong_command["local_verification_command"] = "git verify-tag HEAD"
         expect_failure(repository, wrong_command, "nonreproducible command")
     except (AttestationError, OSError, UnicodeDecodeError) as exc:
-        print(f"source-equivalence attestation calibration: FAIL: {exc}", file=sys.stderr)
+        print(
+            f"source-equivalence attestation calibration: FAIL: {exc}", file=sys.stderr
+        )
         return 1
     print("source-equivalence attestation calibration: identity drift fails closed")
     return 0

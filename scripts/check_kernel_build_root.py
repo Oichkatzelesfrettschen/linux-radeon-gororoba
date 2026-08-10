@@ -91,17 +91,23 @@ def parse_manifest(path: Path) -> list[str]:
     for line_number, row in enumerate(lines[2:], 3):
         fields = row.split("\t")
         if len(fields) != 5:
-            raise VerificationError(f"manifest row {line_number} has {len(fields)} fields")
+            raise VerificationError(
+                f"manifest row {line_number} has {len(fields)} fields"
+            )
         rel, entry_type, mode, size_text, identity = fields
         if rel in seen:
             raise VerificationError(f"manifest repeats path: {rel}")
         seen.add(rel)
         if entry_type not in {"directory", "regular", "symlink"}:
-            raise VerificationError(f"manifest carries unknown type for {rel}: {entry_type}")
+            raise VerificationError(
+                f"manifest carries unknown type for {rel}: {entry_type}"
+            )
         if not re.fullmatch(r"[0-7]{4}", mode):
             raise VerificationError(f"manifest carries invalid mode for {rel}: {mode}")
         if not size_text.isdigit():
-            raise VerificationError(f"manifest carries invalid size for {rel}: {size_text}")
+            raise VerificationError(
+                f"manifest carries invalid size for {rel}: {size_text}"
+            )
         if entry_type == "directory":
             if size_text != "0" or identity != "-":
                 raise VerificationError(f"directory identity is not canonical: {rel}")
@@ -155,8 +161,12 @@ def load_declaration(path: Path) -> dict[str, object]:
     if declaration["signature_result"] != "good":
         raise VerificationError("signature_result must equal good")
     fingerprint = declaration["verified_signer_fingerprint"]
-    if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9A-F]{40}", fingerprint):
-        raise VerificationError("verified_signer_fingerprint is not a 40-digit fingerprint")
+    if not isinstance(fingerprint, str) or not re.fullmatch(
+        r"[0-9A-F]{40}", fingerprint
+    ):
+        raise VerificationError(
+            "verified_signer_fingerprint is not a 40-digit fingerprint"
+        )
     host_policy = declaration.get("host_policy")
     if host_policy != {
         "uid": 0,
@@ -166,7 +176,9 @@ def load_declaration(path: Path) -> dict[str, object]:
         "runner_directory_write": False,
         "special_files": False,
     }:
-        raise VerificationError("host_policy does not carry the fail-closed declaration")
+        raise VerificationError(
+            "host_policy does not carry the fail-closed declaration"
+        )
     return declaration
 
 
@@ -251,7 +263,9 @@ def verify_host_policy(root: Path) -> None:
         if info.st_uid != 0 or info.st_gid != 0:
             raise VerificationError(f"host ownership is not root:root: {rel}")
         if not stat.S_ISLNK(info.st_mode) and stat.S_IMODE(info.st_mode) & 0o022:
-            raise VerificationError(f"host object is group-writable or other-writable: {rel}")
+            raise VerificationError(
+                f"host object is group-writable or other-writable: {rel}"
+            )
         if stat.S_ISDIR(info.st_mode) and os.access(path, os.W_OK):
             raise VerificationError(f"runner can write retained-root directory: {rel}")
         attributes = os.listxattr(path, follow_symlinks=False)
@@ -282,7 +296,9 @@ def verify(
         "symlink": declaration["symlink_count"],
     }
     if counts != expected_counts:
-        raise VerificationError(f"manifest type counts differ: {counts} against {expected_counts}")
+        raise VerificationError(
+            f"manifest type counts differ: {counts} against {expected_counts}"
+        )
     if sum(counts.values()) != declaration["entry_count"]:
         raise VerificationError("manifest entry count differs from declaration")
     verify_kernel_identity(root, declaration)
@@ -323,7 +339,10 @@ def self_test() -> None:
         changed("changed regular mode", lambda path: (path / "file").chmod(0o755))
         changed(
             "changed symlink target",
-            lambda path: ((path / "link").unlink(), (path / "link").symlink_to("empty")),
+            lambda path: (
+                (path / "link").unlink(),
+                (path / "link").symlink_to("empty"),
+            ),
         )
         changed("unexpected file", lambda path: (path / "extra").write_bytes(b"x"))
 

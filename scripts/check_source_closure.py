@@ -34,7 +34,9 @@ def load_declaration(path: Path) -> dict[str, Any]:
     return data
 
 
-def git(repository: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def git(
+    repository: Path, *arguments: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         ["git", "-C", str(repository), *arguments],
         check=False,
@@ -66,7 +68,7 @@ def validate_entry(
         raise ClosureError(f"{table} is not a list of tables")
     path = closure_path(entry.get("path"), table)
     if entry.get("status") != "present":
-        raise ClosureError(f"{table} {path} must carry status = \"present\"")
+        raise ClosureError(f'{table} {path} must carry status = "present"')
 
     reconstruction_id = entry.get("reconstruction_id")
     if not isinstance(reconstruction_id, str) or not RECONSTRUCTION_ID.fullmatch(
@@ -131,9 +133,7 @@ def validate_declaration(
     if not isinstance(closure, dict):
         raise ClosureError("source-closure.toml carries no [closure] table")
     if closure.get("upstream_path") != RADEON_SUBTREE.as_posix():
-        raise ClosureError(
-            f"closure upstream_path must be {RADEON_SUBTREE.as_posix()}"
-        )
+        raise ClosureError(f"closure upstream_path must be {RADEON_SUBTREE.as_posix()}")
 
     proven = []
     for table in ("restored", "retained"):
@@ -230,10 +230,7 @@ def main() -> int:
         print(f"source closure: {exc}", file=sys.stderr)
         return 1
     for table, path, reconstruction_id, source_commit in proven:
-        print(
-            f"{table}: {path} present at {reconstruction_id} "
-            f"({source_commit})"
-        )
+        print(f"{table}: {path} present at {reconstruction_id} ({source_commit})")
     print(f"source closure: {len(proven)} attributed paths proven")
     return 0
 

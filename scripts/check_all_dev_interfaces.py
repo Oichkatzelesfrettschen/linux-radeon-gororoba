@@ -237,9 +237,7 @@ RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
         "rs480_candidate_gart_status_regs_fops"
     ),
     "radeon_rs480_candidate_gb_regs": "rs480_candidate_gb_regs_fops",
-    "radeon_rs480_candidate_mc_benign_regs": (
-        "rs480_candidate_mc_benign_regs_fops"
-    ),
+    "radeon_rs480_candidate_mc_benign_regs": ("rs480_candidate_mc_benign_regs_fops"),
     "radeon_rs480_candidate_rb3d_regs": "rs480_candidate_rb3d_regs_fops",
     "radeon_rs480_candidate_regs": "rs480_candidate_config_regs_fops",
     "radeon_rs480_candidate_sc_regs": "rs480_candidate_sc_regs_fops",
@@ -344,12 +342,8 @@ MUTATION_AUDIT_PATTERNS = {
 }
 
 RETIRED_RESET_PROBE_MARKERS = {
-    "drivers/gpu/drm/radeon/radeon_dev.c": (
-        "radeon_rs480_gpu_reset_recover_probe",
-    ),
-    "drivers/gpu/drm/radeon/radeon_dev.h": (
-        "radeon_rs480_gpu_reset_recover_probe",
-    ),
+    "drivers/gpu/drm/radeon/radeon_dev.c": ("radeon_rs480_gpu_reset_recover_probe",),
+    "drivers/gpu/drm/radeon/radeon_dev.h": ("radeon_rs480_gpu_reset_recover_probe",),
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
         "RS480_GPU_RESET_RECOVER_PROBE_ARM_TOKEN",
         "RS480_RESET_HANG_PROBE_SOFT_RESET_TOKEN",
@@ -546,8 +540,7 @@ def require_control_flow_census(
     """Require lexical control under the stated returning-call assumption."""
     code = strip_comments_and_literals(body)
     actual_counts = tuple(
-        len(re.findall(rf"\b{keyword}\b", code))
-        for keyword in CONTROL_FLOW_KEYWORDS
+        len(re.findall(rf"\b{keyword}\b", code)) for keyword in CONTROL_FLOW_KEYWORDS
     )
     require(
         actual_counts == expected_counts,
@@ -725,9 +718,7 @@ def function_body(
             function_text = "\n".join(lines[start : index + 1])
             if protect_identifiers:
                 protected_identifier_set = set(
-                    C_IDENTIFIER.findall(
-                        strip_comments_and_literals(function_text)
-                    )
+                    C_IDENTIFIER.findall(strip_comments_and_literals(function_text))
                 )
                 enclosing_conditions = []
                 if expected_enclosing_condition is not None:
@@ -735,13 +726,10 @@ def function_body(
                 if expected_enclosing_stack is not None:
                     enclosing_conditions.extend(
                         condition_tail
-                        for _kind, condition_tail, _branch
-                        in expected_enclosing_stack
+                        for _kind, condition_tail, _branch in expected_enclosing_stack
                     )
                 for condition in enclosing_conditions:
-                    protected_identifier_set.update(
-                        C_IDENTIFIER.findall(condition)
-                    )
+                    protected_identifier_set.update(C_IDENTIFIER.findall(condition))
                 protected_identifier_set.discard("defined")
                 require_no_local_macro_overrides(
                     source,
@@ -869,9 +857,7 @@ def validate_advertised_interface_totals(
 ) -> None:
     expected = {
         "features": sum(feature["tier"] != "prod" for feature in features.values()),
-        "parameters": sum(
-            row["marker_type"] == "module-parameter" for row in rows
-        ),
+        "parameters": sum(row["marker_type"] == "module-parameter" for row in rows),
         "debugfs": sum(row["marker_type"] == "debugfs-file" for row in rows),
     }
     for path, pattern in ADVERTISED_INTERFACE_TOTAL_PATTERNS.items():
@@ -1085,8 +1071,7 @@ def validate_rs4xx_output_schema_paths(
         "RS4xx readable debugfs node-to-fops map differs",
     )
     registered_node_modes = {
-        match.group("node"): match.group("mode")
-        for match in registrations
+        match.group("node"): match.group("mode") for match in registrations
     }
     expected_all_node_modes = {
         node: (
@@ -1186,9 +1171,7 @@ def validate_rs4xx_output_schema_paths(
         refusal_schema,
         "RS4xx parked-state schema route",
     )
-    refusal_prefix = strip_comments_and_literals(
-        refusal_body[: refusal_schema.start()]
-    )
+    refusal_prefix = strip_comments_and_literals(refusal_body[: refusal_schema.start()])
     require(
         output_call.search(refusal_prefix) is None
         and control_exit.search(refusal_prefix) is None,
@@ -1332,9 +1315,7 @@ def validate_rs4xx_output_schema_paths(
         r"position == RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;",
         "RS4xx CP-ME terminal-position predicate",
     )
-    terminal_emit_body = function_body(
-        source, "rs480_cp_me_ram_seq_emit_terminal"
-    )
+    terminal_emit_body = function_body(source, "rs480_cp_me_ram_seq_emit_terminal")
     terminal_emit_control = strip_comments_and_literals(terminal_emit_body)
     terminal_mapping = require_one_match(
         terminal_emit_body,
@@ -1794,8 +1775,7 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
         "RS4xx CP-ME dump data terminal record",
     )
     require(
-        brace_depth_at(dump_show_body, dump_header.end() + dump_data_gate.start())
-        == 1,
+        brace_depth_at(dump_show_body, dump_header.end() + dump_data_gate.start()) == 1,
         "RS4xx CP-ME dump data terminal record is not an unconditional outer function statement",
     )
     dump_address = require_one_match(
@@ -2349,12 +2329,11 @@ def validate_retired_reset_probe_denominator(
         len(set(identities)) == len(identities),
         "retired reset-probe marker denominator contains a duplicate identity",
     )
-    serialized = "".join(
-        f"{path}\t{marker}\n" for path, marker in identities
-    ).encode("ascii")
+    serialized = "".join(f"{path}\t{marker}\n" for path, marker in identities).encode(
+        "ascii"
+    )
     require(
-        hashlib.sha256(serialized).hexdigest()
-        == RETIRED_RESET_PROBE_MARKER_SHA256,
+        hashlib.sha256(serialized).hexdigest() == RETIRED_RESET_PROBE_MARKER_SHA256,
         "retired reset-probe marker identities differ from their pinned digest",
     )
 
@@ -2465,8 +2444,7 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     )
     for marker, expected_depth in marker_depths:
         require(
-            brace_depth_at(wedged_body, wedged_body.find(marker))
-            == expected_depth,
+            brace_depth_at(wedged_body, wedged_body.find(marker)) == expected_depth,
             f"wedged reset-probe marker is not at depth {expected_depth}: {marker}",
         )
 
@@ -2563,9 +2541,7 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         "atomic_inc(&rdev->gpu_reset_counter);"
     )
     require(
-        normalized_code(
-            reset_function_body[: reset_counter_at + len(reset_counter)]
-        )
+        normalized_code(reset_function_body[: reset_counter_at + len(reset_counter)])
         == expected_reset_prefix,
         "forced GPU-reset declaration and writer transaction prefix differs",
     )
@@ -2588,7 +2564,7 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         brace_depth_at(reset_function_body, reset_counter_at) == 1,
         "forced GPU-reset counter transition is not an outer function statement",
     )
-    reset_body = reset_function_body[reset_counter_at + len(reset_counter):]
+    reset_body = reset_function_body[reset_counter_at + len(reset_counter) :]
     require(
         "up_write(&rdev->exclusive_lock);" not in reset_body,
         "forced GPU-reset writer lock ends before a legitimate downgrade",
@@ -2602,8 +2578,7 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         "forced GPU-reset read-lock release paths differ",
     )
     parked_exit_start = (
-        'dev_err(rdev->dev, "parked: async agents quiesced, '
-        'entering quiet epoch\\n");'
+        'dev_err(rdev->dev, "parked: async agents quiesced, entering quiet epoch\\n");'
     )
     expected_parked_exit = (
         "dev_err(rdev->dev, ); rdev->in_reset = true; "
@@ -3193,11 +3168,10 @@ def self_test(root: Path) -> int:
     )
 
     alternate_seq_output = rs4xx_source.replace(
-        "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
-        "{\n",
+        "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n{\n",
         "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
         "{\n"
-        "\tseq_put_decimal_ull(m, \"\", 7);\n",
+        '\tseq_put_decimal_ull(m, "", 7);\n',
         1,
     )
     require(
@@ -3259,10 +3233,9 @@ def self_test(root: Path) -> int:
     reject_schema_mutant("a CP-ME dump without its header record", missing_dump_header)
 
     early_dump_header_output = rs4xx_source.replace(
+        "\tif (v == SEQ_START_TOKEN) {\n\t\trs480_debugfs_emit_schema(m);",
         "\tif (v == SEQ_START_TOKEN) {\n"
-        "\t\trs480_debugfs_emit_schema(m);",
-        "\tif (v == SEQ_START_TOKEN) {\n"
-        "\t\tseq_puts(m, \"bad\\n\");\n"
+        '\t\tseq_puts(m, "bad\\n");\n'
         "\t\trs480_debugfs_emit_schema(m);",
         1,
     )
@@ -3303,11 +3276,12 @@ def self_test(root: Path) -> int:
         paginated_dump_schema != rs4xx_source,
         "self-test CP-ME dump pagination fixture differs from the source",
     )
-    reject_schema_mutant("a schema emitter in CP-ME data records", paginated_dump_schema)
+    reject_schema_mutant(
+        "a schema emitter in CP-ME data records", paginated_dump_schema
+    )
 
     direct_paginated_schema = rs4xx_source.replace(
-        "\t}\n"
-        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\t}\n\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
         "\t}\n"
         "\trs480_debugfs_emit_schema(m);\n"
         "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
@@ -3323,10 +3297,9 @@ def self_test(root: Path) -> int:
     )
 
     early_dump_data_output = rs4xx_source.replace(
+        "\t}\n\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
         "\t}\n"
-        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
-        "\t}\n"
-        "\tseq_puts(m, \"bad\\n\");\n"
+        '\tseq_puts(m, "bad\\n");\n'
         "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
         1,
     )
@@ -3367,13 +3340,8 @@ def self_test(root: Path) -> int:
     reject_schema_mutant("an unbounded CP-ME dump iterator", unbounded_dump_next)
 
     early_dump_next_return = rs4xx_source.replace(
-        "\t++*pos;\n"
-        "\tif (was_terminal)\n"
-        "\t\treturn NULL;",
-        "\t++*pos;\n"
-        "\treturn pos;\n"
-        "\tif (was_terminal)\n"
-        "\t\treturn NULL;",
+        "\t++*pos;\n\tif (was_terminal)\n\t\treturn NULL;",
+        "\t++*pos;\n\treturn pos;\n\tif (was_terminal)\n\t\treturn NULL;",
         1,
     )
     require(
@@ -3386,8 +3354,7 @@ def self_test(root: Path) -> int:
     )
 
     dump_start_schema = rs4xx_source.replace(
-        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n"
-        "{\n",
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n{\n",
         "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n"
         "{\n"
         "\trs480_debugfs_emit_schema(m);\n",
@@ -3419,9 +3386,7 @@ def self_test(root: Path) -> int:
     )
 
     dump_next_schema = rs4xx_source.replace(
-        "\t++*pos;\n"
-        "\tif (was_terminal)\n"
-        "\t\treturn NULL;",
+        "\t++*pos;\n\tif (was_terminal)\n\t\treturn NULL;",
         "\t++*pos;\n"
         "\trs480_debugfs_emit_schema(m);\n"
         "\tif (was_terminal)\n"
@@ -3435,9 +3400,7 @@ def self_test(root: Path) -> int:
     reject_schema_mutant("schema output from CP-ME dump next", dump_next_schema)
 
     dump_next_refusal = rs4xx_source.replace(
-        "\t++*pos;\n"
-        "\tif (was_terminal)\n"
-        "\t\treturn NULL;",
+        "\t++*pos;\n\tif (was_terminal)\n\t\treturn NULL;",
         "\t++*pos;\n"
         "\trs480_debugfs_refuse_if_parked(m, rdev);\n"
         "\tif (was_terminal)\n"
@@ -3454,9 +3417,7 @@ def self_test(root: Path) -> int:
     )
 
     dump_stop_schema = rs4xx_source.replace(
-        "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n"
-        "{\n"
-        "}",
+        "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n{\n}",
         "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n"
         "{\n"
         "\trs480_debugfs_emit_schema(m);\n"
@@ -3559,9 +3520,7 @@ def self_test(root: Path) -> int:
     reject_schema_mutant("a conditional VAP schema route", conditional_vap_schema)
 
     gart_schema_route = (
-        "\trs480_debugfs_emit_schema(m);\n"
-        "\tseq_puts(m,\n"
-        '\t\t "row_type\\tstart_index'
+        '\trs480_debugfs_emit_schema(m);\n\tseq_puts(m,\n\t\t "row_type\\tstart_index'
     )
     literal_gart_schema = rs4xx_source.replace(
         gart_schema_route,
@@ -3592,8 +3551,7 @@ def self_test(root: Path) -> int:
     reject_schema_mutant("a disabled GART schema route", disabled_gart_schema)
 
     early_dump_header_refusal = rs4xx_source.replace(
-        "\tif (v == SEQ_START_TOKEN) {\n"
-        "\t\trs480_debugfs_emit_schema(m);\n",
+        "\tif (v == SEQ_START_TOKEN) {\n\t\trs480_debugfs_emit_schema(m);\n",
         "\tif (v == SEQ_START_TOKEN) {\n"
         "\t\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
         "\t\trs480_debugfs_emit_schema(m);\n",
@@ -3639,8 +3597,7 @@ def self_test(root: Path) -> int:
     )
 
     start_mmio_before_gate = rs4xx_source.replace(
-        "\tloff_t terminal_position;\n\n"
-        "\tif (*pos == 0)",
+        "\tloff_t terminal_position;\n\n\tif (*pos == 0)",
         "\tloff_t terminal_position;\n\n"
         "\tterminal_position = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
         "\tif (*pos == 0)",
@@ -3858,8 +3815,7 @@ def self_test(root: Path) -> int:
         "\t\tm->index = terminal_position;\n"
         "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
         "\t\treturn 0;\n",
-        "\t\tm->index = terminal_position;\n"
-        "\t\treturn 0;\n",
+        "\t\tm->index = terminal_position;\n\t\treturn 0;\n",
         1,
     )
     require(
@@ -3872,8 +3828,7 @@ def self_test(root: Path) -> int:
     )
 
     duplicate_show_terminal_route = rs4xx_source.replace(
-        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
-        "\t\treturn 0;\n",
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n\t\treturn 0;\n",
         "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
         "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
         "\t\treturn 0;\n",
@@ -3889,8 +3844,7 @@ def self_test(root: Path) -> int:
     )
 
     silent_show_terminal_route = rs4xx_source.replace(
-        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
-        "\t\treturn 0;\n",
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n\t\treturn 0;\n",
         "\t\treturn 0;\n",
         1,
     )
@@ -3904,9 +3858,9 @@ def self_test(root: Path) -> int:
     )
 
     duplicate_terminal_status = rs4xx_source.replace(
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n",
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n",
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n',
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n'
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n',
         1,
     )
     require(
@@ -3919,7 +3873,7 @@ def self_test(root: Path) -> int:
     )
 
     missing_terminal_status = rs4xx_source.replace(
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n",
+        '\t\tseq_puts(m, "terminal_status\\tstatus=asic-suspended\\n");\n',
         "",
         1,
     )
@@ -3935,24 +3889,24 @@ def self_test(root: Path) -> int:
     all_statuses_in_default = rs4xx_source.replace(
         "\tswitch (position) {\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=disarmed\\n");\n'
         "\t\tbreak;\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n'
         "\t\tbreak;\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=asic-suspended\\n");\n'
         "\t\tbreak;\n"
         "\tdefault:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=invalid\\n");\n'
         "\t\tbreak;\n"
         "\t}\n",
         "\tswitch (position) {\n"
         "\tdefault:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=disarmed\\n");\n'
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n'
+        '\t\tseq_puts(m, "terminal_status\\tstatus=asic-suspended\\n");\n'
+        '\t\tseq_puts(m, "terminal_status\\tstatus=invalid\\n");\n'
         "\t\tbreak;\n"
         "\t}\n",
         1,
@@ -3968,8 +3922,7 @@ def self_test(root: Path) -> int:
 
     overwritten_terminal_position = rs4xx_source.replace(
         "\tswitch (position) {",
-        "\tposition = RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n"
-        "\tswitch (position) {",
+        "\tposition = RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n\tswitch (position) {",
         1,
     )
     require(
@@ -4018,31 +3971,31 @@ def self_test(root: Path) -> int:
     nested_terminal_mapping = rs4xx_source.replace(
         "\tswitch (position) {\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=disarmed\\n");\n'
         "\t\tbreak;\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n'
         "\t\tbreak;\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=asic-suspended\\n");\n'
         "\t\tbreak;\n"
         "\tdefault:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=invalid\\n");\n'
         "\t\tbreak;\n"
         "\t}\n",
         "\tif (position == -1) {\n"
         "\tswitch (position) {\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=disarmed\\n");\n'
         "\t\tbreak;\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");\n'
         "\t\tbreak;\n"
         "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=asic-suspended\\n");\n'
         "\t\tbreak;\n"
         "\tdefault:\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=invalid\\n");\n'
         "\t\tbreak;\n"
         "\t}\n"
         "\t}\n"
@@ -4059,8 +4012,7 @@ def self_test(root: Path) -> int:
     )
 
     header_second_state_read = rs4xx_source.replace(
-        "\t\trs480_debugfs_emit_schema(m);\n"
-        "\t\treturn 0;",
+        "\t\trs480_debugfs_emit_schema(m);\n\t\treturn 0;",
         "\t\trs480_debugfs_emit_schema(m);\n"
         "\t\tif (rs480_debugfs_refuse_hardware_access(m, rdev))\n"
         "\t\t\treturn 0;\n"
@@ -4077,8 +4029,7 @@ def self_test(root: Path) -> int:
     )
 
     header_index_mutation = rs4xx_source.replace(
-        "\t\trs480_debugfs_emit_schema(m);\n"
-        "\t\treturn 0;",
+        "\t\trs480_debugfs_emit_schema(m);\n\t\treturn 0;",
         "\t\trs480_debugfs_emit_schema(m);\n"
         "\t\tm->index = RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n"
         "\t\treturn 0;",
@@ -4094,10 +4045,9 @@ def self_test(root: Path) -> int:
     )
 
     extra_header_terminal_record = rs4xx_source.replace(
+        "\t\trs480_debugfs_emit_schema(m);\n\t\treturn 0;",
         "\t\trs480_debugfs_emit_schema(m);\n"
-        "\t\treturn 0;",
-        "\t\trs480_debugfs_emit_schema(m);\n"
-        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        '\t\tseq_puts(m, "terminal_status\\tstatus=invalid\\n");\n'
         "\t\treturn 0;",
         1,
     )
@@ -4232,8 +4182,7 @@ def self_test(root: Path) -> int:
             "conditional lock assertion without braces",
             "drivers/gpu/drm/radeon/evergreen.c",
             "lockdep_assert_held_write(&rdev->exclusive_lock);",
-            "if (false)\n"
-            "\t\tlockdep_assert_held_write(&rdev->exclusive_lock);",
+            "if (false)\n\t\tlockdep_assert_held_write(&rdev->exclusive_lock);",
         ),
         (
             "reset body releases caller lock",
@@ -4294,15 +4243,13 @@ def self_test(root: Path) -> int:
             "conditional unsafe Boolean refusal without braces",
             "drivers/gpu/drm/radeon/evergreen.c",
             "if (!radeon_palm_dev_pci_reset_unsafe(rdev)) {",
-            "if (false)\n"
-            "\t\tif (!radeon_palm_dev_pci_reset_unsafe(rdev)) {",
+            "if (false)\n\t\tif (!radeon_palm_dev_pci_reset_unsafe(rdev)) {",
         ),
         (
             "conditional mutation marker without braces",
             "drivers/gpu/drm/radeon/evergreen.c",
             'radeon_dev_mark_mutation(rdev, "Palm PCI config reset");',
-            "if (false)\n"
-            '\t\tradeon_dev_mark_mutation(rdev, "Palm PCI config reset");',
+            'if (false)\n\t\tradeon_dev_mark_mutation(rdev, "Palm PCI config reset");',
         ),
         (
             "unlock before reset",
@@ -4382,7 +4329,7 @@ def self_test(root: Path) -> int:
             "if (false)\n"
             '\t\tdebugfs_create_file("radeon_force_pci_reset_safe", 0200,\n'
             "\t\t\t\t    minor->debugfs_root, rdev,\n"
-                "\t\t\t\t    &radeon_force_pci_reset_safe_fops);",
+            "\t\t\t\t    &radeon_force_pci_reset_safe_fops);",
         ),
         (
             "local debugfs_create_file override",
@@ -4584,10 +4531,7 @@ def self_test(root: Path) -> int:
 
     bypassed_palm_reset = copy.deepcopy(source_texts)
     palm_reset_path = "drivers/gpu/drm/radeon/evergreen.c"
-    family_refusal = (
-        "if (!rdev || rdev->family != CHIP_PALM)\n"
-        "\t\treturn -ENODEV;"
-    )
+    family_refusal = "if (!rdev || rdev->family != CHIP_PALM)\n\t\treturn -ENODEV;"
     first_hardware_context = (
         'dev_info(rdev->dev, "GPU pci config reset '
         '(bounded MC-wait safe variant)\\n");\n\n'
@@ -4721,9 +4665,9 @@ def self_test(root: Path) -> int:
     validate_retired_reset_probes(retired_source_texts)
     shrunk_retired_denominator = copy.deepcopy(RETIRED_RESET_PROBE_MARKERS)
     first_retired_path = sorted(shrunk_retired_denominator)[0]
-    shrunk_retired_denominator[first_retired_path] = (
-        shrunk_retired_denominator[first_retired_path][1:]
-    )
+    shrunk_retired_denominator[first_retired_path] = shrunk_retired_denominator[
+        first_retired_path
+    ][1:]
     try:
         validate_retired_reset_probe_denominator(shrunk_retired_denominator)
     except InterfaceError:
@@ -4771,16 +4715,13 @@ def self_test(root: Path) -> int:
 
     reset_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     reset_source = source_texts[reset_source_path]
-    wedged_function_start = reset_source.find(
-        "static int rs480_wedged_3d_reset("
-    )
+    wedged_function_start = reset_source.find("static int rs480_wedged_3d_reset(")
     wedged_function_end = reset_source.find(
         "\nstatic int rs480_reset_hang_probe_show(",
         wedged_function_start,
     )
     require(
-        wedged_function_start >= 0
-        and wedged_function_end > wedged_function_start,
+        wedged_function_start >= 0 and wedged_function_end > wedged_function_start,
         "self-test wedged reset function boundary differs from the source",
     )
 
@@ -4854,23 +4795,20 @@ def self_test(root: Path) -> int:
     except InterfaceError:
         pass
     else:
-        raise InterfaceError(
-            "self-test accepted an unbraced conditional wedged reset"
-        )
+        raise InterfaceError("self-test accepted an unbraced conditional wedged reset")
 
-    goto_wedged_body = reset_source[
-        wedged_function_start:wedged_function_end
-    ].replace(
-        "\treset_result = radeon_gpu_reset_forced(rdev);",
-        "\tgoto bypass_wd3;\n"
-        "\treset_result = radeon_gpu_reset_forced(rdev);",
-        1,
-    ).replace(
-        "\tup_read(&rdev->exclusive_lock);",
-        "\tup_read(&rdev->exclusive_lock);\n"
-        "bypass_wd3:\n"
-        "\t;",
-        1,
+    goto_wedged_body = (
+        reset_source[wedged_function_start:wedged_function_end]
+        .replace(
+            "\treset_result = radeon_gpu_reset_forced(rdev);",
+            "\tgoto bypass_wd3;\n\treset_result = radeon_gpu_reset_forced(rdev);",
+            1,
+        )
+        .replace(
+            "\tup_read(&rdev->exclusive_lock);",
+            "\tup_read(&rdev->exclusive_lock);\nbypass_wd3:\n\t;",
+            1,
+        )
     )
     bypassed_wedged_reset = copy.deepcopy(source_texts)
     bypassed_wedged_reset[reset_source_path] = (
@@ -4910,9 +4848,7 @@ def self_test(root: Path) -> int:
     except InterfaceError:
         pass
     else:
-        raise InterfaceError(
-            "self-test accepted an overridden WD3 debugfs condition"
-        )
+        raise InterfaceError("self-test accepted an overridden WD3 debugfs condition")
 
     disabled_wedged_mutation = copy.deepcopy(source_texts)
     disabled_wedged_mutation[reset_source_path] = (
@@ -4926,9 +4862,7 @@ def self_test(root: Path) -> int:
     except InterfaceError:
         pass
     else:
-        raise InterfaceError(
-            "self-test accepted an overridden WD3 mutation condition"
-        )
+        raise InterfaceError("self-test accepted an overridden WD3 mutation condition")
 
     unreachable_wedged_body = reset_source[
         wedged_function_start:wedged_function_end
@@ -4948,9 +4882,7 @@ def self_test(root: Path) -> int:
     except InterfaceError:
         pass
     else:
-        raise InterfaceError(
-            "self-test accepted unreachable before the wedged unlock"
-        )
+        raise InterfaceError("self-test accepted unreachable before the wedged unlock")
 
     wrong_post_state = copy.deepcopy(source_texts)
     wrong_post_state[reset_source_path] = re.sub(
@@ -4977,9 +4909,7 @@ def self_test(root: Path) -> int:
         "\tup_read(&rdev->exclusive_lock);",
         unreachable_start,
     )
-    unreachable_end = unreachable_unlock + len(
-        "\tup_read(&rdev->exclusive_lock);"
-    )
+    unreachable_end = unreachable_unlock + len("\tup_read(&rdev->exclusive_lock);")
     require(
         unreachable_start >= 0 and unreachable_unlock > unreachable_start,
         "self-test wedged reset transaction boundary differs from the source",
@@ -5033,11 +4963,9 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted MMIO inside the parked branch")
 
     missing_post_reset_read_lock = copy.deepcopy(source_texts)
-    missing_post_reset_read_lock[reset_source_path] = (
-        missing_post_reset_read_lock[reset_source_path].replace(
-            "\tdown_read(&rdev->exclusive_lock);\n", "", 1
-        )
-    )
+    missing_post_reset_read_lock[reset_source_path] = missing_post_reset_read_lock[
+        reset_source_path
+    ].replace("\tdown_read(&rdev->exclusive_lock);\n", "", 1)
     try:
         validate_wedged_reset_probe_post_state(missing_post_reset_read_lock)
     except InterfaceError:
@@ -5046,11 +4974,9 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted an unlocked parked-state check")
 
     missing_post_reset_read_unlock = copy.deepcopy(source_texts)
-    missing_post_reset_read_unlock[reset_source_path] = (
-        missing_post_reset_read_unlock[reset_source_path].replace(
-            "\tup_read(&rdev->exclusive_lock);\n", "", 1
-        )
-    )
+    missing_post_reset_read_unlock[reset_source_path] = missing_post_reset_read_unlock[
+        reset_source_path
+    ].replace("\tup_read(&rdev->exclusive_lock);\n", "", 1)
     try:
         validate_wedged_reset_probe_post_state(missing_post_reset_read_unlock)
     except InterfaceError:
@@ -5112,9 +5038,7 @@ def self_test(root: Path) -> int:
     inactive_forced_wrapper[reset_implementation_path] = (
         reset_implementation_source[:wrapper_function_start]
         + "#if 0\n"
-        + reset_implementation_source[
-            wrapper_function_start:wrapper_function_end
-        ]
+        + reset_implementation_source[wrapper_function_start:wrapper_function_end]
         + "\n#else\n"
         + "int radeon_gpu_reset_forced(struct radeon_device *rdev)\n"
         + "{\n"
@@ -5128,9 +5052,7 @@ def self_test(root: Path) -> int:
     except InterfaceError:
         pass
     else:
-        raise InterfaceError(
-            "self-test accepted an inactive forced-reset wrapper"
-        )
+        raise InterfaceError("self-test accepted an inactive forced-reset wrapper")
 
     mutate_wrapper_guard_start = reset_implementation_source.rfind(
         "#if RADEON_MUTATE_DEV",
@@ -5195,8 +5117,7 @@ def self_test(root: Path) -> int:
     asm_after_reset_counter[reset_implementation_path] = (
         reset_implementation_source.replace(
             "\tatomic_inc(&rdev->gpu_reset_counter);",
-            "\tatomic_inc(&rdev->gpu_reset_counter);\n"
-            '\t__asm__ __volatile__("ud2");',
+            '\tatomic_inc(&rdev->gpu_reset_counter);\n\t__asm__ __volatile__("ud2");',
             1,
         )
     )
@@ -5238,9 +5159,7 @@ def self_test(root: Path) -> int:
     except InterfaceError:
         pass
     else:
-        raise InterfaceError(
-            "self-test accepted a conditional parked reset transition"
-        )
+        raise InterfaceError("self-test accepted a conditional parked reset transition")
 
     looping_parked_exit = copy.deepcopy(source_texts)
     looping_parked_exit[reset_implementation_path] = (
@@ -5257,17 +5176,12 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a looping parked reset exit")
 
-    ordinary_transition = (
-        "\tradeon_hpd_init(rdev);\n\n"
-        "\trdev->in_reset = true;"
-    )
+    ordinary_transition = "\tradeon_hpd_init(rdev);\n\n\trdev->in_reset = true;"
     early_ordinary_return = copy.deepcopy(source_texts)
     early_ordinary_return[reset_implementation_path] = (
         reset_implementation_source.replace(
             ordinary_transition,
-            "\tradeon_hpd_init(rdev);\n\n"
-            "\treturn r;\n"
-            "\trdev->in_reset = true;",
+            "\tradeon_hpd_init(rdev);\n\n\treturn r;\n\trdev->in_reset = true;",
             1,
         )
     )
@@ -5282,9 +5196,7 @@ def self_test(root: Path) -> int:
     conditional_ordinary_exit[reset_implementation_path] = (
         reset_implementation_source.replace(
             ordinary_transition,
-            "\tradeon_hpd_init(rdev);\n\n"
-            "\tif (false)\n"
-            "\t\trdev->in_reset = true;",
+            "\tradeon_hpd_init(rdev);\n\n\tif (false)\n\t\trdev->in_reset = true;",
             1,
         )
     )
@@ -5345,9 +5257,7 @@ def self_test(root: Path) -> int:
 
     unreachable_forced_reset = copy.deepcopy(source_texts)
     forced_source = unreachable_forced_reset[reset_implementation_path]
-    forced_function_start = forced_source.find(
-        "static int radeon_gpu_reset_internal("
-    )
+    forced_function_start = forced_source.find("static int radeon_gpu_reset_internal(")
     forced_function_end = forced_source.find(
         "\n/**\n * radeon_gpu_reset -",
         forced_function_start,
@@ -5357,9 +5267,7 @@ def self_test(root: Path) -> int:
         "self-test forced reset function boundary differs from the source",
     )
     forced_body = forced_source[forced_function_start:forced_function_end]
-    forced_transaction_start = forced_body.find(
-        "\tdown_write(&rdev->exclusive_lock);"
-    )
+    forced_transaction_start = forced_body.find("\tdown_write(&rdev->exclusive_lock);")
     forced_transaction_return = forced_body.rfind("\treturn r;")
     forced_transaction_end = forced_transaction_return + len("\treturn r;")
     require(
@@ -5404,13 +5312,12 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted a premature forced-reset unlock")
 
     post_counter_forced_unlock = copy.deepcopy(source_texts)
-    post_counter_forced_unlock[reset_implementation_path] = (
-        post_counter_forced_unlock[reset_implementation_path].replace(
-            "\tatomic_inc(&rdev->gpu_reset_counter);\n",
-            "\tatomic_inc(&rdev->gpu_reset_counter);\n"
-            "\tup_write(&rdev->exclusive_lock);\n",
-            1,
-        )
+    post_counter_forced_unlock[reset_implementation_path] = post_counter_forced_unlock[
+        reset_implementation_path
+    ].replace(
+        "\tatomic_inc(&rdev->gpu_reset_counter);\n",
+        "\tatomic_inc(&rdev->gpu_reset_counter);\n\tup_write(&rdev->exclusive_lock);\n",
+        1,
     )
     try:
         validate_forced_gpu_reset_transaction(post_counter_forced_unlock)

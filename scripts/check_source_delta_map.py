@@ -151,9 +151,7 @@ def validate_union_path(
             f"union merge drops its first-parent change: {repository_path}",
         )
         return
-    raise DeltaMapError(
-        f"union merge parents diverge on one path: {repository_path}"
-    )
+    raise DeltaMapError(f"union merge parents diverge on one path: {repository_path}")
 
 
 def validate_union_only_merge(
@@ -315,9 +313,7 @@ def validate(
         "source-delta commit-path coverage differs: "
         + ",".join(
             f"{commit}:{path}"
-            for commit, path in sorted(
-                declared_commit_paths ^ changed_commit_paths
-            )
+            for commit, path in sorted(declared_commit_paths ^ changed_commit_paths)
         ),
     )
 
@@ -459,9 +455,13 @@ def self_test(root: Path) -> int:
         ),
         (None, None, None, "100644 blob novel", "novel-result.c"),
     )
-    for base_entry, first_entry, second_entry, result_entry, source_path in (
-        invalid_union_paths
-    ):
+    for (
+        base_entry,
+        first_entry,
+        second_entry,
+        result_entry,
+        source_path,
+    ) in invalid_union_paths:
         try:
             validate_union_path(
                 base_entry,
@@ -554,6 +554,7 @@ def self_test(root: Path) -> int:
         raise DeltaMapError("self-test accepted a dropped parent-only source path")
 
     for merge_bases in ("", "base\nother\n"):
+
         def invalid_merge_base_reader(
             _root: Path,
             *arguments: str,

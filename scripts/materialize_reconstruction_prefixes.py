@@ -68,9 +68,7 @@ def git_tree(repository: Path) -> str:
 def reject_generated_inputs(repository: Path) -> None:
     tracked = run(["git", "ls-files"], cwd=repository).decode("utf-8").splitlines()
     forbidden = [
-        path
-        for path in tracked
-        if path == "mkregtable" or path.endswith("_reg_safe.h")
+        path for path in tracked if path == "mkregtable" or path.endswith("_reg_safe.h")
     ]
     if forbidden:
         raise PrefixError(
@@ -104,15 +102,15 @@ def verify_row(
     if corrupt_expected_tree:
         expected_tree = "0" * 40
     if actual_tree != expected_tree:
-        raise PrefixError(
-            f"{commit_id}: driver tree {actual_tree} != {expected_tree}"
-        )
+        raise PrefixError(f"{commit_id}: driver tree {actual_tree} != {expected_tree}")
 
     actual_manifest = expected_manifest_text(root, repository)
     manifest_path = root / row["expected_manifest"]
     recorded_manifest = manifest_path.read_bytes()
     if actual_manifest != recorded_manifest:
-        raise PrefixError(f"{commit_id}: materialized manifest differs from recorded bytes")
+        raise PrefixError(
+            f"{commit_id}: materialized manifest differs from recorded bytes"
+        )
     actual_manifest_sha = sha256_bytes(actual_manifest)
     if actual_manifest_sha != row["expected_manifest_sha256"]:
         raise PrefixError(
@@ -182,8 +180,7 @@ def materialize(
             root / "migration/expected-prefixes/mechanism/M24.manifest.tsv"
         )
         migration_oracle = (
-            root
-            / "migration/input/migration-oracle-0.3-91-exact-context-manifest.tsv"
+            root / "migration/input/migration-oracle-0.3-91-exact-context-manifest.tsv"
         )
         if mechanism_final.read_bytes() != migration_oracle.read_bytes():
             raise PrefixError("M24 manifest differs from the frozen migration oracle")

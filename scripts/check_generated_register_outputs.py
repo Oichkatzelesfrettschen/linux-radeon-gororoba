@@ -47,12 +47,16 @@ def build_generator(tree: Path, output: Path) -> str:
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise OutputError(f"mkregtable compilation failed: {detail}")
-    version = subprocess.run(
-        [compiler, "--version"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    ).stdout.decode("utf-8", errors="replace").splitlines()[0]
+    version = (
+        subprocess.run(
+            [compiler, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        .stdout.decode("utf-8", errors="replace")
+        .splitlines()[0]
+    )
     return version
 
 
@@ -77,11 +81,7 @@ def target_source(tree: Path, target: str) -> Path:
         re.MULTILINE,
     )
     match = pattern.search(makefile)
-    source_name = (
-        match.group(1)
-        if match
-        else target.removesuffix("_reg_safe.h")
-    )
+    source_name = match.group(1) if match else target.removesuffix("_reg_safe.h")
     return tree / "reg_srcs" / source_name
 
 
@@ -164,13 +164,12 @@ def self_test(root: Path) -> int:
                 "$(src)/reg_srcs/evergreen $(obj)/mkregtable FORCE\n",
                 encoding="ascii",
             )
-            if target_source(
-                mapping_tree, "evergreen_dev_reg_safe.h"
-            ).name != "evergreen":
+            if (
+                target_source(mapping_tree, "evergreen_dev_reg_safe.h").name
+                != "evergreen"
+            ):
                 raise OutputError("explicit generated source mapping was ignored")
-            if target_source(
-                mapping_tree, "r100_reg_safe.h"
-            ).name != "r100":
+            if target_source(mapping_tree, "r100_reg_safe.h").name != "r100":
                 raise OutputError("pattern generated source mapping was ignored")
             content = generate(generator, tree / "reg_srcs/r100")
             digest = hashlib.sha256(content).hexdigest()
