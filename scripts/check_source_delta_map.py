@@ -9,6 +9,7 @@ import csv
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -113,22 +114,117 @@ def validate_baseline(
     git_output(root, "merge-base", "--is-ancestor", expected_commit, "HEAD")
 
 
-def changed_source_commit_paths(root: Path) -> set[tuple[str, str]]:
-    output = git_output(
+def tree_entry(root: Path, treeish: str, repository_path: str) -> str | None:
+    output = git_output(root, "ls-tree", treeish, "--", repository_path).strip()
+    if not output:
+        return None
+    lines = output.splitlines()
+    require(
+        len(lines) == 1 and "\t" in lines[0],
+        f"source-delta tree entry is ambiguous: {treeish}:{repository_path}",
+    )
+    return lines[0].split("\t", 1)[0]
+
+
+def validate_union_path(
+    base_entry: str | None,
+    first_parent_entry: str | None,
+    second_parent_entry: str | None,
+    result_entry: str | None,
+    repository_path: str,
+) -> None:
+    if first_parent_entry == second_parent_entry:
+        require(
+            result_entry == first_parent_entry,
+            f"union merge changes equal parent content: {repository_path}",
+        )
+        return
+    if first_parent_entry == base_entry:
+        require(
+            result_entry == second_parent_entry,
+            f"union merge drops its second-parent change: {repository_path}",
+        )
+        return
+    if second_parent_entry == base_entry:
+        require(
+            result_entry == first_parent_entry,
+            f"union merge drops its first-parent change: {repository_path}",
+        )
+        return
+    raise DeltaMapError(
+        f"union merge parents diverge on one path: {repository_path}"
+    )
+
+
+def validate_union_only_merge(
+    root: Path,
+    commit: str,
+    parents: list[str],
+    git_reader: Callable[..., str] = git_output,
+    tree_reader: Callable[[Path, str, str], str | None] = tree_entry,
+    pathspec: str | None = DRIVER_ROOT.as_posix(),
+) -> None:
+    require(
+        len(parents) == 2,
+        f"post-tag source merge has {len(parents)} parents: {commit}",
+    )
+    merge_bases = git_reader(root, "merge-base", "--all", *parents).splitlines()
+    require(
+        len(merge_bases) == 1,
+        f"post-tag source merge has {len(merge_bases)} merge bases: {commit}",
+    )
+    merge_base = merge_bases[0]
+    union_paths: set[str] = set()
+    for treeish in (*parents, commit):
+        arguments = [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            merge_base,
+            treeish,
+        ]
+        if pathspec is not None:
+            arguments.extend(("--", pathspec))
+        changed_paths = git_reader(root, *arguments)
+        union_paths.update(path for path in changed_paths.splitlines() if path)
+    require(bool(union_paths), f"post-tag union merge is path-empty: {commit}")
+    for repository_path in sorted(union_paths):
+        validate_union_path(
+            tree_reader(root, merge_base, repository_path),
+            tree_reader(root, parents[0], repository_path),
+            tree_reader(root, parents[1], repository_path),
+            tree_reader(root, commit, repository_path),
+            repository_path,
+        )
+
+
+def source_history_commits(
+    root: Path,
+    git_reader: Callable[..., str] = git_output,
+) -> list[str]:
+    output = git_reader(
         root,
         "rev-list",
+        "--full-history",
         "--reverse",
         f"{BASELINE_COMMIT}..HEAD",
         "--",
         DRIVER_ROOT.as_posix(),
     )
+    return output.splitlines()
+
+
+def changed_source_commit_paths(root: Path) -> set[tuple[str, str]]:
     changed: set[tuple[str, str]] = set()
-    for commit in output.splitlines():
-        parents = git_output(root, "rev-list", "--parents", "-n", "1", commit).split()
-        require(
-            len(parents) == 2,
-            f"post-tag Radeon source commit is a merge: {commit}",
-        )
+    for commit in source_history_commits(root):
+        commit_and_parents = git_output(
+            root, "rev-list", "--parents", "-n", "1", commit
+        ).split()
+        parents = commit_and_parents[1:]
+        if len(parents) > 1:
+            validate_union_only_merge(root, commit, parents)
+            continue
+        require(len(parents) == 1, f"post-tag source commit has no parent: {commit}")
         paths = git_output(
             root,
             "diff-tree",
@@ -234,6 +330,27 @@ def self_test(root: Path) -> int:
     validate(rows, changed_commit_paths)
     rejection_count = 0
 
+    def full_history_reader(_root: Path, *arguments: str) -> str:
+        require(
+            arguments
+            == (
+                "rev-list",
+                "--full-history",
+                "--reverse",
+                f"{BASELINE_COMMIT}..HEAD",
+                "--",
+                DRIVER_ROOT.as_posix(),
+            ),
+            "self-test source history traversal differs",
+        )
+        return "source-merge\nside-parent\n"
+
+    require(
+        source_history_commits(root, full_history_reader)
+        == ["source-merge", "side-parent"],
+        "self-test source history traversal loses commits",
+    )
+
     invalid_headers = map_text.replace(REQUIRED_HEADERS[0], "# schema: wrong", 1)
     try:
         parse_map(invalid_headers)
@@ -302,6 +419,172 @@ def self_test(root: Path) -> int:
             rejection_count += 1
         else:
             raise DeltaMapError("self-test accepted an invalid source-delta map")
+
+    validate_union_path("base", "first", "base", "first", "first-only.c")
+    validate_union_path("base", "base", "second", "second", "second-only.c")
+    validate_union_path("base", "shared", "shared", "shared", "shared.c")
+    validate_union_path("base", None, "base", None, "deleted.c")
+    validate_union_path(
+        "100644 blob old",
+        None,
+        "100644 blob old",
+        None,
+        "renamed-old.c",
+    )
+    validate_union_path(
+        None,
+        "100644 blob old",
+        None,
+        "100644 blob old",
+        "renamed-new.c",
+    )
+    invalid_union_paths = (
+        ("base", "shared", "shared", "novel", "equal-parents.c"),
+        ("base", "first", "base", "base", "dropped-first.c"),
+        ("base", "base", "second", "base", "dropped-second.c"),
+        ("base", "first", "second", "first", "divergent-parents.c"),
+        (
+            "100644 blob content",
+            "100644 blob content",
+            "100644 blob content",
+            "100755 blob content",
+            "mode-mutation.c",
+        ),
+        (
+            "100644 blob content",
+            "100644 blob content",
+            "100644 blob content",
+            "160000 commit content",
+            "type-mutation.c",
+        ),
+        (None, None, None, "100644 blob novel", "novel-result.c"),
+    )
+    for base_entry, first_entry, second_entry, result_entry, source_path in (
+        invalid_union_paths
+    ):
+        try:
+            validate_union_path(
+                base_entry,
+                first_entry,
+                second_entry,
+                result_entry,
+                source_path,
+            )
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid source merge path")
+
+    first_path = (DRIVER_ROOT / "first-parent.c").as_posix()
+    second_path = (DRIVER_ROOT / "second-parent.c").as_posix()
+
+    def merge_git_reader(
+        result_paths: tuple[str, ...],
+    ) -> Callable[..., str]:
+        def read_git(_root: Path, *arguments: str) -> str:
+            if arguments == ("merge-base", "--all", "first", "second"):
+                return "base\n"
+            if arguments[:4] == (
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "base",
+            ):
+                require(
+                    arguments[5:] in ((), ("--", DRIVER_ROOT.as_posix())),
+                    "self-test merge pathspec differs",
+                )
+                paths_by_tree = {
+                    "first": (first_path,),
+                    "second": (second_path,),
+                    "result": result_paths,
+                }
+                treeish = arguments[4]
+                require(treeish in paths_by_tree, "self-test merge treeish differs")
+                return "".join(f"{path}\n" for path in paths_by_tree[treeish])
+            raise DeltaMapError("self-test merge git command differs")
+
+        return read_git
+
+    def merge_tree_reader(
+        result_second_entry: str,
+    ) -> Callable[[Path, str, str], str | None]:
+        entries = {
+            ("base", first_path): "base-first",
+            ("base", second_path): "base-second",
+            ("first", first_path): "first-change",
+            ("first", second_path): "base-second",
+            ("second", first_path): "base-first",
+            ("second", second_path): "second-change",
+            ("result", first_path): "first-change",
+            ("result", second_path): result_second_entry,
+        }
+
+        def read_tree(_root: Path, treeish: str, source_path: str) -> str | None:
+            return entries[(treeish, source_path)]
+
+        return read_tree
+
+    validate_union_only_merge(
+        root,
+        "result",
+        ["first", "second"],
+        git_reader=merge_git_reader((first_path, second_path)),
+        tree_reader=merge_tree_reader("second-change"),
+    )
+    validate_union_only_merge(
+        root,
+        "result",
+        ["first", "second"],
+        git_reader=merge_git_reader((first_path, second_path)),
+        tree_reader=merge_tree_reader("second-change"),
+        pathspec=None,
+    )
+    try:
+        validate_union_only_merge(
+            root,
+            "result",
+            ["first", "second"],
+            git_reader=merge_git_reader((first_path,)),
+            tree_reader=merge_tree_reader("base-second"),
+        )
+    except DeltaMapError:
+        rejection_count += 1
+    else:
+        raise DeltaMapError("self-test accepted a dropped parent-only source path")
+
+    for merge_bases in ("", "base\nother\n"):
+        def invalid_merge_base_reader(
+            _root: Path,
+            *arguments: str,
+            merge_base_output: str = merge_bases,
+        ) -> str:
+            if arguments == ("merge-base", "--all", "first", "second"):
+                return merge_base_output
+            raise DeltaMapError("self-test merge-base command differs")
+
+        try:
+            validate_union_only_merge(
+                root,
+                "result",
+                ["first", "second"],
+                git_reader=invalid_merge_base_reader,
+            )
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an ambiguous merge base")
+
+    try:
+        validate_union_only_merge(
+            root,
+            "result",
+            ["first", "second", "third"],
+        )
+    except DeltaMapError:
+        rejection_count += 1
+    else:
+        raise DeltaMapError("self-test accepted an octopus source merge")
 
     print(f"source delta map calibration: {rejection_count} invalid classes rejected")
     return 0
