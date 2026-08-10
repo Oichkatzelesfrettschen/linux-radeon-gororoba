@@ -7,8 +7,9 @@ The strict record binds an annotated SSH-signed tag to its peeled commit,
 repository tree, Radeon subtree, feature policy tree and policy-file hash. It
 also binds the external release allowlist and tag-bound source-delta map. It
 checks workflow, guard, clean-tree, and evidence-result declarations without
-promoting them to independently verified execution evidence. The checker does
-not query GitHub and does not turn NOT RUN evidence into a pass.
+promoting them to independently verified execution evidence. The published
+object match remains an explicit declaration because the checker does not query
+GitHub. The checker does not turn NOT RUN evidence into a pass.
 """
 
 from __future__ import annotations
@@ -22,39 +23,29 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-try:
-    from check_source_delta_map import (
-        BASELINE_COMMIT as CANONICAL_BASELINE_COMMIT,
-        BASELINE_TAG as CANONICAL_BASELINE_TAG,
-        BASELINE_TAG_OBJECT as CANONICAL_BASELINE_TAG_OBJECT,
-        DRIVER_ROOT as CANONICAL_DRIVER_ROOT,
-        MAP_PATH as CANONICAL_MAP_PATH,
-        DeltaMapError,
-        git_output as canonical_git_output,
-        parse_map as canonical_parse_map,
-        source_history_commits as canonical_source_history_commits,
-        tree_entry as canonical_tree_entry,
-        validate as canonical_validate_map,
-        validate_union_only_merge as canonical_validate_union_only_merge,
-    )
-except ModuleNotFoundError:
-    from scripts.check_source_delta_map import (
-        BASELINE_COMMIT as CANONICAL_BASELINE_COMMIT,
-        BASELINE_TAG as CANONICAL_BASELINE_TAG,
-        BASELINE_TAG_OBJECT as CANONICAL_BASELINE_TAG_OBJECT,
-        DRIVER_ROOT as CANONICAL_DRIVER_ROOT,
-        MAP_PATH as CANONICAL_MAP_PATH,
-        DeltaMapError,
-        git_output as canonical_git_output,
-        parse_map as canonical_parse_map,
-        source_history_commits as canonical_source_history_commits,
-        tree_entry as canonical_tree_entry,
-        validate as canonical_validate_map,
-        validate_union_only_merge as canonical_validate_union_only_merge,
-    )
+if not __package__:
+    # Direct script execution starts with scripts/ on sys.path; package
+    # execution already resolves imports from the repository root.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.check_source_delta_map import (
+    BASELINE_COMMIT as CANONICAL_BASELINE_COMMIT,
+    BASELINE_TAG as CANONICAL_BASELINE_TAG,
+    BASELINE_TAG_OBJECT as CANONICAL_BASELINE_TAG_OBJECT,
+    DRIVER_ROOT as CANONICAL_DRIVER_ROOT,
+    MAP_PATH as CANONICAL_MAP_PATH,
+    DeltaMapError,
+    git_output as canonical_git_output,
+    parse_map as canonical_parse_map,
+    source_history_commits as canonical_source_history_commits,
+    tree_entry as canonical_tree_entry,
+    validate as canonical_validate_map,
+    validate_union_only_merge as canonical_validate_union_only_merge,
+)
 
 
 DRIVER_SUBTREE = CANONICAL_DRIVER_ROOT.as_posix()
@@ -81,12 +72,13 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 
 # These fields are integrity-checked declarations. The checker does not
-# verify the workflow run, clean checkout, local guard execution, or profile
-# results from these self-declared values.
+# verify the published object, workflow run, clean checkout, local guard
+# execution, or profile results from these self-declared values.
 DECLARATION_FIELDS = {
     "profile_workflow_run",
     "profile_workflow_head",
     "profile_workflow_clean_tree",
+    "published_object_matches_local_declared",
     "source_commit_6_18_build",
     "source_commit_7_1_build",
     "prod_profile",
@@ -126,7 +118,7 @@ STRICT_FIELDS = {
     "allowed_signers_path",
     "verification_command",
     "local_verification",
-    "published_object_matches_local",
+    "published_object_matches_local_declared",
     "profile_workflow_run",
     "profile_workflow_head",
     "profile_workflow_clean_tree",
@@ -155,7 +147,7 @@ STRICT_FIELDS = {
 }
 STRING_FIELDS = STRICT_FIELDS - {
     "schema",
-    "published_object_matches_local",
+    "published_object_matches_local_declared",
     "profile_workflow_run",
     "profile_workflow_clean_tree",
     "local_parked_guard_clean_tree",
@@ -236,7 +228,8 @@ def git_output(repository: Path, *arguments: str) -> str:
 
 def exact_string(record: dict[str, Any], field: str) -> str:
     value = record[field]
-    require(type(value) is str and value != "", f"{field} must be a nonempty string")
+    if type(value) is not str or value == "":
+        raise AttestationError(f"{field} must be a nonempty string")
     try:
         value.encode("ascii")
     except UnicodeEncodeError as exc:
@@ -267,8 +260,8 @@ def check_schema(record: dict[str, Any]) -> None:
     for field in STRING_FIELDS:
         exact_string(record, field)
     require(
-        type(record["published_object_matches_local"]) is bool,
-        "published_object_matches_local must be a Boolean",
+        type(record["published_object_matches_local_declared"]) is bool,
+        "published_object_matches_local_declared must be a Boolean",
     )
     require(
         type(record["profile_workflow_run"]) is int
@@ -319,8 +312,8 @@ def check_schema(record: dict[str, Any]) -> None:
     )
     require(record["local_verification"] == "PASS", "local_verification must be PASS")
     require(
-        record["published_object_matches_local"] is True,
-        "published_object_matches_local must be true",
+        record["published_object_matches_local_declared"] is True,
+        "published_object_matches_local_declared must be true",
     )
     require(
         record["profile_workflow_head"] == record["peeled_commit"],
@@ -406,7 +399,8 @@ UPSTREAM_TARGET_FIELDS = {"tag", "commit", "subtree_tree"}
 
 
 def strict_ascii_value(value: Any, field: str) -> str:
-    require(type(value) is str and value != "", f"{field} must be a nonempty string")
+    if type(value) is not str or value == "":
+        raise AttestationError(f"{field} must be a nonempty string")
     try:
         value.encode("ascii")
     except UnicodeEncodeError as exc:
@@ -453,6 +447,10 @@ def validate_upstream_data(
     require(
         type(upstream["signature_verified"]) is bool,
         "UPSTREAM_BASE.toml signature_verified must be a Boolean",
+    )
+    require(
+        upstream["signature_verified"] is False,
+        "UPSTREAM_BASE.toml signature proof must remain explicitly false",
     )
     require(
         OBJECT_ID.fullmatch(upstream["tag_object"]) is not None
@@ -818,6 +816,8 @@ def validate_delta_map(
     repository: Path,
     record: dict[str, Any],
     map_bytes: bytes | None,
+    *,
+    ancestor_checker: Callable[[Path, str, str], bool] = is_ancestor,
 ) -> None:
     coverage = record["source_delta_coverage"]
     target_commit = record["peeled_commit"]
@@ -827,11 +827,11 @@ def validate_delta_map(
         # Radeon path change behind NOT RUN.
         canonical_baseline_identity(repository)
         baseline_commit = BASELINE_COMMIT
-        if not is_ancestor(repository, baseline_commit, target_commit):
+        if not ancestor_checker(repository, baseline_commit, target_commit):
             # A pre-baseline tag has no post-baseline source range. Keep the
             # relation explicit so an unrelated commit cannot use NOT RUN.
             require(
-                is_ancestor(repository, target_commit, baseline_commit),
+                ancestor_checker(repository, target_commit, baseline_commit),
                 "NOT RUN source-delta coverage has no baseline relation",
             )
             return
@@ -839,8 +839,13 @@ def validate_delta_map(
         require(not changed, "NOT RUN source-delta coverage hides source changes")
         return
 
-    require(map_bytes is not None, "source-delta map bytes are absent")
+    if map_bytes is None:
+        raise AttestationError("source-delta map bytes are absent")
     canonical_baseline_identity(repository)
+    require(
+        ancestor_checker(repository, BASELINE_COMMIT, target_commit),
+        "PASS source-delta target is not a descendant of canonical baseline",
+    )
     require(
         hashlib.sha256(map_bytes).hexdigest() == record["source_delta_map_sha256"],
         "source-delta map SHA-256 differs from the tag-bound declaration",
@@ -1120,6 +1125,9 @@ def self_test(repository: Path, authority: Path) -> int:
     )
     record = copy.deepcopy(original)
     record["schema"] = 2
+    record["published_object_matches_local_declared"] = record.pop(
+        "published_object_matches_local"
+    )
     map_bytes = git_bytes(
         repository,
         "show",
@@ -1142,7 +1150,7 @@ def self_test(repository: Path, authority: Path) -> int:
     validate_record(repository, record, authority)
     print(
         "  ok: real signed 0.8 source identity and map verify; "
-        "workflow and guard fields remain declarations"
+        "published-object, workflow, and guard fields remain declarations"
     )
     target_history = source_history_commits_at(repository, record["peeled_commit"])
     require(
@@ -1150,6 +1158,35 @@ def self_test(repository: Path, authority: Path) -> int:
         "self-test source history leaked commits after the attested tag",
     )
     print("  ok: source history stays bound to the attested target commit")
+    separate_target = copy.deepcopy(record)
+    separate_target["peeled_commit"] = "f" * 40
+
+    def separate_root_checker(
+        _repository: Path,
+        ancestor: str,
+        descendant: str,
+    ) -> bool:
+        require(
+            ancestor == BASELINE_COMMIT and descendant == "f" * 40,
+            "self-test target ancestry mutant differs",
+        )
+        return False
+
+    try:
+        validate_delta_map(
+            repository,
+            separate_target,
+            map_bytes,
+            ancestor_checker=separate_root_checker,
+        )
+    except AttestationError as exc:
+        require(
+            "not a descendant of canonical baseline" in str(exc),
+            "self-test target ancestry mutant reports the wrong rejection",
+        )
+        print("  ok: separately rooted PASS target is rejected")
+    else:
+        raise AttestationError("self-test accepted a separately rooted PASS target")
     baseline_source = repository / (
         "docs/profiled-source-attestations/radeon-unified-0.7-profiled-source.toml"
     )
@@ -1159,6 +1196,9 @@ def self_test(repository: Path, authority: Path) -> int:
     baseline_record.update(
         {
             "schema": 2,
+            "published_object_matches_local_declared": baseline_record.pop(
+                "published_object_matches_local"
+            ),
             "profile_workflow_head": baseline_record["peeled_commit"],
             "profile_workflow_clean_tree": True,
             "local_parked_guard_commit": baseline_record["peeled_commit"],
@@ -1205,18 +1245,32 @@ def self_test(repository: Path, authority: Path) -> int:
         ),
         "self-test UPSTREAM_BASE.toml",
     )
-    upstream_mutations = [
-        ("missing upstream key", lambda value: value.pop("schema")),
-        ("unknown upstream key", lambda value: value.update({"unknown": True})),
-        ("wrong upstream schema type", lambda value: value.update({"schema": "1"})),
-        (
-            "wrong upstream Boolean type",
-            lambda value: value.update({"signature_verified": "false"}),
-        ),
-        (
-            "missing upstream target key",
-            lambda value: value["target"]["mainline"].pop("commit"),
-        ),
+
+    def remove_upstream_schema(value: dict[str, Any]) -> None:
+        del value["schema"]
+
+    def add_unknown_upstream_key(value: dict[str, Any]) -> None:
+        value["unknown"] = True
+
+    def change_upstream_schema_type(value: dict[str, Any]) -> None:
+        value["schema"] = "1"
+
+    def change_upstream_signature_type(value: dict[str, Any]) -> None:
+        value["signature_verified"] = "false"
+
+    def claim_unproven_upstream_signature(value: dict[str, Any]) -> None:
+        value["signature_verified"] = True
+
+    def remove_upstream_target_commit(value: dict[str, Any]) -> None:
+        del value["target"]["mainline"]["commit"]
+
+    upstream_mutations: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
+        ("missing upstream key", remove_upstream_schema),
+        ("unknown upstream key", add_unknown_upstream_key),
+        ("wrong upstream schema type", change_upstream_schema_type),
+        ("wrong upstream Boolean type", change_upstream_signature_type),
+        ("unproven upstream signature declaration", claim_unproven_upstream_signature),
+        ("missing upstream target key", remove_upstream_target_commit),
     ]
     for label, mutate in upstream_mutations:
         changed_upstream = copy.deepcopy(upstream)
@@ -1277,6 +1331,12 @@ def self_test(repository: Path, authority: Path) -> int:
         ("principal drift", "signer_principal", "untrusted@example.invalid"),
         ("fingerprint drift", "signer_fingerprint", "SHA256:" + "A" * 43),
         ("workflow head drift", "profile_workflow_head", "7" * 40),
+        (
+            "published object declaration drift",
+            "published_object_matches_local_declared",
+            False,
+        ),
+        ("legacy published object field", "published_object_matches_local", True),
         (
             "malformed target tag",
             "tag_name",
@@ -1367,7 +1427,7 @@ def self_test(repository: Path, authority: Path) -> int:
     cryptographic_untrusted_fixture(repository, record, authority)
     print(
         "profiled-source attestation calibration: strict identity drift fails closed; "
-        "execution fields remain declarations"
+        "published-object and execution fields remain declarations"
     )
     return 0
 
@@ -1415,7 +1475,8 @@ def main() -> int:
     print(
         f"profiled-source attestation: {len(paths)} signed source identities, "
         "object trees, policy hashes, and source-delta maps verified; "
-        "workflow, guard, and run-result fields checked as declarations only"
+        "published-object, workflow, guard, and run-result fields checked as "
+        "declarations only"
     )
     return 0
 
