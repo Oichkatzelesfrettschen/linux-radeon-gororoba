@@ -36,7 +36,7 @@ from unittest import mock
 
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
-COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v2"
+COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
 LEXICAL_SCHEMA = "radeon-driver-lexical-map-v1"
 DECLARED_BINDING_SCHEMA = "radeon-driver-declared-bindings-v2"
 PATH_WITNESS_SCHEMA = "radeon-driver-contextual-path-witnesses-v2"
@@ -657,10 +657,18 @@ def require_unique_tsv_columns(
     columns: tuple[str, ...] | list[str],
     label: str,
 ) -> None:
-    duplicates = sorted(
-        column for column in set(columns) if columns.count(column) > 1
+    seen_columns: set[str] = set()
+    duplicates: set[str] = set()
+    for column in columns:
+        if column in seen_columns:
+            duplicates.add(column)
+        else:
+            seen_columns.add(column)
+    duplicate_columns = sorted(duplicates)
+    require(
+        not duplicate_columns,
+        f"{label} repeats columns: {', '.join(duplicate_columns)}",
     )
-    require(not duplicates, f"{label} repeats columns: {', '.join(duplicates)}")
 
 
 def write_tsv(path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
@@ -9634,13 +9642,18 @@ def self_test(repository: Path, policy_path: Path) -> int:
             and bool(observed_open_flags & os.O_NOCTTY)
             and bool(observed_open_flags & os.O_NOFOLLOW),
         )
+
+        class DuplicateColumnsWithoutCount(list[str]):
+            def count(self, value: str) -> int:
+                raise AssertionError(f"quadratic count invoked for {value}")
+
         duplicate_writer_path = temp / "duplicate-writer.tsv"
         rejects(
             "TSV writer rejects duplicate column names",
             lambda: write_tsv(
                 duplicate_writer_path,
                 "duplicate-column-fixture-v1",
-                ("change", "change"),
+                DuplicateColumnsWithoutCount(["change", "change"]),
                 [],
             ),
         )

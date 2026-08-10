@@ -1,6 +1,6 @@
 schema = 1
 capture_schema = "gororoba-radeon-driver-source-map-v2"
-comparison_schema = "gororoba-radeon-driver-source-map-comparison-v2"
+comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
 max_source_bytes = 7000000
