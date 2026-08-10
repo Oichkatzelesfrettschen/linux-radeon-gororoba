@@ -833,7 +833,7 @@ def check_wait_idle_lock(
     statement_start: int,
     statement_end: int,
 ) -> None:
-    """Prove the bounded wait, parked refusal, and exact VRAM flush."""
+    """Prove the bounded wait, parked refusal, VRAM flush, and result return."""
 
     function_open = body.find("{")
     wait = one_match_in_function(
@@ -1007,6 +1007,15 @@ def check_wait_idle_lock(
         READ_UNLOCK,
         [parked_unlock_offset, final_unlock.start()],
         "wait-idle-flush read unlock",
+    )
+    require_exact_statement_sequence(
+        body,
+        final_unlock.end(),
+        len(body),
+        r"\s*drm_gem_object_put\s*\(\s*gobj\s*\)\s*;\s*"
+        r"r\s*=\s*radeon_gem_handle_lockup\s*\(\s*rdev\s*,\s*r\s*\)\s*;\s*"
+        r"return\s+r\s*;\s*\}\s*",
+        "wait-idle-flush post-unlock cleanup and result return",
     )
     interval_returns = list(
         re.compile(r"\breturn\b").finditer(
@@ -2372,6 +2381,8 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 \t    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)
 \t\trobj->rdev->asic->mmio_hdp_flush(rdev);
 \tup_read(&rdev->exclusive_lock);
+\tdrm_gem_object_put(gobj);
+\tr = radeon_gem_handle_lockup(rdev, r);
 \treturn r;
 }
 """
@@ -2516,8 +2527,9 @@ WAIT_FIXTURE_MUTATIONS = {
         "\tif (false)\n\t\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);",
     ),
     "final read unlock is controlled by an unreachable condition": (
-        "\tup_read(&rdev->exclusive_lock);\n\treturn r;",
-        "\tif (false)\n\t\tup_read(&rdev->exclusive_lock);\n\treturn r;",
+        "\tup_read(&rdev->exclusive_lock);\n\tdrm_gem_object_put(gobj);",
+        "\tif (false)\n\t\tup_read(&rdev->exclusive_lock);\n"
+        "\tdrm_gem_object_put(gobj);",
     ),
     "success return follows the reservation wait": (
         "\t\t\t\t    true, 30 * HZ);",
@@ -2575,16 +2587,20 @@ WAIT_FIXTURE_MUTATIONS = {
             "\tif (false) <%\n\t\t;\n\tret = dma_resv_wait_timeout",
             1,
         ).replace(
-            "\tup_read(&rdev->exclusive_lock);\n\treturn r;",
-            "\tup_read(&rdev->exclusive_lock);\n\t%>\n\treturn r;",
+            "\treturn r;\n}",
+            "\treturn r;\n\t%>\n}",
             1,
         ),
     ),
     "extra flush follows the final read unlock": (
-        "\tup_read(&rdev->exclusive_lock);\n\treturn r;",
+        "\tup_read(&rdev->exclusive_lock);\n\tdrm_gem_object_put(gobj);",
         "\tup_read(&rdev->exclusive_lock);\n"
         "\trobj->rdev->asic->mmio_hdp_flush(rdev);\n"
-        "\treturn r;",
+        "\tdrm_gem_object_put(gobj);",
+    ),
+    "normalized wait result is replaced at final return": (
+        "\tr = radeon_gem_handle_lockup(rdev, r);\n\treturn r;",
+        "\tr = radeon_gem_handle_lockup(rdev, r);\n\treturn 0;",
     ),
 }
 
@@ -3303,6 +3319,9 @@ MUTATION_EXPECTED_ERRORS = {
             "parked guard is nested below its required statement scope"
         ),
         "extra flush follows the final read unlock": "MMIO call denominator differs",
+        "normalized wait result is replaced at final return": (
+            "post-unlock cleanup and result return"
+        ),
     },
     "command-submission": {
         "success return follows the read lock": "lock-to-guard",
