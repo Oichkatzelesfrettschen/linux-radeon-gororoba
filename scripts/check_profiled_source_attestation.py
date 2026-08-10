@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2026 Terascale Functionalists
 """Verify strict profiled-source attestations and calibrate their falsifiers.
 
 The strict record binds an annotated SSH-signed tag to its peeled commit,
