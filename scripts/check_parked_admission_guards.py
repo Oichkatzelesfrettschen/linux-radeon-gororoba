@@ -27,6 +27,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import check_rs4xx_hardware_admission_contract as centralized_admission
+
 SUBTREE = Path("drivers/gpu/drm/radeon")
 
 # A guard is (file, enclosing function, the call it must precede). "precedes"
@@ -66,6 +68,12 @@ GUARDS = [
 PARKED_GUARD = re.compile(r"\bif\s*\(\s*READ_ONCE\s*\(\s*rdev->gpu_parked\s*\)\s*\)")
 READ_LOCK = re.compile(r"\bdown_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;")
 READ_UNLOCK = re.compile(r"\bup_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;")
+DEVICE_UNLOCK = re.compile(
+    r"\bradeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;"
+)
+ACCESS_END = re.compile(
+    r"\bradeon_rs4xx_hardware_access_end\s*\(\s*rdev\s*\)\s*;"
+)
 RESET_TRANSACTION = re.compile(
     r"\{\s*"
     r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
@@ -110,7 +118,11 @@ PARKED_PROTECTED_MACROS = (
     "drm_gem_object_put",
     "radeon_bo_create",
     "radeon_cs_parser_init",
+    "radeon_device_lock_hardware",
+    "radeon_device_unlock_hardware",
     "radeon_gpu_reset",
+    "radeon_rs4xx_hardware_access_begin",
+    "radeon_rs4xx_hardware_access_end",
     "up_read",
 )
 DUMB_CREATE_PROTECTED_MACROS = (
@@ -574,7 +586,7 @@ def require_refusal_unlock(
     return statement_start + unlocks[0].start()
 
 
-def check_guard(root: Path, guard: dict[str, str]) -> None:
+def check_legacy_guard(root: Path, guard: dict[str, str]) -> None:
     path = root / guard["path"]
     try:
         source = path.read_text(encoding="utf-8")
@@ -1673,7 +1685,7 @@ def check_command_submission_lock(
     )
 
 
-def check_dumb_create_propagation(root: Path) -> None:
+def check_legacy_dumb_create_propagation(root: Path) -> None:
     """Check that dumb-create returns the immediately preceding creator result."""
     path = root / SUBTREE / "radeon_gem.c"
     try:
@@ -1785,6 +1797,988 @@ def check_dumb_create_propagation(root: Path) -> None:
         1,
         "dumb-create creator assignment",
     )
+
+
+def projected_direct_match(
+    body: str,
+    pattern: re.Pattern[str],
+    label: str,
+) -> re.Match[str]:
+    """Return one direct function-scope match from a projected helper path."""
+
+    match = one_match_in_function(body, pattern, label)
+    function_open = body.find("{")
+    if brace_depth(body, match.start()) != 1:
+        raise GuardError(f"{label} is outside direct function scope")
+    require_direct_statement(body, function_open, match.start(), label)
+    return match
+
+
+def projected_labeled_match(
+    body: str,
+    pattern: re.Pattern[str],
+    label: str,
+) -> re.Match[str]:
+    """Return one function-scope match immediately following a C label."""
+
+    match = one_match_in_function(body, pattern, label)
+    if brace_depth(body, match.start()) != 1:
+        raise GuardError(f"{label} is outside direct function scope")
+    return match
+
+
+def projected_condition(
+    body: str,
+    pattern: re.Pattern[str],
+    interval_start: int,
+    interval_end: int,
+    label: str,
+) -> ControlledMatch:
+    """Return one direct function-scope condition in a bounded interval."""
+
+    condition = one_match_in_interval_at_depth(
+        body,
+        pattern,
+        interval_start,
+        interval_end,
+        1,
+        label,
+    )
+    require_direct_statement(body, body.find("{"), condition.start(), label)
+    return controlled_match(body, condition)
+
+
+def require_projected_failure(
+    body: str,
+    assignment: re.Match[str],
+    interval_end: int,
+    result_name: str,
+    statement_pattern: str,
+    label: str,
+) -> ControlledMatch:
+    """Prove a helper result reaches one direct fail-closed return."""
+
+    failure = projected_condition(
+        body,
+        re.compile(rf"\bif\s*\(\s*{re.escape(result_name)}\s*\)"),
+        assignment.end(),
+        interval_end,
+        f"{label} result guard",
+    )
+    require_empty_source_interval(
+        body,
+        assignment.end(),
+        failure.condition.start(),
+        f"{label} assignment-to-result-guard",
+    )
+    require_exact_statement_sequence(
+        body,
+        failure.statement_start,
+        failure.statement_end,
+        statement_pattern,
+        f"{label} failure",
+    )
+    return failure
+
+
+def check_projected_gem_create(body: str) -> None:
+    """Prove GEM creation holds reader admission across every BO retry."""
+
+    begin = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_rs4xx_hardware_access_begin\s*"
+            r"\(\s*rdev\s*\)\s*;"
+        ),
+        "gem-create access admission",
+    )
+    retry_label = one_match_in_function(
+        body,
+        re.compile(r"(?m)^[ \t]*retry\s*:"),
+        "gem-create retry label",
+    )
+    allocation = projected_labeled_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_bo_create\s*\(\s*rdev\s*,\s*size\s*,\s*"
+            r"alignment\s*,\s*kernel\s*,\s*initial_domain\s*,\s*flags\s*,\s*"
+            r"NULL\s*,\s*NULL\s*,\s*&robj\s*\)\s*;"
+        ),
+        "gem-create BO allocation",
+    )
+    out_label = one_match_in_function(
+        body,
+        re.compile(r"(?m)^[ \t]*out\s*:"),
+        "gem-create release label",
+    )
+    end = projected_labeled_match(body, ACCESS_END, "gem-create access release")
+    final_return = one_match_in_interval_at_depth(
+        body,
+        re.compile(r"\breturn\s+r\s*;"),
+        end.end(),
+        len(body),
+        1,
+        "gem-create final return",
+    )
+    require_direct_statement(
+        body,
+        body.find("{"),
+        final_return.start(),
+        "gem-create final return",
+    )
+    failure = require_projected_failure(
+        body,
+        begin,
+        retry_label.start(),
+        "r",
+        r"\s*return\s+r\s*;\s*",
+        "gem-create access admission",
+    )
+    if not (
+        begin.start()
+        < failure.condition.start()
+        < failure.statement_end
+        <= retry_label.start()
+        < allocation.start()
+        < out_label.start()
+        < end.start()
+        < final_return.start()
+    ):
+        raise GuardError("gem-create projected admission order differs")
+    require_empty_source_interval(
+        body,
+        failure.statement_end,
+        retry_label.start(),
+        "gem-create admission-to-retry",
+    )
+    require_empty_source_interval(
+        body,
+        retry_label.end(),
+        allocation.start(),
+        "gem-create retry-label-to-allocation",
+    )
+    require_empty_source_interval(
+        body,
+        out_label.end(),
+        end.start(),
+        "gem-create out-label-to-release",
+    )
+    if re.search(r"\breturn\b", body[retry_label.start() : end.start()]):
+        raise GuardError("gem-create admitted retry region returns before release")
+    gotos = tuple(
+        match.group(1)
+        for match in re.finditer(
+            r"\bgoto\s+([A-Za-z_][A-Za-z0-9_]*)\s*;",
+            body[retry_label.start() : end.start()],
+        )
+    )
+    if gotos != ("retry", "out"):
+        raise GuardError(f"gem-create admitted goto denominator differs: {gotos}")
+    for identifier, count, label in (
+        ("radeon_rs4xx_hardware_access_begin", 1, "access admission"),
+        ("radeon_rs4xx_hardware_access_end", 1, "access release"),
+        ("radeon_bo_create", 1, "BO allocation"),
+    ):
+        require_call_denominator(body, identifier, count, f"gem-create {label}")
+
+
+def check_projected_prime_import(body: str) -> None:
+    """Prove PRIME import balances helper admission around one reservation."""
+
+    admission = projected_direct_match(
+        body,
+        re.compile(
+            r"\bret\s*=\s*radeon_device_lock_hardware\s*"
+            r"\(\s*rdev\s*\)\s*;"
+        ),
+        "prime-import helper admission",
+    )
+    reservation = projected_direct_match(
+        body,
+        re.compile(r"\bdma_resv_lock\s*\(\s*resv\s*,\s*NULL\s*\)\s*;"),
+        "prime-import reservation lock",
+    )
+    failure = require_projected_failure(
+        body,
+        admission,
+        reservation.start(),
+        "ret",
+        r"\s*return\s+ERR_PTR\s*\(\s*ret\s*\)\s*;\s*",
+        "prime-import helper admission",
+    )
+    allocation = projected_direct_match(
+        body,
+        re.compile(
+            r"\bret\s*=\s*radeon_bo_create\s*\(\s*rdev\s*,\s*"
+            r"attach->dmabuf->size\s*,\s*PAGE_SIZE\s*,\s*false\s*,\s*"
+            r"RADEON_GEM_DOMAIN_GTT\s*,\s*0\s*,\s*sg\s*,\s*resv\s*,\s*"
+            r"&bo\s*\)\s*;"
+        ),
+        "prime-import allocation",
+    )
+    reservation_unlock = projected_direct_match(
+        body,
+        re.compile(r"\bdma_resv_unlock\s*\(\s*resv\s*\)\s*;"),
+        "prime-import reservation unlock",
+    )
+    release = projected_direct_match(
+        body,
+        DEVICE_UNLOCK,
+        "prime-import helper release",
+    )
+    result = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*ret\s*\)"),
+        release.end(),
+        len(body),
+        "prime-import allocation result guard",
+    )
+    require_exact_statement_sequence(
+        body,
+        result.statement_start,
+        result.statement_end,
+        r"\s*return\s+ERR_PTR\s*\(\s*ret\s*\)\s*;\s*",
+        "prime-import allocation failure",
+    )
+    if not (
+        admission.start()
+        < failure.condition.start()
+        < failure.statement_end
+        <= reservation.start()
+        < allocation.start()
+        < reservation_unlock.start()
+        < release.start()
+        < result.condition.start()
+    ):
+        raise GuardError("prime-import projected transaction order differs")
+    if re.search(r"\breturn\b", body[failure.statement_end : release.start()]):
+        raise GuardError("prime-import admitted transaction returns before release")
+    if re.search(r"\bgoto\b", body[admission.start() : release.end()]):
+        raise GuardError("prime-import projected transaction contains goto")
+    for identifier, count, label in (
+        ("radeon_device_lock_hardware", 1, "helper admission"),
+        ("radeon_device_unlock_hardware", 1, "helper release"),
+        ("dma_resv_lock", 1, "reservation lock"),
+        ("dma_resv_unlock", 1, "reservation unlock"),
+        ("radeon_bo_create", 1, "allocation"),
+    ):
+        require_call_denominator(body, identifier, count, f"prime-import {label}")
+
+
+def check_projected_wait_idle(body: str) -> None:
+    """Prove wait normalization precedes one admitted MMIO flush region."""
+
+    wait = projected_direct_match(
+        body,
+        re.compile(
+            r"\bret\s*=\s*dma_resv_wait_timeout\s*\(\s*"
+            r"robj->tbo.base.resv\s*,\s*DMA_RESV_USAGE_READ\s*,\s*true\s*,\s*"
+            r"30\s*\*\s*HZ\s*\)\s*;"
+        ),
+        "wait-idle-flush reservation wait",
+    )
+    admission = projected_direct_match(
+        body,
+        re.compile(
+            r"\bhardware_result\s*=\s*radeon_device_lock_hardware\s*"
+            r"\(\s*rdev\s*\)\s*;"
+        ),
+        "wait-idle-flush helper admission",
+    )
+    wait_failure = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*r\s*\)"),
+        wait.end(),
+        admission.start(),
+        "wait-idle-flush wait result guard",
+    )
+    require_exact_statement_sequence(
+        body,
+        wait.end(),
+        wait_failure.statement_end,
+        r"\s*if\s*\(\s*ret\s*==\s*0\s*\)\s*r\s*=\s*-EBUSY\s*;\s*"
+        r"else\s+if\s*\(\s*ret\s*<\s*0\s*\)\s*r\s*=\s*ret\s*;\s*"
+        r"if\s*\(\s*r\s*\)\s*\{\s*"
+        r"drm_gem_object_put\s*\(\s*gobj\s*\)\s*;\s*"
+        r"return\s+r\s*;\s*\}\s*",
+        "wait-idle-flush wait result normalization",
+    )
+    placement = projected_direct_match(
+        body,
+        re.compile(
+            r"\bcur_placement\s*=\s*READ_ONCE\s*\(\s*"
+            r"robj->tbo.resource->mem_type\s*\)\s*;"
+        ),
+        "wait-idle-flush placement read",
+    )
+    admission_failure = require_projected_failure(
+        body,
+        admission,
+        placement.start(),
+        "hardware_result",
+        r"\s*\{\s*drm_gem_object_put\s*\(\s*gobj\s*\)\s*;\s*"
+        r"return\s+hardware_result\s*;\s*\}\s*",
+        "wait-idle-flush helper admission",
+    )
+    flush_condition = one_match_in_function(
+        body,
+        re.compile(
+            r"\bif\s*\(\s*rdev->asic->mmio_hdp_flush\s*&&\s*"
+            r"radeon_mem_type_to_domain\s*\(\s*cur_placement\s*\)\s*==\s*"
+            r"RADEON_GEM_DOMAIN_VRAM\s*\)"
+        ),
+        "wait-idle-flush VRAM predicate",
+    )
+    flush_start, flush_end = controlled_statement(body, flush_condition.end())
+    flush = one_match_in_interval_at_depth(
+        body,
+        re.compile(r"\brobj->rdev->asic->mmio_hdp_flush\s*\(\s*rdev\s*\)\s*;"),
+        flush_start,
+        flush_end,
+        direct_statement_depth(body, flush_start),
+        "wait-idle-flush MMIO call",
+    )
+    release = projected_direct_match(
+        body,
+        DEVICE_UNLOCK,
+        "wait-idle-flush helper release",
+    )
+    final_return = projected_direct_match(
+        body,
+        re.compile(r"\breturn\s+0\s*;"),
+        "wait-idle-flush final return",
+    )
+    if not (
+        wait.start()
+        < wait_failure.condition.start()
+        < wait_failure.statement_end
+        <= admission.start()
+        < admission_failure.condition.start()
+        < admission_failure.statement_end
+        <= placement.start()
+        < flush_condition.start()
+        < flush.start()
+        < release.start()
+        < final_return.start()
+    ):
+        raise GuardError("wait-idle-flush projected transaction order differs")
+    if re.search(r"\breturn\b", body[admission_failure.statement_end : release.start()]):
+        raise GuardError("wait-idle-flush admitted region returns before release")
+    if re.search(r"\bgoto\b", body[wait.start() : release.end()]):
+        raise GuardError("wait-idle-flush projected transaction contains goto")
+    require_exact_statement_sequence(
+        body,
+        release.end(),
+        len(body),
+        r"\s*drm_gem_object_put\s*\(\s*gobj\s*\)\s*;\s*"
+        r"return\s+0\s*;\s*\}\s*",
+        "wait-idle-flush post-release cleanup",
+    )
+    for identifier, count, label in (
+        ("dma_resv_wait_timeout", 1, "reservation wait"),
+        ("radeon_device_lock_hardware", 1, "helper admission"),
+        ("radeon_device_unlock_hardware", 1, "helper release"),
+        ("mmio_hdp_flush", 1, "MMIO flush"),
+    ):
+        require_call_denominator(body, identifier, count, f"wait-idle-flush {label}")
+
+
+def check_projected_dumb_create(body: str) -> None:
+    """Prove dumb-create balances helper admission and forwards both failures."""
+
+    admission = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_device_lock_hardware\s*"
+            r"\(\s*rdev\s*\)\s*;"
+        ),
+        "dumb-create helper admission",
+    )
+    creator = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_gem_object_create\s*\(\s*rdev\s*,\s*"
+            r"args->size\s*,\s*0\s*,\s*RADEON_GEM_DOMAIN_VRAM\s*,\s*0\s*,\s*"
+            r"false\s*,\s*&gobj\s*\)\s*;"
+        ),
+        "dumb-create creator assignment",
+    )
+    admission_failure = require_projected_failure(
+        body,
+        admission,
+        creator.start(),
+        "r",
+        r"\s*return\s+r\s*;\s*",
+        "dumb-create helper admission",
+    )
+    release = projected_direct_match(body, DEVICE_UNLOCK, "dumb-create helper release")
+    handle = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*drm_gem_handle_create\s*\(\s*file_priv\s*,\s*"
+            r"gobj\s*,\s*&handle\s*\)\s*;"
+        ),
+        "dumb-create handle creation",
+    )
+    result = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*r\s*\)"),
+        release.end(),
+        handle.start(),
+        "dumb-create creator result guard",
+    )
+    require_exact_statement_sequence(
+        body,
+        result.statement_start,
+        result.statement_end,
+        r"\s*return\s+r\s*;\s*",
+        "dumb-create creator failure",
+    )
+    if not (
+        admission.start()
+        < admission_failure.condition.start()
+        < admission_failure.statement_end
+        <= creator.start()
+        < release.start()
+        < result.condition.start()
+        < result.statement_end
+        <= handle.start()
+    ):
+        raise GuardError("dumb-create projected transaction order differs")
+    if re.search(r"\breturn\b", body[admission_failure.statement_end : release.start()]):
+        raise GuardError("dumb-create admitted region returns before release")
+    if re.search(r"\bgoto\b", body[admission.start() : release.end()]):
+        raise GuardError("dumb-create projected transaction contains goto")
+    for identifier, count, label in (
+        ("radeon_device_lock_hardware", 1, "helper admission"),
+        ("radeon_device_unlock_hardware", 1, "helper release"),
+        ("radeon_gem_object_create", 1, "creator"),
+        ("drm_gem_handle_create", 1, "handle creation"),
+    ):
+        require_call_denominator(body, identifier, count, f"dumb-create {label}")
+
+
+def find_projected_command_submission_topology(
+    body: str,
+) -> CommandSubmissionTopology:
+    """Resolve the helper-owned command-submission source anchors."""
+
+    function_open = body.find("{")
+    lock = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_device_lock_hardware\s*"
+            r"\(\s*rdev\s*\)\s*;"
+        ),
+        "command-submission helper admission",
+    )
+    acceleration = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*!\s*rdev->accel_working\s*\)"),
+        lock.end(),
+        len(body),
+        "command-submission acceleration guard",
+    )
+    reset = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*rdev->in_reset\s*\)"),
+        acceleration.statement_end,
+        len(body),
+        "command-submission reset guard",
+    )
+    parser_zero = projected_direct_match(
+        body,
+        re.compile(
+            r"\bmemset\s*\(\s*&parser\s*,\s*0\s*,\s*"
+            r"sizeof\s*\(\s*(?:parser|struct\s+radeon_cs_parser)\s*\)\s*\)\s*;"
+        ),
+        "command-submission parser zeroing",
+    )
+    parser_init = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_cs_parser_init\s*"
+            r"\(\s*&parser\s*,\s*data\s*\)\s*;"
+        ),
+        "command-submission parser initialization",
+    )
+    ib_fill = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_cs_ib_fill\s*"
+            r"\(\s*rdev\s*,\s*&parser\s*\)\s*;"
+        ),
+        "command-submission IB fill call",
+    )
+    relocations = one_match_in_function(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_cs_parser_relocs\s*"
+            r"\(\s*&parser\s*\)\s*;"
+        ),
+        "command-submission relocation call",
+    )
+    trace = projected_direct_match(
+        body,
+        re.compile(r"\btrace_radeon_cs\s*\(\s*&parser\s*\)\s*;"),
+        "command-submission trace call",
+    )
+    ib_schedule = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_cs_ib_chunk\s*"
+            r"\(\s*rdev\s*,\s*&parser\s*\)\s*;"
+        ),
+        "command-submission non-VM IB schedule call",
+    )
+    ib_vm_schedule = projected_direct_match(
+        body,
+        re.compile(
+            r"\br\s*=\s*radeon_cs_ib_vm_chunk\s*"
+            r"\(\s*rdev\s*,\s*&parser\s*\)\s*;"
+        ),
+        "command-submission VM IB schedule call",
+    )
+    out_label = one_match_in_function(
+        body,
+        re.compile(r"(?m)^[ \t]*out\s*:"),
+        "command-submission out label",
+    )
+    final_unlock = one_match_at_depth(
+        body,
+        DEVICE_UNLOCK,
+        1,
+        "command-submission final helper release",
+    )
+    parser_failure = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*r\s*\)"),
+        parser_init.end(),
+        ib_fill.start(),
+        "command-submission parser initialization failure guard",
+    )
+    relocation = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*!\s*r\s*\)"),
+        ib_fill.end(),
+        trace.start(),
+        "command-submission relocation result guard",
+    )
+    validation_failure = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*r\s*\)"),
+        relocation.statement_end,
+        trace.start(),
+        "command-submission validation failure guard",
+    )
+    ib_failure = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*r\s*\)"),
+        ib_schedule.end(),
+        ib_vm_schedule.start(),
+        "command-submission non-VM result guard",
+    )
+    ib_vm_failure = projected_condition(
+        body,
+        re.compile(r"\bif\s*\(\s*r\s*\)"),
+        ib_vm_schedule.end(),
+        out_label.start(),
+        "command-submission VM result guard",
+    )
+    fence_validation = projected_condition(
+        body,
+        re.compile(
+            r"\bif\s*\(\s*!\s*list_empty\s*\(\s*&parser\.validated\s*\)\s*"
+            r"&&\s*!\s*parser\.ib\.fence\s*\)"
+        ),
+        ib_vm_failure.statement_end,
+        out_label.start(),
+        "command-submission validated-BO fence guard",
+    )
+    final_return = one_match_in_interval_at_depth(
+        body,
+        re.compile(r"\breturn\s+r\s*;"),
+        out_label.end(),
+        len(body),
+        1,
+        "command-submission final return",
+    )
+    return CommandSubmissionTopology(
+        function_open=function_open,
+        lock=lock,
+        acceleration=acceleration,
+        reset=reset,
+        parser_zero=parser_zero,
+        parser_init=parser_init,
+        parser_failure=parser_failure,
+        ib_fill=ib_fill,
+        relocation_stage=relocation,
+        relocations=relocations,
+        validation_failure=validation_failure,
+        trace=trace,
+        ib_schedule=ib_schedule,
+        ib_failure=ib_failure,
+        ib_vm_schedule=ib_vm_schedule,
+        ib_vm_failure=ib_vm_failure,
+        fence_validation=fence_validation,
+        out_label=out_label,
+        final_unlock=final_unlock,
+        final_return=final_return,
+    )
+
+
+def check_projected_command_submission(body: str) -> None:
+    """Prove helper-owned CS admission, validation, scheduling, and cleanup."""
+
+    topology = find_projected_command_submission_topology(body)
+    parked_matches = list(PARKED_GUARD.finditer(body))
+    if len(parked_matches) != 1:
+        raise GuardError(
+            "command-submission projected path requires one direct parked guard"
+        )
+    parked = parked_matches[0]
+    if brace_depth(body, parked.start()) != 1:
+        raise GuardError("command-submission parked guard is outside direct scope")
+    require_direct_statement(
+        body,
+        topology.function_open,
+        parked.start(),
+        "command-submission parked guard",
+    )
+    admission_failure = require_projected_failure(
+        body,
+        topology.lock,
+        parked.start(),
+        "r",
+        r"\s*return\s+r\s*;\s*",
+        "command-submission helper admission",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.function_open,
+        topology.lock.end(),
+        r"\{\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*=\s*dev->dev_private\s*;\s*"
+        r"struct\s+radeon_cs_parser\s+parser\s*;\s*"
+        r"int\s+r\s*;\s*"
+        r"r\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;\s*",
+        "command-submission declaration and helper-admission prefix",
+    )
+    require_empty_source_interval(
+        body,
+        admission_failure.statement_end,
+        parked.start(),
+        "command-submission admission-to-parked-guard",
+    )
+    parked_statement = controlled_match(body, parked)
+    require_exact_statement_sequence(
+        body,
+        parked_statement.statement_start,
+        parked_statement.statement_end,
+        r"\s*\{\s*radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"(?:dev_err_once\s*\(\s*rdev->dev\s*,\s*\)\s*;\s*)?"
+        r"return\s+-EIO\s*;\s*\}\s*",
+        "command-submission parked refusal",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.acceleration.statement_start,
+        topology.acceleration.statement_end,
+        r"\s*\{\s*radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"return\s+-EBUSY\s*;\s*\}\s*",
+        "command-submission acceleration refusal",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.reset.statement_start,
+        topology.reset.statement_end,
+        r"\s*\{\s*radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"r\s*=\s*radeon_gpu_reset\s*\(\s*rdev\s*\)\s*;\s*"
+        r"if\s*\(\s*!\s*r\s*\)\s*r\s*=\s*-EAGAIN\s*;\s*"
+        r"return\s+r\s*;\s*\}\s*",
+        "command-submission reset transaction",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.parser_zero.start(),
+        topology.parser_init.end(),
+        r"\s*memset\s*\(\s*&parser\s*,\s*0\s*,\s*"
+        r"sizeof\s*\(\s*(?:parser|struct\s+radeon_cs_parser)\s*\)\s*\)\s*;\s*"
+        r"parser\.filp\s*=\s*filp\s*;\s*"
+        r"parser\.rdev\s*=\s*rdev\s*;\s*"
+        r"parser\.dev\s*=\s*rdev->dev\s*;\s*"
+        r"parser\.family\s*=\s*rdev->family\s*;\s*"
+        r"r\s*=\s*radeon_cs_parser_init\s*\(\s*&parser\s*,\s*data\s*\)\s*;\s*",
+        "command-submission parser initialization prefix",
+    )
+    require_empty_source_interval(
+        body,
+        topology.parser_init.end(),
+        topology.parser_failure.condition.start(),
+        "command-submission parser-init-to-failure-guard",
+    )
+    cleanup_pattern = (
+        r"radeon_cs_parser_release_reservations\s*\(\s*&parser\s*,\s*r\s*\)\s*;\s*"
+        r"radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"radeon_cs_parser_release_storage\s*\(\s*&parser\s*\)\s*;\s*"
+        r"r\s*=\s*radeon_cs_handle_lockup\s*\(\s*rdev\s*,\s*r\s*\)\s*;\s*"
+        r"return\s+r\s*;"
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.parser_failure.statement_start,
+        topology.parser_failure.statement_end,
+        r"\s*\{\s*DRM_ERROR\s*\(\s*\)\s*;\s*" + cleanup_pattern + r"\s*\}\s*",
+        "command-submission parser initialization failure",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.relocation_stage.statement_start,
+        topology.relocation_stage.statement_end,
+        r"\s*\{\s*r\s*=\s*radeon_cs_parser_relocs\s*"
+        r"\(\s*&parser\s*\)\s*;\s*"
+        r"if\s*\(\s*r\s*&&\s*r\s*!=\s*-ERESTARTSYS\s*\)\s*"
+        r"DRM_ERROR\s*\(\s*,\s*r\s*\)\s*;\s*\}\s*",
+        "command-submission relocation success stage",
+    )
+    require_empty_source_interval(
+        body,
+        topology.relocation_stage.statement_end,
+        topology.validation_failure.condition.start(),
+        "command-submission relocation-to-failure-guard",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.validation_failure.statement_start,
+        topology.validation_failure.statement_end,
+        r"\s*\{\s*" + cleanup_pattern + r"\s*\}\s*",
+        "command-submission validation failure",
+    )
+    for failure, label in (
+        (topology.ib_failure, "non-VM"),
+        (topology.ib_vm_failure, "VM"),
+    ):
+        require_exact_statement_sequence(
+            body,
+            failure.statement_start,
+            failure.statement_end,
+            r"\s*\{\s*goto\s+out\s*;\s*\}\s*",
+            f"command-submission {label} failure edge",
+        )
+    require_exact_statement_sequence(
+        body,
+        topology.fence_validation.statement_start,
+        topology.fence_validation.statement_end,
+        r"\s*\{\s*DRM_ERROR\s*\(\s*\)\s*;\s*r\s*=\s*-EINVAL\s*;\s*\}\s*",
+        "command-submission validated-BO fence failure",
+    )
+    require_exact_statement_sequence(
+        body,
+        topology.out_label.start(),
+        topology.final_return.end(),
+        r"\s*out\s*:\s*" + cleanup_pattern + r"\s*",
+        "command-submission final cleanup",
+    )
+    if not (
+        topology.lock.start()
+        < admission_failure.condition.start()
+        < admission_failure.statement_end
+        <= parked.start()
+        < parked_statement.statement_end
+        <= topology.acceleration.condition.start()
+        < topology.reset.condition.start()
+        < topology.parser_zero.start()
+        < topology.parser_init.start()
+        < topology.parser_failure.condition.start()
+        < topology.ib_fill.start()
+        < topology.relocation_stage.condition.start()
+        < topology.relocations.start()
+        < topology.validation_failure.condition.start()
+        < topology.trace.start()
+        < topology.ib_schedule.start()
+        < topology.ib_failure.condition.start()
+        < topology.ib_vm_schedule.start()
+        < topology.ib_vm_failure.condition.start()
+        < topology.fence_validation.condition.start()
+        < topology.out_label.start()
+        < topology.final_unlock.start()
+        < topology.final_return.start()
+    ):
+        raise GuardError("command-submission projected stage order differs")
+
+    controlled_regions = (
+        parked_statement,
+        topology.acceleration,
+        topology.reset,
+        topology.parser_failure,
+        topology.validation_failure,
+    )
+    unlock_offsets = []
+    return_offsets = [
+        one_match_in_interval_at_depth(
+            body,
+            re.compile(r"\breturn\s+r\s*;"),
+            admission_failure.statement_start,
+            admission_failure.statement_end,
+            direct_statement_depth(body, admission_failure.statement_start),
+            "command-submission admission failure return",
+        ).start()
+    ]
+    for region, label in zip(
+        controlled_regions,
+        ("parked", "acceleration", "reset", "parser", "validation"),
+        strict=True,
+    ):
+        unlock_offsets.append(
+            one_match_in_interval_at_depth(
+                body,
+                DEVICE_UNLOCK,
+                region.statement_start,
+                region.statement_end,
+                direct_statement_depth(body, region.statement_start),
+                f"command-submission {label} helper release",
+            ).start()
+        )
+        return_offsets.append(
+            one_match_in_interval_at_depth(
+                body,
+                re.compile(r"\breturn\b"),
+                region.statement_start,
+                region.statement_end,
+                direct_statement_depth(body, region.statement_start),
+                f"command-submission {label} return",
+            ).start()
+        )
+    unlock_offsets.append(topology.final_unlock.start())
+    return_offsets.append(topology.final_return.start())
+    require_exact_match_offsets(
+        body,
+        DEVICE_UNLOCK,
+        unlock_offsets,
+        "command-submission helper release",
+    )
+    require_exact_match_offsets(
+        body,
+        re.compile(r"\breturn\b"),
+        return_offsets,
+        "command-submission return",
+    )
+    goto_offsets = [
+        one_match_in_interval_at_depth(
+            body,
+            re.compile(r"\bgoto\s+out\s*;"),
+            region.statement_start,
+            region.statement_end,
+            direct_statement_depth(body, region.statement_start),
+            f"command-submission {label} goto",
+        ).start()
+        for region, label in (
+            (topology.ib_failure, "non-VM"),
+            (topology.ib_vm_failure, "VM"),
+        )
+    ]
+    require_exact_match_offsets(
+        body,
+        re.compile(r"\bgoto\b"),
+        goto_offsets,
+        "command-submission goto",
+    )
+    for identifier, count, label in (
+        ("radeon_device_lock_hardware", 1, "helper admission"),
+        ("radeon_device_unlock_hardware", 6, "helper release"),
+        ("radeon_gpu_reset", 1, "reset"),
+        ("radeon_cs_parser_init", 1, "parser initialization"),
+        ("radeon_cs_ib_fill", 1, "IB fill"),
+        ("radeon_cs_parser_relocs", 1, "relocation"),
+        ("trace_radeon_cs", 1, "trace"),
+        ("radeon_cs_ib_chunk", 1, "non-VM schedule"),
+        ("radeon_cs_ib_vm_chunk", 1, "VM schedule"),
+        ("radeon_cs_parser_release_reservations", 3, "reservation release"),
+        ("radeon_cs_parser_release_storage", 3, "storage release"),
+        ("radeon_cs_handle_lockup", 3, "lockup translation"),
+        ("radeon_ib_get", 0, "early IB allocation"),
+    ):
+        require_call_denominator(
+            body,
+            identifier,
+            count,
+            f"command-submission {label}",
+        )
+
+
+def check_projected_guard(body: str, guard: dict[str, str]) -> None:
+    """Dispatch one centralized-helper entrypoint proof."""
+
+    if guard["id"] == "gem-create":
+        check_projected_gem_create(body)
+    elif guard["id"] == "prime-import":
+        check_projected_prime_import(body)
+    elif guard["id"] == "wait-idle-flush":
+        check_projected_wait_idle(body)
+    elif guard["id"] == "command-submission":
+        check_projected_command_submission(body)
+    else:
+        raise GuardError(f"unsupported projected guard {guard['id']}")
+
+
+def check_guard(
+    root: Path,
+    guard: dict[str, str],
+    *,
+    validate_helpers: bool = True,
+) -> None:
+    """Prove one legacy direct guard or centralized-helper projection."""
+
+    path = root / guard["path"]
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise GuardError(f"{guard['id']}: missing source {path}") from exc
+    body = function_code(source, guard["function"], PARKED_PROTECTED_MACROS)
+    projected = re.search(
+        r"\b(?:radeon_device_lock_hardware|"
+        r"radeon_rs4xx_hardware_access_begin)\s*\(",
+        body,
+    )
+    if projected is None:
+        check_legacy_guard(root, guard)
+        return
+    reject_conditional_directives(body, guard["id"])
+    if validate_helpers:
+        try:
+            centralized_admission.check_contract(root)
+        except centralized_admission.GuardError as exc:
+            raise GuardError(f"centralized admission contract: {exc}") from exc
+    check_projected_guard(body, guard)
+
+
+def check_dumb_create_propagation(
+    root: Path,
+    *,
+    validate_helpers: bool = True,
+) -> None:
+    """Prove the legacy direct lock or centralized helper at dumb-create."""
+
+    path = root / SUBTREE / "radeon_gem.c"
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise GuardError(f"dumb-create: missing source {path}") from exc
+    body = function_code(
+        source,
+        "radeon_mode_dumb_create",
+        DUMB_CREATE_PROTECTED_MACROS + PARKED_PROTECTED_MACROS,
+    )
+    if re.search(r"\bradeon_device_lock_hardware\s*\(", body) is None:
+        check_legacy_dumb_create_propagation(root)
+        return
+    reject_conditional_directives(body, "dumb-create")
+    if validate_helpers:
+        try:
+            centralized_admission.check_contract(root)
+        except centralized_admission.GuardError as exc:
+            raise GuardError(f"centralized admission contract: {exc}") from exc
+    check_projected_dumb_create(body)
 
 
 GEM_FIXTURE_OPEN = "int radeon_gem_object_create(struct radeon_device *rdev)\n{\n"
@@ -3265,6 +4259,343 @@ CS_FIXTURES_BAD = {
     ),
 }
 
+
+PROJECTED_GEM_FIXTURE = """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+	int r;
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return r;
+retry:
+	r = radeon_bo_create(rdev, size, alignment, kernel, initial_domain,
+			     flags, NULL, NULL, &robj);
+	if (r) {
+		if (initial_domain == RADEON_GEM_DOMAIN_VRAM) {
+			initial_domain |= RADEON_GEM_DOMAIN_GTT;
+			goto retry;
+		}
+		goto out;
+	}
+out:
+	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
+}
+"""
+
+PROJECTED_GEM_MUTATIONS = {
+    "access admission removed": PROJECTED_GEM_FIXTURE.replace(
+        "\tr = radeon_rs4xx_hardware_access_begin(rdev);",
+        "\tr = 0;",
+        1,
+    ),
+    "access failure ignored": PROJECTED_GEM_FIXTURE.replace(
+        "\tif (r)\n\t\treturn r;",
+        "\tif (false && r)\n\t\treturn r;",
+        1,
+    ),
+    "access failure returns success": PROJECTED_GEM_FIXTURE.replace(
+        "\tif (r)\n\t\treturn r;",
+        "\tif (r)\n\t\treturn 0;",
+        1,
+    ),
+    "access release removed": PROJECTED_GEM_FIXTURE.replace(
+        "\tradeon_rs4xx_hardware_access_end(rdev);",
+        "",
+        1,
+    ),
+    "admitted allocation returns before release": PROJECTED_GEM_FIXTURE.replace(
+        "\tr = radeon_bo_create(rdev, size, alignment, kernel, initial_domain,",
+        "\treturn 0;\n"
+        "\tr = radeon_bo_create(rdev, size, alignment, kernel, initial_domain,",
+        1,
+    ),
+    "unexpected admitted goto": PROJECTED_GEM_FIXTURE.replace(
+        "\t\tgoto out;",
+        "\t\tgoto retry;",
+        1,
+    ),
+    "extra access admission": PROJECTED_GEM_FIXTURE.replace(
+        "retry:\n",
+        "retry:\n\tr = radeon_rs4xx_hardware_access_begin(rdev);\n",
+        1,
+    ),
+}
+
+PROJECTED_PRIME_FIXTURE = """
+struct drm_gem_object *radeon_gem_prime_import_sg_table(struct drm_device *dev)
+{
+	struct dma_resv *resv = attach->dmabuf->resv;
+	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_bo *bo;
+	int ret;
+	ret = radeon_device_lock_hardware(rdev);
+	if (ret)
+		return ERR_PTR(ret);
+	dma_resv_lock(resv, NULL);
+	ret = radeon_bo_create(rdev, attach->dmabuf->size, PAGE_SIZE, false,
+			       RADEON_GEM_DOMAIN_GTT, 0, sg, resv, &bo);
+	dma_resv_unlock(resv);
+	radeon_device_unlock_hardware(rdev);
+	if (ret)
+		return ERR_PTR(ret);
+	return &bo->tbo.base;
+}
+"""
+
+PROJECTED_PRIME_MUTATIONS = {
+    "helper admission removed": PROJECTED_PRIME_FIXTURE.replace(
+        "\tret = radeon_device_lock_hardware(rdev);",
+        "\tret = 0;",
+        1,
+    ),
+    "helper failure ignored": PROJECTED_PRIME_FIXTURE.replace(
+        "\tif (ret)\n\t\treturn ERR_PTR(ret);",
+        "\tif (false && ret)\n\t\treturn ERR_PTR(ret);",
+        1,
+    ),
+    "reservation precedes admission": PROJECTED_PRIME_FIXTURE.replace(
+        "\tret = radeon_device_lock_hardware(rdev);\n"
+        "\tif (ret)\n"
+        "\t\treturn ERR_PTR(ret);\n"
+        "\tdma_resv_lock(resv, NULL);",
+        "\tdma_resv_lock(resv, NULL);\n"
+        "\tret = radeon_device_lock_hardware(rdev);\n"
+        "\tif (ret)\n"
+        "\t\treturn ERR_PTR(ret);",
+        1,
+    ),
+    "helper release removed": PROJECTED_PRIME_FIXTURE.replace(
+        "\tradeon_device_unlock_hardware(rdev);",
+        "",
+        1,
+    ),
+    "admitted allocation returns before release": PROJECTED_PRIME_FIXTURE.replace(
+        "\tdma_resv_unlock(resv);",
+        "\treturn NULL;\n\tdma_resv_unlock(resv);",
+        1,
+    ),
+    "allocation uses another reservation": PROJECTED_PRIME_FIXTURE.replace(
+        "RADEON_GEM_DOMAIN_GTT, 0, sg, resv, &bo);",
+        "RADEON_GEM_DOMAIN_GTT, 0, sg, NULL, &bo);",
+        1,
+    ),
+}
+
+PROJECTED_WAIT_FIXTURE = """
+int radeon_gem_wait_idle_ioctl(struct drm_device *dev)
+{
+	struct radeon_device *rdev = dev->dev_private;
+	int r = 0;
+	int hardware_result;
+	long ret;
+	ret = dma_resv_wait_timeout(robj->tbo.base.resv, DMA_RESV_USAGE_READ,
+				    true, 30 * HZ);
+	if (ret == 0)
+		r = -EBUSY;
+	else if (ret < 0)
+		r = ret;
+	if (r) {
+		drm_gem_object_put(gobj);
+		return r;
+	}
+	hardware_result = radeon_device_lock_hardware(rdev);
+	if (hardware_result) {
+		drm_gem_object_put(gobj);
+		return hardware_result;
+	}
+	cur_placement = READ_ONCE(robj->tbo.resource->mem_type);
+	if (rdev->asic->mmio_hdp_flush &&
+	    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)
+		robj->rdev->asic->mmio_hdp_flush(rdev);
+	radeon_device_unlock_hardware(rdev);
+	drm_gem_object_put(gobj);
+	return 0;
+}
+"""
+
+PROJECTED_WAIT_MUTATIONS = {
+    "wait failure discarded": PROJECTED_WAIT_FIXTURE.replace(
+        "\tif (r) {\n\t\tdrm_gem_object_put(gobj);\n\t\treturn r;\n\t}\n",
+        "",
+        1,
+    ),
+    "helper admission removed": PROJECTED_WAIT_FIXTURE.replace(
+        "\thardware_result = radeon_device_lock_hardware(rdev);",
+        "\thardware_result = 0;",
+        1,
+    ),
+    "helper failure returns success": PROJECTED_WAIT_FIXTURE.replace(
+        "\t\treturn hardware_result;",
+        "\t\treturn 0;",
+        1,
+    ),
+    "placement read precedes admission": PROJECTED_WAIT_FIXTURE.replace(
+        "\thardware_result = radeon_device_lock_hardware(rdev);\n"
+        "\tif (hardware_result) {\n"
+        "\t\tdrm_gem_object_put(gobj);\n"
+        "\t\treturn hardware_result;\n"
+        "\t}\n"
+        "\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);",
+        "\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);\n"
+        "\thardware_result = radeon_device_lock_hardware(rdev);\n"
+        "\tif (hardware_result) {\n"
+        "\t\tdrm_gem_object_put(gobj);\n"
+        "\t\treturn hardware_result;\n"
+        "\t}",
+        1,
+    ),
+    "helper release precedes flush": PROJECTED_WAIT_FIXTURE.replace(
+        "\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);\n"
+        "\tif (rdev->asic->mmio_hdp_flush &&\n"
+        "\t    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)\n"
+        "\t\trobj->rdev->asic->mmio_hdp_flush(rdev);\n"
+        "\tradeon_device_unlock_hardware(rdev);",
+        "\tradeon_device_unlock_hardware(rdev);\n"
+        "\tcur_placement = READ_ONCE(robj->tbo.resource->mem_type);\n"
+        "\tif (rdev->asic->mmio_hdp_flush &&\n"
+        "\t    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)\n"
+        "\t\trobj->rdev->asic->mmio_hdp_flush(rdev);",
+        1,
+    ),
+    "flush uses another device": PROJECTED_WAIT_FIXTURE.replace(
+        "robj->rdev->asic->mmio_hdp_flush(rdev);",
+        "robj->rdev->asic->mmio_hdp_flush(robj->rdev);",
+        1,
+    ),
+}
+
+PROJECTED_DUMB_FIXTURE = """
+int radeon_mode_dumb_create(struct drm_file *file_priv,
+			    struct drm_device *dev,
+			    struct drm_mode_create_dumb *args)
+{
+	struct radeon_device *rdev = dev->dev_private;
+	struct drm_gem_object *gobj;
+	uint32_t handle;
+	int r;
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
+	r = radeon_gem_object_create(rdev, args->size, 0,
+				     RADEON_GEM_DOMAIN_VRAM, 0,
+				     false, &gobj);
+	radeon_device_unlock_hardware(rdev);
+	if (r)
+		return r;
+	r = drm_gem_handle_create(file_priv, gobj, &handle);
+	if (r)
+		return r;
+	return 0;
+}
+"""
+
+PROJECTED_DUMB_MUTATIONS = {
+    "helper admission removed": PROJECTED_DUMB_FIXTURE.replace(
+        "\tr = radeon_device_lock_hardware(rdev);",
+        "\tr = 0;",
+        1,
+    ),
+    "helper failure translated": PROJECTED_DUMB_FIXTURE.replace(
+        "\tif (r)\n\t\treturn r;",
+        "\tif (r)\n\t\treturn -ENOMEM;",
+        1,
+    ),
+    "creator precedes admission": PROJECTED_DUMB_FIXTURE.replace(
+        "\tr = radeon_device_lock_hardware(rdev);\n"
+        "\tif (r)\n"
+        "\t\treturn r;\n"
+        "\tr = radeon_gem_object_create(rdev, args->size, 0,\n"
+        "\t\t\t\t     RADEON_GEM_DOMAIN_VRAM, 0,\n"
+        "\t\t\t\t     false, &gobj);",
+        "\tr = radeon_gem_object_create(rdev, args->size, 0,\n"
+        "\t\t\t\t     RADEON_GEM_DOMAIN_VRAM, 0,\n"
+        "\t\t\t\t     false, &gobj);\n"
+        "\tr = radeon_device_lock_hardware(rdev);\n"
+        "\tif (r)\n"
+        "\t\treturn r;",
+        1,
+    ),
+    "helper release removed": PROJECTED_DUMB_FIXTURE.replace(
+        "\tradeon_device_unlock_hardware(rdev);",
+        "",
+        1,
+    ),
+    "creator failure translated": PROJECTED_DUMB_FIXTURE.replace(
+        "\tradeon_device_unlock_hardware(rdev);\n\tif (r)\n\t\treturn r;",
+        "\tradeon_device_unlock_hardware(rdev);\n\tif (r)\n\t\treturn -ENOMEM;",
+        1,
+    ),
+}
+
+
+def project_command_submission_fixture(source: str) -> str:
+    """Project a direct-lock CS fixture through the centralized helper."""
+
+    projected = source.replace(
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tr = radeon_device_lock_hardware(rdev);\n"
+        "\tif (r)\n"
+        "\t\treturn r;",
+        1,
+    )
+    projected = projected.replace(
+        "radeon_cs_parser_fini(&parser, r);",
+        "radeon_cs_parser_release_reservations(&parser, r);",
+    )
+    projected = projected.replace(
+        "up_read(&rdev->exclusive_lock);",
+        "radeon_device_unlock_hardware(rdev);",
+    )
+    projected = projected.replace(
+        "radeon_cs_parser_release_reservations(&parser, r);\n"
+        "\t\tradeon_device_unlock_hardware(rdev);",
+        "radeon_cs_parser_release_reservations(&parser, r);\n"
+        "\t\tradeon_device_unlock_hardware(rdev);\n"
+        "\t\tradeon_cs_parser_release_storage(&parser);",
+    )
+    projected = projected.replace(
+        "radeon_cs_parser_release_reservations(&parser, r);\n"
+        "\tradeon_device_unlock_hardware(rdev);",
+        "radeon_cs_parser_release_reservations(&parser, r);\n"
+        "\tradeon_device_unlock_hardware(rdev);\n"
+        "\tradeon_cs_parser_release_storage(&parser);",
+    )
+    return projected
+
+
+PROJECTED_CS_FIXTURE = project_command_submission_fixture(CS_FIXTURE_GOOD)
+PROJECTED_CS_MUTATIONS = {
+    "helper failure guard removed": PROJECTED_CS_FIXTURE.replace(
+        "\tif (r)\n\t\treturn r;\n",
+        "",
+        1,
+    ),
+    "helper result clobbered": PROJECTED_CS_FIXTURE.replace(
+        "\tr = radeon_device_lock_hardware(rdev);",
+        "\tr = radeon_device_lock_hardware(rdev);\n\tr = 0;",
+        1,
+    ),
+    "parked helper release removed": PROJECTED_CS_FIXTURE.replace(
+        "\tif (READ_ONCE(rdev->gpu_parked)) {\n"
+        "\t\tradeon_device_unlock_hardware(rdev);",
+        "\tif (READ_ONCE(rdev->gpu_parked)) {",
+        1,
+    ),
+    "parser storage releases before admission": PROJECTED_CS_FIXTURE.replace(
+        "\t\tradeon_device_unlock_hardware(rdev);\n"
+        "\t\tradeon_cs_parser_release_storage(&parser);",
+        "\t\tradeon_cs_parser_release_storage(&parser);\n"
+        "\t\tradeon_device_unlock_hardware(rdev);",
+        1,
+    ),
+    "raw read unlock reintroduced": PROJECTED_CS_FIXTURE.replace(
+        "\tradeon_device_unlock_hardware(rdev);",
+        "\tup_read(&rdev->exclusive_lock);",
+        1,
+    ),
+}
+
 MUTATION_EXPECTED_ERRORS = {
     "gem-create": {
         "allocation name is not called": "radeon_bo_create call absent",
@@ -3550,15 +4881,116 @@ def selftest(tmp: Path) -> int:
             )
             failures += 1
 
+    projected_cases = (
+        (
+            "gem-create",
+            "radeon_gem_object_create",
+            PROJECTED_GEM_FIXTURE,
+            PROJECTED_GEM_MUTATIONS,
+            check_projected_gem_create,
+        ),
+        (
+            "prime-import",
+            "radeon_gem_prime_import_sg_table",
+            PROJECTED_PRIME_FIXTURE,
+            PROJECTED_PRIME_MUTATIONS,
+            check_projected_prime_import,
+        ),
+        (
+            "wait-idle-flush",
+            "radeon_gem_wait_idle_ioctl",
+            PROJECTED_WAIT_FIXTURE,
+            PROJECTED_WAIT_MUTATIONS,
+            check_projected_wait_idle,
+        ),
+        (
+            "dumb-create",
+            "radeon_mode_dumb_create",
+            PROJECTED_DUMB_FIXTURE,
+            PROJECTED_DUMB_MUTATIONS,
+            check_projected_dumb_create,
+        ),
+        (
+            "command-submission",
+            "radeon_cs_ioctl",
+            PROJECTED_CS_FIXTURE,
+            PROJECTED_CS_MUTATIONS,
+            check_projected_command_submission,
+        ),
+    )
+    for label, function_name, good_fixture, mutations, checker in projected_cases:
+        try:
+            projected_body = function_code(
+                good_fixture,
+                function_name,
+                PARKED_PROTECTED_MACROS,
+            )
+            reject_conditional_directives(projected_body, f"projected {label}")
+            checker(projected_body)
+            print(f"selftest known-good accepted: projected {label}")
+        except GuardError as exc:
+            print(
+                f"selftest known-good REJECTED: projected {label}: {exc}",
+                file=sys.stderr,
+            )
+            failures += 1
+        for name, fixture in mutations.items():
+            try:
+                projected_body = function_code(
+                    fixture,
+                    function_name,
+                    PARKED_PROTECTED_MACROS,
+                )
+                reject_conditional_directives(
+                    projected_body,
+                    f"projected {label} {name}",
+                )
+                checker(projected_body)
+            except GuardError:
+                print(f"selftest known-bad rejected: projected {label} {name}")
+            else:
+                print(
+                    f"selftest known-bad ACCEPTED: projected {label} {name}",
+                    file=sys.stderr,
+                )
+                failures += 1
+
+    for name, fixture in CS_FIXTURES_BAD.items():
+        try:
+            projected_body = function_code(
+                project_command_submission_fixture(fixture),
+                "radeon_cs_ioctl",
+                PARKED_PROTECTED_MACROS,
+            )
+            reject_conditional_directives(
+                projected_body,
+                f"projected command-submission legacy mutation {name}",
+            )
+            check_projected_command_submission(projected_body)
+        except GuardError:
+            print(
+                "selftest known-bad rejected: projected command-submission "
+                f"{name}"
+            )
+        else:
+            print(
+                "selftest known-bad ACCEPTED: projected command-submission "
+                f"{name}",
+                file=sys.stderr,
+            )
+            failures += 1
+
     if failures:
         print(f"selftest: {failures} fixture(s) misclassified", file=sys.stderr)
         return 1
-    good_count = len(good) + 2 + len(locked_fixtures)
+    good_count = len(good) + 2 + len(locked_fixtures) + len(projected_cases)
     bad_count = (
         len(FIXTURES_BAD)
         + len(DUMB_FIXTURES_BAD)
         + len(CS_FIXTURES_BAD)
         + sum(len(mutations) for _, _, mutations in locked_fixtures)
+        + sum(len(mutations) for _, _, _, mutations, _ in projected_cases)
+        + len(CS_FIXTURES_BAD)
     )
     print(f"selftest: {good_count} good and {bad_count} bad fixtures classified")
     return 0
@@ -3581,9 +5013,16 @@ def main() -> int:
             return selftest(Path(name))
 
     failures = 0
+    try:
+        centralized_admission.check_contract(args.root)
+    except centralized_admission.GuardError as exc:
+        print(f"FAIL centralized admission contract: {exc}", file=sys.stderr)
+        failures += 1
+    else:
+        print("ok centralized admission: reader and transaction helpers proven")
     for guard in GUARDS:
         try:
-            check_guard(args.root, guard)
+            check_guard(args.root, guard, validate_helpers=False)
         except GuardError as exc:
             print(f"FAIL {exc}", file=sys.stderr)
             failures += 1
@@ -3591,7 +5030,7 @@ def main() -> int:
             print(f"ok {guard['id']}: refuses before {guard['precedes']}")
 
     try:
-        check_dumb_create_propagation(args.root)
+        check_dumb_create_propagation(args.root, validate_helpers=False)
     except GuardError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         failures += 1

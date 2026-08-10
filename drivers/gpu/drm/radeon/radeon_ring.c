@@ -471,6 +471,11 @@ static int radeon_debugfs_ring_info_show(struct seq_file *m, void *unused)
 
 	uint32_t rptr, wptr, rptr_next;
 	unsigned count, i, j;
+	int r;
+
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	radeon_ring_free_size(rdev, ring);
 	count = (ring->ring_size / 4) - ring->ring_free_dw;
@@ -500,7 +505,7 @@ static int radeon_debugfs_ring_info_show(struct seq_file *m, void *unused)
 	seq_printf(m, "%u dwords in ring\n", count);
 
 	if (!ring->ring)
-		return 0;
+		goto out_unlock;
 
 	/* print 8 dw before current rptr as often it's the last executed
 	 * packet that is the root issue
@@ -515,6 +520,9 @@ static int radeon_debugfs_ring_info_show(struct seq_file *m, void *unused)
 		seq_puts(m, "\n");
 		i = (i + 1) & ring->ptr_mask;
 	}
+
+out_unlock:
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 }
 
@@ -550,11 +558,10 @@ static void radeon_debugfs_ring_init(struct radeon_device *rdev, struct radeon_r
 {
 #if defined(CONFIG_DEBUG_FS)
 	const char *ring_name = radeon_debugfs_ring_idx_to_name(ring->idx);
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
 
 	if (ring_name)
-		debugfs_create_file(ring_name, 0444, root, ring,
-				    &radeon_debugfs_ring_info_fops);
+		radeon_debugfs_add_component(rdev, ring_name, 0444, ring,
+					     &radeon_debugfs_ring_info_fops);
 
 #endif
 }

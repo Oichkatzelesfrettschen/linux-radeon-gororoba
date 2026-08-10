@@ -2050,6 +2050,7 @@ int atombios_crtc_mode_set(struct drm_crtc *crtc,
 	struct radeon_encoder *radeon_encoder =
 		to_radeon_encoder(radeon_crtc->encoder);
 	bool is_tvcv = false;
+	int r;
 
 	if (radeon_encoder->active_device &
 	    (ATOM_DEVICE_TV_SUPPORT | ATOM_DEVICE_CV_SUPPORT))
@@ -2073,12 +2074,22 @@ int atombios_crtc_mode_set(struct drm_crtc *crtc,
 			atombios_set_crtc_dtd_timing(crtc, adjusted_mode);
 		radeon_legacy_atom_fixup(crtc);
 	}
-	atombios_crtc_set_base(crtc, x, y, old_fb);
+	r = atombios_crtc_set_base(crtc, x, y, old_fb);
+	if (r) {
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->rs4xx_reset_reprogramming))
+			WRITE_ONCE(rdev->rs4xx_reset_reprogram_failed, true);
+		return r;
+	}
 	atombios_overscan_setup(crtc, mode, adjusted_mode);
 	atombios_scaler_setup(crtc);
 	radeon_cursor_reset(crtc);
 	/* update the hw version fpr dpm */
 	radeon_crtc->hw_mode = *adjusted_mode;
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->rs4xx_reset_reprogramming))
+		WRITE_ONCE(rdev->rs4xx_reset_reprogram_completed,
+			   READ_ONCE(rdev->rs4xx_reset_reprogram_completed) + 1);
 
 	return 0;
 }
@@ -2158,9 +2169,13 @@ static void atombios_crtc_disable(struct drm_crtc *crtc)
 
 		rbo = gem_to_radeon_bo(crtc->primary->fb->obj[0]);
 		r = radeon_bo_reserve(rbo, false);
-		if (unlikely(r))
+		if (unlikely(r)) {
 			DRM_ERROR("failed to reserve rbo before unpin\n");
-		else {
+			if (radeon_rs4xx_hardware_target(rdev) &&
+			    READ_ONCE(rdev->rs4xx_scanout_release_tracking))
+				WRITE_ONCE(rdev->rs4xx_scanout_release_failed,
+					   true);
+		} else {
 			radeon_bo_unpin(rbo);
 			radeon_bo_unreserve(rbo);
 		}

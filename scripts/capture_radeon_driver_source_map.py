@@ -34,6 +34,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import check_rs4xx_hardware_admission_contract as parked_admission
+
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
 COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
@@ -81,20 +83,20 @@ SCRIPT_PATH = Path("scripts/capture_radeon_driver_source_map.py")
 KERNEL_ROOT_VALIDATOR_PATH = Path("scripts/check_kernel_build_root.py")
 CANONICAL_SOURCE_ROOT = "drivers/gpu/drm/radeon"
 MAX_SOURCE_FILES = 256
-MAX_SOURCE_BYTES = 7_000_000
-EXPECTED_ROOT_DENOMINATOR_COUNT = 73
+MAX_SOURCE_BYTES = 7_100_000
+EXPECTED_ROOT_DENOMINATOR_COUNT = 119
 EXPECTED_ROOT_DENOMINATOR_SHA256 = (
-    "a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814"
+    "e05f959e228dd37d64156a239ed81915d80fc8a2f8a5f666a47c1d550e27b243"
 )
-EXPECTED_HAZARD_DENOMINATOR_COUNT = 13
+EXPECTED_HAZARD_DENOMINATOR_COUNT = 30
 EXPECTED_HAZARD_DENOMINATOR_SHA256 = (
-    "79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5"
+    "79caef3c4c570beaef5430110bfadfc2cc431e189872a5d95f8e51b6449259b2"
 )
-EXPECTED_BINDING_DENOMINATOR_COUNT = 55
+EXPECTED_BINDING_DENOMINATOR_COUNT = 63
 EXPECTED_BINDING_DENOMINATOR_SHA256 = (
-    "e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77"
+    "e7674df3c0cdb43ccad8a62a2a1a3b5345a0705355f7f6b8ff779465eca0845f"
 )
-EXPECTED_SELFTEST_VERDICT_COUNT = 175
+EXPECTED_SELFTEST_VERDICT_COUNT = 239
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -163,6 +165,64 @@ REQUIRED_PATH_WITNESS_ENDPOINTS = {
         "radeon_bo_init",
         "radeon_ttm_gtt_read",
     ),
+    "rs4xx-fbdev-mmap-aperture-refusal": (
+        "fb_mmap",
+        "fb_io_mmap",
+    ),
+    "rs4xx-pci-remove-terminal-retention": (
+        "pci_device_remove",
+        "radeon_rs4xx_retain_terminal_device_identity",
+    ),
+}
+REQUIRED_FRAMEWORK_CALLBACK_BINDINGS = {
+    "fbdev-mmap-callback": (
+        "profile-and-admission",
+        "callback-table",
+        "brace",
+        "fb_mmap",
+        "radeon_fbdev_fb_mmap",
+        "drivers/gpu/drm/radeon/radeon_fbdev.c",
+        r"(?s)static const struct fb_ops radeon_fbdev_fb_ops = \{.*?\.fb_mmap = radeon_fbdev_fb_mmap\s*,",
+        1,
+    ),
+    "pci-device-probe": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "pci_device_probe",
+        "radeon_pci_probe",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.probe = radeon_pci_probe\s*,",
+        1,
+    ),
+    "pci-device-remove": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "pci_device_remove",
+        "radeon_pci_remove",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.remove = radeon_pci_remove\s*,",
+        1,
+    ),
+    "pci-device-shutdown": (
+        "module-lifecycle",
+        "callback-table",
+        "brace",
+        "pci_device_shutdown",
+        "radeon_pci_shutdown",
+        "drivers/gpu/drm/radeon/radeon_drv.c",
+        r"(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.shutdown = radeon_pci_shutdown\s*,",
+        1,
+    ),
+}
+REQUIRED_BOUNDED_QUERIES = {
+    "fbdev-fbops-probe-scope": (
+        ("drivers/gpu/drm/radeon/radeon_fbdev.c",),
+        r"\binfo\s*->\s*fbops\s*=\s*&\s*radeon_fbdev_fb_ops\s*;",
+        1,
+        "radeon_fbdev_driver_fbdev_probe",
+    ),
 }
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -179,6 +239,9 @@ C_COMMENT_OR_LITERAL = re.compile(
     re.DOTALL,
 )
 C_LINE_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
+C_PREPROCESSOR_DIRECTIVE = re.compile(
+    r"^[ \t]*#[ \t]*([A-Za-z_][A-Za-z0-9_]*)"
+)
 CFLOW_ROW = re.compile(r"^\s*\d+\s+\{\s*(\d+)\}\s+(\S[^:]*):\s*(.*)$")
 FIELD_INITIALIZER = re.compile(
     r"(?m)^\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*&?"
@@ -234,6 +297,13 @@ class SourceEntry:
     size: int
     sha256: str
     source_class: str
+
+
+@dataclass
+class PreprocessorConditionalState:
+    parent_inactive: bool
+    prior_branch_state: str
+    current_inactive: bool
 
 
 @dataclass(frozen=True)
@@ -310,6 +380,7 @@ class BoundedQuery:
     pattern: str
     expected_matches: int
     rationale: str
+    function: str | None = None
 
 
 @dataclass(frozen=True)
@@ -321,6 +392,22 @@ class KernelLane:
     toolchain_manifest: str
     toolchain_prefix_manifest: str
     profiles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AdmissionCallSite:
+    path: str
+    function: str
+    callee: str
+    expected_calls: int
+
+
+@dataclass(frozen=True)
+class AdmissionContract:
+    operational_callers: tuple[str, ...]
+    call_site_shape_count: int
+    call_occurrence_count: int
+    call_sites: tuple[AdmissionCallSite, ...]
 
 
 @dataclass(frozen=True)
@@ -372,6 +459,7 @@ class Policy:
     ctags_stderr: tuple[str, ...]
     translation_units: tuple[str, ...]
     kernel_lanes: tuple[KernelLane, ...]
+    admission_contract: AdmissionContract | None
     partitions: tuple[Partition, ...]
     hazards: tuple[Hazard, ...]
     bindings: tuple[Binding, ...]
@@ -972,6 +1060,36 @@ def validate_path_witness_shape(
             ),
             f"{edge_label} contains invalid candidate identity text",
         )
+        if edge.edge_kind == "declared-indirect":
+            require(
+                bindings is not None,
+                f"{edge_label} requires a declared binding map",
+            )
+        if bindings is not None and edge.edge_kind == "declared-indirect":
+            binding = bindings.get(edge.provenance)
+            require(
+                binding is not None,
+                f"{edge_label} names unknown declared binding provenance",
+            )
+            if binding is None:
+                raise SourceMapError(
+                    f"{edge_label} names unknown declared binding provenance"
+                )
+            require(
+                (
+                    edge.caller,
+                    edge.callee,
+                    edge.partition,
+                    edge.classification,
+                )
+                == (
+                    binding.caller,
+                    binding.callee,
+                    binding.partition,
+                    binding.kind,
+                ),
+                f"{edge_label} differs from binding {edge.provenance}",
+            )
         if edge.axis != active_axis:
             if active_axis:
                 completed_axes.add(active_axis)
@@ -1097,6 +1215,165 @@ def validate_required_path_witnesses(
     )
 
 
+def canonical_admission_contract() -> AdmissionContract:
+    """Return the transaction caller and call-site denominator."""
+
+    operational_callers = tuple(
+        f"{root.path.as_posix()}:{root.function}"
+        for root in parked_admission.ROOTS
+    )
+    call_sites = tuple(
+        AdmissionCallSite(
+            path.as_posix(),
+            function,
+            callee,
+            expected_calls,
+        )
+        for (path, function, callee), expected_calls in sorted(
+            parked_admission.expected_call_sites().items(),
+            key=lambda item: tuple(str(part) for part in item[0]),
+        )
+    )
+    return AdmissionContract(
+        operational_callers,
+        len(call_sites),
+        sum(site.expected_calls for site in call_sites),
+        call_sites,
+    )
+
+
+def parse_admission_contract(
+    raw_contract: object,
+    source_root: str,
+) -> AdmissionContract:
+    """Parse and bind the source-map admission denominator."""
+
+    label = "admission_contract"
+    require(isinstance(raw_contract, dict), f"{label} must be a table")
+    contract_keys = {
+        "operational_callers",
+        "call_site_shape_count",
+        "call_occurrence_count",
+        "call_site",
+    }
+    reject_unknown(raw_contract, contract_keys, label)
+    require(set(raw_contract) == contract_keys, f"{label} is incomplete")
+    operational_callers = string_list(
+        raw_contract,
+        "operational_callers",
+        label,
+    )
+    call_site_shape_count = raw_contract.get("call_site_shape_count")
+    call_occurrence_count = raw_contract.get("call_occurrence_count")
+    require(
+        type(call_site_shape_count) is int and call_site_shape_count > 0,
+        f"{label}.call_site_shape_count must be positive",
+    )
+    require(
+        type(call_occurrence_count) is int and call_occurrence_count > 0,
+        f"{label}.call_occurrence_count must be positive",
+    )
+    raw_call_sites = raw_contract.get("call_site")
+    require(
+        isinstance(raw_call_sites, list) and raw_call_sites,
+        f"{label}.call_site must be a nonempty table list",
+    )
+    call_sites: list[AdmissionCallSite] = []
+    for index, raw_call_site in enumerate(raw_call_sites):
+        call_site_label = f"{label}.call_site[{index}]"
+        require(
+            isinstance(raw_call_site, dict),
+            f"{call_site_label} must be a table",
+        )
+        call_site_keys = {"path", "function", "callee", "expected_calls"}
+        reject_unknown(raw_call_site, call_site_keys, call_site_label)
+        require(
+            set(raw_call_site) == call_site_keys,
+            f"{call_site_label} is incomplete",
+        )
+        path = string_value(raw_call_site, "path", call_site_label)
+        function = string_value(raw_call_site, "function", call_site_label)
+        callee = string_value(raw_call_site, "callee", call_site_label)
+        expected_calls = raw_call_site.get("expected_calls")
+        require(
+            path.startswith(source_root + "/")
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts,
+            f"{call_site_label}.path leaves the source root",
+        )
+        require(
+            C_IDENTIFIER.fullmatch(function) is not None
+            and C_IDENTIFIER.fullmatch(callee) is not None,
+            f"{call_site_label} carries an invalid C identifier",
+        )
+        require(
+            type(expected_calls) is int and expected_calls > 0,
+            f"{call_site_label}.expected_calls must be positive",
+        )
+        call_sites.append(
+            AdmissionCallSite(path, function, callee, expected_calls)
+        )
+    contract = AdmissionContract(
+        operational_callers,
+        call_site_shape_count,
+        call_occurrence_count,
+        tuple(call_sites),
+    )
+    require(
+        contract == canonical_admission_contract(),
+        "admission contract differs from the finite source checker",
+    )
+    return contract
+
+
+def verify_admission_contract_source(
+    source_root: Path,
+    policy: Policy,
+) -> None:
+    """Replay the finite transaction call denominator on captured source."""
+
+    if policy.admission_contract is None:
+        return
+    try:
+        parked_admission.check_call_denominator(source_root)
+    except parked_admission.GuardError as exc:
+        raise SourceMapError(
+            f"source-map admission denominator differs: {exc}"
+        ) from exc
+
+
+def verify_declared_hazard_guard_identifiers(
+    source_root: Path,
+    policy: Policy,
+) -> None:
+    """Bind every declared hazard guard owner to retained source tokens."""
+
+    functions_by_name: defaultdict[
+        str,
+        list[parked_admission.SourceFunction],
+    ] = defaultdict(list)
+    for function in parked_admission.source_functions(source_root):
+        functions_by_name[function.name].append(function)
+    for hazard in policy.hazards:
+        for census in hazard.guard_identifier_census:
+            candidates = functions_by_name[census.owner]
+            require(
+                len(candidates) == 1,
+                f"hazard {hazard.symbol} guard census owner "
+                f"{census.owner} resolves to {len(candidates)} source functions",
+            )
+            missing_identifiers = missing_code_identifiers(
+                parked_admission.body_text(candidates[0]),
+                census.identifiers,
+            )
+            require(
+                not missing_identifiers,
+                f"hazard {hazard.symbol} guard census owner "
+                f"{census.owner} lost identifiers: "
+                + ", ".join(missing_identifiers),
+            )
+
+
 def load_policy(
     path: Path,
     *,
@@ -1128,6 +1405,7 @@ def load_policy(
         "source_classes",
         "callback_extractor",
         "preprocessor",
+        "admission_contract",
         "partition",
         "hazard",
         "binding",
@@ -1365,6 +1643,19 @@ def load_policy(
             f"kernel lane {lane.release} repeats a profile",
         )
 
+    raw_admission_contract = data.get("admission_contract")
+    if raw_admission_contract is not None:
+        admission_contract = parse_admission_contract(
+            raw_admission_contract,
+            source_root,
+        )
+    else:
+        require(
+            comparison_schema != COMPARISON_SCHEMA,
+            "current comparison policy omits the admission contract",
+        )
+        admission_contract = None
+
     partitions: list[Partition] = []
     for index, item in enumerate(data.get("partition", [])):
         label = f"partition[{index}]"
@@ -1474,12 +1765,19 @@ def load_policy(
         require(
             partition_name in partition_names, f"{label} names an unknown partition"
         )
+        binding_kind = string_value(item, "kind", label)
         path_value = string_value(item, "path", label)
         require(
             path_value.startswith(source_root + "/"),
             f"{label}.path is outside the source root",
         )
         pattern = string_value(item, "pattern", label)
+        callee = string_value(item, "callee", label)
+        require(
+            C_IDENTIFIER.fullmatch(callee) is not None
+            or binding_kind == "wrapper-macro",
+            f"{label}.callee must be an exact C identifier or a wrapper expression",
+        )
         try:
             re.compile(pattern, re.MULTILINE | re.DOTALL)
         except re.error as exc:
@@ -1488,10 +1786,10 @@ def load_policy(
             Binding(
                 string_value(item, "name", label),
                 partition_name,
-                string_value(item, "kind", label),
+                binding_kind,
                 string_value(item, "scope", label),
                 string_value(item, "caller", label),
-                string_value(item, "callee", label),
+                callee,
                 path_value,
                 pattern,
                 expected,
@@ -1520,6 +1818,31 @@ def load_policy(
         require(
             binding_denominator_sha256(bindings) == EXPECTED_BINDING_DENOMINATOR_SHA256,
             "binding denominator identity differs",
+        )
+    binding_map = {item.name: item for item in bindings}
+    for binding_name, identity in REQUIRED_FRAMEWORK_CALLBACK_BINDINGS.items():
+        binding = binding_map.get(binding_name)
+        require(
+            binding is not None,
+            f"required framework callback binding is absent: {binding_name}",
+        )
+        if binding is None:
+            raise SourceMapError(
+                f"required framework callback binding is absent: {binding_name}"
+            )
+        require(
+            (
+                binding.partition,
+                binding.kind,
+                binding.scope,
+                binding.caller,
+                binding.callee,
+                binding.path,
+                binding.pattern,
+                binding.expected_matches,
+            )
+            == identity,
+            f"required framework callback binding differs: {binding_name}",
         )
 
     path_witnesses: list[PathWitness] = []
@@ -1618,7 +1941,14 @@ def load_policy(
         require(isinstance(item, dict), f"{label} must be a table")
         reject_unknown(
             item,
-            {"name", "paths", "pattern", "expected_matches", "rationale"},
+            {
+                "name",
+                "paths",
+                "pattern",
+                "expected_matches",
+                "rationale",
+                "function",
+            },
             label,
         )
         pattern = string_value(item, "pattern", label)
@@ -1636,6 +1966,19 @@ def load_policy(
             isinstance(expected_matches, int) and expected_matches >= 0,
             f"{label}.expected_matches must be nonnegative",
         )
+        function = item.get("function")
+        require(
+            function is None
+            or (
+                isinstance(function, str)
+                and C_IDENTIFIER.fullmatch(function) is not None
+            ),
+            f"{label}.function must be a C identifier when present",
+        )
+        require(
+            function is None or len(paths) == 1,
+            f"{label}.function requires exactly one selected path pattern",
+        )
         bounded_queries.append(
             BoundedQuery(
                 string_value(item, "name", label),
@@ -1643,6 +1986,7 @@ def load_policy(
                 pattern,
                 expected_matches,
                 string_value(item, "rationale", label),
+                function,
             )
         )
     require(bounded_queries, "policy carries no bounded queries")
@@ -1650,6 +1994,27 @@ def load_policy(
         len({item.name for item in bounded_queries}) == len(bounded_queries),
         "bounded query name repeats",
     )
+    bounded_query_map = {item.name: item for item in bounded_queries}
+    for query_name, expected in REQUIRED_BOUNDED_QUERIES.items():
+        query = bounded_query_map.get(query_name)
+        require(
+            query is not None,
+            f"required function-scoped bounded query is absent: {query_name}",
+        )
+        if query is None:
+            raise SourceMapError(
+                f"required function-scoped bounded query is absent: {query_name}"
+            )
+        require(
+            (
+                query.paths,
+                query.pattern,
+                query.expected_matches,
+                query.function,
+            )
+            == expected,
+            f"required function-scoped bounded query differs: {query_name}",
+        )
 
     return Policy(
         policy_schema,
@@ -1672,6 +2037,7 @@ def load_policy(
         ctags_stderr,
         translation_units,
         tuple(kernel_lanes),
+        admission_contract,
         tuple(partitions),
         tuple(hazards),
         tuple(bindings),
@@ -2223,6 +2589,202 @@ def strip_comments_and_literals(source: str) -> str:
         return re.sub(r"[^\n]", " ", match.group(0))
 
     return C_COMMENT_OR_LITERAL.sub(blank, C_LINE_SPLICE.sub("", source))
+
+
+def c_preprocessor_split(expression: str, operator: str) -> tuple[str, ...]:
+    """Split one preprocessor expression at a top-level Boolean operator."""
+
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    offset = 0
+    while offset < len(expression):
+        character = expression[offset]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            require(depth > 0, "preprocessor expression has an unmatched close parenthesis")
+            depth -= 1
+        elif depth == 0 and expression.startswith(operator, offset):
+            parts.append(expression[start:offset])
+            offset += len(operator)
+            start = offset
+            continue
+        offset += 1
+    require(depth == 0, "preprocessor expression has an unmatched open parenthesis")
+    parts.append(expression[start:])
+    return tuple(parts)
+
+
+def c_preprocessor_constant_truth(expression: str) -> bool | None:
+    """Evaluate the macro-independent Boolean part of one #if expression."""
+
+    compact = re.sub(r"\s+", "", expression)
+    if not compact:
+        return None
+
+    while compact.startswith("(") and compact.endswith(")"):
+        depth = 0
+        encloses_expression = True
+        for offset, character in enumerate(compact):
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                require(
+                    depth >= 0,
+                    "preprocessor expression has an unmatched close parenthesis",
+                )
+                if depth == 0 and offset != len(compact) - 1:
+                    encloses_expression = False
+                    break
+        require(depth == 0, "preprocessor expression has an unmatched open parenthesis")
+        if not encloses_expression:
+            break
+        compact = compact[1:-1]
+
+    disjunction = c_preprocessor_split(compact, "||")
+    if len(disjunction) > 1:
+        values = tuple(c_preprocessor_constant_truth(part) for part in disjunction)
+        if any(value is True for value in values):
+            return True
+        if all(value is False for value in values):
+            return False
+        return None
+
+    conjunction = c_preprocessor_split(compact, "&&")
+    if len(conjunction) > 1:
+        values = tuple(c_preprocessor_constant_truth(part) for part in conjunction)
+        if any(value is False for value in values):
+            return False
+        if all(value is True for value in values):
+            return True
+        return None
+
+    if compact.startswith("!") and not compact.startswith("!="):
+        value = c_preprocessor_constant_truth(compact[1:])
+        return None if value is None else not value
+
+    integer = re.fullmatch(
+        r"(?P<sign>[+-]?)(?P<number>0[xX][0-9A-Fa-f]+|0[0-7]*|[1-9][0-9]*)"
+        r"(?P<suffix>[uUlL]*)",
+        compact,
+    )
+    if integer is None:
+        return None
+    number = integer.group("number")
+    if number.lower().startswith("0x"):
+        radix = 16
+    elif len(number) > 1 and number.startswith("0"):
+        radix = 8
+    else:
+        radix = 10
+    value = int(f"{integer.group('sign')}{number}", radix)
+    return value != 0
+
+
+def c_preprocessor_regions(
+    code_mask: str,
+) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+    """Return definitely inactive and directive ranges from lexical C source."""
+
+    inactive_ranges: list[tuple[int, int]] = []
+    directive_ranges: list[tuple[int, int]] = []
+    conditional_stack: list[PreprocessorConditionalState] = []
+    offset = 0
+    for line in code_mask.splitlines(keepends=True):
+        line_end = offset + len(line)
+        directive_match = C_PREPROCESSOR_DIRECTIVE.match(line)
+        if conditional_stack and conditional_stack[-1].current_inactive:
+            inactive_ranges.append((offset, line_end))
+        if directive_match is not None:
+            directive_ranges.append((offset, line_end))
+            directive = directive_match.group(1).lower()
+            expression = line[directive_match.end() :].strip()
+            if directive in {"if", "ifdef", "ifndef"}:
+                parent_inactive = bool(
+                    conditional_stack
+                    and conditional_stack[-1].current_inactive
+                )
+                truth = (
+                    c_preprocessor_constant_truth(expression)
+                    if directive == "if"
+                    else None
+                )
+                prior_branch_state = (
+                    "definite" if truth is True else "none" if truth is False else "possible"
+                )
+                conditional_stack.append(
+                    PreprocessorConditionalState(
+                        parent_inactive,
+                        prior_branch_state,
+                        parent_inactive or truth is False,
+                    )
+                )
+            elif directive == "elif":
+                require(conditional_stack, "preprocessor elif has no open conditional")
+                state = conditional_stack[-1]
+                truth = c_preprocessor_constant_truth(expression)
+                if state.parent_inactive or state.prior_branch_state == "definite":
+                    state.current_inactive = True
+                else:
+                    state.current_inactive = truth is False
+                    if state.prior_branch_state == "none":
+                        state.prior_branch_state = (
+                            "definite"
+                            if truth is True
+                            else "none"
+                            if truth is False
+                            else "possible"
+                        )
+            elif directive == "else":
+                require(conditional_stack, "preprocessor else has no open conditional")
+                state = conditional_stack[-1]
+                state.current_inactive = (
+                    state.parent_inactive or state.prior_branch_state == "definite"
+                )
+                if not state.parent_inactive:
+                    state.prior_branch_state = "definite"
+            elif directive == "endif":
+                require(conditional_stack, "preprocessor endif has no open conditional")
+                conditional_stack.pop()
+        offset = line_end
+    require(not conditional_stack, "preprocessor conditional nesting is unbalanced")
+    return tuple(inactive_ranges), tuple(directive_ranges)
+
+
+def c_ranges_overlap(
+    start: int,
+    end: int,
+    ranges: tuple[tuple[int, int], ...],
+) -> bool:
+    """Return whether one logical source span intersects a recorded range."""
+
+    return any(start < range_end and range_start < end for range_start, range_end in ranges)
+
+
+def require_source_match_is_active(
+    start: int,
+    end: int,
+    inactive_ranges: tuple[tuple[int, int], ...],
+    directive_ranges: tuple[tuple[int, int], ...],
+    label: str,
+    *,
+    reject_inactive: bool = True,
+    reject_directives: bool = True,
+) -> None:
+    """Reject matches in directives and unevaluated conditional source."""
+
+    if reject_directives:
+        require(
+            not c_ranges_overlap(start, end, directive_ranges),
+            f"{label} matches a preprocessor directive or macro definition",
+        )
+    if reject_inactive:
+        require(
+            not c_ranges_overlap(start, end, inactive_ranges),
+            f"{label} matches definitely inactive preprocessor source",
+        )
 
 
 def physical_offset_after_splicing(source: str, logical_offset: int) -> int:
@@ -4086,8 +4648,34 @@ def build_cflow_maps(
 
 def binding_matches(source: str, binding: Binding) -> list[re.Match[str]]:
     code_mask = strip_comments_and_literals(source)
+    inactive_ranges, directive_ranges = c_preprocessor_regions(code_mask)
     search_text = strip_comments(source) if binding.match_literals else code_mask
     matches = list(re.finditer(binding.pattern, search_text, re.MULTILINE | re.DOTALL))
+
+    def contains_exact_callee(match: re.Match[str]) -> bool:
+        if C_IDENTIFIER.fullmatch(binding.callee) is None:
+            return True
+        matched_code = search_text[match.start() : match.end()]
+        if binding.kind == "show-attribute-macro":
+            macro_symbol = binding.callee.removesuffix("_show")
+            require(
+                C_IDENTIFIER.fullmatch(macro_symbol) is not None,
+                f"show-attribute binding {binding.name} has an invalid generated callee",
+            )
+            return re.search(
+                rf"\bDEFINE_SHOW_ATTRIBUTE\s*\(\s*"
+                rf"{re.escape(macro_symbol)}\s*\)",
+                matched_code,
+            ) is not None
+        return any(
+            match.start() <= callee_match.start()
+            and callee_match.end() <= match.end()
+            for callee_match in re.finditer(
+                rf"(?<![A-Za-z0-9_]){re.escape(binding.callee)}"
+                rf"(?![A-Za-z0-9_])",
+                search_text,
+            )
+        )
 
     def remains_in_opening_scope(match: re.Match[str]) -> bool:
         if binding.scope != "brace":
@@ -4112,13 +4700,22 @@ def binding_matches(source: str, binding: Binding) -> list[re.Match[str]]:
                     return not code_mask[offset + 1 : match.end()].strip()
         return depth > 0
 
-    return [
-        match
-        for match in matches
-        if match.start() < len(code_mask)
-        and not code_mask[match.start()].isspace()
-        and remains_in_opening_scope(match)
-    ]
+    accepted_matches: list[re.Match[str]] = []
+    for match in matches:
+        if match.start() >= len(code_mask) or code_mask[match.start()].isspace():
+            continue
+        require_source_match_is_active(
+            match.start(),
+            match.start() + 1,
+            inactive_ranges,
+            directive_ranges,
+            f"binding {binding.name}",
+            reject_inactive=True,
+            reject_directives=binding.kind != "wrapper-macro",
+        )
+        if contains_exact_callee(match) and remains_in_opening_scope(match):
+            accepted_matches.append(match)
+    return accepted_matches
 
 
 def verify_declared_bindings(
@@ -4480,6 +5077,74 @@ def build_contextual_path_witnesses(
     return edge_rows, join_rows
 
 
+def matching_c_delimiter(
+    code_mask: str,
+    opening_offset: int,
+    opening: str,
+    closing: str,
+) -> int:
+    """Return the matching delimiter offset in comment-free C source."""
+
+    require(
+        opening_offset < len(code_mask)
+        and code_mask[opening_offset] == opening,
+        f"C delimiter scan does not start at {opening}",
+    )
+    depth = 0
+    for offset in range(opening_offset, len(code_mask)):
+        token = code_mask[offset]
+        if token == opening:
+            depth += 1
+        elif token == closing:
+            depth -= 1
+            require(
+                depth >= 0,
+                f"C delimiter order for {opening}{closing} is invalid",
+            )
+            if depth == 0:
+                return offset
+    raise SourceMapError(f"C delimiter group {opening}{closing} is unbalanced")
+
+
+def c_function_body_span(code_mask: str, function: str) -> tuple[int, int]:
+    """Return one function body span from a comment-free C source stream."""
+
+    inactive_ranges, directive_ranges = c_preprocessor_regions(code_mask)
+    candidates: list[tuple[int, int]] = []
+    function_pattern = re.compile(rf"\b{re.escape(function)}\s*\(")
+    for match in function_pattern.finditer(code_mask):
+        opening_paren = code_mask.find("(", match.start(), match.end())
+        closing_paren = matching_c_delimiter(
+            code_mask,
+            opening_paren,
+            "(",
+            ")",
+        )
+        cursor = closing_paren + 1
+        while cursor < len(code_mask) and code_mask[cursor].isspace():
+            cursor += 1
+        if cursor >= len(code_mask) or code_mask[cursor] != "{":
+            continue
+        closing_brace = matching_c_delimiter(code_mask, cursor, "{", "}")
+        if c_ranges_overlap(
+            match.start(),
+            cursor + 1,
+            directive_ranges,
+        ) or c_ranges_overlap(
+            match.start(),
+            cursor + 1,
+            inactive_ranges,
+        ):
+            continue
+        candidates.append((cursor + 1, closing_brace))
+    require(
+        len(candidates) == 1,
+        f"function-scoped bounded query resolves {function} to "
+        f"{len(candidates)} definitions",
+    )
+    return candidates[0]
+
+
 def evaluate_bounded_queries(
     source_root: Path,
     entries: list[SourceEntry],
@@ -4499,13 +5164,41 @@ def evaluate_bounded_queries(
             }
         )
         require(selected, f"bounded query selects no files: {query.name}")
+        require(
+            query.function is None or len(selected) == 1,
+            f"function-scoped bounded query selects multiple files: {query.name}",
+        )
         expression = re.compile(query.pattern, re.MULTILINE | re.DOTALL)
         match_count = 0
         for path in selected:
             source = (source_root / path).read_text(encoding="utf-8")
             code_mask = strip_comments_and_literals(source)
-            for match in expression.finditer(code_mask):
-                line = physical_line_after_splicing(source, match.start())
+            inactive_ranges, directive_ranges = c_preprocessor_regions(code_mask)
+            search_start = 0
+            search_text = code_mask
+            provenance = "lexical-code-mask"
+            semantic_limit = "lexical-code-mask-not-runtime-reachability"
+            if query.function is not None:
+                search_start, search_end = c_function_body_span(
+                    code_mask,
+                    query.function,
+                )
+                search_text = code_mask[search_start:search_end]
+                provenance = "lexical-function-code-mask"
+                semantic_limit = (
+                    "lexical-function-code-mask-not-runtime-reachability"
+                )
+            for match in expression.finditer(search_text):
+                logical_offset = search_start + match.start()
+                require_source_match_is_active(
+                    logical_offset,
+                    search_start + match.end(),
+                    inactive_ranges,
+                    directive_ranges,
+                    f"bounded query {query.name}",
+                    reject_inactive=True,
+                )
+                line = physical_line_after_splicing(source, logical_offset)
                 normalized = " ".join(match.group(0).split())
                 match_rows.append(
                     (
@@ -4514,7 +5207,7 @@ def evaluate_bounded_queries(
                         line,
                         entry_map[path].sha256,
                         sha256_bytes(normalized.encode("utf-8")),
-                        "lexical-code-mask",
+                        provenance,
                     )
                 )
                 match_count += 1
@@ -4533,7 +5226,7 @@ def evaluate_bounded_queries(
                     b"".join(path.encode("utf-8") + b"\0" for path in selected)
                 ),
                 query.rationale,
-                "lexical-code-mask-not-runtime-reachability",
+                semantic_limit,
             )
         )
     require(
@@ -7849,6 +8542,7 @@ def verify_capture(
         regular_tree_files(root / "source", "retained source") == seen_paths,
         "retained source file denominator differs from the file list",
     )
+    verify_admission_contract_source(root / "source", policy)
 
     c_and_header_paths = [
         entry.path for entry in source_entries if entry.source_class in {"c", "header"}
@@ -8804,6 +9498,8 @@ def capture_source_map(
             retained_driver_tree_id(entries, policy.source_root) == driver_tree,
             "exported source does not reconstruct the source driver tree",
         )
+        verify_admission_contract_source(source_root, policy)
+        verify_declared_hazard_guard_identifiers(source_root, policy)
         write_source_tree_proof(
             stage,
             repository,
@@ -9805,6 +10501,59 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "binding lexer rejects decoy-only targets",
         len(binding_matches(synthetic_source, changed)) == 0,
     )
+    inactive_binding_source = (
+        "#if 0\n"
+        "static const struct sample owner = {\n"
+        "    .member = &target,\n"
+        "};\n"
+        "#endif\n"
+    )
+    rejects(
+        "binding lexer rejects a definitely inactive callback table",
+        lambda: binding_matches(inactive_binding_source, binding),
+    )
+    conditional_binding_source = (
+        "#if defined(CONFIG_SYNTHETIC_CALLBACK)\n"
+        "static const struct sample owner = {\n"
+        "    .member = &target,\n"
+        "};\n"
+        "#endif\n"
+    )
+    check(
+        "binding lexer retains an unknown conditional callback candidate",
+        len(binding_matches(conditional_binding_source, binding)) == 1,
+    )
+    macro_binding_source = (
+        "#define synthetic_owner() static const struct sample owner = { "
+        ".member = &target, };\n"
+    )
+    rejects(
+        "binding lexer rejects a macro pseudo-definition",
+        lambda: require(
+            len(binding_matches(macro_binding_source, binding)) == 1,
+            "macro pseudo-definition was accepted as a binding",
+        ),
+    )
+    suffix_binding = Binding(
+        "synthetic-ioctl-binding",
+        policy.partitions[0].name,
+        "ioctl-macro",
+        "match",
+        "drm_ioctl_dispatch",
+        "ioctl_target",
+        "drivers/gpu/drm/radeon/test.c",
+        r"DRM_IOCTL_DEF_DRV[(]TEST, *ioctl_target",
+        1,
+        False,
+    )
+    suffix_source = "DRM_IOCTL_DEF_DRV(TEST, ioctl_target_extra, FLAGS);\n"
+    rejects(
+        "binding lexer rejects a non-callback suffix target",
+        lambda: require(
+            len(binding_matches(suffix_source, suffix_binding)) == 1,
+            "non-callback suffix target was accepted",
+        ),
+    )
     crossed_initializer = (
         "static const struct sample owner = {\n"
         "    .member = NULL,\n"
@@ -9857,23 +10606,35 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "declared-indirect",
             "family",
             "callback_target",
-            binding.partition,
-            binding.name,
+            policy.partitions[0].name,
+            "synthetic-path-binding",
             "callback-table",
         ),
     ]
-    synthetic_declared_row = (
-        binding.name,
-        binding.kind,
-        binding.partition,
+    path_binding = Binding(
+        "synthetic-path-binding",
+        policy.partitions[0].name,
+        "callback-table",
+        "brace",
+        "family",
+        "callback_target",
         binding.path,
+        binding.pattern,
         1,
-        binding.caller,
-        binding.callee,
+        False,
+    )
+    synthetic_declared_row = (
+        path_binding.name,
+        path_binding.kind,
+        path_binding.partition,
+        path_binding.path,
+        1,
+        path_binding.caller,
+        path_binding.callee,
         "a" * 64,
         "b" * 64,
         "policy-declared",
-        binding.scope,
+        path_binding.scope,
     )
     expected_synthetic_calls = write_call_candidates(
         Path("."),
@@ -9926,20 +10687,20 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         ),
         (
-            PathWitnessJoin(
-                "callback-selection",
-                "execution",
-                "callback_slot",
-                "family-selection",
-                "family",
-                (binding.name,),
+                PathWitnessJoin(
+                    "callback-selection",
+                    "execution",
+                    "callback_slot",
+                    "family-selection",
+                    "family",
+                    (path_binding.name,),
+                ),
             ),
-        ),
     )
     path_policy = Policy(
         **{
             **policy.__dict__,
-            "bindings": (*policy.bindings, binding),
+            "bindings": (*policy.bindings, path_binding),
             "path_witnesses": (path_witness,),
         }
     )
@@ -9950,6 +10711,40 @@ def self_test(repository: Path, policy_path: Path) -> int:
             path_policy,
             path_candidates,
             write_output=False,
+        ),
+    )
+    rejects(
+        "contextual path witness requires binding provenance",
+        lambda: validate_path_witness_shape(
+            path_witness,
+            "missing binding map fixture",
+        ),
+    )
+    forged_declared_witness = PathWitness(
+        path_witness.name,
+        path_witness.entry,
+        "forged_target",
+        path_witness.context,
+        (
+            path_witness.edges[0],
+            PathWitnessEdge(
+                "family-selection",
+                "declared-indirect",
+                path_binding.caller,
+                "forged_target",
+                path_binding.partition,
+                path_binding.name,
+                path_binding.kind,
+            ),
+        ),
+        path_witness.joins,
+    )
+    rejects(
+        "contextual path witness rejects a forged declared binding edge",
+        lambda: validate_path_witness_shape(
+            forged_declared_witness,
+            "forged declared edge fixture",
+            {path_binding.name: path_binding},
         ),
     )
     rejects(
@@ -10345,7 +11140,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     expected_source_commands = expected_command_records(policy, [entry], set())
     check(
         "source command contract closes the analyzer command denominator",
-        len(expected_source_commands) == 246,
+        len(expected_source_commands) == 386,
     )
     expected_kernel_commands = expected_command_records(
         policy,
@@ -10357,7 +11152,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     ]
     check(
         "kernel command contract pins host make, shell, and LLVM prefix",
-        len(expected_kernel_commands) == 266
+        len(expected_kernel_commands) == 406
         and len(expected_make_commands) == 12
         and all(
             (arguments := json.loads(row[6]))[0] == "/usr/bin/make"
@@ -10534,7 +11329,6 @@ def self_test(repository: Path, policy_path: Path) -> int:
             and bool(observed_open_flags & os.O_NOCTTY)
             and bool(observed_open_flags & os.O_NOFOLLOW),
         )
-
         class DuplicateColumnsWithoutCount(list[str]):
             def count(self, value: str) -> int:
                 raise AssertionError(f"quadratic count invoked for {value}")
@@ -11079,6 +11873,10 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "\t/* real_target(); */\n"
             '\tconst char *text = "real_target()";\n'
             "}\n"
+            "void outside_bounded_test(void)\n"
+            "{\n"
+            "\treal_target();\n"
+            "}\n"
         )
         write_text(cscope_source_root / bounded_path, bounded_content)
         bounded_entry = SourceEntry(
@@ -11094,7 +11892,8 @@ def self_test(repository: Path, policy_path: Path) -> int:
             (bounded_path,),
             r"\breal_target\s*\(",
             1,
-            "Only the code occurrence belongs to the lexical denominator.",
+            "Only the target function occurrence belongs to the lexical denominator.",
+            "bounded_test",
         )
         bounded_summary, bounded_matches = evaluate_bounded_queries(
             cscope_source_root,
@@ -11105,7 +11904,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "bounded query replay excludes comment and string decoys",
             bounded_summary[0][3] == 1
             and len(bounded_matches) == 1
-            and bounded_matches[0][5] == "lexical-code-mask",
+            and bounded_matches[0][5] == "lexical-function-code-mask",
         )
         rejects(
             "bounded query replay rejects a forged expected count",
@@ -11119,6 +11918,193 @@ def self_test(repository: Path, policy_path: Path) -> int:
                         bounded_query.pattern,
                         2,
                         bounded_query.rationale,
+                        bounded_query.function,
+                    ),
+                ),
+            ),
+        )
+        rejects(
+            "bounded query replay rejects an absent function scope",
+            lambda: evaluate_bounded_queries(
+                cscope_source_root,
+                [bounded_entry],
+                (
+                    BoundedQuery(
+                        bounded_query.name,
+                        bounded_query.paths,
+                        bounded_query.pattern,
+                        bounded_query.expected_matches,
+                        bounded_query.rationale,
+                        "missing_bounded_test",
+                    ),
+                ),
+            ),
+        )
+        conditional_function_path = f"{policy.source_root}/conditional_bounded.c"
+        conditional_function_content = (
+            "#if 0\n"
+            "static int conditional_bounded(void)\n"
+            "{\n"
+            "\treal_target();\n"
+            "}\n"
+            "#endif\n"
+        )
+        write_text(cscope_source_root / conditional_function_path, conditional_function_content)
+        conditional_function_entry = SourceEntry(
+            conditional_function_path,
+            "100644",
+            git_object_id("blob", conditional_function_content.encode("utf-8")),
+            len(conditional_function_content.encode("utf-8")),
+            sha256_bytes(conditional_function_content.encode("utf-8")),
+            "c",
+        )
+        rejects(
+            "bounded query replay rejects an inactive conditional function",
+            lambda: evaluate_bounded_queries(
+                cscope_source_root,
+                [conditional_function_entry],
+                (
+                    BoundedQuery(
+                        "conditional-function-fixture",
+                        (conditional_function_path,),
+                        r"\breal_target\s*\(",
+                        1,
+                        "The inactive function definition is outside the lexical denominator.",
+                        "conditional_bounded",
+                    ),
+                ),
+            ),
+        )
+        macro_function_path = f"{policy.source_root}/macro_bounded.c"
+        macro_function_content = (
+            "#define macro_bounded() static int macro_bounded(void) { real_target(); }\n"
+        )
+        write_text(cscope_source_root / macro_function_path, macro_function_content)
+        macro_function_entry = SourceEntry(
+            macro_function_path,
+            "100644",
+            git_object_id("blob", macro_function_content.encode("utf-8")),
+            len(macro_function_content.encode("utf-8")),
+            sha256_bytes(macro_function_content.encode("utf-8")),
+            "c",
+        )
+        rejects(
+            "bounded query replay rejects a macro pseudo-definition",
+            lambda: evaluate_bounded_queries(
+                cscope_source_root,
+                [macro_function_entry],
+                (
+                    BoundedQuery(
+                        "macro-function-fixture",
+                        (macro_function_path,),
+                        r"\breal_target\s*\(",
+                        1,
+                        "The macro pseudo-definition is outside the lexical denominator.",
+                        "macro_bounded",
+                    ),
+                ),
+            ),
+        )
+        conditional_query_path = f"{policy.source_root}/conditional_query.c"
+        conditional_query_content = (
+            "static int conditional_query(void)\n"
+            "{\n"
+            "#if 0\n"
+            "\treal_target();\n"
+            "#endif\n"
+            "}\n"
+        )
+        write_text(cscope_source_root / conditional_query_path, conditional_query_content)
+        conditional_query_entry = SourceEntry(
+            conditional_query_path,
+            "100644",
+            git_object_id("blob", conditional_query_content.encode("utf-8")),
+            len(conditional_query_content.encode("utf-8")),
+            sha256_bytes(conditional_query_content.encode("utf-8")),
+            "c",
+        )
+        rejects(
+            "bounded query replay rejects an inactive conditional match",
+            lambda: evaluate_bounded_queries(
+                cscope_source_root,
+                [conditional_query_entry],
+                (
+                    BoundedQuery(
+                        "conditional-query-fixture",
+                        (conditional_query_path,),
+                        r"\breal_target\s*\(",
+                        1,
+                        "The inactive conditional occurrence is outside the lexical denominator.",
+                        "conditional_query",
+                    ),
+                ),
+            ),
+        )
+        global_conditional_path = f"{policy.source_root}/global_conditional_query.c"
+        global_conditional_content = (
+            "#if 0\n"
+            "real_target();\n"
+            "#endif\n"
+        )
+        write_text(
+            cscope_source_root / global_conditional_path,
+            global_conditional_content,
+        )
+        global_conditional_entry = SourceEntry(
+            global_conditional_path,
+            "100644",
+            git_object_id("blob", global_conditional_content.encode("utf-8")),
+            len(global_conditional_content.encode("utf-8")),
+            sha256_bytes(global_conditional_content.encode("utf-8")),
+            "c",
+        )
+        rejects(
+            "global bounded query rejects a definitely inactive match",
+            lambda: evaluate_bounded_queries(
+                cscope_source_root,
+                [global_conditional_entry],
+                (
+                    BoundedQuery(
+                        "global-conditional-query-fixture",
+                        (global_conditional_path,),
+                        r"\breal_target\s*\(",
+                        1,
+                        "A definitely inactive global occurrence is outside the lexical denominator.",
+                        None,
+                    ),
+                ),
+            ),
+        )
+        global_unknown_content = (
+            "#if defined(CONFIG_SYNTHETIC_TARGET)\n"
+            "real_target();\n"
+            "#endif\n"
+        )
+        write_text(
+            cscope_source_root / global_conditional_path,
+            global_unknown_content,
+        )
+        global_unknown_entry = SourceEntry(
+            global_conditional_path,
+            "100644",
+            git_object_id("blob", global_unknown_content.encode("utf-8")),
+            len(global_unknown_content.encode("utf-8")),
+            sha256_bytes(global_unknown_content.encode("utf-8")),
+            "c",
+        )
+        accepts(
+            "global bounded query retains an unknown conditional candidate",
+            lambda: evaluate_bounded_queries(
+                cscope_source_root,
+                [global_unknown_entry],
+                (
+                    BoundedQuery(
+                        "global-unknown-query-fixture",
+                        (global_conditional_path,),
+                        r"\breal_target\s*\(",
+                        1,
+                        "An unknown configuration remains a lexical candidate.",
+                        None,
                     ),
                 ),
             ),
@@ -11182,6 +12168,341 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 )
             ).strip()
             and (blob_export_root / ignored_metadata_path).is_file(),
+        )
+        accepts(
+            "live declared bindings match the exported HEAD source",
+            lambda: verify_declared_bindings(
+                temp / "live-binding-capture",
+                blob_export_root,
+                blob_export_entries,
+                policy,
+                write_output=False,
+            ),
+        )
+        accepts(
+            "live hazard guard census matches the exported HEAD source",
+            lambda: verify_declared_hazard_guard_identifiers(
+                blob_export_root,
+                policy,
+            ),
+        )
+
+        def verify_mutated_live_hazard_identifiers(
+            original: str,
+            replacement: str,
+            source_name: str = "radeon_cs.c",
+        ) -> None:
+            source_path = (
+                blob_export_root
+                / policy.source_root
+                / source_name
+            )
+            source = source_path.read_text(encoding="utf-8")
+            require(
+                source.count(original) == 1,
+                "hazard census mutation anchor differs",
+            )
+            write_text(source_path, source.replace(original, replacement, 1))
+            try:
+                verify_declared_hazard_guard_identifiers(
+                    blob_export_root,
+                    policy,
+                )
+            finally:
+                write_text(source_path, source)
+
+        rejects(
+            "live hazard census rejects removed drm_exec cleanup ownership",
+            lambda: verify_mutated_live_hazard_identifiers(
+                "\tdrm_exec_fini(&parser->exec);",
+                "\tdrm_exec_cleanup(&parser->exec);",
+            ),
+        )
+        rejects(
+            "live hazard census rejects lost fb_info mmap provenance",
+            lambda: verify_mutated_live_hazard_identifiers(
+                "\tstruct drm_fb_helper *fb_helper = info->par;",
+                "\tstruct drm_fb_helper *fb_helper = info->private_data;",
+                "radeon_fbdev.c",
+            ),
+        )
+        rejects(
+            "live hazard census rejects lost Radeon mmap provenance",
+            lambda: verify_mutated_live_hazard_identifiers(
+                "\tstruct radeon_device *rdev = fb_helper->dev->dev_private;",
+                "\tstruct radeon_device *rdev = fb_helper->dev->device_private;",
+                "radeon_fbdev.c",
+            ),
+        )
+
+        def verify_mutated_live_bindings(
+            original: str,
+            replacement: str,
+            source_name: str = "radeon_fbdev.c",
+        ) -> None:
+            source_path = (
+                blob_export_root
+                / policy.source_root
+                / source_name
+            )
+            source = source_path.read_text(encoding="utf-8")
+            require(
+                source.count(original) == 1,
+                "binding mutation anchor differs",
+            )
+            write_text(source_path, source.replace(original, replacement, 1))
+            try:
+                verify_declared_bindings(
+                    temp / "mutated-binding-capture",
+                    blob_export_root,
+                    blob_export_entries,
+                    policy,
+                    write_output=False,
+                )
+            finally:
+                write_text(source_path, source)
+
+        rejects(
+            "live binding verifier rejects direct fb_io_mmap callback bypass",
+            lambda: verify_mutated_live_bindings(
+                ".fb_mmap = radeon_fbdev_fb_mmap,",
+                ".fb_mmap = fb_io_mmap,",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects a suffixed fbdev mmap callback",
+            lambda: verify_mutated_live_bindings(
+                ".fb_mmap = radeon_fbdev_fb_mmap,",
+                ".fb_mmap = radeon_fbdev_fb_mmap_extra,",
+            ),
+        )
+        for pci_field, callback in (
+            ("probe", "radeon_pci_probe"),
+            ("remove", "radeon_pci_remove"),
+            ("shutdown", "radeon_pci_shutdown"),
+        ):
+            rejects(
+                f"live binding verifier rejects a suffixed PCI {pci_field} callback",
+                lambda pci_field=pci_field, callback=callback: (
+                    verify_mutated_live_bindings(
+                        f".{pci_field} = {callback},",
+                        f".{pci_field} = {callback}_extra,",
+                        "radeon_drv.c",
+                    )
+                ),
+            )
+        rejects(
+            "live binding verifier rejects inverted RS4xx mmap refusal",
+            lambda: verify_mutated_live_bindings(
+                "if (radeon_rs4xx_hardware_target(rdev))",
+                "if (!radeon_rs4xx_hardware_target(rdev))",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects a conditional RS4xx mmap refusal",
+            lambda: verify_mutated_live_bindings(
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\treturn -ENODEV;\n"
+                "\treturn fb_io_mmap(info, vma);",
+                "\tif (rdev->gpu_parked)\n"
+                "\t\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\t\treturn -ENODEV;\n"
+                "\treturn fb_io_mmap(info, vma);",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects lost fb_info provenance",
+            lambda: verify_mutated_live_bindings(
+                "\tstruct drm_fb_helper *fb_helper = info->par;",
+                "\tstruct drm_fb_helper *fb_helper = NULL;",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects lost Radeon device provenance",
+            lambda: verify_mutated_live_bindings(
+                "\tstruct radeon_device *rdev = fb_helper->dev->dev_private;",
+                "\tstruct radeon_device *rdev = NULL;",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects removed RS4xx mmap refusal",
+            lambda: verify_mutated_live_bindings(
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\treturn -ENODEV;\n",
+                "",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects changed RS4xx mmap errno",
+            lambda: verify_mutated_live_bindings(
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\treturn -ENODEV;\n",
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\treturn -EIO;\n",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects removed fb_io_mmap terminal call",
+            lambda: verify_mutated_live_bindings(
+                "\treturn fb_io_mmap(info, vma);",
+                "\treturn 0;",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects mapping before RS4xx refusal",
+            lambda: verify_mutated_live_bindings(
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\treturn -ENODEV;\n"
+                "\treturn fb_io_mmap(info, vma);",
+                "\tif (fb_io_mmap(info, vma))\n"
+                "\t\treturn -EIO;\n"
+                "\tif (radeon_rs4xx_hardware_target(rdev))\n"
+                "\t\treturn -ENODEV;\n"
+                "\treturn 0;",
+            ),
+        )
+        rejects(
+            "live binding verifier rejects removed PCI remove callback",
+            lambda: verify_mutated_live_bindings(
+                ".remove = radeon_pci_remove,",
+                ".remove = NULL,",
+                "radeon_drv.c",
+            ),
+        )
+        accepts(
+            "live bounded queries match the exported HEAD source",
+            lambda: evaluate_bounded_queries(
+                blob_export_root,
+                list(blob_export_entries.values()),
+                policy.bounded_queries,
+            ),
+        )
+
+        def verify_mutated_live_bounded_query_replacements(
+            replacements: tuple[tuple[str, str], ...],
+        ) -> None:
+            source_path = (
+                blob_export_root
+                / policy.source_root
+                / "radeon_fbdev.c"
+            )
+            source = source_path.read_text(encoding="utf-8")
+            for original, _replacement in replacements:
+                require(
+                    source.count(original) == 1,
+                    "fbdev bounded-query mutation anchor differs",
+                )
+            mutated = source
+            for original, replacement in replacements:
+                mutated = mutated.replace(original, replacement, 1)
+            write_text(source_path, mutated)
+            try:
+                evaluate_bounded_queries(
+                    blob_export_root,
+                    list(blob_export_entries.values()),
+                    policy.bounded_queries,
+                )
+            finally:
+                write_text(source_path, source)
+
+        def verify_mutated_live_bounded_queries(
+            original: str,
+            replacement: str,
+        ) -> None:
+            verify_mutated_live_bounded_query_replacements(
+                ((original, replacement),)
+            )
+
+        fbops_assignment = "\tinfo->fbops = &radeon_fbdev_fb_ops;"
+        rejects(
+            "live bounded queries reject a removed fbops assignment",
+            lambda: verify_mutated_live_bounded_queries(
+                fbops_assignment,
+                "",
+            ),
+        )
+        rejects(
+            "live bounded queries reject a changed fbops table",
+            lambda: verify_mutated_live_bounded_queries(
+                fbops_assignment,
+                "\tinfo->fbops = &foreign_fbdev_fb_ops;",
+            ),
+        )
+        rejects(
+            "live bounded queries reject fbops assignment outside the probe",
+            lambda: verify_mutated_live_bounded_queries(
+                fbops_assignment,
+                "}\n\n"
+                "static void moved_fbops_assignment(struct fb_info *info)\n"
+                "{\n"
+                "\tinfo->fbops = &radeon_fbdev_fb_ops;",
+            ),
+        )
+        rejects(
+            "live bounded queries reject an indented probe close and later decoy",
+            lambda: verify_mutated_live_bounded_query_replacements(
+                (
+                    (fbops_assignment, ""),
+                    (
+                        "\treturn ret;\n"
+                        "}\n\n"
+                        "bool radeon_fbdev_robj_is_fb",
+                        "\treturn ret;\n"
+                        "\t}\n\n"
+                        "static void fbops_assignment_decoy(struct fb_info *info)\n"
+                        "{\n"
+                        "\tinfo->fbops = &radeon_fbdev_fb_ops;\n"
+                        "}\n\n"
+                        "bool radeon_fbdev_robj_is_fb",
+                    ),
+                )
+            ),
+        )
+        rejects(
+            "live bounded queries reject a duplicate fbops assignment",
+            lambda: verify_mutated_live_bounded_queries(
+                fbops_assignment,
+                f"{fbops_assignment}\n{fbops_assignment}",
+            ),
+        )
+        rejects(
+            "live bounded queries reject a comment-only fbops decoy",
+            lambda: verify_mutated_live_bounded_queries(
+                fbops_assignment,
+                "\t/* info->fbops = &radeon_fbdev_fb_ops; */",
+            ),
+        )
+        rejects(
+            "live bounded queries reject a string-only fbops decoy",
+            lambda: verify_mutated_live_bounded_queries(
+                fbops_assignment,
+                "\tconst char *fbops_decoy = "
+                '"info->fbops = &radeon_fbdev_fb_ops;";',
+            ),
+        )
+        fbops_query = next(
+            query
+            for query in policy.bounded_queries
+            if query.name == "fbdev-fbops-assignment"
+        )
+        rejects(
+            "live bounded queries reject a zero fbops assignment denominator",
+            lambda: evaluate_bounded_queries(
+                blob_export_root,
+                list(blob_export_entries.values()),
+                tuple(
+                    BoundedQuery(
+                        query.name,
+                        query.paths,
+                        query.pattern,
+                        0,
+                        query.rationale,
+                    )
+                    if query == fbops_query
+                    else query
+                    for query in policy.bounded_queries
+                ),
+            ),
         )
         write_source_tree_proof(
             proof_root,
@@ -11502,6 +12823,304 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
             ),
         )
+        live_admission_contract = canonical_admission_contract()
+        admission_policy_mutations = (
+            (
+                "removed-operational-caller",
+                '  "drivers/gpu/drm/radeon/radeon_gem.c:radeon_gem_fault",\n',
+                "",
+            ),
+            (
+                "changed-call-site-count",
+                "call_site_shape_count = "
+                f"{live_admission_contract.call_site_shape_count}",
+                "call_site_shape_count = "
+                f"{live_admission_contract.call_site_shape_count - 1}",
+            ),
+            (
+                "changed-call-occurrence-count",
+                "call_occurrence_count = "
+                f"{live_admission_contract.call_occurrence_count}",
+                "call_occurrence_count = "
+                f"{live_admission_contract.call_occurrence_count - 1}",
+            ),
+            (
+                "changed-call-site-callee",
+                'callee = "radeon_rs4xx_hardware_transaction_begin"',
+                'callee = "radeon_rs4xx_hardware_transaction_try_begin"',
+            ),
+        )
+        for label, original, replacement in admission_policy_mutations:
+            require(
+                live_policy.count(original) >= 1,
+                f"admission policy mutation anchor differs: {label}",
+            )
+            mutated_policy = temp / f"{label}.toml"
+            write_text(
+                mutated_policy,
+                live_policy.replace(original, replacement, 1),
+            )
+            rejects(
+                f"policy rejects {label.replace('-', ' ')}",
+                lambda mutation=mutated_policy: load_policy(mutation),
+            )
+        framework_binding_mutations = (
+            (
+                "fbdev-dispatcher-alias",
+                'name = "fbdev-mmap-callback"\n'
+                'partition = "profile-and-admission"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "fb_mmap"',
+                'name = "fbdev-mmap-callback"\n'
+                'partition = "profile-and-admission"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "fbdev_mmap"',
+            ),
+            (
+                "pci-probe-dispatcher-alias",
+                'name = "pci-device-probe"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "pci_device_probe"',
+                'name = "pci-device-probe"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "pci_core_probe"',
+            ),
+            (
+                "pci-remove-dispatcher-alias",
+                'name = "pci-device-remove"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "pci_device_remove"',
+                'name = "pci-device-remove"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "pci_core_remove"',
+            ),
+            (
+                "pci-shutdown-dispatcher-alias",
+                'name = "pci-device-shutdown"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "pci_device_shutdown"',
+                'name = "pci-device-shutdown"\n'
+                'partition = "module-lifecycle"\n'
+                'kind = "callback-table"\n'
+                'scope = "brace"\n'
+                'caller = "pci_core_shutdown"',
+            ),
+        )
+        for label, original, replacement in framework_binding_mutations:
+            require(
+                live_policy.count(original) == 1,
+                f"framework binding mutation anchor differs: {label}",
+            )
+            mutated_policy = temp / f"{label}.toml"
+            write_text(
+                mutated_policy,
+                live_policy.replace(original, replacement, 1),
+            )
+            rejects(
+                f"policy rejects {label.replace('-', ' ')}",
+                lambda mutation=mutated_policy: load_policy(mutation),
+            )
+        framework_block_start = live_policy.index(
+            '[[binding]]\nname = "fbdev-mmap-callback"\n'
+        )
+        framework_block_end = live_policy.index(
+            "\n\n[[binding]]",
+            framework_block_start,
+        )
+        framework_block = live_policy[framework_block_start:framework_block_end]
+        framework_identity_mutations = (
+            (
+                "required-framework-partition",
+                'partition = "profile-and-admission"\n',
+                'partition = "module-lifecycle"\n',
+            ),
+            (
+                "required-framework-kind",
+                'kind = "callback-table"\n',
+                'kind = "debugfs-registration"\n',
+            ),
+            (
+                "required-framework-scope",
+                'scope = "brace"\n',
+                'scope = "match"\n',
+            ),
+            (
+                "required-framework-caller",
+                'caller = "fb_mmap"\n',
+                'caller = "fbdev_mmap"\n',
+            ),
+            (
+                "required-framework-callee",
+                'callee = "radeon_fbdev_fb_mmap"\n',
+                'callee = "radeon_fbdev_fb_mmap_extra"\n',
+            ),
+            (
+                "required-framework-path",
+                'path = "drivers/gpu/drm/radeon/radeon_fbdev.c"\n',
+                'path = "drivers/gpu/drm/radeon/radeon_drv.c"\n',
+            ),
+            (
+                "required-framework-pattern",
+                next(
+                    line + "\n"
+                    for line in framework_block.splitlines()
+                    if line.startswith("pattern = ")
+                ),
+                "pattern = 'fb_mmap = radeon_fbdev_fb_mmap'\n",
+            ),
+            (
+                "required-framework-count",
+                "expected_matches = 1",
+                "expected_matches = 2",
+            ),
+        )
+        for label, original, replacement in framework_identity_mutations:
+            require(
+                framework_block.count(original) == 1,
+                f"required framework mutation anchor differs: {label}",
+            )
+            mutated_policy = temp / f"{label}.toml"
+            mutated_block = framework_block.replace(original, replacement, 1)
+            write_text(
+                mutated_policy,
+                live_policy[:framework_block_start]
+                + mutated_block
+                + live_policy[framework_block_end:],
+            )
+            rejects(
+                f"policy rejects {label.replace('-', ' ')}",
+                lambda mutation=mutated_policy: load_policy(mutation),
+            )
+        invalid_callee = temp / "invalid-nonwrapper-callee.toml"
+        invalid_callee_original = 'callee = "radeon_module_init"\n'
+        require(
+            live_policy.count(invalid_callee_original) == 1,
+            "invalid callee mutation anchor differs",
+        )
+        write_text(
+            invalid_callee,
+            live_policy.replace(
+                invalid_callee_original,
+                'callee = "rdev->module_init"\n',
+                1,
+            ),
+        )
+        rejects(
+            "policy rejects a nonidentifier callee outside wrapper macros",
+            lambda: load_policy(invalid_callee),
+        )
+        bounded_function_anchor = (
+            'function = "radeon_fbdev_driver_fbdev_probe"\n'
+        )
+        require(
+            live_policy.count(bounded_function_anchor) == 1,
+            "bounded function mutation anchor differs",
+        )
+        for label, replacement in (
+            ("removed-bounded-function", ""),
+            (
+                "changed-bounded-function",
+                'function = "radeon_fbdev_driver_fbdev_probe_extra"\n',
+            ),
+            (
+                "invalid-bounded-function",
+                'function = "radeon fbdev probe"\n',
+            ),
+        ):
+            mutated_policy = temp / f"{label}.toml"
+            write_text(
+                mutated_policy,
+                live_policy.replace(
+                    bounded_function_anchor,
+                    replacement,
+                    1,
+                ),
+            )
+            rejects(
+                f"policy rejects {label.replace('-', ' ')}",
+                lambda mutation=mutated_policy: load_policy(mutation),
+            )
+        bounded_paths_anchor = (
+            'name = "fbdev-fbops-probe-scope"\n'
+            'paths = ["drivers/gpu/drm/radeon/radeon_fbdev.c"]\n'
+        )
+        require(
+            live_policy.count(bounded_paths_anchor) == 1,
+            "bounded path mutation anchor differs",
+        )
+        multiple_bounded_paths = temp / "multiple-bounded-function-paths.toml"
+        write_text(
+            multiple_bounded_paths,
+            live_policy.replace(
+                bounded_paths_anchor,
+                'name = "fbdev-fbops-probe-scope"\n'
+                'paths = ["drivers/gpu/drm/radeon/radeon_fbdev.c", '
+                '"drivers/gpu/drm/radeon/radeon_drv.c"]\n',
+                1,
+            ),
+        )
+        rejects(
+            "policy rejects multiple function-scoped bounded paths",
+            lambda: load_policy(multiple_bounded_paths),
+        )
+        bounded_block_start = live_policy.index(
+            '[[bounded_query]]\nname = "fbdev-fbops-probe-scope"\n'
+        )
+        bounded_block_end = live_policy.index(
+            "\n\n[[bounded_query]]",
+            bounded_block_start,
+        )
+        bounded_block = live_policy[bounded_block_start:bounded_block_end]
+        bounded_identity_mutations = (
+            (
+                "required-bounded-path",
+                'paths = ["drivers/gpu/drm/radeon/radeon_fbdev.c"]\n',
+                'paths = ["drivers/gpu/drm/radeon/radeon_drv.c"]\n',
+            ),
+            (
+                "required-bounded-pattern",
+                next(
+                    line + "\n"
+                    for line in bounded_block.splitlines()
+                    if line.startswith("pattern = ")
+                ),
+                "pattern = 'fbops = foreign_fbops'\n",
+            ),
+            (
+                "required-bounded-count",
+                "expected_matches = 1\n",
+                "expected_matches = 2\n",
+            ),
+        )
+        for label, original, replacement in bounded_identity_mutations:
+            require(
+                bounded_block.count(original) == 1,
+                f"required bounded mutation anchor differs: {label}",
+            )
+            mutated_policy = temp / f"{label}.toml"
+            mutated_block = bounded_block.replace(original, replacement, 1)
+            write_text(
+                mutated_policy,
+                live_policy[:bounded_block_start]
+                + mutated_block
+                + live_policy[bounded_block_end:],
+            )
+            rejects(
+                f"policy rejects {label.replace('-', ' ')}",
+                lambda mutation=mutated_policy: load_policy(mutation),
+            )
         unknown_key = temp / "unknown-key.toml"
         write_text(unknown_key, live_policy + '\nunknown_policy_key = "rejected"\n')
         rejects("policy rejects an unknown key", lambda: load_policy(unknown_key))

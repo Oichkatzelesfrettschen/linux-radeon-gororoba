@@ -3,9 +3,9 @@
 ## Scope and authority
 
 `policy/rs4xx-gart-memory-path.tsv` is the canonical finite ledger for the
-Linux Radeon GART, TTM, buffer object, CPU mapping, and teardown path. Its 29
+Linux Radeon GART, TTM, buffer object, CPU mapping, and teardown path. Its 35
 rows use one 19 field schema and one acyclic dependency graph. The denominator
-contains 18 `proven` rows, 4 `repaired` rows, and 7 `open` rows.
+contains 15 `proven` rows, 16 `repaired` rows, and 4 `open` rows.
 
 The status in `source_status` describes the bounded source relation. Runtime
 and silicon status remain separate fields. A source proof cannot promote a
@@ -69,10 +69,11 @@ before a tree result has authority.
 * CPU access and bounded observation owns `KERNEL_BO_MAP_RESERVATION_WAIT`,
   `USER_MMAP_FAULT_RESERVATION`, and `GART_TABLE_READER_SNAPSHOT_BOUNDARY`.
   Kernel mapping waits kernel reservation users. The userspace fault path
-  reserves the BO before placement inspection. The debug reader protects
-  table lifetime against finalization, but ordinary bind and unbind writers do
-  not share its lock. These relations order software access and lifetime; they
-  do not perform payload cache maintenance.
+  reserves the BO before transaction admission and placement inspection. The
+  debug reader holds hardware transaction admission and `gart.lock` across its
+  metadata and PTE snapshot. Bind, unbind, and finalization writers use the
+  same lock. These relations order software access and lifetime; they do not
+  perform payload cache maintenance.
 * Common release owns `GART_COMMON_TEARDOWN` and
   `RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT`. Common GART finalization unbinds the
   ready aperture before releasing shadows and the dummy page. RS400
@@ -86,11 +87,16 @@ before a tree result has authority.
   on a snoop verdict. Linux records the source controls and order that an
   admitted trial must retain. No source checker can close these rows or
   attribute a directional result to snooping.
-* Unresolved Linux lifecycle owns `RS400_TLB_FLUSH_COMPLETION`,
-  `GART_SUSPEND_READY_STATE`, `GART_BACKEND_NOT_READY_UNBIND_STATE`, and
-  `GART_TTM_TEARDOWN_OWNERSHIP`. Linux owns the missing result and state
-  contracts. These rows remain open until source accounts for every local
-  disposition and the checker calibrates the completed mechanism.
+* Terminal lifecycle owns `GART_SUSPEND_READY_STATE`,
+  `GART_BACKEND_NOT_READY_UNBIND_STATE`, `GART_TTM_TEARDOWN_OWNERSHIP`,
+  `RS4XX_GART_COMPLETION_RELEASE`, `TTM_BO_MOVE_BIND_ROLLBACK`,
+  `RS4XX_BO_LIFETIME_ACCOUNTING`, `RS4XX_BO_TRANSACTION_ROOTS`, and
+  `RS4XX_TTM_FINI_LIVE_DENOMINATOR`. These repaired rows distinguish allocated
+  GART storage from enabled hardware, propagate common teardown refusal,
+  retain complete BO, table, and page ownership, roll back a move-installed
+  binding, and veto final TTM destruction while any counted owner remains.
+* `RS400_TLB_FLUSH_COMPLETION` remains the sole open Linux-owned row. The void
+  ASIC callback reports no completed or timed-out disposition to its callers.
 
 The Vostro repository supplies event scoped aperture and page table
 observations. Steinmarder supplies RS482 silicon and payload authority. Their
@@ -102,19 +108,25 @@ repository cannot silently replace the evidence bound by this contract.
 The bounded source path has these ownership transfers:
 
 1. BO creation normalizes non PCIe GTT cache flags.
-2. TTM selects a cache mode and creates the translation table.
-3. Userptr population allocates only its external SG table container.
-4. Backend bind pins userptr pages when applicable, creates and maps SG
+2. BO creation rejects an imported SG table on the AGP backend before
+   allocation and TTM construction.
+3. TTM selects a cache mode and creates the backend-specific translation
+   table.
+4. Userptr population allocates only its external SG table container.
+5. Backend bind pins userptr pages when applicable, creates and maps SG
    entries, extracts DMA addresses, requests PTE flags, and binds the range.
-5. GART bind updates software shadows and the mapped page table before its
+6. GART bind updates software shadows and the mapped page table before its
    barrier and TLB callback.
-6. Kernel maps and userspace faults use reservation ordering around CPU
+7. Kernel maps and userspace faults use reservation ordering around CPU
    access. This ordering is not a cache visibility operation.
-7. Backend unbind removes PTEs before it releases userptr DMA and page
+8. Backend unbind removes PTEs before it releases userptr DMA and page
    ownership.
-8. Common finalization unbinds the ready aperture before it releases common
+9. Common finalization unbinds the ready aperture before it releases common
    shadows. RS400 finalization then disables GART hardware and releases the
    page table allocation through the WB restore attempt.
+10. A terminal unbind refusal retains the complete BO, its translation table,
+    and pages that leave generic TTM accounting before generic cleanup releases
+    the resource range or clears the translation-table pointer.
 
 Every step names a source relation. None of the steps asserts that CPU cache
 lines reached the GPU, that GPU writes reached the CPU, or that RS482 honored
@@ -122,8 +134,8 @@ the requested per PTE snoop state.
 
 ## Repaired source defects
 
-The four `repaired` rows preserve the defects and the replacement mechanisms
-as distinct evidence:
+The 16 `repaired` rows preserve the defects and replacement mechanisms as
+distinct evidence:
 
 * `USERPTR_PIN_DMA_MAP_TRANSACTION` makes the ownership prefix transactional.
   A zero progress page pin now fails. The backend propagates pin failures. SG
@@ -139,6 +151,24 @@ as distinct evidence:
 * `GART_UNBIND_SPARSE_CURSOR` derives the GPU PTE cursor on every outer CPU page
   iteration. A sparse hole cannot shift a later dummy write into an earlier
   PTE range.
+* `USER_MMAP_FAULT_RESERVATION` reserves the BO before transaction admission,
+  placement changes, and CPU aperture PTE installation.
+* `GART_TABLE_READER_SNAPSHOT_BOUNDARY` holds hardware admission and
+  `gart.lock` across metadata and every PTE read.
+* `GART_COMMON_TEARDOWN`, `RS4XX_GART_TEARDOWN_ERROR_PROPAGATION`,
+  `GART_SUSPEND_READY_STATE`, `GART_BACKEND_NOT_READY_UNBIND_STATE`, and
+  `RS4XX_GART_COMPLETION_RELEASE` preserve exact common-teardown disposition,
+  separate allocated from enabled state, and publish completion only after
+  aperture disable and coherent table release.
+* `GART_TTM_TEARDOWN_OWNERSHIP` transfers complete BO, translation-table, and
+  retained-page ownership before the void callbacks return. The retained and
+  detached GEM debugfs classifications precede resource dereference.
+* `TTM_BO_MOVE_BIND_ROLLBACK` removes any binding installed by a failed move.
+  `RS4XX_BO_LIFETIME_ACCOUNTING` and `RS4XX_BO_TRANSACTION_ROOTS` keep each BO
+  counted and admitted through true final destruction.
+* `RS4XX_TTM_FINI_LIVE_DENOMINATOR` vetoes range-manager and TTM destruction
+  for a live BO, retained BO, retained table, retained accounted page,
+  transaction, or reader.
 
 These repairs close source defects only. They do not make userptr a preferred
 Mesa sharing ABI, establish payload visibility, or prove a live TLB outcome.
@@ -173,24 +203,54 @@ tested trials. Both arms failing leaves visibility open.
   invalidation and polls, but its void signature discards timeout disposition.
   A result channel and calibrated success and timeout paths must account for
   every caller.
-* `GART_SUSPEND_READY_STATE` belongs to Linux. Suspend disables hardware while
-  `gart.ready` continues to represent allocated state. Separate allocated and
-  enabled state, or an executable quiescence invariant, must prevent live bind
-  and unbind ambiguity.
-* `GART_BACKEND_NOT_READY_UNBIND_STATE` belongs to Linux. Common unbind can
-  return for not ready while the backend clears `bound` without a disposition
-  result. A result and state contract must distinguish global teardown from a
-  live mismatch.
-* `GART_TTM_TEARDOWN_OWNERSHIP` belongs to Linux. RS400 finalization owns common
-  finalization, hardware disable, and table release, while TTM finalization
-  invokes common finalization again. One owner or an executable ordering
-  invariant must account for every object, callback, table, and common
-  allocation.
 
 The global snoop enable mutation remains excluded. The retained negative sits
 in Steinmarder and does not authorize another live mutation from this source
 repository. K8 F3x40 AtomicRMW reporting state is also not a cache coherence
 enable and does not close a ledger row.
+
+## Failed reset terminal retention
+
+The RS4xx admission state assigns every delayed translation-table destructor
+one stable disposition. A destructor waits while reset, suspend, or resume owns
+the hardware transition. A running result admits the GART unbind. A parked or
+shutdown result retains the binding, translation table, backing pages, buffer
+object, TTM device, DRM device, PCI parent, and module until reboot. Shutdown
+returns its disposition immediately because `ttm_device_fini` can wait for the
+same delayed destructor.
+
+The GEM destructor enters a wait-capable hardware transaction before TTM
+finalization. Reset closes transaction admission and drains admitted
+destructors before it publishes `RESETTING`. The lower GART unbind uses a
+wait-capable reader when no transaction already owns the complete move or
+destruction. A reader enclosing the wait-capable unbind creates a cycle: reset
+can wait for the outer reader while the unbind waits for reset. The transaction
+root removes the cycle and preserves one stable disposition
+for the complete buffer object.
+
+Linux v7.1 `ttm_tt_unpopulate` invokes the driver
+`ttm_tt_unpopulate` callback through a `void` interface, then clears populated
+state and releases global accounting. `ttm_bo_tt_destroy` invokes the driver
+destroy callback, then clears the buffer object's translation-table pointer.
+The Radeon callback therefore has no result channel that preserves an RS4xx
+GART unbind refusal in TTM core state. The terminal callback transfers the
+complete Radeon BO and its bound translation table into per-device retention
+before returning. It also transfers every page that leaves generic TTM
+allocation accounting into an exact retained-page denominator. The later
+driver BO destructor observes the retained flag and leaves the BO allocated.
+The retained TTM device keeps the associated workqueue and callback code alive.
+
+Generic TTM cleanup can release the resource-manager range and clear
+`rbo->tbo.resource` after that transfer. Hardware admission remains closed, so
+no later BO allocation, movement, or binding can reuse the released range on
+the terminal device. The GEM debugfs reader reports `RETAINED` before resource
+inspection and reports `DETACHED` for a nonretained BO without a resource.
+
+The terminal retention is a host-safety result and a resource-lifetime
+boundary. It establishes that teardown issues no RS4xx GART write or TLB flush
+after failed reset. It preserves complete Radeon ownership and accounts for
+pages that generic TTM no longer counts. It does not reclaim memory before
+reboot, restore the device, or add a result channel to the generic callback ABI.
 
 ## Build priorities
 
@@ -208,10 +268,8 @@ runtime reachability, or silicon behavior.
 1. Preserve the lifecycle checker's known-good and known-bad calibration and
    the eight-lane exact-root, exact-toolchain, zero-warning build matrix on
    every change to the repaired source or its build contract.
-2. Close Linux owned open rows in dependency order. A TLB completion result, a
-   hardware enabled state, a backend unbind disposition, and consolidated
-   teardown ownership each require one final safe mechanism and calibrated
-   negative fixtures.
+2. Close `RS400_TLB_FLUSH_COMPLETION` only through a result-bearing callback
+   contract with calibrated success and timeout paths for every caller.
 3. Run exact target snoop and payload trials only in Steinmarder after the
    Linux source and build identities are pinned. The trial must preserve raw
    controls, cache actions, producer and consumer digests, submission, and
@@ -235,6 +293,10 @@ subcontract. Direct runs remain useful when a cache relation fails:
 python3 scripts/check_rs4xx_gart_cache_policy.py --selftest
 python3 scripts/check_rs4xx_gart_cache_policy.py
 ```
+
+The lifecycle checker admits 35 rows with 15 proven, 16 repaired, and 4 open
+statuses. Its selftest rejects 144 known-bad source, ownership, authority,
+dependency, and evidence mutations.
 
 Then run the module build harness against both exact declared kernel roots as
 documented in `README.md`. The matrix recorded for driver tree

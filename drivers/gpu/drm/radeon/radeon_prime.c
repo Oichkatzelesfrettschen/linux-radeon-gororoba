@@ -51,24 +51,15 @@ struct drm_gem_object *radeon_gem_prime_import_sg_table(struct drm_device *dev,
 	struct radeon_bo *bo;
 	int ret;
 
-	/* This importer calls radeon_bo_create directly, so the parked-device
-	 * refusal in radeon_gem_object_create never covers it. A parked device
-	 * allocates no buffer object, and a dma-buf import allocates one, so
-	 * the same test gates it here. The exclusive_lock reader serializes the
-	 * flag against the writer that latches it in radeon_gpu_reset, and it
-	 * stays outside dma_resv the way the GEM create ioctls order the two.
-	 */
-	down_read(&rdev->exclusive_lock);
-	if (READ_ONCE(rdev->gpu_parked)) {
-		up_read(&rdev->exclusive_lock);
-		return ERR_PTR(-EIO);
-	}
+	ret = radeon_device_lock_hardware(rdev);
+	if (ret)
+		return ERR_PTR(ret);
 
 	dma_resv_lock(resv, NULL);
 	ret = radeon_bo_create(rdev, attach->dmabuf->size, PAGE_SIZE, false,
 			       RADEON_GEM_DOMAIN_GTT, 0, sg, resv, &bo);
 	dma_resv_unlock(resv);
-	up_read(&rdev->exclusive_lock);
+	radeon_device_unlock_hardware(rdev);
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -85,12 +76,18 @@ struct drm_gem_object *radeon_gem_prime_import_sg_table(struct drm_device *dev,
 int radeon_gem_prime_pin(struct drm_gem_object *obj)
 {
 	struct radeon_bo *bo = gem_to_radeon_bo(obj);
-	int ret = 0;
+	struct radeon_device *rdev = bo->rdev;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_transaction_begin(rdev);
+	if (ret)
+		return ret;
 
 	/* pin buffer into GTT */
 	ret = radeon_bo_pin(bo, RADEON_GEM_DOMAIN_GTT, NULL);
 	if (likely(ret == 0))
 		bo->prime_shared_count++;
+	radeon_rs4xx_hardware_transaction_end(rdev);
 
 	return ret;
 }
@@ -98,10 +95,15 @@ int radeon_gem_prime_pin(struct drm_gem_object *obj)
 void radeon_gem_prime_unpin(struct drm_gem_object *obj)
 {
 	struct radeon_bo *bo = gem_to_radeon_bo(obj);
+	struct radeon_device *rdev = bo->rdev;
+
+	if (radeon_rs4xx_hardware_transaction_begin(rdev))
+		return;
 
 	radeon_bo_unpin(bo);
 	if (bo->prime_shared_count)
 		bo->prime_shared_count--;
+	radeon_rs4xx_hardware_transaction_end(rdev);
 }
 
 

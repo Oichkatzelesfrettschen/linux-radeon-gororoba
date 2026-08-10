@@ -263,13 +263,19 @@ hardware claim binds to. `RS485M` names the platform chipset of the target
 machine, sourced from DMI and the `1002:5950` host bridge, and it stays out of
 GPU register and reset claims.
 
-## Memory path contracts
+## Hardware and memory path contracts
 
-The active RS4xx memory-path source model has three finite owners:
+The active RS4xx hardware and memory source model has four finite owners:
+
+* `policy/rs4xx-hardware-transition-contract.tsv` covers the eight-state
+  admission model and the exact initialization, suspend, resume, reset, and
+  unload transition owners. Its narrative is
+  `docs/rs4xx-failed-reset-hardware-containment.md`.
 
 * `policy/rs4xx-gart-memory-path.tsv` covers GART, TTM, BO mapping, PTE
-  publication, userptr ownership, CPU mappings, and teardown. Its narrative is
-  `docs/rs4xx-gart-bo-lifecycle-contract.md`.
+  publication, userptr ownership, CPU mappings, move rollback, BO lifetime
+  accounting, the six-owner TTM finalization veto, and teardown. Its narrative
+  is `docs/rs4xx-gart-bo-lifecycle-contract.md`.
 * `policy/radeon-cs-reservation-fence-contract.tsv` covers command admission,
   BO reservations, dependency import, IB scheduling, r300 fence commands, and
   reservation-fence publication. Its narrative is
@@ -281,13 +287,22 @@ The active RS4xx memory-path source model has three finite owners:
   ledger, and narrative live beside it in `policy/` and
   `docs/rs4xx-vram-gtt-capacity-contract.md`.
 
-All three ledgers separate source status from runtime and silicon status. In
-particular, reservation fences and emitted cache commands prove software and
-ring order, not cached-GTT payload visibility. GTT size is virtual aperture
-capacity rather than proved physical backing, and a source-supported selector
-is not a performance result. Exact RS482 payload, allocation-pressure, and replay
-verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM, address
-domain, PAT, MTRR, and event-scoped aperture observations.
+All four ledgers separate source status from runtime and silicon status. The
+transition contract proves finite source ordering, not scheduler interleavings
+or target survival. Reservation fences and emitted cache commands prove
+software and ring order, not cached-GTT payload visibility. GTT size is virtual
+aperture capacity rather than proved physical backing, and a source-supported
+selector is not a performance result. Exact RS482 payload, allocation-pressure,
+and replay verdicts remain owned by Steinmarder, while Vostro owns K8, HT, DRAM,
+address domain, PAT, MTRR, and event-scoped aperture observations.
+
+`policy/rs4xx-ttm-retention-authority.toml` pins the Linux 6.18 and 7.1 TTM,
+GEM, PRIME, and AGP cleanup sources. It binds complete BO, detached translation
+table, page-accounting, resource-release, and imported-SG ownership claims to
+their exact upstream bytes. `policy/pci-runtime-resume-rollback-authority.toml`
+pins the matching PCI and runtime-PM sources. The transition and GART lifecycle
+checkers verify these authority hashes before accepting their derived source
+contracts.
 
 ## License
 

@@ -88,6 +88,12 @@ static int pre_xfer(struct i2c_adapter *i2c_adap)
 	struct radeon_device *rdev = i2c->dev->dev_private;
 	struct radeon_i2c_bus_rec *rec = &i2c->rec;
 	uint32_t temp;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	i2c->rs4xx_hardware_access_held = true;
 
 	mutex_lock(&i2c->mutex);
 
@@ -169,6 +175,10 @@ static void post_xfer(struct i2c_adapter *i2c_adap)
 	temp = RREG32(rec->mask_data_reg);
 
 	mutex_unlock(&i2c->mutex);
+	if (i2c->rs4xx_hardware_access_held) {
+		i2c->rs4xx_hardware_access_held = false;
+		radeon_rs4xx_hardware_access_end(rdev);
+	}
 }
 
 static int get_clock(void *i2c_priv)
@@ -812,6 +822,9 @@ static int radeon_hw_i2c_xfer(struct i2c_adapter *i2c_adap,
 	struct radeon_i2c_bus_rec *rec = &i2c->rec;
 	int ret = 0;
 
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
 	mutex_lock(&i2c->mutex);
 
 	switch (rdev->family) {
@@ -881,7 +894,23 @@ static int radeon_hw_i2c_xfer(struct i2c_adapter *i2c_adap,
 	}
 
 	mutex_unlock(&i2c->mutex);
+	radeon_rs4xx_hardware_access_end(rdev);
 
+	return ret;
+}
+
+static int radeon_atom_hw_i2c_xfer_admitted(struct i2c_adapter *i2c_adap,
+					     struct i2c_msg *msgs, int num)
+{
+	struct radeon_i2c_chan *i2c = i2c_get_adapdata(i2c_adap);
+	struct radeon_device *rdev = i2c->dev->dev_private;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	ret = radeon_atom_hw_i2c_xfer(i2c_adap, msgs, num);
+	radeon_rs4xx_hardware_access_end(rdev);
 	return ret;
 }
 
@@ -896,7 +925,7 @@ static const struct i2c_algorithm radeon_i2c_algo = {
 };
 
 static const struct i2c_algorithm radeon_atom_i2c_algo = {
-	.master_xfer = radeon_atom_hw_i2c_xfer,
+	.master_xfer = radeon_atom_hw_i2c_xfer_admitted,
 	.functionality = radeon_atom_hw_i2c_func,
 };
 
@@ -1147,4 +1176,3 @@ void radeon_router_select_cd_port(struct radeon_connector *radeon_connector)
 			    radeon_connector->router.i2c_addr,
 			    0x1, val);
 }
-

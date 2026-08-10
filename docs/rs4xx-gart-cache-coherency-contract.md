@@ -5,7 +5,7 @@
 This contract interprets the coupled cache controls used by RS400 and RS480
 GART mappings. `policy/rs4xx-gart-memory-path.tsv` is the canonical finite
 ledger. `docs/rs4xx-gart-bo-lifecycle-contract.md` describes its complete
-29-row lifecycle and its seven open boundaries.
+35-row lifecycle and its four open boundaries.
 
 The cache policy checker retains seven calibrated source relationships as a
 focused diagnostic subset. The lifecycle ledger splits coherent table
@@ -53,12 +53,13 @@ then call the ASIC TLB flush. This is address publication order. The callback
 has a void result, so its bounded poll cannot report completion to its callers.
 `RS400_TLB_FLUSH_COMPLETION` remains open.
 
-The root-only GART table reader holds `rs400_gart_page_table_lock`.
-`rs400_gart_fini` holds the same lock, but bind and unbind do not. `READ_ONCE`
-protects each scalar read and does not make the multi-entry output one
-generation consistent snapshot. A snapshot claim requires serialization with
-PTE writers or a generation and retry protocol. The reader does not provide a
-synchronization surface for Mesa.
+The root-only GART table reader enters one hardware transaction and holds
+`rdev->gart.lock` across metadata and PTE reads. Bind, unbind, and common
+finalization hold the same table lock. Lifecycle transitions close and drain
+ordinary reader admission before RS400 disables the aperture or releases table
+storage. The emitted rows therefore form one source-defined table snapshot
+relative to those writers. The reader does not provide a payload-cache action
+or a synchronization surface for Mesa.
 
 Reservation fences and the r300 fence command sequence add execution order.
 They do not add CPU payload cache maintenance. CPU to GPU publication and GPU
@@ -87,7 +88,7 @@ Both files propose the same two behavior changes that remain unported:
 2. It exposes a path that can write K8 F3x40 AtomicRMW reporting state.
 
 The Steinmarder finding pinned by the lifecycle ledger at
-`steinmarder-r300/src/re/r300/findings/active/2026-06-21-rs482-global-gart-snoop-breaks-gart-binding-measured.md`
+`steinmarder-r300/src/re/r300/findings/resolved/canonical/2026-06-21-rs482-global-gart-snoop-gart-binding-outcome.md`
 is a reported operational negative. It reports that clearing
 `REQ_TYPE_SNOOP_DIS` produced `AGP_MODE_CNTL = 0x00400000`, left the GART not
 ready, and made GTT and GEM allocations fail. Its

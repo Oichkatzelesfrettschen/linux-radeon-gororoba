@@ -268,6 +268,12 @@ int radeon_ib_ring_tests(struct radeon_device *rdev)
 
 		r = radeon_ib_test(rdev, i, ring);
 		if (r) {
+			if (radeon_rs4xx_hardware_target(rdev)) {
+				radeon_rs4xx_publish_parked_state(rdev);
+				DRM_ERROR("failed testing IB on RS4xx ring %u (%d).\n",
+					  i, r);
+				return r;
+			}
 			radeon_fence_driver_force_completion(rdev, i);
 			ring->ready = false;
 			rdev->needs_reset = false;
@@ -309,9 +315,7 @@ DEFINE_SHOW_ATTRIBUTE(radeon_debugfs_sa_info);
 static void radeon_debugfs_sa_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("radeon_sa_info", 0444, root, rdev,
-			    &radeon_debugfs_sa_info_fops);
+	radeon_debugfs_add_component(rdev, "radeon_sa_info", 0444, rdev,
+				     &radeon_debugfs_sa_info_fops);
 #endif
 }

@@ -131,17 +131,7 @@ radeon_palm_dev_pci_reset_unsafe(struct radeon_device *rdev)
 #endif
 
 #if RADEON_OBSERVE_DEV
-void radeon_rs4xx_dev_gart_lock(void);
-void radeon_rs4xx_dev_gart_unlock(void);
 void radeon_rs480_re_debugfs_register(struct drm_minor *minor);
-#else
-static inline void radeon_rs4xx_dev_gart_lock(void)
-{
-}
-
-static inline void radeon_rs4xx_dev_gart_unlock(void)
-{
-}
 #endif
 
 #endif

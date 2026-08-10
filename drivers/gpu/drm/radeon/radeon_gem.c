@@ -44,36 +44,16 @@ struct sg_table *radeon_gem_prime_get_sg_table(struct drm_gem_object *obj);
 int radeon_gem_prime_pin(struct drm_gem_object *obj);
 void radeon_gem_prime_unpin(struct drm_gem_object *obj);
 
-#include <linux/delay.h>
-
-/* Counted parked-GPU teardown breadcrumb. The DRM file-close handle walk frees
- * every client BO through radeon_gem_object_free, each leaked under gpu_parked
- * (0053). dev_err_once hides the walk after the first object, so the death
- * window between the first leak and radeon_driver_postclose_kms is invisible.
- * A per-object counter, paced so netconsole keeps every line, makes the last
- * object index on the wire the pin for the remaining teardown killer.
- */
-static atomic_t rs480_parked_gem_leak = ATOMIC_INIT(0);
-
 static vm_fault_t radeon_gem_fault(struct vm_fault *vmf)
 {
 	struct ttm_buffer_object *bo = vmf->vma->vm_private_data;
 	struct radeon_device *rdev = radeon_get_rdev(bo->bdev);
+	bool hardware_transaction = false;
 	vm_fault_t ret;
 
-	/* A userspace touch of a CPU-mapped VRAM page goes through the
-	 * host aperture, and a parked RS480 holds MC aperture requests
-	 * parked: the access becomes a non-posted HyperTransport read
-	 * that hard-locks the machine from userspace, with no kernel
-	 * print possible. Kill the faulting client with SIGBUS instead;
-	 * its buffer objects already outlive teardown via the parked
-	 * GEM-leak path. GTT and system placements stay mapped -- their
-	 * pages are plain system RAM.
-	 *
-	 * Reserve the BO before reading placement: a concurrent TTM move
-	 * can free or rewrite bo->resource between an unlocked mem_type
-	 * peek and the later reserve, so the SIGBUS decision and the
-	 * subsequent fault path must share one reserved view.
+	/* The RS400/RS480 admission epoch closes before reset invalidates the
+	 * anonymous GEM mapping. A fault reserves its BO first, then joins the
+	 * epoch before TTM changes placement or installs a CPU aperture PTE.
 	 */
 	down_read(&rdev->pm.mclk_lock);
 
@@ -81,13 +61,13 @@ static vm_fault_t radeon_gem_fault(struct vm_fault *vmf)
 	if (ret)
 		goto unlock_mclk;
 
-	if (rdev->gpu_parked &&
-	    bo->resource && bo->resource->mem_type == TTM_PL_VRAM) {
+	if (radeon_rs4xx_hardware_transaction_begin(rdev)) {
 		dev_err_once(rdev->dev,
-			     "parked: SIGBUS on VRAM mmap fault (aperture unreadable)\n");
+			     "RS4xx hardware unavailable: SIGBUS on GEM fault\n");
 		ret = VM_FAULT_SIGBUS;
 		goto unlock_resv;
 	}
+	hardware_transaction = true;
 
 	ret = radeon_bo_fault_reserve_notify(bo);
 	if (ret)
@@ -96,13 +76,33 @@ static vm_fault_t radeon_gem_fault(struct vm_fault *vmf)
 	ret = ttm_bo_vm_fault_reserved(vmf, vmf->vma->vm_page_prot,
 				       TTM_BO_VM_NUM_PREFAULT);
 	if (ret == VM_FAULT_RETRY && !(vmf->flags & FAULT_FLAG_RETRY_NOWAIT))
-		goto unlock_mclk;
+		goto unlock_transaction;
 
 unlock_resv:
 	dma_resv_unlock(bo->base.resv);
 
+unlock_transaction:
+	if (hardware_transaction)
+		radeon_rs4xx_hardware_transaction_end(rdev);
+
 unlock_mclk:
 	up_read(&rdev->pm.mclk_lock);
+	return ret;
+}
+
+static int radeon_gem_vm_access(struct vm_area_struct *vma,
+				unsigned long addr, void *buf, int len,
+				int write)
+{
+	struct ttm_buffer_object *bo = vma->vm_private_data;
+	struct radeon_device *rdev = radeon_get_rdev(bo->bdev);
+	int ret;
+
+	ret = radeon_rs4xx_hardware_transaction_begin(rdev);
+	if (ret)
+		return ret;
+	ret = ttm_bo_vm_access(vma, addr, buf, len, write);
+	radeon_rs4xx_hardware_transaction_end(rdev);
 	return ret;
 }
 
@@ -110,38 +110,46 @@ static const struct vm_operations_struct radeon_gem_vm_ops = {
 	.fault = radeon_gem_fault,
 	.open = ttm_bo_vm_open,
 	.close = ttm_bo_vm_close,
-	.access = ttm_bo_vm_access
+	.access = radeon_gem_vm_access
 };
 
 static void radeon_gem_object_free(struct drm_gem_object *gobj)
 {
 	struct radeon_bo *robj = gem_to_radeon_bo(gobj);
+	struct radeon_device *rdev;
+	bool hardware_transaction = false;
+	int ret;
 
 	if (robj) {
-		/* BO teardown funnels into ttm core, whose fini path reaches
-		 * driver callbacks and aperture accesses that are non-posted
-		 * black holes on a parked RS480 (the fire-12 pin dies inside
-		 * the first ttm_bo_fini). The core is not patchable from this
-		 * module, so a parked GPU leaks its BOs by design: the frontend
-		 * is dead, nothing recycles its memory before the reboot that
-		 * reclaims everything, and the host stays alive.
-		 */
-		if (robj->rdev->gpu_parked) {
-			int leak_n = atomic_inc_return(&rs480_parked_gem_leak);
+		rdev = robj->rdev;
+		ret = radeon_rs4xx_hardware_transaction_wait_begin(rdev);
+		if (ret == -ESHUTDOWN)
+			ret = radeon_rs4xx_gart_teardown_wait(rdev);
+		else if (ret == 0)
+			hardware_transaction = true;
+		if (ret) {
+			int retained_count = radeon_rs4xx_retain_bo(robj);
 
-			dev_err(robj->rdev->dev, "parked: GEM leak #%d begin (mn_unregister then return, no ttm_bo_fini)\n", leak_n);
-			msleep(1);
+			/* TTM cannot preserve an unbind error through its void
+			 * unpopulate callback, so the terminal path retains the complete
+			 * buffer object and records the exact per-device denominator.
+			 */
+			dev_err_ratelimited(
+				rdev->dev,
+				"RS4xx hardware unavailable: retained GEM objects=%d\n",
+				retained_count);
+			radeon_rs4xx_latch_teardown_refusal(rdev);
 			radeon_mn_unregister(robj);
-			dev_err(robj->rdev->dev, "parked: GEM leak #%d mn_unregister returned; deferring teardown to reboot\n", leak_n);
-			msleep(1);
 			return;
 		}
 		radeon_mn_unregister(robj);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 		ttm_bo_fini(&robj->tbo);
-#else
+	#else
 		ttm_bo_put(&robj->tbo);
-#endif
+	#endif
+		if (hardware_transaction)
+			radeon_rs4xx_hardware_transaction_end(rdev);
 	}
 }
 
@@ -155,29 +163,6 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 	int r;
 
 	*obj = NULL;
-
-	/* radeon_gpu_reset latches gpu_parked when reset recovery fails, under
-	 * the exclusive_lock writer that also clears accel_working and every
-	 * ring's ready flag. The device stays parked until reboot, so this
-	 * refusal allocates no buffer object for any requested or final
-	 * placement.
-	 *
-	 * radeon_gem_fault decides placement and fault resolution: its
-	 * TTM_PL_VRAM test returns SIGBUS for a parked VRAM mapping and lets a
-	 * GTT or system mapping fault into ordinary system memory. A park frees
-	 * no VRAM, so a request that free VRAM satisfies is placed in VRAM and
-	 * reaches that test; the retry: path below ORs RADEON_GEM_DOMAIN_GTT on
-	 * only after radeon_bo_create fails for a VRAM-only request. An RS482
-	 * (1002:5974) run measured both: a 16 MiB VRAM request issued after the
-	 * park was placed in VRAM and took SIGBUS, and a GTT mapping held
-	 * across the park completed its touch (steinmarder-r300 bundle
-	 * rs480_parked_gem_placement_discriminator_rs482_20260804T041115Z).
-	 *
-	 * -EIO is the parked-device return radeon_dev_hardware_available uses,
-	 * and radeon_gem_handle_lockup forwards it without a reset re-entry.
-	 */
-	if (READ_ONCE(rdev->gpu_parked))
-		return -EIO;
 
 	/* At least align on page size */
 	if (alignment < PAGE_SIZE) {
@@ -194,6 +179,10 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 		return -ENOMEM;
 	}
 
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return r;
+
 retry:
 	r = radeon_bo_create(rdev, size, alignment, kernel, initial_domain,
 			     flags, NULL, NULL, &robj);
@@ -206,7 +195,7 @@ retry:
 			DRM_ERROR("Failed to allocate GEM object (%ld, %d, %u, %d)\n",
 				  size, initial_domain, alignment, r);
 		}
-		return r;
+		goto out;
 	}
 	*obj = &robj->tbo.base;
 	robj->pid = task_pid_nr(current);
@@ -215,7 +204,10 @@ retry:
 	list_add_tail(&robj->list, &rdev->gem.objects);
 	mutex_unlock(&rdev->gem.mutex);
 
-	return 0;
+	r = 0;
+out:
+	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
 }
 
 static int radeon_gem_set_domain(struct drm_gem_object *gobj,
@@ -346,11 +338,31 @@ static int radeon_gem_object_mmap(struct drm_gem_object *obj, struct vm_area_str
 {
 	struct radeon_bo *bo = gem_to_radeon_bo(obj);
 	struct radeon_device *rdev = radeon_get_rdev(bo->tbo.bdev);
+	int ret;
 
 	if (radeon_ttm_tt_has_userptr(rdev, bo->tbo.ttm))
 		return -EPERM;
 
-	return drm_gem_ttm_mmap(obj, vma);
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	ret = drm_gem_ttm_mmap(obj, vma);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_gem_object_vmap(struct drm_gem_object *obj,
+				  struct iosys_map *map)
+{
+	struct radeon_bo *bo = gem_to_radeon_bo(obj);
+
+	/* A dma-buf vmap outlives the call that creates it, so an admission
+	 * token cannot revoke a VRAM aperture pointer before reset. The RS400
+	 * and RS480 object interface keeps that persistent mapping closed.
+	 */
+	if (radeon_rs4xx_hardware_target(bo->rdev))
+		return -EOPNOTSUPP;
+	return drm_gem_ttm_vmap(obj, map);
 }
 
 const struct drm_gem_object_funcs radeon_gem_object_funcs = {
@@ -361,7 +373,7 @@ const struct drm_gem_object_funcs radeon_gem_object_funcs = {
 	.pin = radeon_gem_prime_pin,
 	.unpin = radeon_gem_prime_unpin,
 	.get_sg_table = radeon_gem_prime_get_sg_table,
-	.vmap = drm_gem_ttm_vmap,
+	.vmap = radeon_gem_object_vmap,
 	.vunmap = drm_gem_ttm_vunmap,
 	.mmap = radeon_gem_object_mmap,
 	.vm_ops = &radeon_gem_vm_ops,
@@ -397,27 +409,28 @@ int radeon_gem_create_ioctl(struct drm_device *dev, void *data,
 	uint32_t handle;
 	int r;
 
-	down_read(&rdev->exclusive_lock);
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 	/* create a gem object to contain this object in */
 	args->size = roundup(args->size, PAGE_SIZE);
 	r = radeon_gem_object_create(rdev, args->size, args->alignment,
 				     args->initial_domain, args->flags,
 				     false, &gobj);
 	if (r) {
-		up_read(&rdev->exclusive_lock);
+		radeon_device_unlock_hardware(rdev);
 		r = radeon_gem_handle_lockup(rdev, r);
 		return r;
 	}
 	r = drm_gem_handle_create(filp, gobj, &handle);
+	radeon_device_unlock_hardware(rdev);
 	/* drop reference from allocate - handle holds it now */
 	drm_gem_object_put(gobj);
 	if (r) {
-		up_read(&rdev->exclusive_lock);
 		r = radeon_gem_handle_lockup(rdev, r);
 		return r;
 	}
 	args->handle = handle;
-	up_read(&rdev->exclusive_lock);
 	return 0;
 }
 
@@ -456,7 +469,9 @@ int radeon_gem_userptr_ioctl(struct drm_device *dev, void *data,
 		return -EACCES;
 	}
 
-	down_read(&rdev->exclusive_lock);
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	/* create a gem object to contain this object in */
 	r = radeon_gem_object_create(rdev, args->size, 0,
@@ -493,20 +508,24 @@ int radeon_gem_userptr_ioctl(struct drm_device *dev, void *data,
 	}
 
 	r = drm_gem_handle_create(filp, gobj, &handle);
+	radeon_device_unlock_hardware(rdev);
 	/* drop reference from allocate - handle holds it now */
 	drm_gem_object_put(gobj);
 	if (r)
-		goto handle_lockup;
+		goto handle_lockup_unlocked;
 
 	args->handle = handle;
-	up_read(&rdev->exclusive_lock);
 	return 0;
 
 release_object:
+	radeon_device_unlock_hardware(rdev);
 	drm_gem_object_put(gobj);
+	goto handle_lockup_unlocked;
 
 handle_lockup:
-	up_read(&rdev->exclusive_lock);
+	radeon_device_unlock_hardware(rdev);
+
+handle_lockup_unlocked:
 	r = radeon_gem_handle_lockup(rdev, r);
 
 	return r;
@@ -524,19 +543,21 @@ int radeon_gem_set_domain_ioctl(struct drm_device *dev, void *data,
 
 	/* for now if someone requests domain CPU -
 	 * just make sure the buffer is finished with */
-	down_read(&rdev->exclusive_lock);
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	/* just do a BO wait for now */
 	gobj = drm_gem_object_lookup(filp, args->handle);
 	if (gobj == NULL) {
-		up_read(&rdev->exclusive_lock);
+		radeon_device_unlock_hardware(rdev);
 		return -ENOENT;
 	}
 
 	r = radeon_gem_set_domain(gobj, args->read_domains, args->write_domain);
 
+	radeon_device_unlock_hardware(rdev);
 	drm_gem_object_put(gobj);
-	up_read(&rdev->exclusive_lock);
 	r = radeon_gem_handle_lockup(rdev, r);
 	return r;
 }
@@ -605,6 +626,7 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 	struct drm_gem_object *gobj;
 	struct radeon_bo *robj;
 	int r = 0;
+	int hardware_result;
 	uint32_t cur_placement = 0;
 	long ret;
 
@@ -620,6 +642,10 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 		r = -EBUSY;
 	else if (ret < 0)
 		r = ret;
+	if (r) {
+		drm_gem_object_put(gobj);
+		return r;
+	}
 
 	/* gpu_parked latches under the exclusive_lock writer in
 	 * radeon_gpu_reset, so holding the reader across the flag test and the
@@ -629,11 +655,10 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 	 * outside the lock because a 30 * HZ hold would stall that writer for
 	 * the whole timeout on a wedging GPU.
 	 */
-	down_read(&rdev->exclusive_lock);
-	if (READ_ONCE(rdev->gpu_parked)) {
-		up_read(&rdev->exclusive_lock);
+	hardware_result = radeon_device_lock_hardware(rdev);
+	if (hardware_result) {
 		drm_gem_object_put(gobj);
-		return -EIO;
+		return hardware_result;
 	}
 
 	/* Flush HDP cache via MMIO if necessary */
@@ -641,10 +666,9 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
 	if (rdev->asic->mmio_hdp_flush &&
 	    radeon_mem_type_to_domain(cur_placement) == RADEON_GEM_DOMAIN_VRAM)
 		robj->rdev->asic->mmio_hdp_flush(rdev);
-	up_read(&rdev->exclusive_lock);
+	radeon_device_unlock_hardware(rdev);
 	drm_gem_object_put(gobj);
-	r = radeon_gem_handle_lockup(rdev, r);
-	return r;
+	return 0;
 }
 
 int radeon_gem_set_tiling_ioctl(struct drm_device *dev, void *data,
@@ -945,11 +969,13 @@ int radeon_mode_dumb_create(struct drm_file *file_priv,
 	 * radeon_gpu_reset; the read lock serializes this creator against
 	 * that latch the same way the GEM create and userptr ioctls do.
 	 */
-	down_read(&rdev->exclusive_lock);
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 	r = radeon_gem_object_create(rdev, args->size, 0,
 				     RADEON_GEM_DOMAIN_VRAM, 0,
 				     false, &gobj);
-	up_read(&rdev->exclusive_lock);
+	radeon_device_unlock_hardware(rdev);
 	/* radeon_gem_object_create returns -EIO for a parked device and
 	 * -ENOMEM for exhaustion; forwarding r keeps those distinguishable
 	 * at the ioctl boundary.
@@ -979,18 +1005,25 @@ static int radeon_debugfs_gem_info_show(struct seq_file *m, void *unused)
 		unsigned domain;
 		const char *placement;
 
-		domain = radeon_mem_type_to_domain(rbo->tbo.resource->mem_type);
-		switch (domain) {
-		case RADEON_GEM_DOMAIN_VRAM:
-			placement = "VRAM";
-			break;
-		case RADEON_GEM_DOMAIN_GTT:
-			placement = " GTT";
-			break;
-		case RADEON_GEM_DOMAIN_CPU:
-		default:
-			placement = " CPU";
-			break;
+		if (READ_ONCE(rbo->rs4xx_terminally_retained)) {
+			placement = "RETAINED";
+		} else if (!rbo->tbo.resource) {
+			placement = "DETACHED";
+		} else {
+			domain = radeon_mem_type_to_domain(
+				rbo->tbo.resource->mem_type);
+			switch (domain) {
+			case RADEON_GEM_DOMAIN_VRAM:
+				placement = "VRAM";
+				break;
+			case RADEON_GEM_DOMAIN_GTT:
+				placement = " GTT";
+				break;
+			case RADEON_GEM_DOMAIN_CPU:
+			default:
+				placement = " CPU";
+				break;
+			}
 		}
 		seq_printf(m, "bo[0x%08x] %8ldkB %8ldMB %s pid %8ld\n",
 			   i, radeon_bo_size(rbo) >> 10, radeon_bo_size(rbo) >> 20,
@@ -1007,10 +1040,8 @@ DEFINE_SHOW_ATTRIBUTE(radeon_debugfs_gem_info);
 void radeon_gem_debugfs_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("radeon_gem_info", 0444, root, rdev,
-			    &radeon_debugfs_gem_info_fops);
+	radeon_debugfs_add_component(rdev, "radeon_gem_info", 0444, rdev,
+				     &radeon_debugfs_gem_info_fops);
 
 #endif
 }

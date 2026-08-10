@@ -164,9 +164,14 @@ static int radeon_atom_backlight_update_status(struct backlight_device *bd)
 {
 	struct radeon_backlight_privdata *pdata = bl_get_data(bd);
 	struct radeon_encoder *radeon_encoder = pdata->encoder;
+	struct radeon_device *rdev = radeon_encoder->base.dev->dev_private;
+	int ret;
 
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
 	atombios_set_backlight_level(radeon_encoder, radeon_atom_bl_level(bd));
-
+	radeon_rs4xx_hardware_access_end(rdev);
 	return 0;
 }
 
@@ -176,8 +181,14 @@ static int radeon_atom_backlight_get_brightness(struct backlight_device *bd)
 	struct radeon_encoder *radeon_encoder = pdata->encoder;
 	struct drm_device *dev = radeon_encoder->base.dev;
 	struct radeon_device *rdev = dev->dev_private;
+	int level, ret;
 
-	return radeon_atom_get_backlight_level_from_reg(rdev);
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	level = radeon_atom_get_backlight_level_from_reg(rdev);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return level;
 }
 
 static const struct backlight_ops radeon_atom_backlight_ops = {

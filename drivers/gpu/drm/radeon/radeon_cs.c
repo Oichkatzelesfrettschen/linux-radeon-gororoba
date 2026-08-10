@@ -468,17 +468,16 @@ static int cmp_size_smaller_first(void *priv, const struct list_head *a,
 }
 
 /**
- * radeon_cs_parser_fini() - clean parser states
+ * radeon_cs_parser_release_reservations() - publish fences and unlock BOs
  * @parser:	parser structure holding parsing context.
  * @error:	error number
  *
- * If error is set than unvalidate buffer, otherwise just free memory
- * used by parsing context.
+ * A successful submission publishes its fences before the transaction root
+ * releases hardware admission. Then every path releases its reservations.
  **/
-static void radeon_cs_parser_fini(struct radeon_cs_parser *parser, int error)
+static void radeon_cs_parser_release_reservations(
+	struct radeon_cs_parser *parser, int error)
 {
-	unsigned i;
-
 	if (!error) {
 		struct radeon_bo_list *reloc;
 
@@ -502,7 +501,17 @@ static void radeon_cs_parser_fini(struct radeon_cs_parser *parser, int error)
 		}
 	}
 
+	/* Each exec object retains either a relocation lookup reference or a VM
+	 * ownership reference, so drm_exec_fini cannot destroy it here.
+	 * radeon_cs_parser_release_storage drops parser relocation references after
+	 * admission ends; VM ownership persists.
+	 */
 	drm_exec_fini(&parser->exec);
+}
+
+static void radeon_cs_parser_release_storage(struct radeon_cs_parser *parser)
+{
+	unsigned int i;
 
 	if (parser->relocs != NULL) {
 		for (i = 0; i < parser->nrelocs; i++) {
@@ -734,7 +743,9 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	struct radeon_cs_parser parser;
 	int r;
 
-	down_read(&rdev->exclusive_lock);
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 	/* radeon_gpu_reset latches gpu_parked when reset recovery fails, under
 	 * the exclusive_lock writer that also clears accel_working and every
 	 * ring's ready flag.  accel_working alone already refuses most parked
@@ -749,17 +760,17 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	 * submission.
 	 */
 	if (READ_ONCE(rdev->gpu_parked)) {
-		up_read(&rdev->exclusive_lock);
+		radeon_device_unlock_hardware(rdev);
 		dev_err_once(rdev->dev,
 			     "parked: refusing command submission\n");
 		return -EIO;
 	}
 	if (!rdev->accel_working) {
-		up_read(&rdev->exclusive_lock);
+		radeon_device_unlock_hardware(rdev);
 		return -EBUSY;
 	}
 	if (rdev->in_reset) {
-		up_read(&rdev->exclusive_lock);
+		radeon_device_unlock_hardware(rdev);
 		r = radeon_gpu_reset(rdev);
 		if (!r)
 			r = -EAGAIN;
@@ -774,8 +785,9 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	r = radeon_cs_parser_init(&parser, data);
 	if (r) {
 		DRM_ERROR("Failed to initialize parser !\n");
-		radeon_cs_parser_fini(&parser, r);
-		up_read(&rdev->exclusive_lock);
+		radeon_cs_parser_release_reservations(&parser, r);
+		radeon_device_unlock_hardware(rdev);
+		radeon_cs_parser_release_storage(&parser);
 		r = radeon_cs_handle_lockup(rdev, r);
 		return r;
 	}
@@ -788,8 +800,9 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	}
 
 	if (r) {
-		radeon_cs_parser_fini(&parser, r);
-		up_read(&rdev->exclusive_lock);
+		radeon_cs_parser_release_reservations(&parser, r);
+		radeon_device_unlock_hardware(rdev);
+		radeon_cs_parser_release_storage(&parser);
 		r = radeon_cs_handle_lockup(rdev, r);
 		return r;
 	}
@@ -809,8 +822,9 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		r = -EINVAL;
 	}
 out:
-	radeon_cs_parser_fini(&parser, r);
-	up_read(&rdev->exclusive_lock);
+	radeon_cs_parser_release_reservations(&parser, r);
+	radeon_device_unlock_hardware(rdev);
+	radeon_cs_parser_release_storage(&parser);
 	r = radeon_cs_handle_lockup(rdev, r);
 	return r;
 }

@@ -6,7 +6,7 @@
 ledger for Radeon command submission admission, BO reservation, dependency
 import, IB scheduling, fence command emission, and reservation fence
 publication. Its 14 rows use the same 19 field schema as the GART lifecycle
-ledger. The denominator contains 7 `proven` rows, 2 `repaired` rows, and 5
+ledger. The denominator contains 7 `proven` rows, 3 `repaired` rows, and 4
 `open` rows.
 
 The source ledger proves software ownership and order. It does not infer fence
@@ -18,18 +18,27 @@ exact RS482 replay work and retained payload evidence.
 row set, causal row order, exact dependency graph, callback bindings, parked
 refusal, relocation geometry, BO reservation order, dependency import, ring
 schedule, r300 fence command order, reservation fence publication, every
-external identity, every nonclaim, and a length-framed exact identity for all
-18 fields after each `row_id`. Field-specific semantic checks run before the
-full-row identity check so rebound mutants must fail for their declared reason.
-The four guards that carry the two repaired rows use exact tokenized `if`
-conditions,
+external identity, every nonclaim, every bounded source path and symbol, and a
+length-framed exact identity for all 18 fields after each `row_id`.
+Field-specific semantic checks run before the full-row identity check so
+rebound mutants must fail for their declared reason.
+The four guarded relations that carry the two repaired admission rows use exact
+tokenized `if` conditions,
 fixed direct function-body statement indexes, and a length-framed token digest
 of every direct statement from function entry through the guarded successor.
 The rejection remains the final top-level statement in each exact guard body.
 The selftest rejects disabled, negated, outer-controlled, nested,
 later-overridden, jump-bypassed, declaration-level statement-expression, and
-policy mutations. Each policy mutant is rebound to its own test digest and must
-fail with its declared semantic error before the tree result has authority.
+policy mutations. It also rejects a hardware transaction root that bypasses
+admission or release, parser cleanup that ends the transaction before
+`drm_exec_fini`, relocation reference release that precedes transaction end,
+ring scheduling that omits either rollback, dependency waits that swallow an
+error, reservation preparation that ignores an error, and failed-reset
+publication that reaches direct hardware access. The final CS cleanup suffix
+and the reservation-release function carry exact tokenized control flow, so a
+retained token behind a `goto` cannot satisfy the checker. Each policy mutant
+is rebound to its own test digest and must fail with its declared semantic
+error before the tree result has authority.
 
 ## Mechanism ownership
 
@@ -37,21 +46,27 @@ fail with its declared semantic error before the tree result has authority.
   `RS482_ASIC_COMMAND_CALLBACK_BINDING`. RS400 and RS480 select `rs400_asic`.
   Its graphics ring reaches `r100_ring_ib_execute`, `r300_fence_ring_emit`,
   and `r300_cs_parse`. This proves source binding, not live callback execution.
-* Parked admission uses `CS_PARKED_EARLY_REFUSAL`. `radeon_cs_ioctl` holds
-  `exclusive_lock` for reading and returns `EIO` on `gpu_parked` before parser,
-  relocation, or ring work. Reset uses the writer side. Current 0.7 execution
-  is not run, and the row binds no external authority. Steinmarder commit
-  `baa6b2d496c52392c0ecb5e18306db02e9dfd6cf` retains the older 0.6 parked-entry
-  directory bundle as historical adjacent context only. That bundle observed
-  the separate `!accel_working` refusal with `EBUSY`, not the current direct
-  `gpu_parked` refusal with `EIO`.
+* Parked admission uses `CS_PARKED_EARLY_REFUSAL`. `radeon_cs_ioctl` enters
+  `radeon_device_lock_hardware`, which increments and revalidates the RS4xx
+  transaction admission count before the helper takes the shared
+  `exclusive_lock` reader. The ioctl returns `EIO` on `gpu_parked` before
+  parser, relocation, or ring work. Reset uses the writer side. Current target
+  execution is not run, and the row binds no external authority. Steinmarder
+  commit `baa6b2d496c52392c0ecb5e18306db02e9dfd6cf` retains the older 0.6
+  parked-entry directory bundle as historical adjacent context only. That
+  bundle observed the separate `!accel_working` refusal with `EBUSY`, not the
+  current direct `gpu_parked` refusal with `EIO`.
 * Pre-BO topology uses `CS_RELOCATION_RECORD_GEOMETRY`. Parser admission rejects
   relocation metadata without an IB, requires complete four dword records, and
   validates every relocation index before BO lookup or reservation.
-* BO ownership uses `CS_BO_RESERVATION_LOCKS`. Every relocation holds its GEM
+* BO ownership uses `CS_BO_RESERVATION_LOCKS`. Every command submission keeps
+  the hardware transaction active through parser initialization, relocation
+  parsing, ring scheduling, and `drm_exec_fini`. Every relocation holds its GEM
   reference, enters the validation list, and reaches `drm_exec_prepare_obj`
-  before TTM validation and GPU offset capture. Reservation ownership protects
-  placement and metadata; it does not maintain payload caches.
+  before TTM validation and GPU offset capture. The transaction ends before
+  `radeon_cs_parser_release_storage` drops the final parser relocation
+  references. Reservation ownership protects placement and metadata; it does
+  not maintain payload caches.
 * Prior dependency import uses `CS_RESERVATION_DEPENDENCY_IMPORT`. Same device
   Radeon fences become per ring dependencies. Foreign or different device
   fences receive a CPU wait. Any error aborts target ring scheduling while BO
@@ -73,14 +88,26 @@ fail with its declared semantic error before the tree result has authority.
   before ring commit. The void emitter has no local execution result.
 * Reservation fence publication uses `CS_RESERVATION_FENCE_PUBLICATION`.
   Successful cleanup adds the IB fence with READ or WRITE usage before
-  `drm_exec_fini` releases reservations. Error cleanup adds no new fence.
-  Publication orders later users but does not report completion or payload
-  visibility.
-* Linux trust and waiter ownership uses `CS_RELOCATION_ACCESS_DIRECTION`,
-  `FENCE_FORCE_COMPLETION_PUBLICATION`, and `CS_SUSPEND_FENCE_LOCK_CONTEXT`.
-  Linux owns the missing packet role validation, failed reset waiter
-  publication, and suspend lock proof. Each row stays open until source and
+  `drm_exec_fini` releases reservations. `radeon_cs_ioctl` ends the hardware
+  transaction only after this cleanup returns, then releases parser relocation
+  references. Error cleanup adds no new fence. Publication orders later users
+  but does not report completion or payload visibility.
+* Linux trust and waiter ownership uses `CS_RELOCATION_ACCESS_DIRECTION` and
+  `CS_SUSPEND_FENCE_LOCK_CONTEXT`. Linux owns the missing packet role
+  validation and suspend lock proof. Each row stays open until source and
   calibrated fixtures account for its full local contract.
+* Failed-reset waiter ownership uses `FENCE_FORCE_COMPLETION_PUBLICATION`.
+  `radeon_rs4xx_publish_parked_state` latches `gpu_parked` before it calls
+  `radeon_fence_driver_force_completion_parked`. The helper cancels delayed
+  lockup work, takes `fence_queue.lock`, clears delayed IRQ demand, wakes the
+  queue, and leaves `last_seq` unchanged. Awakened terminal fence paths publish
+  `-EIO` or `-ESHUTDOWN` before signaling and perform no MMIO. Queue wake
+  callbacks release logical fence IRQ references.
+  Retained page-flip completion releases logical page-flip IRQ references.
+  `radeon_irq_hardware_update_allowed` requires an installed IRQ path with
+  neither reset nor parking active before either release path calls
+  `radeon_irq_set`. This is a repaired source contract; runtime and silicon
+  status remain unproved.
 * RS482 execution and payload semantics uses
   `RS482_RESET_RING_REPLAY_SEMANTICS` and
   `RS482_CACHED_GTT_PAYLOAD_VISIBILITY`. No exact reset-replay owner artifact is
@@ -96,7 +123,8 @@ fail with its declared semantic error before the tree result has authority.
 
 The successful source path has these ordered ownership steps:
 
-1. `radeon_cs_ioctl` acquires the shared exclusion and refuses a parked device.
+1. `radeon_cs_ioctl` admits one hardware transaction, acquires the shared
+   exclusion, and refuses a parked device.
 2. Parser initialization discovers chunk topology and rejects relocation data
    without an IB.
 3. Relocation parsing validates record geometry, acquires GEM references, and
@@ -112,7 +140,10 @@ The successful source path has these ordered ownership steps:
 8. The post-schedule invariant requires a fence for every validated BO before
    cleanup can enter successful publication.
 9. Successful parser cleanup attaches the IB fence to each BO reservation with
-   the declared access usage before it releases reservation locks.
+   the declared access usage, calls `drm_exec_fini`, and returns while the
+   hardware transaction remains active.
+10. `radeon_cs_ioctl` ends the hardware transaction, then releases parser
+    relocation references and storage.
 
 This path provides execution dependency and lifetime order. It carries no CPU
 payload cache action and no exact target digest. The emitted r300 sequence is
@@ -121,7 +152,7 @@ became coherent.
 
 ## Repaired source defects
 
-The two `repaired` rows retain the original unsafe shapes and their replacement
+The three `repaired` rows retain the original unsafe shapes and their replacement
 contracts:
 
 * `CS_RELOCATION_RECORD_GEOMETRY` rejects a relocation chunk when no IB chunk
@@ -134,6 +165,14 @@ contracts:
   dereferencing and publishing a null completion token. It cannot cancel or
   make safe work that a future broken scheduler already committed without a
   fence.
+* `FENCE_FORCE_COMPLETION_PUBLICATION` repairs the failed-reset path for
+  RS400 and RS480. The parked-state publisher sets `gpu_parked` before it
+  cancels lockup work and calls the CPU-only helper. The helper publishes each
+  initialized ring sequence under `fence_queue.lock` and wakes the queue. It
+  performs no register access after the terminal park. Fence and retained
+  page-flip completion may release logical IRQ references, while the shared
+  IRQ hardware predicate prevents an interrupt register update during reset
+  and after parking.
 
 The repairs do not validate the truth of a userspace access domain declaration
 and do not prove that an emitted fence completed.
@@ -145,12 +184,13 @@ and do not prove that an emitted fence completed.
   bind every supported packet write site to that declaration. A finite packet
   resource role map and negative command stream corpus must cover every
   supported write site and reject an inaccurate domain.
-* `FENCE_FORCE_COMPLETION_PUBLICATION` belongs to Linux. Failed reset writes
-  the latest sequence through the ASIC callback, but the local function does
-  not advance `last_seq`, signal generic fences, or wake the fence queue. A
-  source proof or repair must account for the sequence, generic signaling,
-  wakeup, ordering, and absence of post park MMIO. This failed-reset branch is
-  not a causal prerequisite for successful ring replay.
+* `FENCE_FORCE_COMPLETION_PUBLICATION` is source-repaired in Linux. Failed
+  reset latches `gpu_parked` before CPU-only sequence publication. The helper
+  advances `last_seq` under `fence_queue.lock`, wakes the queue, cancels
+  delayed lockup work, and performs no MMIO. Logical fence and page-flip IRQ
+  release remains CPU-side because the hardware update predicate rejects both
+  reset and parked state. Runtime and silicon completion remain unproved. This
+  failed-reset branch is not a causal prerequisite for successful ring replay.
 * `RS482_RESET_RING_REPLAY_SEMANTICS` belongs to Steinmarder. Successful reset
   can recommit backed up ring dwords after partial execution. Source does not
   establish exactly once payload effects. No exact retained artifact owns this
@@ -196,9 +236,10 @@ runtime reachability, or silicon behavior.
 2. Build the finite packet resource role map before changing reservation usage.
    The corpus must cover every supported r300 write site and include negative
    domain declarations that compile but fail admission.
-3. Define failed reset waiter publication before using force completion as a
-   recovery guarantee. The mechanism must account for generic fences, the
-   sequence cache, the wait queue, and parked MMIO refusal together.
+3. Keep failed reset waiter publication bounded to the source contract until
+   target evidence observes fence completion. The mechanism accounts for
+   generic fence sequence state, the wait queue, delayed work, and parked MMIO
+   refusal together.
 4. Close the suspend caller proof or repair its lock invariant as one source
    mechanism. Do not infer the missing exclusion from a comment.
 5. Run reset replay and cached payload oracles only in Steinmarder against a

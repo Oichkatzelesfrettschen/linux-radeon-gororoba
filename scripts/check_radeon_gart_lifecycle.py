@@ -16,19 +16,25 @@ import re
 import shutil
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 import check_rs4xx_gart_cache_policy as cache_policy
 
 POLICY = Path("policy/rs4xx-gart-memory-path.tsv")
+TTM_AUTHORITY = Path("policy/rs4xx-ttm-retention-authority.toml")
+UPSTREAM_BASE = Path("UPSTREAM_BASE.toml")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "88f5bb0170fbecad0241522690eb8255af2cf622274d3c56cc4292c868193308"
+    "1c9173e4ef9e5f4d5b2d766fee91338eee2b19d6a5e242657639b0b20427979c"
+)
+EXPECTED_TTM_AUTHORITY_SHA256 = (
+    "d49d884ec32024abaa044ec3abb4015244b00975d681e077cc39214a0c78096a"
 )
 GART_DIRECT_PREFIX_SHA256 = {
     "range": "892932bfd330e1d916f282e5822781f97ab1986420156fab8e096e1d65268480",
     "bind": "014e9a8795dd62f5edcf527968a3995faafbf8025aa76f50a09aab3293773da4",
-    "unbind": "11eb49c3c9d7d0fe07137251c6bf23915a8788b85b8dad5269b28cf934405454",
+    "unbind": "64d023defc1d5864f949266af510b052a78233b91c664d05e12676a4e2ff17cd",
 }
 HEADER = (
     "row_id",
@@ -61,26 +67,32 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "TTM_DEFAULT_CACHED_SELECTION": "b54cd9f77cb7788f88646016d2f0c5b9e02d1a70678f3dff3a53f4a9598b5635",
     "USERPTR_TT_EXTERNAL_POPULATION": "63c97a7cbaf5d34a52bcf8011abf38c253ca3e780d6a3975a36ca0623fdf4e6d",
     "USERPTR_PIN_DMA_MAP_TRANSACTION": "0e99c37f9cb1513a83f68bb27079484a007f90af2f654948805dd1bccf9a5b8f",
-    "GART_BIND_RANGE_ADMISSION": "2683117c17ea621ca172a45c2c201ad094061472cc11b0f81b15b16bd12ff6b3",
+    "GART_BIND_RANGE_ADMISSION": "bde7bd2be8ef66f200b086e262f5a6c4a5eaa984e6265e21a10a1510c9c95c71",
     "CACHED_TTM_SNOOP_FLAG_PROPAGATION": "21147c41c720175f939f0101f51880589f656939a6ed3923afcaa8e690754213",
     "RS400_PTE_PERMISSION_AND_SNOOP_ENCODING": "03a4de4d7c3136d5eacfb78dce5dfe87757950ad57d3e336321971e6a023510c",
     "RS480_GLOBAL_REQUEST_SNOOP_DISABLE": "25d60d2f09abe76b55c1d097563475ddbee42c042c9722201d1e4f62c3a477be",
-    "GART_BIND_PTE_MB_TLB_PUBLICATION": "385882c4679db1391becb4d605691571c8ff8d8f9eef4c7add822947ca90fdea",
-    "GART_UNBIND_RANGE_ADMISSION": "06bd449fe0f099c0f93760724c99665ebd697d48efc4a0573540876960996cae",
-    "GART_UNBIND_SPARSE_CURSOR": "21c792aef097900553a9bed51ccff3ef8caed8a028ea71d710cd5a9d129327db",
-    "GART_UNBIND_PTE_MB_TLB_PUBLICATION": "7f625005eea02702afae58278cef6e15ec1dcb7b510349b1f349c21c10944223",
+    "GART_BIND_PTE_MB_TLB_PUBLICATION": "cc874dc497df5749a650ce93afa7bc0f3ff9cac00147b7d8380301eaa44ca208",
+    "GART_UNBIND_RANGE_ADMISSION": "c86bb9b169f8fe169590f01f2d9d51c6991cee11b667f595b56850571635bdb4",
+    "GART_UNBIND_SPARSE_CURSOR": "db51218105bf8cb9128e6042275265a65ce9e4e3e4d2243b63577e229dbe91ac",
+    "GART_UNBIND_PTE_MB_TLB_PUBLICATION": "6b61643eb9cea5c4b7590847a0aabcffc0beddb75d66d59155783a25a6f2f5a9",
     "KERNEL_BO_MAP_RESERVATION_WAIT": "6c6d705572d2b742f33214eb46a68bf14bd3ee2c89091277b5957f12cb8bbe85",
-    "USER_MMAP_FAULT_RESERVATION": "7ad2fb7a1a775c21ca8c6c953cdc3fa30ba324aba381eec6a08a65a4111d6cbd",
-    "GART_TABLE_READER_SNAPSHOT_BOUNDARY": "a2e488e9fcadbc320189ce3a92c671f5b602c5d8dda5d229bb975f548ce19957",
-    "GART_COMMON_TEARDOWN": "14db30bd36fbb1e69e551a7f1da0f0bd371a06d176075653fc64814ff17f3fdb",
+    "USER_MMAP_FAULT_RESERVATION": "69193af651a78aeee402203d87c11a6efd11f4c6a4ce5e18884a8b3f53050310",
+    "GART_TABLE_READER_SNAPSHOT_BOUNDARY": "d0b36062b23a39d607e3a1d097ba6690c935c6583f9da5aff3d43ff607fae9dd",
+    "GART_COMMON_TEARDOWN": "4881e60041c9b8028b7d249a0c5a67db5d16717b965d72c14b00baf04b3809d6",
+    "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION": "35d7a10d7e1cdbbf9333098d7d6ca7a649ca48b75ca872311ed9a3337af686c1",
     "RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT": "b0d5a1d660763582d833facff6f916aabe7546f0c88564893e1316dadffff5a3",
     "EFFECTIVE_PER_PTE_SNOOP_SEMANTICS": "e3e77b176af743d4a96484d6a4225c76568c83beb7a1561d8593cf825ffa4610",
     "CPU_GTT_GPU_PAYLOAD_PUBLICATION": "1a20db8baa0e1454be1ac09df445bc10ce6e26475032739b7edd41ba4e6bfb3a",
     "GPU_GTT_CPU_PAYLOAD_INVALIDATION": "467c50fdfa11df670c8103fe9dd93b31a8851cab73d4d67a2ffc8cc2011d4c3c",
     "RS400_TLB_FLUSH_COMPLETION": "76af718d9768d10e3e3f6ac931ac6933b8a02bfa3129ebe34692442772a08c3b",
-    "GART_SUSPEND_READY_STATE": "cde207fdd56b63e07f744028234a8c02dbba0e929c15d5db10fcb0483ff09651",
-    "GART_BACKEND_NOT_READY_UNBIND_STATE": "5a7df63acc08b641a8a1b2567d36a9c56c5381bece3a51526889aac62f204b9f",
-    "GART_TTM_TEARDOWN_OWNERSHIP": "c661cd8f528e66f54c5e14a3b3b7bd3ba6b413034e2b02052526834a207568f1",
+    "GART_SUSPEND_READY_STATE": "f4509dd49e51a48da562535699ef30e8b7e34defc20aaab597ea5a91ee82ecb1",
+    "GART_BACKEND_NOT_READY_UNBIND_STATE": "98b9d15e6ae748e974e10870215875f4cefa2b51900931c3cd8789413353e11b",
+    "GART_TTM_TEARDOWN_OWNERSHIP": "a2cd8581b5b686c2e33da216d0b95c5a3b1a8601755c4ff0e90064fde62dea92",
+    "RS4XX_GART_COMPLETION_RELEASE": "88f4f8ea72bb94b99fb14a9057cd54f1c54616f7a8e9e465c4bfe35945babe50",
+    "TTM_BO_MOVE_BIND_ROLLBACK": "6fbae494e28a79fc94419b2c0d53f54ceffe1bd67243650b81475de2ece494d7",
+    "RS4XX_BO_LIFETIME_ACCOUNTING": "03acb9ce00fdf4a410f22ae8ccbb9d7cb57c43ea43b33a69b52502ec76396ac5",
+    "RS4XX_BO_TRANSACTION_ROOTS": "7565a641fa7f281aeed18a445253271aae5023cd0c01263899073ce51d2b8315",
+    "RS4XX_TTM_FINI_LIVE_DENOMINATOR": "a0973fc564a7a530f5072fe8cb7dd2f776174a92d9a83ccf490b0e21fd9ee496",
 }
 
 EXPECTED_ROWS = {
@@ -154,16 +166,20 @@ EXPECTED_ROWS = {
         "GART_SOURCE_BUILD_REACHABILITY",
     ),
     "USER_MMAP_FAULT_RESERVATION": (
-        "proven",
+        "repaired",
         "GART_SOURCE_BUILD_REACHABILITY",
     ),
     "GART_TABLE_READER_SNAPSHOT_BOUNDARY": (
-        "proven",
-        "GART_TABLE_DMA_COHERENT_ALLOCATION_API",
+        "repaired",
+        "GART_TABLE_DMA_COHERENT_ALLOCATION_API;GART_BIND_PTE_MB_TLB_PUBLICATION;GART_UNBIND_PTE_MB_TLB_PUBLICATION",
     ),
     "GART_COMMON_TEARDOWN": (
-        "proven",
+        "repaired",
         "GART_UNBIND_PTE_MB_TLB_PUBLICATION",
+    ),
+    "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION": (
+        "repaired",
+        "GART_COMMON_TEARDOWN",
     ),
     "RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT": (
         "proven",
@@ -186,16 +202,36 @@ EXPECTED_ROWS = {
         "GART_BIND_PTE_MB_TLB_PUBLICATION;GART_UNBIND_PTE_MB_TLB_PUBLICATION",
     ),
     "GART_SUSPEND_READY_STATE": (
-        "open",
+        "repaired",
         "RS400_ASIC_GART_CALLBACK_SELECTION",
     ),
     "GART_BACKEND_NOT_READY_UNBIND_STATE": (
-        "open",
+        "repaired",
         "GART_COMMON_TEARDOWN",
     ),
     "GART_TTM_TEARDOWN_OWNERSHIP": (
-        "open",
-        "GART_COMMON_TEARDOWN;RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT;GART_BACKEND_NOT_READY_UNBIND_STATE",
+        "repaired",
+        "GART_COMMON_TEARDOWN;RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT;GART_BACKEND_NOT_READY_UNBIND_STATE;RS4XX_GART_TEARDOWN_ERROR_PROPAGATION",
+    ),
+    "RS4XX_GART_COMPLETION_RELEASE": (
+        "repaired",
+        "GART_COMMON_TEARDOWN",
+    ),
+    "TTM_BO_MOVE_BIND_ROLLBACK": (
+        "repaired",
+        "USERPTR_PIN_DMA_MAP_TRANSACTION;GART_BACKEND_NOT_READY_UNBIND_STATE",
+    ),
+    "RS4XX_BO_LIFETIME_ACCOUNTING": (
+        "repaired",
+        "TTM_BO_MOVE_BIND_ROLLBACK",
+    ),
+    "RS4XX_BO_TRANSACTION_ROOTS": (
+        "repaired",
+        "RS4XX_BO_LIFETIME_ACCOUNTING",
+    ),
+    "RS4XX_TTM_FINI_LIVE_DENOMINATOR": (
+        "repaired",
+        "GART_TTM_TEARDOWN_OWNERSHIP;RS4XX_BO_LIFETIME_ACCOUNTING;RS4XX_BO_TRANSACTION_ROOTS;RS4XX_GART_TEARDOWN_ERROR_PROPAGATION",
     ),
 }
 
@@ -277,21 +313,27 @@ EXPECTED_NONCLAIMS = {
     "RS400_PTE_PERMISSION_AND_SNOOP_ENCODING": "Encoded bits do not prove global and per PTE precedence.",
     "RS480_GLOBAL_REQUEST_SNOOP_DISABLE": "Linux source does not independently prove the external silicon result.",
     "GART_BIND_PTE_MB_TLB_PUBLICATION": "mb and a dispatched flush do not prove payload publication or completed invalidation.",
-    "GART_UNBIND_RANGE_ADMISSION": "The void return still does not communicate a not ready disposition to TTM.",
+    "GART_UNBIND_RANGE_ADMISSION": "An integer disposition does not prove completed hardware invalidation.",
     "GART_UNBIND_SPARSE_CURSOR": "The repair does not prove a live TLB invalidation.",
     "GART_UNBIND_PTE_MB_TLB_PUBLICATION": "Source order does not prove that the GPU stopped using a stale translation.",
     "KERNEL_BO_MAP_RESERVATION_WAIT": "Fence retirement does not invalidate or flush payload cache lines.",
     "USER_MMAP_FAULT_RESERVATION": "A successful page fault does not prove a later GPU read sees CPU writes.",
     "GART_TABLE_READER_SNAPSHOT_BOUNDARY": "A bounded table dump does not characterize unobserved PTEs or payload visibility.",
-    "GART_COMMON_TEARDOWN": "Common teardown does not prove every TTM callback observed one hardware enabled state.",
+    "GART_COMMON_TEARDOWN": "Successful common teardown does not prove target TLB completion.",
+    "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION": "Exact source propagation does not prove target teardown failure or recovery.",
     "RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT": "The call does not prove that the CPU alias returned to WB.",
     "EFFECTIVE_PER_PTE_SNOOP_SEMANTICS": "The encoded PTE and global register do not establish effective snooping.",
     "CPU_GTT_GPU_PAYLOAD_PUBLICATION": "A directional visibility result does not prove snoop attribution or general cache coherence.",
     "GPU_GTT_CPU_PAYLOAD_INVALIDATION": "A directional visibility result does not prove snoop attribution or general cache coherence.",
     "RS400_TLB_FLUSH_COMPLETION": "A returned void call does not prove TLB invalidation completed.",
-    "GART_SUSPEND_READY_STATE": "gart.ready true does not always prove hardware translation is enabled.",
-    "GART_BACKEND_NOT_READY_UNBIND_STATE": "The source does not prove bound changes only after hardware and shadow disposition.",
-    "GART_TTM_TEARDOWN_OWNERSHIP": "A second idempotent call does not prove complete callback ordering.",
+    "GART_SUSPEND_READY_STATE": "gart.ready alone does not prove hardware translation is enabled.",
+    "GART_BACKEND_NOT_READY_UNBIND_STATE": "A software completion disposition does not prove completed hardware invalidation.",
+    "GART_TTM_TEARDOWN_OWNERSHIP": "Terminal retention proves source lifetime safety, not target recovery or reclaimed memory.",
+    "RS4XX_GART_COMPLETION_RELEASE": "The release store does not prove target TLB completion.",
+    "TTM_BO_MOVE_BIND_ROLLBACK": "Source rollback does not prove target payload visibility or TTM implementation identity.",
+    "RS4XX_BO_LIFETIME_ACCOUNTING": "The counter proves source ownership accounting, not that TTM drains an external fence.",
+    "RS4XX_BO_TRANSACTION_ROOTS": "Transaction admission does not prove a live target teardown.",
+    "RS4XX_TTM_FINI_LIVE_DENOMINATOR": "The live denominator does not prove a fence will ever retire.",
 }
 
 EXPECTED_COMPLETION_GATES = {
@@ -318,11 +360,17 @@ EXPECTED_COMPLETION_GATES = {
 }
 
 SOURCE_FILES = (
+    str(UPSTREAM_BASE),
+    str(TTM_AUTHORITY),
     "drivers/gpu/drm/radeon/Makefile",
+    "drivers/gpu/drm/radeon/radeon.h",
     "drivers/gpu/drm/radeon/radeon_asic.c",
+    "drivers/gpu/drm/radeon/radeon_device.c",
     "drivers/gpu/drm/radeon/radeon_gart.c",
     "drivers/gpu/drm/radeon/radeon_gem.c",
+    "drivers/gpu/drm/radeon/radeon_kms.c",
     "drivers/gpu/drm/radeon/radeon_object.c",
+    "drivers/gpu/drm/radeon/radeon_prime.c",
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
     "drivers/gpu/drm/radeon/radeon_ttm.c",
     "drivers/gpu/drm/radeon/rs400.c",
@@ -855,6 +903,54 @@ def check_policy_row_identities(rows: dict[str, dict[str, str]]) -> None:
             raise LifecycleError(f"{row_id}: exact policy row identity differs")
 
 
+def check_ttm_authority(root: Path) -> None:
+    authority_raw = (root / TTM_AUTHORITY).read_bytes()
+    try:
+        authority_raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise LifecycleError("TTM authority is not ASCII") from exc
+    if hashlib.sha256(authority_raw).hexdigest() != EXPECTED_TTM_AUTHORITY_SHA256:
+        raise LifecycleError("TTM authority identity differs")
+
+    authority = tomllib.loads(authority_raw.decode("ascii"))
+    upstream = tomllib.loads((root / UPSTREAM_BASE).read_text(encoding="ascii"))
+    expected_commits = {
+        "6.18": upstream["commit"],
+        "7.1": upstream["target"]["mainline"]["commit"],
+    }
+    observed_commits = {
+        entry["kernel"]: entry["commit"] for entry in authority["authority"]
+    }
+    if observed_commits != expected_commits:
+        raise LifecycleError("TTM authority commit set differs from upstream lanes")
+
+    expected_paths = {
+        "drivers/gpu/drm/ttm/ttm_tt.c",
+        "drivers/gpu/drm/ttm/ttm_agp_backend.c",
+        "drivers/gpu/drm/ttm/ttm_bo.c",
+        "drivers/gpu/drm/ttm/ttm_resource.c",
+        "drivers/gpu/drm/drm_gem.c",
+        "drivers/gpu/drm/drm_prime.c",
+        "include/drm/ttm/ttm_device.h",
+        "include/drm/ttm/ttm_tt.h",
+        "include/drm/drm_prime.h",
+    }
+    for entry in authority["authority"]:
+        files = entry.get("file", [])
+        observed_paths = {file_entry["path"] for file_entry in files}
+        if observed_paths != expected_paths or len(files) != len(expected_paths):
+            raise LifecycleError(
+                f"TTM authority file denominator differs for {entry['kernel']}"
+            )
+        if any(
+            re.fullmatch(r"[0-9a-f]{64}", file_entry["sha256"]) is None
+            for file_entry in files
+        ):
+            raise LifecycleError(
+                f"TTM authority digest differs for {entry['kernel']}"
+            )
+
+
 def check_build_and_callbacks(root: Path) -> None:
     makefile = (root / SUBTREE / "Makefile").read_text(encoding="ascii")
     for owner in (
@@ -903,6 +999,8 @@ def check_gart_source(root: Path) -> None:
         "GART size derivation and shadow allocation",
         init,
         (
+            "if (rdev->gart.pages)",
+            "smp_store_release(&rdev->rs4xx_gart_teardown_complete, false)",
             "num_cpu_pages = rdev->mc.gtt_size / PAGE_SIZE",
             "num_gpu_pages = rdev->mc.gtt_size / RADEON_GPU_PAGE_SIZE",
             "rdev->gart.pages = vcalloc",
@@ -947,7 +1045,7 @@ def check_gart_source(root: Path) -> None:
         ),
     )
 
-    bind = function(root, "radeon_gart.c", "radeon_gart_bind")
+    bind = function(root, "radeon_gart.c", "radeon_gart_bind_locked")
     bind_statements, bind_guard_index = require_exact_if_guard(
         "GART bind DMA and range admission guard differs",
         bind,
@@ -995,17 +1093,75 @@ def check_gart_source(root: Path) -> None:
         ),
     )
 
-    unbind = function(root, "radeon_gart.c", "radeon_gart_unbind")
+    bind_root = function(root, "radeon_gart.c", "radeon_gart_bind")
+    require_exact_direct_statements(
+        "GART bind hardware admission and table serialization",
+        bind_root,
+        (
+            "int r;",
+            "r = radeon_rs4xx_hardware_access_begin(rdev);",
+            "if (r) return r;",
+            "mutex_lock(&rdev->gart.lock);",
+            "r = radeon_gart_bind_locked(rdev, offset, pages, pagelist, dma_addr, flags);",
+            "mutex_unlock(&rdev->gart.lock);",
+            "radeon_rs4xx_hardware_access_end(rdev);",
+            "return r;",
+        ),
+    )
+
+    unbind = function(root, "radeon_gart.c", "radeon_gart_unbind_locked")
     unbind_statements, unbind_guard_index = require_exact_if_guard(
         "GART unbind range admission guard differs",
         unbind,
         "!radeon_gart_range_valid(rdev, offset, pages)",
-        "return;",
+        "return -EINVAL;",
         3,
         (
             'WARN(1, "invalid GART unbind range offset %u pages %d\\n", '
             "offset, pages);"
-            "return;"
+            "return -EINVAL;"
+        ),
+    )
+
+    unbind_root = function(root, "radeon_gart.c", "radeon_gart_unbind")
+    require_exact_direct_statements(
+        "GART unbind wait admission and table serialization",
+        unbind_root,
+        (
+            "int r;",
+            "r = radeon_rs4xx_hardware_access_wait_begin(rdev);",
+            "if (r) return r;",
+            "mutex_lock(&rdev->gart.lock);",
+            "r = radeon_gart_unbind_locked(rdev, offset, pages);",
+            "mutex_unlock(&rdev->gart.lock);",
+            "radeon_rs4xx_hardware_access_end(rdev);",
+            "return r;",
+        ),
+    )
+
+    fini = function(root, "radeon_gart.c", "radeon_gart_fini")
+    require_exact_direct_statements(
+        "GART finalization admission retention and table serialization",
+        fini,
+        (
+            "int r;",
+            "r = radeon_rs4xx_hardware_access_begin(rdev);",
+            "if (r) return r;",
+            "mutex_lock(&rdev->gart.lock);",
+            "if (rdev->gart.ready) {"
+            "r = radeon_gart_unbind_locked(rdev, 0, rdev->gart.num_cpu_pages);"
+            "if (r) goto out_unlock;"
+            "}",
+            "rdev->gart.ready = false;",
+            "vfree(rdev->gart.pages);",
+            "vfree(rdev->gart.pages_entry);",
+            "rdev->gart.pages = NULL;",
+            "rdev->gart.pages_entry = NULL;",
+            "radeon_dummy_page_fini(rdev);",
+            "r = 0;",
+            "out_unlock: mutex_unlock(&rdev->gart.lock);",
+            "radeon_rs4xx_hardware_access_end(rdev);",
+            "return r;",
         ),
     )
     require_direct_statement_prefix_sha256(
@@ -1020,8 +1176,10 @@ def check_gart_source(root: Path) -> None:
         unbind_guard_index - 1,
         (
             "if (!rdev->gart.ready) {"
+            "if (radeon_rs4xx_hardware_target(rdev) && "
+            "radeon_rs4xx_gart_teardown_is_complete(rdev)) return 0;"
             'WARN(1, "trying to unbind memory from uninitialized GART !\\n");'
-            "return;"
+            "return -EINVAL;"
             "}"
         ),
     )
@@ -1041,6 +1199,121 @@ def check_gart_source(root: Path) -> None:
             "rdev->gart.pages_entry[t] = rdev->dummy_page.entry",
             "mb();",
             "radeon_gart_tlb_flush(rdev);",
+        ),
+    )
+
+
+def check_ttm_population_contract(root: Path) -> None:
+    target = function(root, "radeon.h", "radeon_rs4xx_hardware_target")
+    require_exact_direct_statements(
+        "RS4xx terminal TTM scope is the internal-GART IGP path",
+        target,
+        (
+            "return rdev && (rdev->flags & RADEON_IS_IGP) && "
+            "(rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480);",
+        ),
+    )
+    device_init = function(root, "radeon_device.c", "radeon_device_init")
+    require_order(
+        "RS4xx IGP initialization removes the AGP backend before driver bring-up",
+        device_init,
+        (
+            "if ((rdev->family >= CHIP_RS400) &&",
+            "(rdev->flags & RADEON_IS_IGP))",
+            "rdev->flags &= ~RADEON_IS_AGP",
+            "r = radeon_init(rdev)",
+        ),
+    )
+
+    prime_import = function(
+        root, "radeon_prime.c", "radeon_gem_prime_import_sg_table"
+    )
+    require_order(
+        "PRIME import transfers the exact SG table into Radeon BO creation",
+        prime_import,
+        (
+            "ret = radeon_device_lock_hardware(rdev)",
+            "dma_resv_lock(resv, NULL)",
+            "ret = radeon_bo_create",
+            "RADEON_GEM_DOMAIN_GTT, 0, sg, resv, &bo",
+            "dma_resv_unlock(resv)",
+            "radeon_device_unlock_hardware(rdev)",
+        ),
+    )
+
+    bo_create = function(root, "radeon_object.c", "radeon_bo_create")
+    require_order(
+        "AGP imported SG admission closes before TTM BO construction",
+        bo_create,
+        (
+            "r = radeon_rs4xx_hardware_transaction_begin(rdev)",
+            "if (r)",
+            "if (sg && (rdev->flags & RADEON_IS_AGP))",
+            "r = -EOPNOTSUPP",
+            "goto out_transaction",
+            "size = ALIGN(size, PAGE_SIZE)",
+            "bo = kzalloc",
+            "drm_gem_private_object_init",
+            "ttm_bo_init_validate",
+            "out_transaction:",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+        ),
+    )
+
+    create = function(root, "radeon_ttm.c", "radeon_ttm_tt_create")
+    require_order(
+        "TTM creation separates AGP and Radeon GART translation storage",
+        create,
+        (
+            "if (rdev->flags & RADEON_IS_AGP)",
+            "return ttm_agp_tt_create",
+            "gtt = kzalloc",
+            "INIT_LIST_HEAD(&gtt->rs4xx_retained_node)",
+            "ttm_sg_tt_init",
+        ),
+    )
+
+    populate = function(root, "radeon_ttm.c", "radeon_ttm_tt_populate")
+    require_order(
+        "TTM population refuses external SG without Radeon GART storage",
+        populate,
+        (
+            "bool slave = !!(ttm->page_flags & TTM_TT_FLAG_EXTERNAL)",
+            "if (gtt && gtt->userptr)",
+            "ttm->page_flags |= TTM_TT_FLAG_EXTERNAL",
+            "gtt->rs4xx_ttm_pages_accounted = true",
+            "if (slave && ttm->sg)",
+            "if (!gtt)",
+            "return -EOPNOTSUPP",
+            "return drm_prime_sg_to_dma_addr_array",
+            "r = ttm_pool_alloc",
+            "gtt->rs4xx_ttm_pages_accounted = true",
+            "return r",
+        ),
+    )
+    if "drm_prime_sg_to_page_array" in populate:
+        raise LifecycleError("TTM population uses deprecated SG page conversion")
+    if populate.count("drm_prime_sg_to_dma_addr_array") != 1:
+        raise LifecycleError("TTM population DMA conversion call count differs")
+
+    retain = function(root, "radeon_ttm.c", "radeon_rs4xx_retain_ttm")
+    require_order(
+        "terminal TTM ownership transfers before generic accounting retires",
+        retain,
+        (
+            "retained_bo_count = radeon_rs4xx_retain_bo(gtt->rs4xx_owner)",
+            "mutex_lock(&rdev->rs4xx_retained_ttm_lock)",
+            "if (list_empty(&gtt->rs4xx_retained_node))",
+            "list_add_tail(&gtt->rs4xx_retained_node",
+            "atomic_inc_return",
+            "if (gtt->rs4xx_ttm_pages_accounted)",
+            "atomic_long_add_return",
+            "gtt->ttm.num_pages",
+            "&rdev->rs4xx_retained_ttm_accounted_pages",
+            "gtt->rs4xx_ttm_pages_accounted = false",
+            "gtt->ttm.page_flags &= ~TTM_TT_FLAG_EXTERNAL",
+            "mutex_unlock(&rdev->rs4xx_retained_ttm_lock)",
+            "accounted pages=%ld",
         ),
     )
 
@@ -1091,9 +1364,193 @@ def check_userptr_transaction(root: Path) -> None:
         unbind,
         (
             "if (!gtt->bound)",
-            "radeon_gart_unbind",
+            "radeon_rs4xx_gart_teardown_is_complete(rdev)",
             "gtt->bound = false;",
             "radeon_ttm_tt_unpin_userptr",
+            "return 0;",
+            "r = radeon_gart_unbind",
+            "if (r && radeon_rs4xx_hardware_target(rdev))",
+            "radeon_rs4xx_latch_teardown_refusal(rdev);",
+            "return r;",
+            "gtt->bound = false;",
+            "radeon_ttm_tt_unpin_userptr",
+            "return 0;",
+        ),
+    )
+    unbind_tokens = c_tokens(unbind)
+    unbind_spans = direct_function_statements(unbind_tokens)
+    unbind_statements = tuple(
+        unbind_tokens[start:end] for start, end in unbind_spans
+    )
+    require_direct_statement(
+        "TTM completed-GART unbind disposition differs",
+        unbind_statements,
+        4,
+        (
+            "if (radeon_rs4xx_hardware_target(rdev) && "
+            "radeon_rs4xx_gart_teardown_is_complete(rdev)) {"
+            "gtt->bound = false;"
+            "if (gtt->userptr) radeon_ttm_tt_unpin_userptr(bdev, ttm);"
+            "return 0;"
+            "}"
+        ),
+    )
+    require_direct_statement(
+        "TTM unbind failure retention guard differs",
+        unbind_statements,
+        7,
+        (
+            "if (r && radeon_rs4xx_hardware_target(rdev)) {"
+            "radeon_rs4xx_latch_teardown_refusal(rdev);"
+            "if (r == -EINVAL)"
+            "dev_err_once(rdev->dev, "
+            '"RS4xx GART unbind invariant failure retains binding\\n");'
+            "else "
+            "dev_err_once(rdev->dev, "
+            '"RS4xx teardown refusal retains GART binding: %d\\n", r);'
+            "return r;"
+            "}"
+        ),
+    )
+
+    unpopulate = function(root, "radeon_ttm.c", "radeon_ttm_tt_unpopulate")
+    require_order(
+        "TTM unpopulate owns admission through the unbind disposition",
+        unpopulate,
+        (
+            "if (gtt && !gtt->bound)",
+            "radeon_ttm_tt_unpin_userptr",
+            "kfree(ttm->sg)",
+            "ttm->sg = NULL",
+            "ttm->page_flags &= ~TTM_TT_FLAG_EXTERNAL",
+            "ttm_pool_free",
+            "r = radeon_rs4xx_hardware_transaction_wait_begin(rdev)",
+            "if (r == -ESHUTDOWN)",
+            "r = radeon_rs4xx_gart_teardown_wait(rdev)",
+            "else if (r == 0)",
+            "hardware_transaction = true",
+            "if (r)",
+            "radeon_rs4xx_latch_teardown_refusal(rdev)",
+            "return;",
+            "r = radeon_ttm_tt_unbind_status(bdev, ttm)",
+            "if (hardware_transaction)",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+            "if (r)",
+            "return;",
+            "kfree(ttm->sg)",
+            "ttm_pool_free",
+        ),
+    )
+    require_exact_if_guard(
+        "TTM unbound CPU cleanup guard differs",
+        unpopulate,
+        "gtt && !gtt->bound",
+        "return;",
+        5,
+        (
+            "if (gtt->userptr) {"
+            "radeon_ttm_tt_unpin_userptr(bdev, ttm);"
+            "kfree(ttm->sg);"
+            "ttm->sg = NULL;"
+            "ttm->page_flags &= ~TTM_TT_FLAG_EXTERNAL;"
+            "gtt->rs4xx_ttm_pages_accounted = false;"
+            "return;"
+            "}"
+            "if (slave) return;"
+            "ttm_pool_free(&rdev->mman.bdev.pool, ttm);"
+            "gtt->rs4xx_ttm_pages_accounted = false;"
+            "return;"
+        ),
+    )
+    require_exact_direct_statements(
+        "TTM unpopulate admission and retention sequence",
+        unpopulate,
+        (
+            "struct radeon_device *rdev = radeon_get_rdev(bdev);",
+            "struct radeon_ttm_tt *gtt = radeon_ttm_tt_to_gtt(rdev, ttm);",
+            "bool slave = !!(ttm->page_flags & TTM_TT_FLAG_EXTERNAL);",
+            "bool hardware_transaction = false;",
+            "int r;",
+            "if (gtt && !gtt->bound) {"
+            "if (gtt->userptr) {"
+            "radeon_ttm_tt_unpin_userptr(bdev, ttm);"
+            "kfree(ttm->sg);"
+            "ttm->sg = NULL;"
+            "ttm->page_flags &= ~TTM_TT_FLAG_EXTERNAL;"
+            "gtt->rs4xx_ttm_pages_accounted = false;"
+            "return;"
+            "}"
+            "if (slave) return;"
+            "ttm_pool_free(&rdev->mman.bdev.pool, ttm);"
+            "gtt->rs4xx_ttm_pages_accounted = false;"
+            "return;"
+            "}",
+            "r = radeon_rs4xx_hardware_transaction_wait_begin(rdev);",
+            "if (r == -ESHUTDOWN) "
+            "r = radeon_rs4xx_gart_teardown_wait(rdev); "
+            "else if (r == 0) hardware_transaction = true;",
+            "if (r) {"
+            "radeon_rs4xx_latch_teardown_refusal(rdev);"
+            "if (gtt && gtt->bound && radeon_rs4xx_hardware_target(rdev)) "
+            "radeon_rs4xx_retain_ttm(rdev, gtt);"
+            "return;"
+            "}",
+            "r = radeon_ttm_tt_unbind_status(bdev, ttm);",
+            "if (hardware_transaction) "
+            "radeon_rs4xx_hardware_transaction_end(rdev);",
+            "if (r) {"
+            "if (gtt && gtt->bound && radeon_rs4xx_hardware_target(rdev)) "
+            "radeon_rs4xx_retain_ttm(rdev, gtt);"
+            "return;"
+            "}",
+            "if (gtt && gtt->userptr) {"
+            "kfree(ttm->sg);"
+            "ttm->sg = NULL;"
+            "ttm->page_flags &= ~TTM_TT_FLAG_EXTERNAL;"
+            "gtt->rs4xx_ttm_pages_accounted = false;"
+            "return;"
+            "}",
+            "if (slave) return;",
+            "ttm_pool_free(&rdev->mman.bdev.pool, ttm);",
+            "if (gtt) gtt->rs4xx_ttm_pages_accounted = false;",
+        ),
+    )
+    destroy = function(root, "radeon_ttm.c", "radeon_ttm_tt_destroy")
+    require_order(
+        "TTM destroy transfers a bound translation table to device ownership",
+        destroy,
+        (
+            "if (gtt && gtt->bound && radeon_rs4xx_hardware_target(rdev))",
+            "radeon_rs4xx_retain_ttm(rdev, gtt)",
+            "return;",
+            "radeon_ttm_backend_destroy",
+        ),
+    )
+    destroy_tokens = c_tokens(destroy)
+    destroy_spans = direct_function_statements(destroy_tokens)
+    destroy_statements = tuple(
+        destroy_tokens[start:end] for start, end in destroy_spans
+    )
+    require_direct_statement(
+        "TTM destroy bound-table retention guard differs",
+        destroy_statements,
+        2,
+        (
+            "if (gtt && gtt->bound && radeon_rs4xx_hardware_target(rdev)) {"
+            "radeon_rs4xx_retain_ttm(rdev, gtt);"
+            "return;"
+            "}"
+        ),
+    )
+    create = function(root, "radeon_ttm.c", "radeon_ttm_tt_create")
+    require_order(
+        "TTM retained-list node initialization",
+        create,
+        (
+            "gtt = kzalloc",
+            "if (gtt == NULL)",
+            "INIT_LIST_HEAD(&gtt->rs4xx_retained_node)",
+            "ttm_sg_tt_init",
         ),
     )
 
@@ -1124,7 +1581,9 @@ def check_cpu_access_and_snapshot(root: Path) -> None:
         ),
     )
     fault = function(root, "radeon_gem.c", "radeon_gem_fault")
-    if fault.find("bo->resource") < fault.find("ttm_bo_vm_reserve"):
+    if fault.find("radeon_bo_fault_reserve_notify") < fault.find(
+        "ttm_bo_vm_reserve"
+    ):
         raise LifecycleError("userspace fault inspects placement before reserve")
     require_order(
         "userspace fault lock and reservation order",
@@ -1132,22 +1591,55 @@ def check_cpu_access_and_snapshot(root: Path) -> None:
         (
             "down_read(&rdev->pm.mclk_lock)",
             "ttm_bo_vm_reserve",
-            "bo->resource->mem_type",
+            "radeon_rs4xx_hardware_transaction_begin",
+            "radeon_bo_fault_reserve_notify",
             "ttm_bo_vm_fault_reserved",
             "dma_resv_unlock",
+            "radeon_rs4xx_hardware_transaction_end",
             "up_read(&rdev->pm.mclk_lock)",
         ),
     )
+    fault_tokens = c_tokens(fault)
+    fault_spans = direct_function_statements(fault_tokens)
+    fault_statements = tuple(
+        fault_tokens[start:end] for start, end in fault_spans
+    )
+    require_direct_statement(
+        "userspace fault hardware transaction guard differs",
+        fault_statements,
+        7,
+        (
+            "if (radeon_rs4xx_hardware_transaction_begin(rdev)) {"
+            'dev_err_once(rdev->dev, "RS4xx hardware unavailable: SIGBUS on '
+            'GEM fault\\n");'
+            "ret = VM_FAULT_SIGBUS;"
+            "goto unlock_resv;"
+            "}"
+        ),
+    )
     reader = function(root, "radeon_rs4xx_dev.c", "rs400_debugfs_gart_page_table_show")
+    require_exact_if_guard(
+        "GART reader hardware admission guard differs",
+        reader,
+        "radeon_device_lock_hardware(rdev)",
+        "return 0;",
+        9,
+        (
+            'seq_puts(m, "metadata\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\t\\thardware-unavailable\\n");'
+            "return 0;"
+        ),
+    )
     require_order(
         "GART reader lifetime lock",
         reader,
         (
-            "mutex_lock(&rs400_gart_page_table_lock)",
+            "radeon_device_lock_hardware(rdev)",
+            "mutex_lock(&rdev->gart.lock)",
             "if (!rdev->gart.ready || !rdev->gart.ptr)",
             "table = rdev->gart.ptr",
             "READ_ONCE(table[index])",
-            "mutex_unlock(&rs400_gart_page_table_lock)",
+            "mutex_unlock(&rdev->gart.lock)",
+            "radeon_device_unlock_hardware(rdev)",
         ),
     )
     fini = function(root, "rs400.c", "rs400_gart_fini")
@@ -1155,11 +1647,444 @@ def check_cpu_access_and_snapshot(root: Path) -> None:
         "GART finalization direct teardown sequence",
         fini,
         (
-            "radeon_rs4xx_dev_gart_lock();",
-            "radeon_gart_fini(rdev);",
+            "int r;",
+            "r = radeon_gart_fini(rdev);",
+            "if (r && radeon_rs4xx_hardware_target(rdev)) {"
+            "WRITE_ONCE(rdev->rs4xx_gart_fini_error, r);"
+            "wake_up_all(&rdev->rs4xx_hardware_wait);"
+            "}",
+            "if (r) return r;",
             "rs400_gart_disable(rdev);",
             "radeon_gart_table_ram_free(rdev);",
-            "radeon_rs4xx_dev_gart_unlock();",
+            "if (radeon_rs4xx_hardware_target(rdev)) {"
+            "WRITE_ONCE(rdev->rs4xx_gart_fini_error, 0);"
+            "smp_store_release(&rdev->rs4xx_gart_teardown_complete, true);"
+            "wake_up_all(&rdev->rs4xx_hardware_wait);"
+            "}",
+            "return 0;",
+        ),
+    )
+
+
+def check_bo_ttm_lifecycle(root: Path) -> None:
+    move = function(root, "radeon_ttm.c", "radeon_bo_move")
+    wait_position = move.find("r = ttm_bo_wait_ctx(bo, ctx);")
+    bind_position = move.find("r = radeon_ttm_tt_bind(bo->bdev, bo->ttm, new_mem);")
+    if wait_position < 0 or bind_position < 0 or wait_position > bind_position:
+        raise LifecycleError("TTM move binds before reservation wait")
+    initial_branch_start = move.find("if (!old_mem ||", bind_position)
+    initial_branch_end = move.find(
+        "if (old_mem->mem_type == TTM_PL_TT &&", initial_branch_start
+    )
+    if initial_branch_start < 0:
+        raise LifecycleError("TTM move initial ownership branch is absent")
+    if initial_branch_end < 0:
+        raise LifecycleError("TTM move initial ownership branches are absent")
+    initial_move = move[initial_branch_start:initial_branch_end]
+    if "goto out_transaction" in initial_move:
+        raise LifecycleError("TTM initial SG move escapes without a bound rollback")
+    rollback_position = move.find("if (r && newly_bound)", bind_position)
+    if rollback_position < 0 or "return " in move[bind_position:rollback_position]:
+        raise LifecycleError("TTM move returns after bind without rollback")
+    require_order(
+        "TTM move records and rolls back a new binding",
+        move,
+        (
+            "newly_bound = radeon_rs4xx_hardware_target(rdev)",
+            "!radeon_ttm_tt_is_bound(bo->bdev, bo->ttm)",
+            "r = radeon_ttm_tt_bind",
+            "if (!old_mem ||",
+            "ttm_bo_move_null(bo, new_mem);",
+            "if (r && newly_bound)",
+            "rollback_result = radeon_ttm_tt_unbind_status",
+            "if (rollback_result)",
+            "r = rollback_result",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+        ),
+    )
+    if move.count("if (r && newly_bound)") != 1:
+        raise LifecycleError("TTM move has no unique new-binding rollback")
+
+    create = function(root, "radeon_object.c", "radeon_bo_create")
+    require_order(
+        "BO lifetime count precedes TTM ownership transfer",
+        create,
+        (
+            "r = radeon_rs4xx_hardware_transaction_begin(rdev)",
+            "bo = kzalloc",
+            "bo->rs4xx_lifetime_counted = false",
+            "bo->rs4xx_lifetime_counted = true",
+            "atomic_inc(&rdev->rs4xx_live_bos)",
+            "ttm_bo_init_validate",
+            "*bo_ptr = bo",
+            "out_transaction:",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+        ),
+    )
+    if create.count("atomic_inc(&rdev->rs4xx_live_bos)") != 1:
+        raise LifecycleError("BO lifetime count increment is not unique")
+
+    destroy = function(root, "radeon_object.c", "radeon_ttm_bo_destroy")
+    require_order(
+        "BO destruction retains refused imported ownership",
+        destroy,
+        (
+            "if (READ_ONCE(bo->rs4xx_terminally_retained))",
+            "radeon_rs4xx_hardware_transaction_wait_begin",
+            "radeon_rs4xx_latch_teardown_refusal",
+            "radeon_rs4xx_retain_bo(bo)",
+            "return;",
+            "drm_prime_gem_destroy",
+            "drm_gem_object_release",
+            "lifetime_counted = bo->rs4xx_lifetime_counted",
+            "kfree(bo)",
+            "atomic_dec_and_test(&rdev->rs4xx_live_bos)",
+            "wake_up_all(&rdev->rs4xx_hardware_wait)",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+        ),
+    )
+    if "if (lifetime_counted &&" not in destroy:
+        raise LifecycleError("BO lifetime decrement is not conditional on ownership")
+    if destroy.count("atomic_dec_and_test(&rdev->rs4xx_live_bos)") != 1:
+        raise LifecycleError("BO lifetime count decrement is not unique")
+
+    gem_free = function(root, "radeon_gem.c", "radeon_gem_object_free")
+    require_order(
+        "GEM destruction keeps the transaction root across TTM release",
+        gem_free,
+        (
+            "ret = radeon_rs4xx_hardware_transaction_wait_begin(rdev)",
+            "if (ret == -ESHUTDOWN)",
+            "ret = radeon_rs4xx_gart_teardown_wait(rdev)",
+            "hardware_transaction = true",
+            "radeon_rs4xx_retain_bo(robj)",
+            "return;",
+            "radeon_mn_unregister(robj)",
+            "ttm_bo_",
+            "if (hardware_transaction)",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+        ),
+    )
+
+    gem_info = function(root, "radeon_gem.c", "radeon_debugfs_gem_info_show")
+    require_order(
+        "GEM debugfs classifies retained and detached BOs before placement",
+        gem_info,
+        (
+            "if (READ_ONCE(rbo->rs4xx_terminally_retained))",
+            'placement = "RETAINED"',
+            "else if (!rbo->tbo.resource)",
+            'placement = "DETACHED"',
+            "radeon_mem_type_to_domain(",
+            "rbo->tbo.resource->mem_type",
+        ),
+    )
+    retained_guard_position = gem_info.find(
+        "if (READ_ONCE(rbo->rs4xx_terminally_retained))"
+    )
+    null_guard_position = gem_info.find("else if (!rbo->tbo.resource)")
+    resource_read_position = gem_info.find("rbo->tbo.resource->mem_type")
+    if not (
+        0 <= retained_guard_position < null_guard_position < resource_read_position
+        and gem_info.count("rbo->tbo.resource->mem_type") == 1
+    ):
+        raise LifecycleError("GEM debugfs dereferences placement before BO disposition")
+
+    ttm_fini = function(root, "radeon_ttm.c", "radeon_ttm_fini")
+    if "drain_workqueue" in ttm_fini or "flush_workqueue" in ttm_fini:
+        raise LifecycleError("TTM finalization pre-drains external-fence work")
+    require_order(
+        "TTM finalization vetoes live and retained ownership",
+        ttm_fini,
+        (
+            "live_bos = atomic_read_acquire(&rdev->rs4xx_live_bos)",
+            "retained_bos = atomic_read(&rdev->rs4xx_retained_gem_objects)",
+            "retained_tables = atomic_read(&rdev->rs4xx_retained_ttm_tables)",
+            "retained_accounted_pages = atomic_long_read(",
+            "&rdev->rs4xx_retained_ttm_accounted_pages)",
+            "transactions = atomic_read(&rdev->rs4xx_hardware_transactions)",
+            "readers = atomic_read(&rdev->rs4xx_hardware_readers)",
+            "if (live_bos != 0 || retained_bos != 0 || retained_tables != 0 ||",
+            "retained_accounted_pages != 0",
+            "transactions != 0 || readers != 0)",
+            "WRITE_ONCE(rdev->rs4xx_ttm_fini_error, r)",
+            "wake_up_all(&rdev->rs4xx_hardware_wait)",
+            "return r;",
+            "ttm_range_man_fini",
+            "ttm_device_fini",
+        ),
+    )
+
+
+def check_terminal_ownership(root: Path) -> None:
+    header = source(root, "radeon.h")
+    for field in (
+        "rs4xx_hardware_transactions",
+        "rs4xx_hardware_readers",
+        "rs4xx_live_bos",
+        "rs4xx_retained_gem_objects",
+        "rs4xx_retained_ttm_tables",
+        "rs4xx_retained_ttm_accounted_pages",
+        "rs4xx_hardware_wait",
+        "rs4xx_retained_bos_list",
+        "rs4xx_retained_ttm_lock",
+        "rs4xx_retained_ttm_tables_list",
+        "rs4xx_gart_fini_error",
+        "rs4xx_ttm_fini_error",
+        "rs4xx_gart_teardown_complete",
+    ):
+        if field not in header:
+            raise LifecycleError(f"terminal ownership field is absent: {field}")
+
+    initialization = function(root, "radeon_device.c", "radeon_device_init")
+    require_order(
+        "terminal ownership initialization",
+        initialization,
+        (
+            "atomic_set(&rdev->rs4xx_hardware_transactions, 0)",
+            "atomic_set(&rdev->rs4xx_hardware_readers, 0)",
+            "atomic_set(&rdev->rs4xx_live_bos, 0)",
+            "atomic_set(&rdev->rs4xx_retained_gem_objects, 0)",
+            "atomic_set(&rdev->rs4xx_retained_ttm_tables, 0)",
+            "atomic_long_set(&rdev->rs4xx_retained_ttm_accounted_pages, 0)",
+            "init_waitqueue_head(&rdev->rs4xx_hardware_wait)",
+            "mutex_init(&rdev->rs4xx_retained_ttm_lock)",
+            "INIT_LIST_HEAD(&rdev->rs4xx_retained_bos_list)",
+            "INIT_LIST_HEAD(&rdev->rs4xx_retained_ttm_tables_list)",
+            "WRITE_ONCE(rdev->rs4xx_gart_fini_error, 0)",
+            "WRITE_ONCE(rdev->rs4xx_ttm_fini_error, 0)",
+            "WRITE_ONCE(rdev->rs4xx_gart_teardown_complete, false)",
+        ),
+    )
+    retained = function(
+        root, "radeon.h", "radeon_rs4xx_terminal_ownership_retained"
+    )
+    require_order(
+        "terminal retention helper covers every retained owner",
+        retained,
+        (
+            "radeon_rs4xx_hardware_target(rdev)",
+            "READ_ONCE(rdev->gpu_parked)",
+            "READ_ONCE(rdev->rs4xx_gart_fini_error)",
+            "READ_ONCE(rdev->rs4xx_ttm_fini_error)",
+            "atomic_read(&rdev->rs4xx_retained_gem_objects)",
+            "atomic_read(&rdev->rs4xx_retained_ttm_tables)",
+            "atomic_long_read(",
+            "&rdev->rs4xx_retained_ttm_accounted_pages)",
+        ),
+    )
+    terminal_error = function(
+        root, "radeon.h", "radeon_rs4xx_terminal_ownership_error"
+    )
+    require_order(
+        "terminal error helper propagates every retained owner",
+        terminal_error,
+        (
+            "READ_ONCE(rdev->rs4xx_gart_fini_error)",
+            "READ_ONCE(rdev->rs4xx_ttm_fini_error)",
+            "READ_ONCE(rdev->gpu_parked)",
+            "atomic_read(&rdev->rs4xx_retained_gem_objects)",
+            "atomic_read(&rdev->rs4xx_retained_ttm_tables)",
+            "atomic_long_read(&rdev->rs4xx_retained_ttm_accounted_pages)",
+            "return -EBUSY",
+        ),
+    )
+    latch = function(
+        root, "radeon_device.c", "radeon_rs4xx_latch_teardown_refusal"
+    )
+    require_exact_direct_statements(
+        "TTM failure latch and publisher queue sequence",
+        latch,
+        (
+            "radeon_rs4xx_latch_parked_state(rdev);",
+            "atomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);",
+            "radeon_rs4xx_queue_parked_publish(rdev);",
+        ),
+    )
+    parked_latch = function(
+        root, "radeon_device.c", "radeon_rs4xx_latch_parked_state"
+    )
+    require_exact_direct_statements(
+        "TTM failure closes hardware admission under the state lock",
+        parked_latch,
+        (
+            "unsigned long irqflags;",
+            "int ring_index;",
+            "if (!radeon_rs4xx_hardware_target(rdev)) return;",
+            "spin_lock_irqsave(&rdev->rs4xx_hardware_state_lock, irqflags);",
+            "WRITE_ONCE(rdev->gpu_parked, true);",
+            "WRITE_ONCE(rdev->accel_working, false);",
+            "WRITE_ONCE(rdev->needs_reset, false);",
+            "for (ring_index = 0; ring_index < RADEON_NUM_RINGS; "
+            "++ring_index) WRITE_ONCE(rdev->ring[ring_index].ready, false);",
+            "atomic_set_release(&rdev->rs4xx_hardware_closing, 1);",
+            "radeon_rs4xx_publish_parked_hardware_state_locked(rdev);",
+            "spin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);",
+            "smp_mb();",
+            "wake_up_all(&rdev->rs4xx_hardware_wait);",
+            "if (READ_ONCE(rdev->rs4xx_fence_work_initialized)) "
+            "wake_up_all(&rdev->fence_queue);",
+        ),
+    )
+    require_order(
+        "TTM failure closes RS4xx hardware admission",
+        parked_latch,
+        (
+            "if (!radeon_rs4xx_hardware_target(rdev))",
+            "spin_lock_irqsave(&rdev->rs4xx_hardware_state_lock, irqflags)",
+            "WRITE_ONCE(rdev->gpu_parked, true)",
+            "WRITE_ONCE(rdev->accel_working, false)",
+            "WRITE_ONCE(rdev->needs_reset, false)",
+            "WRITE_ONCE(rdev->ring[ring_index].ready, false)",
+            "atomic_set_release(&rdev->rs4xx_hardware_closing, 1)",
+            "radeon_rs4xx_publish_parked_hardware_state_locked(rdev)",
+            "spin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags)",
+            "wake_up_all(&rdev->rs4xx_hardware_wait)",
+        ),
+    )
+
+    gem_free = function(root, "radeon_gem.c", "radeon_gem_object_free")
+    require_order(
+        "terminal GEM object retains its driver ownership anchor",
+        gem_free,
+        (
+            "ret = radeon_rs4xx_hardware_transaction_wait_begin(rdev)",
+            "if (ret)",
+            "radeon_rs4xx_retain_bo(robj)",
+            "radeon_rs4xx_latch_teardown_refusal(rdev)",
+            "radeon_mn_unregister(robj)",
+            "return;",
+            "ttm_bo_",
+            "radeon_rs4xx_hardware_transaction_end(rdev)",
+        ),
+    )
+
+    rs400_fini = function(root, "rs400.c", "rs400_fini")
+    require_exact_direct_statements(
+        "RS400 finalization direct ownership sequence",
+        rs400_fini,
+        (
+            "int r;",
+            "if (radeon_rs4xx_terminal_ownership_retained(rdev)) return;",
+            "radeon_pm_fini(rdev);",
+            "r100_cp_fini(rdev);",
+            "radeon_wb_fini(rdev);",
+            "radeon_ib_pool_fini(rdev);",
+            "r = rs400_gart_fini(rdev);",
+            "if (r) return;",
+            "if (radeon_rs4xx_terminal_ownership_retained(rdev)) return;",
+            "radeon_gem_fini(rdev);",
+            "if (radeon_rs4xx_terminal_ownership_retained(rdev)) return;",
+            "radeon_irq_kms_fini(rdev);",
+            "radeon_fence_driver_fini(rdev);",
+            "r = radeon_bo_fini(rdev);",
+            "if (r) return;",
+            "radeon_atombios_fini(rdev);",
+            "kfree(rdev->bios);",
+            "rdev->bios = NULL;",
+        ),
+    )
+    require_order(
+        "RS400 finalization stops before GEM deletion after GART refusal",
+        rs400_fini,
+        (
+            "if (radeon_rs4xx_terminal_ownership_retained(rdev))",
+            "return;",
+            "r = rs400_gart_fini(rdev)",
+            "if (r)",
+            "return;",
+            "radeon_gem_fini(rdev)",
+            "radeon_bo_fini(rdev)",
+        ),
+    )
+    device_fini = function(root, "radeon_device.c", "radeon_device_fini")
+    require_exact_direct_statements(
+        "device finalization direct propagation sequence",
+        device_fini,
+        (
+            "int r;",
+            "r = radeon_rs4xx_terminal_ownership_error(rdev);",
+            "if (r) return r;",
+            'DRM_INFO("radeon: finishing device.\\n");',
+            "WRITE_ONCE(rdev->shutdown, true);",
+            "radeon_rs480_panic_unregister(rdev);",
+            "r = radeon_bo_evict_vram(rdev);",
+            "if (r && radeon_rs4xx_hardware_target(rdev)) return r;",
+            "r = radeon_rs4xx_terminal_ownership_error(rdev);",
+            "if (r) return r;",
+            "radeon_audio_component_fini(rdev);",
+            "radeon_fini(rdev);",
+            "r = radeon_rs4xx_terminal_ownership_error(rdev);",
+            "if (r) return r;",
+            "radeon_device_fini_external_interfaces(rdev);",
+            "if (rdev->rio_mem) pci_iounmap(rdev->pdev, rdev->rio_mem);",
+            "rdev->rio_mem = NULL;",
+            "iounmap(rdev->rmmio);",
+            "rdev->rmmio = NULL;",
+            "if (rdev->family >= CHIP_BONAIRE) radeon_doorbell_fini(rdev);",
+            "return 0;",
+        ),
+    )
+    require_order(
+        "device finalization propagates the RS4xx GART refusal before teardown",
+        device_fini,
+        (
+            "radeon_rs4xx_terminal_ownership_error(rdev)",
+            "if (r)",
+            "return r;",
+            "r = radeon_bo_evict_vram(rdev)",
+            "if (r && radeon_rs4xx_hardware_target(rdev))",
+            "return r;",
+            "radeon_rs4xx_terminal_ownership_error(rdev)",
+            "if (r)",
+            "return r;",
+            "radeon_fini(rdev)",
+            "radeon_rs4xx_terminal_ownership_error(rdev)",
+            "if (r)",
+            "return r;",
+            "radeon_device_fini_external_interfaces(rdev)",
+            "pci_iounmap",
+            "iounmap(rdev->rmmio)",
+        ),
+    )
+    agp_retry = function(root, "radeon_device.c", "radeon_device_init")
+    require_order(
+        "AGP retry stops after a latched RS4xx GART refusal",
+        agp_retry,
+        (
+            "radeon_fini(rdev)",
+            "READ_ONCE(rdev->rs4xx_gart_fini_error)",
+            "if (r)",
+            "goto failed;",
+            "radeon_agp_disable(rdev)",
+            "r = radeon_init(rdev)",
+        ),
+    )
+    rs400_init = function(root, "rs400.c", "rs400_init")
+    require_order(
+        "RS400 startup cleanup returns its GART refusal",
+        rs400_init,
+        (
+            "r = rs400_startup(rdev)",
+            "if (r)",
+            "fini_r = rs400_gart_fini(rdev)",
+            "if (fini_r)",
+            "rdev->accel_working = false",
+            "return fini_r;",
+            "radeon_irq_kms_fini(rdev)",
+        ),
+    )
+    unload = function(root, "radeon_kms.c", "radeon_driver_unload_kms")
+    require_order(
+        "unload converts GART teardown refusal to terminal retention",
+        unload,
+        (
+            "r = radeon_device_fini(rdev)",
+            "if (r && rs4xx_transition)",
+            "radeon_rs4xx_finish_terminal_shutdown",
+            "mutex_unlock(&rdev->rs4xx_unload_lock)",
+            "return;",
+            "radeon_rs4xx_hardware_transition_end",
         ),
     )
 
@@ -1182,12 +2107,6 @@ def check_open_source_boundaries(root: Path) -> None:
     suspend = function(root, "rs400.c", "rs400_suspend")
     if "rs400_gart_disable" not in suspend:
         raise LifecycleError("RS400 suspend no longer disables GART hardware")
-    backend_unbind = function(root, "radeon_ttm.c", "radeon_ttm_backend_unbind")
-    require_order(
-        "backend not ready disposition changed without policy update",
-        backend_unbind,
-        ("radeon_gart_unbind", "gtt->bound = false;"),
-    )
     ttm_fini = function(root, "radeon_ttm.c", "radeon_ttm_fini")
     if "radeon_gart_fini" not in ttm_fini:
         raise LifecycleError("TTM no longer participates in common GART teardown")
@@ -1221,15 +2140,170 @@ def check_tree(
         cache_policy.check_tree(root)
     except cache_policy.PolicyError as exc:
         raise LifecycleError(str(exc)) from exc
+    check_ttm_authority(root)
     check_build_and_callbacks(root)
     check_gart_source(root)
+    check_ttm_population_contract(root)
     check_userptr_transaction(root)
     check_cpu_access_and_snapshot(root)
+    check_bo_ttm_lifecycle(root)
+    check_terminal_ownership(root)
     check_open_source_boundaries(root)
     check_sparse_model()
 
 
 SOURCE_MUTATIONS = {
+    "TTM authority changes its generic BO cleanup contract": (
+        "policy/rs4xx-ttm-retention-authority.toml",
+        'bo_release_successor = "invoke the driver destroy callback after generic cleanup"',
+        'bo_release_successor = "skip the driver destroy callback"',
+    ),
+    "RS4xx terminal target admits a non-IGP backend": (
+        "drivers/gpu/drm/radeon/radeon.h",
+        (
+            "return rdev && (rdev->flags & RADEON_IS_IGP) &&\n"
+            "\t       (rdev->family == CHIP_RS400 || "
+            "rdev->family == CHIP_RS480);"
+        ),
+        (
+            "return rdev && (rdev->family == CHIP_RS400 || "
+            "rdev->family == CHIP_RS480);"
+        ),
+    ),
+    "RS4xx IGP initialization retains the AGP backend": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t\trdev->flags &= ~RADEON_IS_AGP;\n",
+        "\t\trdev->flags |= RADEON_IS_AGP;\n",
+    ),
+    "PRIME import omits its SG ownership input": (
+        "drivers/gpu/drm/radeon/radeon_prime.c",
+        "RADEON_GEM_DOMAIN_GTT, 0, sg, resv, &bo);",
+        "RADEON_GEM_DOMAIN_GTT, 0, NULL, resv, &bo);",
+    ),
+    "AGP imported SG admission is removed": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\tif (sg && (rdev->flags & RADEON_IS_AGP)) {\n",
+        "\tif (false && sg && (rdev->flags & RADEON_IS_AGP)) {\n",
+    ),
+    "AGP imported SG admission is inverted": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\tif (sg && (rdev->flags & RADEON_IS_AGP)) {\n",
+        "\tif (sg && !(rdev->flags & RADEON_IS_AGP)) {\n",
+    ),
+    "AGP imported SG admission follows BO allocation": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        (
+            "\tif (sg && (rdev->flags & RADEON_IS_AGP)) {\n"
+            "\t\tr = -EOPNOTSUPP;\n"
+            "\t\tgoto out_transaction;\n"
+            "\t}\n\n"
+            "\tsize = ALIGN(size, PAGE_SIZE);"
+        ),
+        (
+            "\tsize = ALIGN(size, PAGE_SIZE);\n\n"
+            "\tif (sg && (rdev->flags & RADEON_IS_AGP)) {\n"
+            "\t\tr = -EOPNOTSUPP;\n"
+            "\t\tgoto out_transaction;\n"
+            "\t}"
+        ),
+    ),
+    "external SG population drops the defensive AGP refusal": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t\tif (!gtt)\n\t\t\treturn -EOPNOTSUPP;\n",
+        "\t\tif (!gtt)\n\t\t\treturn 0;\n",
+    ),
+    "external SG population inverts the defensive AGP refusal": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t\tif (!gtt)\n\t\t\treturn -EOPNOTSUPP;\n",
+        "\t\tif (gtt)\n\t\t\treturn -EOPNOTSUPP;\n",
+    ),
+    "external SG population restores deprecated page conversion": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t\t\treturn -EOPNOTSUPP;",
+        (
+            "\t\t\treturn drm_prime_sg_to_page_array(ttm->sg, ttm->pages,\n"
+            "\t\t\t\t\t\t  ttm->num_pages);"
+        ),
+    ),
+    "Radeon imported SG population ignores conversion failure": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\treturn drm_prime_sg_to_dma_addr_array(ttm->sg,\n"
+            "\t\t\t\t\t\t      gtt->ttm.dma_address,\n"
+            "\t\t\t\t\t\t      ttm->num_pages);"
+        ),
+        (
+            "\t\t(void)drm_prime_sg_to_dma_addr_array(ttm->sg,\n"
+            "\t\t\t\t\t\t      gtt->ttm.dma_address,\n"
+            "\t\t\t\t\t\t      ttm->num_pages);\n"
+            "\t\treturn 0;"
+        ),
+    ),
+    "terminal TTM retention drops the outer BO owner": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tretained_bo_count = radeon_rs4xx_retain_bo(gtt->rs4xx_owner);\n",
+        "\tretained_bo_count = 0;\n",
+    ),
+    "terminal TTM retention drops transferred page accounting": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\t\tretained_page_count = atomic_long_add_return(\n"
+            "\t\t\t\tgtt->ttm.num_pages,\n"
+            "\t\t\t\t&rdev->rs4xx_retained_ttm_accounted_pages);"
+        ),
+        (
+            "\t\t\tretained_page_count = atomic_long_read(\n"
+            "\t\t\t\t&rdev->rs4xx_retained_ttm_accounted_pages);"
+        ),
+    ),
+    "terminal TTM retention leaves accounting transferable twice": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\t\tgtt->rs4xx_ttm_pages_accounted = false;\n"
+            "\t\t\t/* TTM clears its population accounting after this void\n"
+        ),
+        "\t\t\t/* TTM clears its population accounting after this void\n",
+    ),
+    "terminal userptr retention hides pages from generic retirement": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t\t\tgtt->ttm.page_flags &= ~TTM_TT_FLAG_EXTERNAL;\n",
+        "\t\t\tgtt->ttm.page_flags |= TTM_TT_FLAG_EXTERNAL;\n",
+    ),
+    "admission refusal drops terminal TTM retention": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
+            "\t\tif (gtt && gtt->bound &&\n"
+            "\t\t    radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\t\tradeon_rs4xx_retain_ttm(rdev, gtt);\n"
+        ),
+        "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n",
+    ),
+    "unbind refusal drops terminal TTM retention": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (r) {\n"
+            "\t\tif (gtt && gtt->bound &&\n"
+            "\t\t    radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\t\tradeon_rs4xx_retain_ttm(rdev, gtt);\n"
+            "\t\treturn;\n"
+            "\t}\n\n"
+            "\tif (gtt && gtt->userptr) {"
+        ),
+        (
+            "\tif (r)\n"
+            "\t\treturn;\n\n"
+            "\tif (gtt && gtt->userptr) {"
+        ),
+    ),
+    "TTM finalization drops retained page observation": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\tretained_accounted_pages = atomic_long_read(\n"
+            "\t\t\t&rdev->rs4xx_retained_ttm_accounted_pages);\n"
+        ),
+        "\t\tretained_accounted_pages = 0;\n",
+    ),
     "Kbuild drops synchronization owner": (
         "drivers/gpu/drm/radeon/Makefile",
         "\tradeon_sync.o radeon_audio.o",
@@ -1366,6 +2440,70 @@ SOURCE_MUTATIONS = {
         "\tuint64_t page_base, page_entry;\n\tint i, j;\n",
         ("\tuint64_t page_base, page_entry;\n\tint i = ({ return 0; 0; }), j;\n"),
     ),
+    "bind wrapper bypasses hardware admission": (
+        "drivers/gpu/drm/radeon/radeon_gart.c",
+        (
+            "\tr = radeon_rs4xx_hardware_access_begin(rdev);\n"
+            "\tif (r)\n\t\treturn r;\n"
+            "\tmutex_lock(&rdev->gart.lock);\n"
+            "\tr = radeon_gart_bind_locked"
+        ),
+        (
+            "\tr = 0;\n"
+            "\tif (r)\n\t\treturn r;\n"
+            "\tmutex_lock(&rdev->gart.lock);\n"
+            "\tr = radeon_gart_bind_locked"
+        ),
+    ),
+    "bind wrapper drops table serialization": (
+        "drivers/gpu/drm/radeon/radeon_gart.c",
+        (
+            "\tmutex_lock(&rdev->gart.lock);\n"
+            "\tr = radeon_gart_bind_locked(rdev, offset, pages, pagelist, dma_addr,\n"
+            "\t\t\t\t   flags);"
+        ),
+        (
+            "\tr = radeon_gart_bind_locked(rdev, offset, pages, pagelist, dma_addr,\n"
+            "\t\t\t\t   flags);"
+        ),
+    ),
+    "unbind wrapper uses nonwaiting admission": (
+        "drivers/gpu/drm/radeon/radeon_gart.c",
+        "\tr = radeon_rs4xx_hardware_access_wait_begin(rdev);",
+        "\tr = radeon_rs4xx_hardware_access_begin(rdev);",
+    ),
+    "unbind wrapper drops hardware access release": (
+        "drivers/gpu/drm/radeon/radeon_gart.c",
+        (
+            "\tr = radeon_gart_unbind_locked(rdev, offset, pages);\n"
+            "\tmutex_unlock(&rdev->gart.lock);\n"
+            "\tradeon_rs4xx_hardware_access_end(rdev);\n"
+            "\treturn r;"
+        ),
+        (
+            "\tr = radeon_gart_unbind_locked(rdev, offset, pages);\n"
+            "\tmutex_unlock(&rdev->gart.lock);\n"
+            "\treturn r;"
+        ),
+    ),
+    "common finalization frees storage after unbind failure": (
+        "drivers/gpu/drm/radeon/radeon_gart.c",
+        (
+            "\tif (rdev->gart.ready) {\n"
+            "\t\t/* unbind pages */\n"
+            "\t\tr = radeon_gart_unbind_locked(rdev, 0,\n"
+            "\t\t\t\t\t      rdev->gart.num_cpu_pages);\n"
+            "\t\tif (r)\n\t\t\tgoto out_unlock;\n"
+            "\t}"
+        ),
+        (
+            "\tif (rdev->gart.ready) {\n"
+            "\t\t/* unbind pages */\n"
+            "\t\tr = radeon_gart_unbind_locked(rdev, 0,\n"
+            "\t\t\t\t\t      rdev->gart.num_cpu_pages);\n"
+            "\t}"
+        ),
+    ),
     "unbind range guard is disabled": (
         "drivers/gpu/drm/radeon/radeon_gart.c",
         "if (!radeon_gart_range_valid(rdev, offset, pages)) {",
@@ -1382,7 +2520,7 @@ SOURCE_MUTATIONS = {
             "\tif (!radeon_gart_range_valid(rdev, offset, pages)) {\n"
             '\t\tWARN(1, "invalid GART unbind range offset %u pages %d\\n",\n'
             "\t\t     offset, pages);\n"
-            "\t\treturn;\n"
+            "\t\treturn -EINVAL;\n"
             "\t}"
         ),
         (
@@ -1390,7 +2528,7 @@ SOURCE_MUTATIONS = {
             "\t\tif (!radeon_gart_range_valid(rdev, offset, pages)) {\n"
             '\t\t\tWARN(1, "invalid GART unbind range offset %u pages %d\\n",\n'
             "\t\t\t     offset, pages);\n"
-            "\t\t\treturn;\n"
+            "\t\t\treturn -EINVAL;\n"
             "\t\t}\n"
             "\t}"
         ),
@@ -1398,7 +2536,7 @@ SOURCE_MUTATIONS = {
     "unbind range guard is bypassed by an earlier return": (
         "drivers/gpu/drm/radeon/radeon_gart.c",
         "\tif (!radeon_gart_range_valid(rdev, offset, pages)) {",
-        ("\treturn;\n\tif (!radeon_gart_range_valid(rdev, offset, pages)) {"),
+        ("\treturn 0;\n\tif (!radeon_gart_range_valid(rdev, offset, pages)) {"),
     ),
     "sparse unbind retains stale cursor": (
         "drivers/gpu/drm/radeon/radeon_gart.c",
@@ -1407,8 +2545,14 @@ SOURCE_MUTATIONS = {
     ),
     "bind flush precedes memory barrier": (
         "drivers/gpu/drm/radeon/radeon_gart.c",
-        "\t\tmb();\n\t\tradeon_gart_tlb_flush(rdev);\n\t}\n\treturn 0;",
-        "\t\tradeon_gart_tlb_flush(rdev);\n\t\tmb();\n\t}\n\treturn 0;",
+        (
+            "\t\tmb();\n\t\tradeon_gart_tlb_flush(rdev);\n\t}\n"
+            "\treturn 0;\n}\n\nint radeon_gart_bind"
+        ),
+        (
+            "\t\tradeon_gart_tlb_flush(rdev);\n\t\tmb();\n\t}\n"
+            "\treturn 0;\n}\n\nint radeon_gart_bind"
+        ),
     ),
     "userptr pin can make zero progress": (
         "drivers/gpu/drm/radeon/radeon_ttm.c",
@@ -1437,8 +2581,182 @@ SOURCE_MUTATIONS = {
     ),
     "userptr releases pages before PTEs": (
         "drivers/gpu/drm/radeon/radeon_ttm.c",
-        "\tradeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);\n\n\tgtt->bound = false;\n\tif (gtt->userptr)\n\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);",
-        "\tif (gtt->userptr)\n\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n\tradeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);\n\n\tgtt->bound = false;",
+        (
+            "\tr = radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);\n"
+            "\tif (r == -ESHUTDOWN && radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\tr = radeon_rs4xx_gart_teardown_wait(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
+            "\t\tif (r == -EINVAL)\n"
+            "\t\t\tdev_err_once(\n"
+            "\t\t\t\trdev->dev,\n"
+            '\t\t\t\t"RS4xx GART unbind invariant failure retains binding\\n");\n'
+            "\t\telse\n"
+            "\t\t\tdev_err_once(\n"
+            "\t\t\t\trdev->dev,\n"
+            '\t\t\t\t"RS4xx teardown refusal retains GART binding: %d\\n",\n'
+            "\t\t\t\tr);\n"
+            "\t\treturn r;\n\t}\n\n"
+            "\tgtt->bound = false;\n\tif (gtt->userptr)\n"
+            "\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n"
+            "\treturn 0;"
+        ),
+        (
+            "\tif (gtt->userptr)\n"
+            "\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n"
+            "\tr = radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);\n"
+            "\tif (r == -ESHUTDOWN && radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\tr = radeon_rs4xx_gart_teardown_wait(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
+            "\t\tif (r == -EINVAL)\n"
+            "\t\t\tdev_err_once(\n"
+            "\t\t\t\trdev->dev,\n"
+            '\t\t\t\t"RS4xx GART unbind invariant failure retains binding\\n");\n'
+            "\t\telse\n"
+            "\t\t\tdev_err_once(\n"
+            "\t\t\t\trdev->dev,\n"
+            '\t\t\t\t"RS4xx teardown refusal retains GART binding: %d\\n",\n'
+            "\t\t\t\tr);\n"
+            "\t\treturn r;\n\t}\n\n\tgtt->bound = false;"
+        ),
+    ),
+    "TTM backend clears bound state after RS4xx unbind refusal": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tif (r && radeon_rs4xx_hardware_target(rdev)) {",
+        "\tif (false && r && radeon_rs4xx_hardware_target(rdev)) {",
+    ),
+    "TTM unpopulate bypasses wait-capable admission": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tr = radeon_rs4xx_hardware_transaction_wait_begin(rdev);\n",
+        "\tr = 0;\n",
+    ),
+    "TTM unpopulate ignores completed GART shutdown": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (r == -ESHUTDOWN)\n"
+            "\t\tr = radeon_rs4xx_gart_teardown_wait(rdev);\n"
+            "\telse if (r == 0)\n"
+            "\t\thardware_transaction = true;\n"
+        ),
+        (
+            "\tif (r == 0)\n"
+            "\t\thardware_transaction = true;\n"
+        ),
+    ),
+    "TTM unpopulate forgets admitted transaction ownership": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\telse if (r == 0)\n\t\thardware_transaction = true;\n",
+        "\telse if (r == 0)\n\t\thardware_transaction = false;\n",
+    ),
+    "TTM unpopulate omits refusal latch": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (r) {\n"
+            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
+            "\t\tif (gtt && gtt->bound &&\n"
+            "\t\t    radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\t\tradeon_rs4xx_retain_ttm(rdev, gtt);\n"
+            "\t\treturn;\n"
+            "\t}\n"
+        ),
+        (
+            "\tif (r) {\n"
+            "\t\tif (gtt && gtt->bound &&\n"
+            "\t\t    radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\t\tradeon_rs4xx_retain_ttm(rdev, gtt);\n"
+            "\t\treturn;\n"
+            "\t}\n"
+        ),
+    ),
+    "TTM unpopulate releases admission before unbind": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tr = radeon_ttm_tt_unbind_status(bdev, ttm);\n"
+            "\tif (hardware_transaction)\n"
+            "\t\tradeon_rs4xx_hardware_transaction_end(rdev);\n"
+        ),
+        (
+            "\tif (hardware_transaction)\n"
+            "\t\tradeon_rs4xx_hardware_transaction_end(rdev);\n"
+            "\tr = radeon_ttm_tt_unbind_status(bdev, ttm);\n"
+        ),
+    ),
+    "TTM unpopulate leaks admitted transaction ownership": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (hardware_transaction)\n"
+            "\t\tradeon_rs4xx_hardware_transaction_end(rdev);\n"
+        ),
+        "",
+    ),
+    "TTM unpopulate releases storage after unbind refusal": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (r) {\n"
+            "\t\tif (gtt && gtt->bound &&\n"
+            "\t\t    radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\t\tradeon_rs4xx_retain_ttm(rdev, gtt);\n"
+            "\t\treturn;\n"
+            "\t}\n\n"
+            "\tif (gtt && gtt->userptr) {\n"
+        ),
+        (
+            "\tif (false && r) {\n"
+            "\t\tif (gtt && gtt->bound &&\n"
+            "\t\t    radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\t\tradeon_rs4xx_retain_ttm(rdev, gtt);\n"
+            "\t\treturn;\n"
+            "\t}\n\n"
+            "\tif (gtt && gtt->userptr) {\n"
+        ),
+    ),
+    "TTM unbound populated cleanup enters hardware admission": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tif (gtt && !gtt->bound) {",
+        "\tif (false && gtt && !gtt->bound) {",
+    ),
+    "TTM unbound userptr cleanup skips page release": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (gtt && !gtt->bound) {\n"
+            "\t\tif (gtt->userptr) {\n"
+            "\t\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n"
+        ),
+        (
+            "\tif (gtt && !gtt->bound) {\n"
+            "\t\tif (gtt->userptr) {\n"
+        ),
+    ),
+    "TTM unbound userptr cleanup releases pages twice": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (gtt && !gtt->bound) {\n"
+            "\t\tif (gtt->userptr) {\n"
+            "\t\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n"
+        ),
+        (
+            "\tif (gtt && !gtt->bound) {\n"
+            "\t\tif (gtt->userptr) {\n"
+            "\t\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n"
+            "\t\t\tradeon_ttm_tt_unpin_userptr(bdev, ttm);\n"
+        ),
+    ),
+    "TTM destroy releases a bound translation table": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tif (gtt && gtt->bound && radeon_rs4xx_hardware_target(rdev)) {",
+        (
+            "\tif (false && gtt && gtt->bound && "
+            "radeon_rs4xx_hardware_target(rdev)) {"
+        ),
+    ),
+    "TTM bound refusal drops retained translation table": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\tlist_add_tail(&gtt->rs4xx_retained_node,\n"
+            "\t\t\t      &rdev->rs4xx_retained_ttm_tables_list);\n"
+        ),
+        "",
     ),
     "successful unpin retains stale SG ownership": (
         "drivers/gpu/drm/radeon/radeon_ttm.c",
@@ -1453,22 +2771,215 @@ SOURCE_MUTATIONS = {
     "fault inspects placement before reserve": (
         "drivers/gpu/drm/radeon/radeon_gem.c",
         "\tret = ttm_bo_vm_reserve(bo, vmf);",
-        "\t(void)READ_ONCE(bo->resource->mem_type);\n\tret = ttm_bo_vm_reserve(bo, vmf);",
+        (
+            "\t(void)radeon_bo_fault_reserve_notify(bo);\n"
+            "\tret = ttm_bo_vm_reserve(bo, vmf);"
+        ),
+    ),
+    "fault bypasses hardware transaction admission": (
+        "drivers/gpu/drm/radeon/radeon_gem.c",
+        "\tif (radeon_rs4xx_hardware_transaction_begin(rdev)) {",
+        "\tif (false && radeon_rs4xx_hardware_transaction_begin(rdev)) {",
     ),
     "reader drops lifetime lock": (
         "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
-        "\tmutex_lock(&rs400_gart_page_table_lock);\n\tif (!rdev->gart.ready || !rdev->gart.ptr) {",
+        "\tmutex_lock(&rdev->gart.lock);\n\tif (!rdev->gart.ready || !rdev->gart.ptr) {",
         "\tif (!rdev->gart.ready || !rdev->gart.ptr) {",
+    ),
+    "reader bypasses hardware transaction admission": (
+        "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+        "\tif (radeon_device_lock_hardware(rdev)) {",
+        "\tif (false && radeon_device_lock_hardware(rdev)) {",
+    ),
+    "TTM move drops reservation wait before bind": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tr = ttm_bo_wait_ctx(bo, ctx);\n",
+        "\t/* reservation wait removed */\n",
+    ),
+    "TTM move drops newly bound rollback": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tif (r && newly_bound) {",
+        "\tif (false && r && newly_bound) {",
+    ),
+    "TTM initial move escapes after bind": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (!old_mem || (old_mem->mem_type == TTM_PL_SYSTEM &&\n"
+            "\t\t\t bo->ttm == NULL)) {\n"
+            "\t\tttm_bo_move_null(bo, new_mem);\n"
+            "\t\tgoto out;\n"
+            "\t}\n"
+        ),
+        (
+            "\tif (!old_mem || (old_mem->mem_type == TTM_PL_SYSTEM &&\n"
+            "\t\t\t bo->ttm == NULL)) {\n"
+            "\t\tttm_bo_move_null(bo, new_mem);\n"
+            "\t\tgoto out_transaction;\n"
+            "\t}\n"
+        ),
+    ),
+    "BO creation drops provisional lifetime count": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\t\tbo->rs4xx_lifetime_counted = true;\n",
+        "",
+    ),
+    "BO destruction drops final lifetime decrement": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\tif (lifetime_counted &&\n\t    atomic_dec_and_test(&rdev->rs4xx_live_bos))",
+        "\tif (false && lifetime_counted &&\n\t    atomic_dec_and_test(&rdev->rs4xx_live_bos))",
+    ),
+    "BO destruction drops final lifetime wake": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n",
+        "",
+    ),
+    "BO creation bypasses transaction root": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\tr = radeon_rs4xx_hardware_transaction_begin(rdev);\n",
+        "\tr = 0;\n",
+    ),
+    "GEM destruction bypasses transaction root": (
+        "drivers/gpu/drm/radeon/radeon_gem.c",
+        "\t\tret = radeon_rs4xx_hardware_transaction_wait_begin(rdev);",
+        "\t\tret = 0;",
+    ),
+    "GEM debugfs disables retained and detached guards": (
+        "drivers/gpu/drm/radeon/radeon_gem.c",
+        (
+            "\t\tif (READ_ONCE(rbo->rs4xx_terminally_retained)) {\n"
+            "\t\t\tplacement = \"RETAINED\";\n"
+            "\t\t} else if (!rbo->tbo.resource) {"
+        ),
+        (
+            "\t\tif (false && READ_ONCE(rbo->rs4xx_terminally_retained)) {\n"
+            "\t\t\tplacement = \"RETAINED\";\n"
+            "\t\t} else if (false && !rbo->tbo.resource) {"
+        ),
+    ),
+    "GEM debugfs reads placement before retained disposition": (
+        "drivers/gpu/drm/radeon/radeon_gem.c",
+        "\t\tif (READ_ONCE(rbo->rs4xx_terminally_retained)) {\n",
+        (
+            "\t\tdomain = radeon_mem_type_to_domain(\n"
+            "\t\t\trbo->tbo.resource->mem_type);\n"
+            "\t\tif (READ_ONCE(rbo->rs4xx_terminally_retained)) {\n"
+        ),
+    ),
+    "TTM BO destruction bypasses transaction root": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\t\t\tr = radeon_rs4xx_hardware_transaction_wait_begin(rdev);",
+        "\t\t\tr = 0;",
+    ),
+    "TTM finalization pre-drains external-fence work": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tif (!rdev->mman.initialized)\n\t\treturn 0;\n",
+        "\tdrain_workqueue(rdev->mman.bdev.wq);\n\tif (!rdev->mman.initialized)\n\t\treturn 0;\n",
+    ),
+    "TTM finalization omits live BO veto": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (live_bos != 0 || retained_bos != 0 || retained_tables != 0 ||\n"
+            "\t    retained_accounted_pages != 0 || transactions != 0 || readers != 0) {"
+        ),
+        (
+            "\tif (retained_bos != 0 || retained_tables != 0 ||\n"
+            "\t    retained_accounted_pages != 0 || transactions != 0 || readers != 0) {"
+        ),
+    ),
+    "TTM finalization omits retained BO veto": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tif (live_bos != 0 || retained_bos != 0 || retained_tables != 0 ||\n",
+        "\tif (live_bos != 0 || retained_tables != 0 ||\n",
+    ),
+    "TTM finalization omits retained page veto": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t    retained_accounted_pages != 0 || transactions != 0 || readers != 0) {",
+        "\t    transactions != 0 || readers != 0) {",
+    ),
+    "TTM finalization omits transaction veto": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t    retained_accounted_pages != 0 || transactions != 0 || readers != 0) {",
+        "\t    retained_accounted_pages != 0 || readers != 0) {",
+    ),
+    "TTM finalization omits reader veto": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t    retained_accounted_pages != 0 || transactions != 0 || readers != 0) {",
+        "\t    retained_accounted_pages != 0 || transactions != 0) {",
+    ),
+    "TTM finalization drops result propagation": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\t\tWRITE_ONCE(rdev->rs4xx_ttm_fini_error, r);\n",
+        "",
+    ),
+    "BO destruction releases imported attachment on refusal": (
+        "drivers/gpu/drm/radeon/radeon_object.c",
+        "\t\tdrm_prime_gem_destroy(&bo->tbo.base, bo->tbo.sg);\n",
+        "",
+    ),
+    "RS400 publishes completion before aperture disable": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        (
+            "\tif (r)\n\t\treturn r;\n"
+            "\trs400_gart_disable(rdev);\n"
+            "\tradeon_gart_table_ram_free(rdev);\n"
+            "\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, 0);\n"
+            "\t\t/* The release publishes aperture disable and table storage removal. */\n"
+            "\t\tsmp_store_release(&rdev->rs4xx_gart_teardown_complete, true);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+        ),
+        (
+            "\tif (r)\n\t\treturn r;\n"
+            "\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, 0);\n"
+            "\t\t/* The release publishes aperture disable and table storage removal. */\n"
+            "\t\tsmp_store_release(&rdev->rs4xx_gart_teardown_complete, true);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\trs400_gart_disable(rdev);\n"
+            "\tradeon_gart_table_ram_free(rdev);\n"
+        ),
+    ),
+    "RS400 finalization ignores common teardown refusal": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        (
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
+            "\trs400_gart_disable(rdev);"
+        ),
+        (
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\trs400_gart_disable(rdev);"
+        ),
     ),
     "RS400 finalization hardware disable is conditionally disabled": (
         "drivers/gpu/drm/radeon/rs400.c",
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\trs400_gart_disable(rdev);\n"
             "\tradeon_gart_table_ram_free(rdev);"
         ),
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\tif (false)\n"
             "\t\trs400_gart_disable(rdev);\n"
             "\tradeon_gart_table_ram_free(rdev);"
@@ -1477,17 +2988,27 @@ SOURCE_MUTATIONS = {
     "unbind declaration hides a statement-expression return": (
         "drivers/gpu/drm/radeon/radeon_gart.c",
         "\tunsigned int t, p;\n\tint i, j;\n\n",
-        ("\tunsigned int t, p;\n\tint i = ({ return; 0; }), j;\n\n"),
+        ("\tunsigned int t, p;\n\tint i = ({ return 0; 0; }), j;\n\n"),
     ),
     "RS400 finalization hardware disable is nested in a scope": (
         "drivers/gpu/drm/radeon/rs400.c",
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\trs400_gart_disable(rdev);\n"
             "\tradeon_gart_table_ram_free(rdev);"
         ),
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\t{\n"
             "\t\trs400_gart_disable(rdev);\n"
             "\t}\n"
@@ -1497,23 +3018,253 @@ SOURCE_MUTATIONS = {
     "RS400 finalization drops hardware disable": (
         "drivers/gpu/drm/radeon/rs400.c",
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\trs400_gart_disable(rdev);\n"
             "\tradeon_gart_table_ram_free(rdev);"
         ),
-        "\tradeon_gart_fini(rdev);\n\tradeon_gart_table_ram_free(rdev);",
+        (
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
+            "\tradeon_gart_table_ram_free(rdev);"
+        ),
     ),
     "RS400 finalization releases table before hardware disable": (
         "drivers/gpu/drm/radeon/rs400.c",
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\trs400_gart_disable(rdev);\n"
             "\tradeon_gart_table_ram_free(rdev);"
         ),
         (
-            "\tradeon_gart_fini(rdev);\n"
+            "\tr = radeon_gart_fini(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+            "\tif (r)\n\t\treturn r;\n"
             "\tradeon_gart_table_ram_free(rdev);\n"
             "\trs400_gart_disable(rdev);"
+        ),
+    ),
+    "GART initialization retains stale teardown completion": (
+        "drivers/gpu/drm/radeon/radeon_gart.c",
+        "smp_store_release(&rdev->rs4xx_gart_teardown_complete, false);",
+        "smp_store_release(&rdev->rs4xx_gart_teardown_complete, true);",
+    ),
+    "common finalization drops teardown completion publication": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        (
+            "\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, 0);\n"
+            "\t\t/* The release publishes aperture disable and table storage removal. */\n"
+            "\t\tsmp_store_release(&rdev->rs4xx_gart_teardown_complete, true);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+        ),
+        "",
+    ),
+    "completed global teardown still reaches hardware unbind": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (radeon_rs4xx_hardware_target(rdev) &&\n"
+            "\t    radeon_rs4xx_gart_teardown_is_complete(rdev)) {"
+        ),
+        (
+            "\tif (false && radeon_rs4xx_hardware_target(rdev) &&\n"
+            "\t    radeon_rs4xx_gart_teardown_is_complete(rdev)) {"
+        ),
+    ),
+    "unbind failure leaves later hardware admission open": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n"
+        ),
+        "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n",
+    ),
+    "TTM create leaves retention node uninitialized": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        "\tINIT_LIST_HEAD(&gtt->rs4xx_retained_node);\n",
+        "",
+    ),
+    "TTM retention drops its device list owner": (
+        "drivers/gpu/drm/radeon/radeon_ttm.c",
+        (
+            "\t\tlist_add_tail(&gtt->rs4xx_retained_node,\n"
+            "\t\t\t      &rdev->rs4xx_retained_ttm_tables_list);\n"
+        ),
+        "",
+    ),
+    "GEM retention leaves later hardware admission open": (
+        "drivers/gpu/drm/radeon/radeon_gem.c",
+        "\t\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n",
+        "",
+    ),
+    "hardware fault latch keeps GPU admission open": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tWRITE_ONCE(rdev->gpu_parked, true);\n"
+            "\tWRITE_ONCE(rdev->accel_working, false);\n"
+        ),
+        (
+            "\tWRITE_ONCE(rdev->gpu_parked, false);\n"
+            "\tWRITE_ONCE(rdev->accel_working, false);\n"
+        ),
+    ),
+    "teardown refusal drops the process-context publisher": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
+            "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+        ),
+        (
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
+        ),
+    ),
+    "parked publication escapes the state lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tatomic_set_release(&rdev->rs4xx_hardware_closing, 1);\n"
+            "\tradeon_rs4xx_publish_parked_hardware_state_locked(rdev);\n"
+            "\tspin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);\n"
+        ),
+        (
+            "\tatomic_set_release(&rdev->rs4xx_hardware_closing, 1);\n"
+            "\tspin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);\n"
+            "\tradeon_rs4xx_publish_parked_hardware_state_locked(rdev);\n"
+        ),
+    ),
+    "retained TTM denominator lacks initialization": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tatomic_set(&rdev->rs4xx_retained_ttm_tables, 0);\n",
+        "",
+    ),
+    "RS400 finalizer drops its result latch": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        (
+            "\tif (r && radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\tWRITE_ONCE(rdev->rs4xx_gart_fini_error, r);\n"
+            "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+            "\t}\n"
+        ),
+        "",
+    ),
+    "RS400 finalization enters cleanup with a prior GART refusal": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        (
+            "\tif (radeon_rs4xx_terminal_ownership_retained(rdev))\n"
+            "\t\treturn;\n\n"
+        ),
+        "",
+    ),
+    "RS400 GEM deletion precedes global GART disposition": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        (
+            "\tr = rs400_gart_fini(rdev);\n"
+            "\tif (r)\n"
+            "\t\treturn;\n"
+            "\tif (radeon_rs4xx_terminal_ownership_retained(rdev))\n"
+            "\t\treturn;\n"
+            "\tradeon_gem_fini(rdev);\n"
+        ),
+        (
+            "\tradeon_gem_fini(rdev);\n"
+            "\tr = rs400_gart_fini(rdev);\n"
+            "\tif (r)\n"
+            "\t\treturn;\n"
+            "\tif (radeon_rs4xx_terminal_ownership_retained(rdev))\n"
+            "\t\treturn;\n"
+        ),
+    ),
+    "device finalization ignores a preexisting GART refusal": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tr = radeon_rs4xx_terminal_ownership_error(rdev);\n"
+            "\tif (r)\n"
+            "\t\treturn r;\n\n"
+            "\tDRM_INFO"
+        ),
+        "\tDRM_INFO",
+    ),
+    "device finalization ignores VRAM eviction refusal": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tradeon_rs480_panic_unregister(rdev);\n"
+            "\t/* evict vram memory */\n"
+            "\tr = radeon_bo_evict_vram(rdev);\n"
+            "\tif (r && radeon_rs4xx_hardware_target(rdev))\n"
+            "\t\treturn r;\n"
+            "\tr = radeon_rs4xx_terminal_ownership_error(rdev);\n"
+            "\tif (r)\n"
+            "\t\treturn r;\n"
+            "\tradeon_audio_component_fini(rdev);\n"
+        ),
+        (
+            "\tradeon_rs480_panic_unregister(rdev);\n"
+            "\t/* evict vram memory */\n"
+            "\tradeon_bo_evict_vram(rdev);\n"
+            "\tradeon_audio_component_fini(rdev);\n"
+        ),
+    ),
+    "device finalization ignores a new GART refusal": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tradeon_fini(rdev);\n"
+            "\tr = radeon_rs4xx_terminal_ownership_error(rdev);\n"
+            "\tif (r)\n"
+            "\t\treturn r;\n"
+        ),
+        "\tradeon_fini(rdev);\n",
+    ),
+    "AGP retry continues after a GART refusal": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\t\tradeon_fini(rdev);\n"
+            "\t\tr = READ_ONCE(rdev->rs4xx_gart_fini_error);\n"
+            "\t\tif (r)\n"
+            "\t\t\tgoto failed;\n"
+            "\t\tradeon_agp_disable(rdev);\n"
+        ),
+        (
+            "\t\tradeon_fini(rdev);\n"
+            "\t\tradeon_agp_disable(rdev);\n"
+        ),
+    ),
+    "RS400 startup cleanup hides its GART refusal": (
+        "drivers/gpu/drm/radeon/rs400.c",
+        "\t\t\treturn fini_r;\n",
+        "\t\t\treturn 0;\n",
+    ),
+    "unload ignores the device finalization result": (
+        "drivers/gpu/drm/radeon/radeon_kms.c",
+        "\tr = radeon_device_fini(rdev);\n",
+        "\tradeon_device_fini(rdev);\n",
+    ),
+    "unload disables terminal retention after a GART refusal": (
+        "drivers/gpu/drm/radeon/radeon_kms.c",
+        (
+            "\tr = radeon_device_fini(rdev);\n"
+            "\tif (r && rs4xx_transition) {\n"
+        ),
+        (
+            "\tr = radeon_device_fini(rdev);\n"
+            "\tif (false && r && rs4xx_transition) {\n"
         ),
     ),
 }
@@ -1596,16 +3347,16 @@ SOURCE_EXPECTED_ERRORS = {
         "GART unbind admission dominance: exact direct statement prefix differs"
     ),
     "RS400 finalization hardware disable is conditionally disabled": (
-        "GART finalization direct teardown sequence: direct statement 2 differs"
+        "GART finalization direct teardown sequence: direct statement 4 differs"
     ),
     "RS400 finalization hardware disable is nested in a scope": (
-        "GART finalization direct teardown sequence: direct statement 2 differs"
+        "GART finalization direct teardown sequence: direct statement 4 differs"
     ),
     "RS400 finalization drops hardware disable": (
-        "GART finalization direct teardown sequence: direct statement count 4 != 5"
+        "GART finalization direct teardown sequence: direct statement count 7 != 8"
     ),
     "RS400 finalization releases table before hardware disable": (
-        "GART finalization direct teardown sequence: direct statement 2 differs"
+        "GART finalization direct teardown sequence: direct statement 4 differs"
     ),
 }
 
@@ -1615,6 +3366,48 @@ POLICY_MUTATIONS = {
         6,
         "proven",
         "USERPTR_PIN_DMA_MAP_TRANSACTION: source_status proven != repaired",
+    ),
+    "repaired userspace fault row promoted to proven": (
+        "USER_MMAP_FAULT_RESERVATION\t",
+        6,
+        "proven",
+        "USER_MMAP_FAULT_RESERVATION: source_status proven != repaired",
+    ),
+    "repaired GART reader row promoted to proven": (
+        "GART_TABLE_READER_SNAPSHOT_BOUNDARY\t",
+        6,
+        "proven",
+        "GART_TABLE_READER_SNAPSHOT_BOUNDARY: source_status proven != repaired",
+    ),
+    "repaired common teardown row promoted to proven": (
+        "GART_COMMON_TEARDOWN\t",
+        6,
+        "proven",
+        "GART_COMMON_TEARDOWN: source_status proven != repaired",
+    ),
+    "repaired GART error propagation row reopened": (
+        "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION\t",
+        6,
+        "open",
+        "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION: source_status open != repaired",
+    ),
+    "repaired suspend row reopened": (
+        "GART_SUSPEND_READY_STATE\t",
+        6,
+        "open",
+        "GART_SUSPEND_READY_STATE: source_status open != repaired",
+    ),
+    "repaired backend unbind row reopened": (
+        "GART_BACKEND_NOT_READY_UNBIND_STATE\t",
+        6,
+        "open",
+        "GART_BACKEND_NOT_READY_UNBIND_STATE: source_status open != repaired",
+    ),
+    "repaired TTM teardown row reopened": (
+        "GART_TTM_TEARDOWN_OWNERSHIP\t",
+        6,
+        "open",
+        "GART_TTM_TEARDOWN_OWNERSHIP: source_status open != repaired",
     ),
     "open payload row promoted to proven": (
         "CPU_GTT_GPU_PAYLOAD_PUBLICATION\t",
@@ -1688,10 +3481,16 @@ POLICY_MUTATIONS = {
         "RS4XX_GART_TABLE_UC_ALIAS_ATTEMPT",
         "RS4XX_GART_TABLE_WB_RESTORE_ATTEMPT: dependency edge differs",
     ),
+    "GART error propagation loses common teardown dependency": (
+        "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION\t",
+        5,
+        "GART_UNBIND_PTE_MB_TLB_PUBLICATION",
+        "RS4XX_GART_TEARDOWN_ERROR_PROPAGATION: dependency edge differs",
+    ),
     "TTM teardown loses table release owner": (
         "GART_TTM_TEARDOWN_OWNERSHIP\t",
         5,
-        "GART_COMMON_TEARDOWN;GART_BACKEND_NOT_READY_UNBIND_STATE",
+        "GART_COMMON_TEARDOWN;GART_BACKEND_NOT_READY_UNBIND_STATE;RS4XX_GART_TEARDOWN_ERROR_PROPAGATION",
         "GART_TTM_TEARDOWN_OWNERSHIP: dependency edge differs",
     ),
     "payload nonclaim polarity is inverted": (

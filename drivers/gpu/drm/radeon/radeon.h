@@ -245,6 +245,13 @@ enum radeon_pll_errata {
 
 struct radeon_device;
 
+struct radeon_debugfs_component {
+	const char			*name;
+	umode_t				mode;
+	void				*data;
+	const struct file_operations	*fops;
+};
+
 
 /*
  * BIOS.
@@ -288,6 +295,7 @@ struct radeon_clock {
 int radeon_pm_init(struct radeon_device *rdev);
 int radeon_pm_late_init(struct radeon_device *rdev);
 void radeon_pm_fini(struct radeon_device *rdev);
+void radeon_pm_fini_hardwareless(struct radeon_device *rdev);
 void radeon_pm_compute_clocks(struct radeon_device *rdev);
 void radeon_pm_suspend(struct radeon_device *rdev);
 void radeon_pm_resume(struct radeon_device *rdev);
@@ -382,6 +390,7 @@ struct radeon_fence {
 	/* RB, DMA, etc. */
 	unsigned		ring;
 	bool			is_vm_update;
+	bool			irq_ref_held;
 
 	wait_queue_entry_t		fence_wake;
 };
@@ -390,6 +399,7 @@ int radeon_fence_driver_start_ring(struct radeon_device *rdev, int ring);
 void radeon_fence_driver_init(struct radeon_device *rdev);
 void radeon_fence_driver_fini(struct radeon_device *rdev);
 void radeon_fence_driver_force_completion(struct radeon_device *rdev, int ring);
+void radeon_fence_driver_force_completion_parked(struct radeon_device *rdev);
 int radeon_fence_emit(struct radeon_device *rdev, struct radeon_fence **fence, int ring);
 void radeon_fence_process(struct radeon_device *rdev, int ring);
 bool radeon_fence_signaled(struct radeon_fence *fence);
@@ -485,6 +495,9 @@ struct radeon_bo_va {
 struct radeon_bo {
 	/* Protected by gem.mutex */
 	struct list_head		list;
+	struct list_head		rs4xx_retained_node;
+	bool				rs4xx_terminally_retained;
+	bool				rs4xx_lifetime_counted;
 	/* Protected by tbo.reserved */
 	u32				initial_domain;
 	struct ttm_place		placements[4];
@@ -604,6 +617,7 @@ struct radeon_mc;
 #define RADEON_GART_PAGE_SNOOP	(1 << 3)
 
 struct radeon_gart {
+	struct mutex			lock;
 	dma_addr_t			table_addr;
 	struct radeon_bo		*robj;
 	void				*ptr;
@@ -622,10 +636,10 @@ void radeon_gart_table_vram_free(struct radeon_device *rdev);
 int radeon_gart_table_vram_pin(struct radeon_device *rdev);
 void radeon_gart_table_vram_unpin(struct radeon_device *rdev);
 int radeon_gart_init(struct radeon_device *rdev);
-void radeon_gart_fini(struct radeon_device *rdev);
-void radeon_gart_unbind(struct radeon_device *rdev, unsigned offset,
-			int pages);
-int radeon_gart_bind(struct radeon_device *rdev, unsigned offset,
+int radeon_gart_fini(struct radeon_device *rdev);
+int radeon_gart_unbind(struct radeon_device *rdev, unsigned int offset,
+		       int pages);
+int radeon_gart_bind(struct radeon_device *rdev, unsigned int offset,
 		     int pages, struct page **pagelist,
 		     dma_addr_t *dma_addr, uint32_t flags);
 
@@ -695,14 +709,20 @@ void radeon_doorbell_free(struct radeon_device *rdev, u32 doorbell);
 struct radeon_flip_work {
 	struct work_struct		flip_work;
 	struct work_struct		unpin_work;
+	struct list_head		retained;
 	struct radeon_device		*rdev;
 	int				crtc_id;
 	u32				target_vblank;
 	uint64_t			base;
 	struct drm_pending_vblank_event *event;
 	struct radeon_bo		*old_rbo;
+	struct radeon_bo		*new_rbo;
 	struct dma_fence		*fence;
 	bool				async;
+	bool				canceled;
+	bool				submitted;
+	bool				vblank_acquired;
+	bool				pflip_acquired;
 };
 
 struct r500_irq_stat_regs {
@@ -764,10 +784,11 @@ struct radeon_irq {
 
 int radeon_irq_kms_init(struct radeon_device *rdev);
 void radeon_irq_kms_fini(struct radeon_device *rdev);
+void radeon_irq_kms_fini_hardwareless(struct radeon_device *rdev);
 void radeon_irq_kms_sw_irq_get(struct radeon_device *rdev, int ring);
 bool radeon_irq_kms_sw_irq_get_delayed(struct radeon_device *rdev, int ring);
 void radeon_irq_kms_sw_irq_put(struct radeon_device *rdev, int ring);
-void radeon_irq_kms_pflip_irq_get(struct radeon_device *rdev, int crtc);
+bool radeon_irq_kms_pflip_irq_get(struct radeon_device *rdev, int crtc);
 void radeon_irq_kms_pflip_irq_put(struct radeon_device *rdev, int crtc);
 void radeon_irq_kms_enable_afmt(struct radeon_device *rdev, int block);
 void radeon_irq_kms_disable_afmt(struct radeon_device *rdev, int block);
@@ -1635,6 +1656,7 @@ struct radeon_pm {
 	/* internal thermal controller on rv6xx+ */
 	enum radeon_int_thermal_type int_thermal_type;
 	struct device	        *int_hwmon_dev;
+	bool			hwmon_initialized;
 	/* fan control parameters */
 	bool                    no_fan;
 	u8                      fan_pulses_per_revolution;
@@ -1643,6 +1665,10 @@ struct radeon_pm {
 	/* dpm */
 	bool                    dpm_enabled;
 	bool                    sysfs_initialized;
+	bool			sysfs_power_profile_initialized;
+	bool			sysfs_power_method_initialized;
+	bool			sysfs_dpm_state_initialized;
+	bool			sysfs_dpm_force_level_initialized;
 	struct radeon_dpm       dpm;
 };
 
@@ -1796,6 +1822,9 @@ static inline void radeon_mn_unregister(struct radeon_bo *bo) {}
  */
 void radeon_debugfs_fence_init(struct radeon_device *rdev);
 void radeon_gem_debugfs_init(struct radeon_device *rdev);
+void radeon_debugfs_add_component(struct radeon_device *rdev,
+				  const char *name, umode_t mode, void *data,
+				  const struct file_operations *fops);
 
 /*
  * ASIC ring specific functions.
@@ -2296,6 +2325,17 @@ struct radeon_atcs {
 typedef uint32_t (*radeon_rreg_t)(struct radeon_device*, uint32_t);
 typedef void (*radeon_wreg_t)(struct radeon_device*, uint32_t, uint32_t);
 
+enum radeon_rs4xx_hardware_state {
+	RADEON_RS4XX_HARDWARE_RUNNING = 0,
+	RADEON_RS4XX_HARDWARE_RESETTING,
+	RADEON_RS4XX_HARDWARE_SUSPENDING,
+	RADEON_RS4XX_HARDWARE_SUSPENDED,
+	RADEON_RS4XX_HARDWARE_RESUMING,
+	RADEON_RS4XX_HARDWARE_SHUTTING_DOWN,
+	RADEON_RS4XX_HARDWARE_SHUTDOWN,
+	RADEON_RS4XX_HARDWARE_PARKED,
+};
+
 struct radeon_device {
 	struct device			*dev;
 	struct drm_device		ddev;
@@ -2377,6 +2417,15 @@ struct radeon_device {
 	struct radeon_pm		pm;
 	struct radeon_uvd		uvd;
 	struct radeon_vce		vce;
+	/* Radeon initialization records the finite debugfs surface before DRM
+	 * assigns the primary minor root. The DRM debugfs callback creates the
+	 * recorded components under that root.
+	 */
+	struct mutex			debugfs_component_lock;
+	unsigned int			debugfs_component_count;
+	bool				debugfs_registration_complete;
+	struct radeon_debugfs_component	debugfs_components[
+		RADEON_DEBUGFS_MAX_COMPONENTS];
 	uint32_t			bios_scratch[RADEON_BIOS_NUM_SCRATCH];
 	struct radeon_wb		wb;
 	struct radeon_dummy_page	dummy_page;
@@ -2385,14 +2434,63 @@ struct radeon_device {
 	bool				accel_working;
 	bool				fastfb_working; /* IGP feature*/
 	bool				needs_reset, in_reset;
+	/* RS400/RS480 hardware transactions enter an admission epoch before
+	 * touching MMIO, the host aperture, or the GART page table. A lifecycle
+	 * transition closes admission and drains admitted transactions before it
+	 * changes hardware state. The transition owner remains admitted for the
+	 * synchronous suspend, reset, resume, or teardown implementation.
+	 */
+	atomic_t			rs4xx_hardware_state;
+	atomic_t			rs4xx_hardware_closing;
+	atomic_t			rs4xx_hardware_transactions;
+	atomic_t			rs4xx_hardware_readers;
+	atomic_t			rs4xx_live_bos;
+	atomic_t			rs4xx_retained_gem_objects;
+	atomic_t			rs4xx_retained_ttm_tables;
+	atomic_long_t			rs4xx_retained_ttm_accounted_pages;
+	wait_queue_head_t		rs4xx_hardware_wait;
+	spinlock_t			rs4xx_hardware_state_lock;
+	struct mutex			rs4xx_hardware_transition_lock;
+	struct mutex			rs4xx_parked_publish_lock;
+	struct mutex			rs4xx_unload_lock;
+	struct mutex			rs4xx_retained_ttm_lock;
+	struct list_head		rs4xx_retained_bos_list;
+	struct list_head		rs4xx_retained_ttm_tables_list;
+	struct task_struct		*rs4xx_hardware_owner;
+	int				rs4xx_gart_fini_error;
+	int				rs4xx_ttm_fini_error;
+	bool				rs4xx_gart_teardown_complete;
+	bool				rs4xx_bound_module_ref_held;
+	bool				rs4xx_terminal_drm_ref_held;
+	bool				rs4xx_terminal_retained;
+	bool				rs4xx_terminal_work_quiesced;
+	bool				rs4xx_unload_completed;
+	struct list_head		rs4xx_terminal_device_node;
+	bool				vga_client_registered;
+	bool				switcheroo_client_registered;
+	bool				switcheroo_domain_pm_initialized;
+	bool				rs4xx_irq_work_initialized;
+	bool				rs4xx_pm_work_initialized;
+	bool				rs4xx_fence_work_initialized;
+	bool				rs4xx_parked_publish_work_initialized;
+	atomic_t			rs4xx_parked_publish_pending;
+	atomic_t			rs4xx_parked_publish_running;
+	struct work_struct		rs4xx_parked_publish_work;
+	struct mutex			rs4xx_retained_flip_lock;
+	struct list_head		rs4xx_retained_flips;
+	struct delayed_work		rs4xx_flip_cleanup_work;
+	bool				rs4xx_reset_reprogramming;
+	bool				rs4xx_reset_reprogram_failed;
+	unsigned int			rs4xx_reset_reprogram_completed;
+	bool				rs4xx_scanout_release_tracking;
+	bool				rs4xx_scanout_release_failed;
 #if RADEON_OBSERVE_DEV
 	struct radeon_dev_context	dev_context;
 #endif
-	/* Failed RS400/RS480 reset with the GA register bus wedged: every
-	 * MMIO read -- direct 3D space, RBBM after clock gating re-engages,
-	 * MC-indirect GART queries -- is a non-posted HyperTransport black
-	 * hole that hard-locks the CPU. gpu_parked gates all register access
-	 * on paths still reachable from userspace teardown.
+	/* A failed RS400/RS480 reset leaves the GA register-bus client wedged.
+	 * The PARKED admission state makes every Radeon MMIO leaf return without
+	 * issuing a non-posted HyperTransport transaction; gpu_parked also selects
+	 * CPU-only fence publication and leak-to-reboot teardown.
 	 */
 	bool				gpu_parked;
 	/* radeon_suspend_kms sets asic_suspended before radeon_suspend()
@@ -2442,6 +2540,7 @@ struct radeon_device {
 	/* ACPI interface */
 	struct radeon_atif		atif;
 	struct radeon_atcs		atcs;
+	bool				acpi_registered;
 	/* srbm instance registers */
 	struct mutex			srbm_mutex;
 	/* clock, powergating flags */
@@ -2487,12 +2586,148 @@ static inline int radeon_dev_hardware_available(const struct radeon_device *rdev
 	return 0;
 }
 
+static inline bool radeon_rs4xx_hardware_target(const struct radeon_device *rdev)
+{
+	return rdev && (rdev->flags & RADEON_IS_IGP) &&
+	       (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480);
+}
+
+static inline bool radeon_rs4xx_gart_teardown_is_complete(
+	const struct radeon_device *rdev)
+{
+	/* Pairs with the release after page table storage leaves service. */
+	return smp_load_acquire(&rdev->rs4xx_gart_teardown_complete);
+}
+
+static inline bool radeon_rs4xx_terminal_ownership_retained(
+	const struct radeon_device *rdev)
+{
+	return radeon_rs4xx_hardware_target(rdev) &&
+	       (READ_ONCE(rdev->gpu_parked) ||
+		READ_ONCE(rdev->rs4xx_gart_fini_error) != 0 ||
+		READ_ONCE(rdev->rs4xx_ttm_fini_error) != 0 ||
+		atomic_read(&rdev->rs4xx_retained_gem_objects) != 0 ||
+		atomic_read(&rdev->rs4xx_retained_ttm_tables) != 0 ||
+		atomic_long_read(
+			&rdev->rs4xx_retained_ttm_accounted_pages) != 0);
+}
+
+static inline int radeon_rs4xx_terminal_ownership_error(
+	const struct radeon_device *rdev)
+{
+	int error;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+	error = READ_ONCE(rdev->rs4xx_gart_fini_error);
+	if (error)
+		return error;
+	error = READ_ONCE(rdev->rs4xx_ttm_fini_error);
+	if (error)
+		return error;
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+	if (atomic_read(&rdev->rs4xx_retained_gem_objects) != 0 ||
+	    atomic_read(&rdev->rs4xx_retained_ttm_tables) != 0 ||
+	    atomic_long_read(&rdev->rs4xx_retained_ttm_accounted_pages) != 0)
+		return -EBUSY;
+	return 0;
+}
+
+int __radeon_rs4xx_hardware_access_begin(struct radeon_device *rdev);
+void __radeon_rs4xx_hardware_access_end(struct radeon_device *rdev);
+int radeon_rs4xx_hardware_access_wait_begin(struct radeon_device *rdev);
+bool radeon_rs4xx_hardware_transition_owned(struct radeon_device *rdev);
+int radeon_rs4xx_hardware_transaction_begin(struct radeon_device *rdev);
+int radeon_rs4xx_hardware_transaction_wait_begin(struct radeon_device *rdev);
+int radeon_rs4xx_hardware_transaction_try_begin(struct radeon_device *rdev);
+void radeon_rs4xx_hardware_transaction_end(struct radeon_device *rdev);
+int radeon_rs4xx_hardware_transition_begin(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state expected_state,
+	enum radeon_rs4xx_hardware_state transition_state);
+void radeon_rs4xx_hardware_shutdown_begin(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state *prior_state);
+void radeon_rs4xx_hardware_transition_end(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state final_state);
+void radeon_rs4xx_latch_parked_state(struct radeon_device *rdev);
+void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev);
+int radeon_rs4xx_gart_teardown_wait(struct radeon_device *rdev);
+void radeon_rs4xx_publish_parked_state(struct radeon_device *rdev);
+void radeon_rs4xx_terminal_quiesce(struct radeon_device *rdev);
+
+static inline int radeon_rs4xx_hardware_access_begin(struct radeon_device *rdev)
+{
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+	return __radeon_rs4xx_hardware_access_begin(rdev);
+}
+
+static inline void radeon_rs4xx_hardware_access_end(struct radeon_device *rdev)
+{
+	if (radeon_rs4xx_hardware_target(rdev))
+		__radeon_rs4xx_hardware_access_end(rdev);
+}
+
+static inline int radeon_device_lock_hardware(struct radeon_device *rdev)
+{
+	int r;
+
+	r = radeon_rs4xx_hardware_transaction_begin(rdev);
+	if (r)
+		return r;
+	if (radeon_rs4xx_hardware_transition_owned(rdev))
+		return 0;
+	down_read(&rdev->exclusive_lock);
+	if (radeon_rs4xx_hardware_target(rdev))
+		r = 0;
+	else
+		r = radeon_dev_hardware_available(rdev);
+	if (r)
+		up_read(&rdev->exclusive_lock);
+	if (r)
+		radeon_rs4xx_hardware_transaction_end(rdev);
+	return r;
+}
+
+static inline void radeon_device_unlock_hardware(struct radeon_device *rdev)
+{
+	if (!radeon_rs4xx_hardware_transition_owned(rdev))
+		up_read(&rdev->exclusive_lock);
+	radeon_rs4xx_hardware_transaction_end(rdev);
+}
+
+static inline int radeon_device_trylock_hardware(struct radeon_device *rdev)
+{
+	int r;
+
+	r = radeon_rs4xx_hardware_transaction_try_begin(rdev);
+	if (r)
+		return r;
+	if (radeon_rs4xx_hardware_transition_owned(rdev))
+		return 0;
+	if (!down_read_trylock(&rdev->exclusive_lock)) {
+		radeon_rs4xx_hardware_transaction_end(rdev);
+		return -EBUSY;
+	}
+	if (radeon_rs4xx_hardware_target(rdev))
+		return 0;
+	r = radeon_dev_hardware_available(rdev);
+	if (!r)
+		return 0;
+	up_read(&rdev->exclusive_lock);
+	radeon_rs4xx_hardware_transaction_end(rdev);
+	return r;
+}
+
 bool radeon_is_px(struct drm_device *dev);
 int radeon_device_init(struct radeon_device *rdev,
 		       struct drm_device *ddev,
 		       struct pci_dev *pdev,
 		       uint32_t flags);
-void radeon_device_fini(struct radeon_device *rdev);
+int radeon_device_fini(struct radeon_device *rdev);
 int radeon_gpu_wait_for_idle(struct radeon_device *rdev);
 
 #define RADEON_MIN_MMIO_SIZE 0x10000
@@ -2502,19 +2737,67 @@ void r100_mm_wreg_slow(struct radeon_device *rdev, uint32_t reg, uint32_t v);
 static inline uint32_t r100_mm_rreg(struct radeon_device *rdev, uint32_t reg,
 				    bool always_indirect)
 {
+	u32 value;
+
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
 	/* The mmio size is 64kb at minimum. Allows the if to be optimized out. */
 	if ((reg < rdev->rmmio_size || reg < RADEON_MIN_MMIO_SIZE) && !always_indirect)
-		return readl(((void __iomem *)rdev->rmmio) + reg);
+		value = readl(((void __iomem *)rdev->rmmio) + reg);
 	else
-		return r100_mm_rreg_slow(rdev, reg);
+		value = r100_mm_rreg_slow(rdev, reg);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return value;
 }
 static inline void r100_mm_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v,
 				bool always_indirect)
 {
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
 	if ((reg < rdev->rmmio_size || reg < RADEON_MIN_MMIO_SIZE) && !always_indirect)
 		writel(v, ((void __iomem *)rdev->rmmio) + reg);
 	else
 		r100_mm_wreg_slow(rdev, reg, v);
+	radeon_rs4xx_hardware_access_end(rdev);
+}
+
+static inline u8 r100_mm_rreg8(struct radeon_device *rdev, u32 reg)
+{
+	u8 value;
+
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
+	value = readb(rdev->rmmio + reg);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return value;
+}
+
+static inline void r100_mm_wreg8(struct radeon_device *rdev, u32 reg, u8 value)
+{
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
+	writeb(value, rdev->rmmio + reg);
+	radeon_rs4xx_hardware_access_end(rdev);
+}
+
+static inline u16 r100_mm_rreg16(struct radeon_device *rdev, u32 reg)
+{
+	u16 value;
+
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
+	value = readw(rdev->rmmio + reg);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return value;
+}
+
+static inline void r100_mm_wreg16(struct radeon_device *rdev, u32 reg,
+				  u16 value)
+{
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
+	writew(value, rdev->rmmio + reg);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 u32 r100_io_rreg(struct radeon_device *rdev, u32 reg);
@@ -2546,10 +2829,10 @@ static inline struct radeon_fence *to_radeon_fence(struct dma_fence *f)
 /*
  * Registers read & write functions.
  */
-#define RREG8(reg) readb((rdev->rmmio) + (reg))
-#define WREG8(reg, v) writeb(v, (rdev->rmmio) + (reg))
-#define RREG16(reg) readw((rdev->rmmio) + (reg))
-#define WREG16(reg, v) writew(v, (rdev->rmmio) + (reg))
+#define RREG8(reg) r100_mm_rreg8(rdev, (reg))
+#define WREG8(reg, v) r100_mm_wreg8(rdev, (reg), (v))
+#define RREG16(reg) r100_mm_rreg16(rdev, (reg))
+#define WREG16(reg, v) r100_mm_wreg16(rdev, (reg), (v))
 #define RREG32(reg) r100_mm_rreg(rdev, (reg), false)
 #define RREG32_IDX(reg) r100_mm_rreg(rdev, (reg), true)
 #define DREG32(reg) pr_info("REGISTER: " #reg " : 0x%08X\n",	\
@@ -2839,7 +3122,11 @@ extern void radeon_pci_config_reset(struct radeon_device *rdev);
 extern void r600_set_bios_scratch_engine_hung(struct radeon_device *rdev, bool hung);
 extern void radeon_agp_disable(struct radeon_device *rdev);
 extern int radeon_modeset_init(struct radeon_device *rdev);
-extern void radeon_modeset_fini(struct radeon_device *rdev);
+extern int radeon_modeset_fini(struct radeon_device *rdev);
+bool radeon_page_flip_quiesce(struct radeon_device *rdev);
+bool radeon_page_flip_finalize_retained(struct radeon_device *rdev,
+					bool release_buffers);
+void radeon_page_flip_cleanup_work(struct work_struct *work_item);
 extern bool radeon_card_posted(struct radeon_device *rdev);
 extern void radeon_update_bandwidth_info(struct radeon_device *rdev);
 extern void radeon_update_display_priority(struct radeon_device *rdev);
