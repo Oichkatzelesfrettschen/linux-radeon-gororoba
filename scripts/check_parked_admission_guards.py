@@ -610,10 +610,10 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
             "gem-create entry-to-guard prefix",
         )
 
-    call_matches = list(re.finditer(rf"\b{re.escape(guard['precedes'])}\b", body))
+    call_matches = list(re.finditer(rf"\b{re.escape(guard['precedes'])}\s*\(", body))
     if not call_matches:
         raise GuardError(
-            f"{guard['id']}: {guard['precedes']} absent from {guard['function']}"
+            f"{guard['id']}: {guard['precedes']} call absent from {guard['function']}"
         )
     first_call = call_matches[0]
     if guard_match.start() > first_call.start():
@@ -1541,7 +1541,7 @@ def check_command_submission_lock(
         body,
         parser_failure_start,
         parser_failure_end,
-        r"\s*\{\s*DRM_ERROR\s*\([^;]*\)\s*;\s*"
+        r"\s*\{\s*DRM_ERROR\s*\(\s*\)\s*;\s*"
         r"radeon_cs_parser_fini\s*\(\s*&parser\s*,\s*r\s*\)\s*;\s*"
         r"up_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
         r"r\s*=\s*radeon_cs_handle_lockup\s*\(\s*rdev\s*,\s*r\s*\)\s*;\s*"
@@ -1567,7 +1567,7 @@ def check_command_submission_lock(
         r"\s*\{\s*r\s*=\s*radeon_cs_parser_relocs\s*"
         r"\(\s*&parser\s*\)\s*;\s*"
         r"if\s*\(\s*r\s*&&\s*r\s*!=\s*-ERESTARTSYS\s*\)\s*"
-        r"DRM_ERROR\s*\([^;]*\)\s*;\s*\}\s*",
+        r"DRM_ERROR\s*\(\s*,\s*r\s*\)\s*;\s*\}\s*",
         "command-submission relocation success stage",
     )
     require_empty_source_interval(
@@ -1640,7 +1640,7 @@ def check_command_submission_lock(
         body,
         fence_validation_start,
         fence_validation_end,
-        r"\s*\{\s*DRM_ERROR\s*\([^;]*\)\s*;\s*"
+        r"\s*\{\s*DRM_ERROR\s*\(\s*\)\s*;\s*"
         r"r\s*=\s*-EINVAL\s*;\s*\}\s*",
         "command-submission validated-BO fence failure",
     )
@@ -2028,6 +2028,11 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 \treturn 0;
 }
 """,
+    "allocation name is not called": FIXTURE_GOOD.replace(
+        "\tr = radeon_bo_create(rdev);",
+        "\t(void)radeon_bo_create;\n\tr = -ENOMEM;",
+        1,
+    ),
 }
 
 DUMB_FIXTURE_GOOD = """
@@ -3156,6 +3161,16 @@ CS_FIXTURES_BAD = {
         "\tr = radeon_cs_parser_init(&parser, data);\n\tr = 0;\n",
         1,
     ),
+    "parser initialization error log clobbers result": CS_FIXTURE_GOOD.replace(
+        'DRM_ERROR("Failed to initialize parser !\\n");',
+        'DRM_ERROR("Failed to initialize parser: %d !\\n", r = 0);',
+        1,
+    ),
+    "relocation error log clobbers result": CS_FIXTURE_GOOD.replace(
+        'DRM_ERROR("Failed to parse relocation %d!\\n", r);',
+        'DRM_ERROR("Failed to parse relocation %d!\\n", r = 0);',
+        1,
+    ),
     "relocation result is clobbered before failure handling": (
         CS_FIXTURE_GOOD.replace(
             CS_VALIDATION_FAILURE_FIXTURE,
@@ -3252,6 +3267,7 @@ CS_FIXTURES_BAD = {
 
 MUTATION_EXPECTED_ERRORS = {
     "gem-create": {
+        "allocation name is not called": "radeon_bo_create call absent",
         "success return precedes the parked guard": "entry-to-guard prefix",
         "infinite loop precedes the parked guard": "entry-to-guard prefix",
         "opaque terminator precedes the parked guard": "entry-to-guard prefix",
@@ -3324,6 +3340,12 @@ MUTATION_EXPECTED_ERRORS = {
         ),
     },
     "command-submission": {
+        "parser initialization error log clobbers result": (
+            "parser initialization failure statement sequence differs"
+        ),
+        "relocation error log clobbers result": (
+            "relocation success stage statement sequence differs"
+        ),
         "success return follows the read lock": "lock-to-guard",
         "nested extra unlock follows admission": "reset-to-parser-zero",
         "parser initialization failure guard is deleted": (
