@@ -597,6 +597,18 @@ def check_guard(root: Path, guard: dict[str, str]) -> None:
         guard_match.start(),
         f"{guard['id']}: parked guard",
     )
+    if guard["id"] == "gem-create":
+        require_exact_statement_sequence(
+            body,
+            function_open,
+            guard_match.start(),
+            r"\{\s*"
+            r"struct\s+radeon_bo\s*\*\s*robj\s*;\s*"
+            r"unsigned\s+long\s+max_size\s*;\s*"
+            r"int\s+r\s*;\s*"
+            r"\*\s*obj\s*=\s*NULL\s*;\s*",
+            "gem-create entry-to-guard prefix",
+        )
 
     call_matches = list(re.finditer(rf"\b{re.escape(guard['precedes'])}\b", body))
     if not call_matches:
@@ -832,6 +844,28 @@ def check_wait_idle_lock(
             r"30\s*\*\s*HZ\s*\)\s*;"
         ),
         "wait-idle-flush reservation wait",
+    )
+    require_exact_statement_sequence(
+        body,
+        function_open,
+        wait.end(),
+        r"\{\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*=\s*dev->dev_private\s*;\s*"
+        r"struct\s+drm_radeon_gem_wait_idle\s*\*\s*args\s*=\s*data\s*;\s*"
+        r"struct\s+drm_gem_object\s*\*\s*gobj\s*;\s*"
+        r"struct\s+radeon_bo\s*\*\s*robj\s*;\s*"
+        r"int\s+r\s*=\s*0\s*;\s*"
+        r"uint32_t\s+cur_placement\s*=\s*0\s*;\s*"
+        r"long\s+ret\s*;\s*"
+        r"gobj\s*=\s*drm_gem_object_lookup\s*\(\s*filp\s*,\s*"
+        r"args->handle\s*\)\s*;\s*"
+        r"if\s*\(\s*gobj\s*==\s*NULL\s*\)\s*\{\s*"
+        r"return\s+-ENOENT\s*;\s*\}\s*"
+        r"robj\s*=\s*gem_to_radeon_bo\s*\(\s*gobj\s*\)\s*;\s*"
+        r"ret\s*=\s*dma_resv_wait_timeout\s*\(\s*"
+        r"robj->tbo.base.resv\s*,\s*DMA_RESV_USAGE_READ\s*,\s*true\s*,\s*"
+        r"30\s*\*\s*HZ\s*\)\s*;\s*",
+        "wait-idle-flush entry-to-wait prefix",
     )
     lock = one_match_in_function(body, READ_LOCK, "wait-idle-flush read lock")
     placement = one_match_in_function(
@@ -1646,6 +1680,24 @@ def check_dumb_create_propagation(root: Path) -> None:
     reject_conditional_directives(body, "dumb-create")
     function_open = body.find("{")
     lock = one_match_in_function(body, READ_LOCK, "dumb-create read lock")
+    require_exact_statement_sequence(
+        body,
+        function_open,
+        lock.end(),
+        r"\{\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*=\s*dev->dev_private\s*;\s*"
+        r"struct\s+drm_gem_object\s*\*\s*gobj\s*;\s*"
+        r"uint32_t\s+handle\s*;\s*"
+        r"int\s+r\s*;\s*"
+        r"args->pitch\s*=\s*radeon_align_pitch\s*\(\s*rdev\s*,\s*"
+        r"args->width\s*,\s*DIV_ROUND_UP\s*\(\s*args->bpp\s*,\s*8\s*\)\s*,\s*"
+        r"0\s*\)\s*;\s*"
+        r"args->size\s*=\s*\(\s*u64\s*\)\s*args->pitch\s*\*\s*"
+        r"args->height\s*;\s*"
+        r"args->size\s*=\s*ALIGN\s*\(\s*args->size\s*,\s*PAGE_SIZE\s*\)\s*;\s*"
+        r"down_read\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*",
+        "dumb-create entry-to-lock prefix",
+    )
     creator = one_match_in_function(
         body,
         re.compile(
@@ -1726,6 +1778,25 @@ def check_dumb_create_propagation(root: Path) -> None:
     )
 
 
+GEM_FIXTURE_OPEN = "int radeon_gem_object_create(struct radeon_device *rdev)\n{\n"
+GEM_FIXTURE_PREFIX = (
+    "int radeon_gem_object_create(struct radeon_device *rdev,\n"
+    "\t\t\t     struct drm_gem_object **obj)\n"
+    "{\n"
+    "\tstruct radeon_bo *robj;\n"
+    "\tunsigned long max_size;\n"
+    "\tint r;\n\n"
+    "\t*obj = NULL;\n"
+)
+
+
+def complete_gem_fixture(fixture: str) -> str:
+    """Give every GEM fixture the exact audited entry prefix."""
+    if GEM_FIXTURE_OPEN not in fixture:
+        raise GuardError("GEM fixture has no recognized function opening")
+    return fixture.replace(GEM_FIXTURE_OPEN, GEM_FIXTURE_PREFIX)
+
+
 FIXTURE_GOOD = """
 int radeon_gem_object_create(struct radeon_device *rdev)
 {
@@ -1737,6 +1808,21 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 """
 
 FIXTURES_BAD = {
+    "infinite loop precedes the parked guard": FIXTURE_GOOD.replace(
+        "\tif (READ_ONCE(rdev->gpu_parked))",
+        "\tfor (;;)\n\t\t;\n\tif (READ_ONCE(rdev->gpu_parked))",
+        1,
+    ),
+    "opaque terminator precedes the parked guard": FIXTURE_GOOD.replace(
+        "\tif (READ_ONCE(rdev->gpu_parked))",
+        "\tBUG();\n\tif (READ_ONCE(rdev->gpu_parked))",
+        1,
+    ),
+    "declaration expression exits before the parked guard": FIXTURE_GOOD.replace(
+        "\tif (READ_ONCE(rdev->gpu_parked))",
+        "\tint prefix_result = ({ return 0; 0; });\n\tif (READ_ONCE(rdev->gpu_parked))",
+        1,
+    ),
     "disabled function precedes an active unguarded definition": (
         "#if 0\n"
         + FIXTURE_GOOD
@@ -1811,6 +1897,16 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 \tr = radeon_bo_create(rdev);
 \tif (READ_ONCE(rdev->gpu_parked))
 \t\treturn -EIO;
+\treturn 0;
+}
+""",
+    "success return precedes the parked guard": """
+int radeon_gem_object_create(struct radeon_device *rdev)
+{
+\treturn 0;
+\tif (READ_ONCE(rdev->gpu_parked))
+\t\treturn -EIO;
+\tr = radeon_bo_create(rdev);
 \treturn 0;
 }
 """,
@@ -1926,8 +2022,20 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 }
 
 DUMB_FIXTURE_GOOD = """
-int radeon_mode_dumb_create(struct drm_file *file_priv)
+int radeon_mode_dumb_create(struct drm_file *file_priv,
+\t\t\t    struct drm_device *dev,
+\t\t\t    struct drm_mode_create_dumb *args)
 {
+\tstruct radeon_device *rdev = dev->dev_private;
+\tstruct drm_gem_object *gobj;
+\tuint32_t handle;
+\tint r;
+
+\targs->pitch = radeon_align_pitch(rdev, args->width,
+\t\t\t\t\t DIV_ROUND_UP(args->bpp, 8), 0);
+\targs->size = (u64)args->pitch * args->height;
+\targs->size = ALIGN(args->size, PAGE_SIZE);
+
 \tdown_read(&rdev->exclusive_lock);
 \tr = radeon_gem_object_create(rdev, args->size, 0,
 \t\t\t\t     RADEON_GEM_DOMAIN_VRAM, 0,
@@ -1941,6 +2049,31 @@ int radeon_mode_dumb_create(struct drm_file *file_priv)
 """
 
 DUMB_FIXTURES_BAD = {
+    "success return precedes the read lock": DUMB_FIXTURE_GOOD.replace(
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\treturn 0;\n\tdown_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "conditional success return precedes the read lock": DUMB_FIXTURE_GOOD.replace(
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tif (rdev)\n\t\treturn 0;\n\tdown_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "infinite loop precedes the read lock": DUMB_FIXTURE_GOOD.replace(
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tfor (;;)\n\t\t;\n\tdown_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "opaque terminator precedes the read lock": DUMB_FIXTURE_GOOD.replace(
+        "\tdown_read(&rdev->exclusive_lock);",
+        "\tBUG();\n\tdown_read(&rdev->exclusive_lock);",
+        1,
+    ),
+    "declaration expression exits before the read lock": DUMB_FIXTURE_GOOD.replace(
+        "\tint r;",
+        "\tint r = ({ return 0; 0; });",
+        1,
+    ),
     "result guard controlled by an unbraced unreachable condition": (
         DUMB_FIXTURE_GOOD.replace(
             "\tif (r)\n\t\treturn r;",
@@ -2205,8 +2338,23 @@ PRIME_FIXTURE_MUTATIONS = {
 }
 
 WAIT_FIXTURE_GOOD = """
-int radeon_gem_wait_idle_ioctl(struct drm_device *dev)
+int radeon_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
+\t\t\t      struct drm_file *filp)
 {
+\tstruct radeon_device *rdev = dev->dev_private;
+\tstruct drm_radeon_gem_wait_idle *args = data;
+\tstruct drm_gem_object *gobj;
+\tstruct radeon_bo *robj;
+\tint r = 0;
+\tuint32_t cur_placement = 0;
+\tlong ret;
+
+\tgobj = drm_gem_object_lookup(filp, args->handle);
+\tif (gobj == NULL) {
+\t\treturn -ENOENT;
+\t}
+\trobj = gem_to_radeon_bo(gobj);
+
 \tret = dma_resv_wait_timeout(robj->tbo.base.resv, DMA_RESV_USAGE_READ,
 \t\t\t\t    true, 30 * HZ);
 \tif (ret == 0)
@@ -2229,6 +2377,30 @@ int radeon_gem_wait_idle_ioctl(struct drm_device *dev)
 """
 
 WAIT_FIXTURE_MUTATIONS = {
+    "success result initializer is nonzero": (
+        "\tint r = 0;",
+        "\tint r = -EIO;",
+    ),
+    "success result is uninitialized": (
+        "\tint r = 0;",
+        "\tint r;",
+    ),
+    "success result is clobbered before the wait": (
+        "\trobj = gem_to_radeon_bo(gobj);",
+        "\trobj = gem_to_radeon_bo(gobj);\n\tr = -EIO;",
+    ),
+    "success return precedes the reservation wait": (
+        "\tret = dma_resv_wait_timeout",
+        "\treturn 0;\n\tret = dma_resv_wait_timeout",
+    ),
+    "infinite loop precedes the reservation wait": (
+        "\tret = dma_resv_wait_timeout",
+        "\tfor (;;)\n\t\t;\n\tret = dma_resv_wait_timeout",
+    ),
+    "declaration expression exits before the reservation wait": (
+        "\tint r = 0;",
+        "\tint r = ({ return 0; 0; });",
+    ),
     "guard polarity inverted": (
         "if (READ_ONCE(rdev->gpu_parked))",
         "if (!READ_ONCE(rdev->gpu_parked))",
@@ -2435,9 +2607,9 @@ int radeon_gem_object_create(struct radeon_device *rdev)
 FIXTURE_GOOD_WITH_COMMENT_TOKEN_LITERAL = """
 int radeon_gem_object_create(struct radeon_device *rdev)
 {
-\tdev_info(rdev->dev, "//");
 \tif (READ_ONCE(rdev->gpu_parked))
 \t\treturn -EIO;
+\tdev_info(rdev->dev, "//");
 \tr = radeon_bo_create(rdev);
 \treturn 0;
 }
@@ -3063,11 +3235,24 @@ CS_FIXTURES_BAD = {
 }
 
 MUTATION_EXPECTED_ERRORS = {
+    "gem-create": {
+        "success return precedes the parked guard": "entry-to-guard prefix",
+        "infinite loop precedes the parked guard": "entry-to-guard prefix",
+        "opaque terminator precedes the parked guard": "entry-to-guard prefix",
+        "declaration expression exits before the parked guard": (
+            "entry-to-guard prefix"
+        ),
+    },
     "dumb-create": {
+        "success return precedes the read lock": "entry-to-lock prefix",
+        "conditional success return precedes the read lock": "entry-to-lock prefix",
+        "infinite loop precedes the read lock": "entry-to-lock prefix",
+        "opaque terminator precedes the read lock": "entry-to-lock prefix",
+        "declaration expression exits before the read lock": "entry-to-lock prefix",
         "creator result is clobbered before its guard": "unlock-to-result-guard",
         "creator result is clobbered before the read unlock": "creator-to-unlock",
         "complete transaction is inside an unreachable digraph block": (
-            "read lock is outside direct function scope"
+            "entry-to-lock prefix"
         ),
     },
     "prime-import": {
@@ -3096,6 +3281,14 @@ MUTATION_EXPECTED_ERRORS = {
         ),
     },
     "wait-idle-flush": {
+        "success result initializer is nonzero": "entry-to-wait prefix",
+        "success result is uninitialized": "entry-to-wait prefix",
+        "success result is clobbered before the wait": "entry-to-wait prefix",
+        "success return precedes the reservation wait": "entry-to-wait prefix",
+        "infinite loop precedes the reservation wait": "entry-to-wait prefix",
+        "declaration expression exits before the reservation wait": (
+            "entry-to-wait prefix"
+        ),
         "success return follows the read lock": "lock-to-guard",
         "flush predicate is always false": "VRAM predicate: expected one match",
         "flush predicate is controlled by an unreachable condition": (
@@ -3145,6 +3338,29 @@ def mutation_error_matches(contract: str, name: str, error: GuardError) -> bool:
     return expected is None or expected in str(error)
 
 
+def classify_gem_bad_fixture(
+    tmp: Path,
+    spec: dict[str, str],
+    name: str,
+    fixture: str,
+) -> int:
+    """Return zero only when one GEM fixture reaches its intended rejection."""
+    (tmp / "radeon_gem.c").write_text(fixture, encoding="utf-8")
+    try:
+        check_guard(tmp, spec)
+    except GuardError as error:
+        if mutation_error_matches("gem-create", name, error):
+            print(f"selftest known-bad rejected: {name}")
+            return 0
+        print(
+            f"selftest known-bad MISDIRECTED: gem-create {name}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"selftest known-bad ACCEPTED: {name}", file=sys.stderr)
+    return 1
+
+
 def selftest(tmp: Path) -> int:
     """Run the fixtures. A checker earns trust by discriminating, not by passing."""
     spec = {
@@ -3163,6 +3379,7 @@ def selftest(tmp: Path) -> int:
         "digraph tokens inside a string": FIXTURE_GOOD_WITH_DIGRAPH_LITERAL,
     }
     for name, fixture in good.items():
+        fixture = complete_gem_fixture(fixture)
         (tmp / "radeon_gem.c").write_text(fixture, encoding="utf-8")
         try:
             check_guard(tmp, spec)
@@ -3172,14 +3389,8 @@ def selftest(tmp: Path) -> int:
             failures += 1
 
     for name, fixture in FIXTURES_BAD.items():
-        (tmp / "radeon_gem.c").write_text(fixture, encoding="utf-8")
-        try:
-            check_guard(tmp, spec)
-        except GuardError:
-            print(f"selftest known-bad rejected: {name}")
-        else:
-            print(f"selftest known-bad ACCEPTED: {name}", file=sys.stderr)
-            failures += 1
+        fixture = complete_gem_fixture(fixture)
+        failures += classify_gem_bad_fixture(tmp, spec, name, fixture)
 
     dumb_dir = tmp / SUBTREE
     dumb_dir.mkdir(parents=True, exist_ok=True)

@@ -1161,6 +1161,10 @@ SOURCE_EXPECTED_ERRORS = {
         "reset backup, reset, replay, and force-completion structure: "
         "missing or out of order: down_write(&rdev->exclusive_lock)"
     ),
+    "parked CS condition is inverted": (
+        "command-submission: expected one unconditional parked guard in "
+        "radeon_cs_ioctl, found 0"
+    ),
     "relocation chunk accepts a partial record": (
         "relocation chunk length admission guard differs: "
         "exact condition match count is 0"
