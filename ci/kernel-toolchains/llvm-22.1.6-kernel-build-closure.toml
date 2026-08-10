@@ -1,0 +1,67 @@
+schema = 2
+family = "llvm"
+version = "22.1.6"
+architecture = "x86_64_v3"
+command_count = 9
+library_count = 8
+support_count = 2
+manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-closure.tsv"
+manifest_sha256 = "4ececf99ed823827688b893f0e142e52e046f7d6888b04357c9260203d0ad541"
+prefix_tree_schema = "gororoba-kernel-toolchain-prefix-tree-v1"
+prefix_tree_manifest = "ci/kernel-toolchains/llvm-22.1.6-kernel-build-prefix-tree.tsv"
+prefix_tree_manifest_sha256 = "7e9a49f730736b24cb2a9ca88be58a6203e94f5df693e72f61f1a4d836b1c8f2"
+prefix_entry_count = 7174
+prefix_directory_count = 355
+prefix_regular_count = 6792
+prefix_symlink_count = 27
+resource_directory = "lib/clang/22"
+resource_entry_count = 295
+resource_directory_count = 11
+resource_regular_count = 284
+runtime_boundary = "exact-llvm-prefix-tree-with-recorded-host-runtime-closure"
+
+[[package]]
+component = "clang"
+archive = "clang-22.1.6-2-x86_64_v3.pkg.tar.zst"
+archive_sha256 = "51d82fcc4898220826e9c1eec8b79c43224ca474a95cc8aa749c364697076a27"
+signature = "clang-22.1.6-2-x86_64_v3.pkg.tar.zst.sig"
+signature_sha256 = "25a7c68d513e4d9d34685fe8538db00b46042f75f6a0120cb6db1053180b147a"
+signature_result = "good"
+signer_fingerprint = "882DCFE48E2051D48E2562ABF3B607488DB35A47"
+
+[[package]]
+component = "llvm"
+archive = "llvm-22.1.6-2-x86_64_v3.pkg.tar.zst"
+archive_sha256 = "cbfa007309b32f646ef786a84466adc53338462de863a0cfc9ce08d3d5a03a17"
+signature = "llvm-22.1.6-2-x86_64_v3.pkg.tar.zst.sig"
+signature_sha256 = "4b7a45906d9973abfa4446877554d01a5ef5d8b557f9840677728a28a041e2a8"
+signature_result = "good"
+signer_fingerprint = "882DCFE48E2051D48E2562ABF3B607488DB35A47"
+
+[[package]]
+component = "llvm-libs"
+archive = "llvm-libs-22.1.6-2-x86_64_v3.pkg.tar.zst"
+archive_sha256 = "d5b1b326669f827caa6cbea658fc9f3bbdb721ad6e37f222402623c942a298f7"
+signature = "llvm-libs-22.1.6-2-x86_64_v3.pkg.tar.zst.sig"
+signature_sha256 = "69c948d2f91c7be2b4aca0d30cc9edcefc6f3d05d6b7531a90bc81207e76a122"
+signature_result = "good"
+signer_fingerprint = "882DCFE48E2051D48E2562ABF3B607488DB35A47"
+
+[[package]]
+component = "lld"
+archive = "lld-22.1.6-1.1-x86_64_v3.pkg.tar.zst"
+archive_sha256 = "41e97e452cb65f4ca7016b043ad86ba505c038d3de00e5e32f78db6096c7f284"
+signature = "lld-22.1.6-1.1-x86_64_v3.pkg.tar.zst.sig"
+signature_sha256 = "507e470f22b29e6e47d5c1fce76f6261e6e1d9e080da21cd0a5e60cf51f02590"
+signature_result = "good"
+signer_fingerprint = "882DCFE48E2051D48E2562ABF3B607488DB35A47"
+
+[host_policy]
+uid = 0
+gid = 0
+group_writable = false
+other_writable = false
+runner_directory_write = false
+runner_file_write = false
+extended_attributes = false
+special_files = false

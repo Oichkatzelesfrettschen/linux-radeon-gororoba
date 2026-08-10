@@ -72,6 +72,44 @@ C_COMMENT_OR_LITERAL = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
 )
+C_LINE_SPLICE = re.compile(r"\\(?:\r\n|\n|\r)")
+C_CONDITIONAL_DIRECTIVE = re.compile(
+    r"(?m)^[ \t\v\f]*(?:#|%:)[ \t\v\f]*"
+    r"(?P<kind>if|ifdef|ifndef|elif|else|endif)\b"
+    r"(?P<tail>[^\r\n]*)"
+)
+C_MACRO_OVERRIDE = re.compile(
+    r"(?m)^[ \t\v\f]*(?:#|%:)[ \t\v\f]*(?:define|undef)"
+    r"[ \t\v\f]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
+)
+C_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+PALM_REGISTRATION_PROTECTED_MACROS = (
+    "CHIP_PALM",
+    "DRM_MINOR_PRIMARY",
+    "RADEON_DEV_PROFILE_MUTATE",
+    "copy_from_user",
+    "debugfs_create_file",
+    "down_write",
+    "evergreen_gpu_pci_config_reset_safe",
+    "radeon_dev_hardware_available",
+    "radeon_dev_profile_enabled",
+    "sysfs_streq",
+    "up_write",
+)
+PALM_RESET_PROTECTED_MACROS = (
+    "CHIP_PALM",
+    "CP_ME_CNTL",
+    "CP_ME_HALT",
+    "CP_PFP_HALT",
+    "RREG32",
+    "WREG32",
+    "lockdep_assert_held_write",
+    "radeon_dev_hardware_available",
+    "radeon_dev_mark_mutation",
+    "radeon_palm_dev_pci_reset_unsafe",
+    "radeon_pci_config_reset",
+)
 C_TOKEN = re.compile(
     r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
     r"|[A-Za-z_][A-Za-z0-9_]*"
@@ -355,7 +393,7 @@ def require(condition: bool, message: str) -> None:
 
 
 def strip_comments(source: str) -> str:
-    """Blank C comments while preserving literals, positions, and line count."""
+    """Apply C line splicing, then blank comments while retaining literals."""
 
     def blank_comment(match: re.Match[str]) -> str:
         token = match.group(0)
@@ -363,16 +401,22 @@ def strip_comments(source: str) -> str:
             return token
         return re.sub(r"[^\n]", " ", match.group(0))
 
-    return C_COMMENT_OR_LITERAL.sub(blank_comment, source)
+    return C_COMMENT_OR_LITERAL.sub(blank_comment, C_LINE_SPLICE.sub("", source))
 
 
 def strip_comments_and_literals(source: str) -> str:
-    """Blank comments and C literals while preserving source positions."""
+    """Apply C line splicing, then blank comments and C literals."""
 
     def blank(match: re.Match[str]) -> str:
         return re.sub(r"[^\n]", " ", match.group(0))
 
-    return C_COMMENT_OR_LITERAL.sub(blank, source)
+    blanked = C_COMMENT_OR_LITERAL.sub(blank, C_LINE_SPLICE.sub("", source))
+    return blanked.replace("<%", "{ ").replace("%>", "} ")
+
+
+def normalized_code(source: str) -> str:
+    """Return a whitespace-normalized C token mask for exact intervals."""
+    return re.sub(r"\s+", " ", strip_comments_and_literals(source)).strip()
 
 
 def c_tokens(source: str, label: str) -> tuple[str, ...]:
@@ -400,11 +444,213 @@ def require_outer_function_match(
     body: str,
     match: re.Match[str],
     label: str,
+    allowed_label: str | None = None,
+    expected_depth: int = 1,
 ) -> None:
+    code = strip_comments_and_literals(body)
     require(
-        brace_depth_at(body, match.start()) == 1,
-        f"{label} is not an unconditional outer function statement",
+        brace_depth_at(code, match.start()) == expected_depth,
+        f"{label} is not a direct statement at depth {expected_depth}",
     )
+    function_open = code.find("{")
+    require(function_open >= 0, f"{label} function body is absent")
+    boundary = function_open + 1
+    depth = 1
+    parenthesis_depth = 0
+    bracket_depth = 0
+    for offset in range(function_open + 1, match.start()):
+        token = code[offset]
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth -= 1
+            if depth == expected_depth:
+                boundary = offset + 1
+        elif token == "(":
+            parenthesis_depth += 1
+        elif token == ")":
+            parenthesis_depth -= 1
+            require(
+                parenthesis_depth >= 0,
+                f"{label} carries invalid parenthesis order",
+            )
+        elif token == "[":
+            bracket_depth += 1
+        elif token == "]":
+            bracket_depth -= 1
+            require(
+                bracket_depth >= 0,
+                f"{label} carries invalid bracket order",
+            )
+        elif (
+            token == ";"
+            and depth == expected_depth
+            and parenthesis_depth == 0
+            and bracket_depth == 0
+        ):
+            boundary = offset + 1
+    direct_prefix = code[boundary : match.start()].strip()
+    require(
+        not direct_prefix or direct_prefix == f"{allowed_label}:",
+        f"{label} is controlled by an unbraced statement",
+    )
+
+
+CONTROL_FLOW_KEYWORDS = (
+    "if",
+    "else",
+    "for",
+    "while",
+    "do",
+    "switch",
+    "case",
+    "default",
+    "break",
+    "continue",
+    "goto",
+    "return",
+)
+OPAQUE_CONTROL_IDENTIFIERS = frozenset(
+    {
+        "BUG",
+        "BUG_ON",
+        "__asm",
+        "__asm__",
+        "__builtin_trap",
+        "__builtin_unreachable",
+        "asm",
+        "do_exit",
+        "make_task_dead",
+        "panic",
+        "unreachable",
+    }
+)
+
+
+def require_no_opaque_control(body: str, label: str) -> None:
+    """Reject finite nonlocal exits and inline assembly from a critical path."""
+    identifiers = set(C_IDENTIFIER.findall(strip_comments_and_literals(body)))
+    opaque_controls = sorted(identifiers & OPAQUE_CONTROL_IDENTIFIERS)
+    require(
+        not opaque_controls,
+        f"{label} carries opaque control: {opaque_controls}",
+    )
+
+
+def require_control_flow_census(
+    body: str,
+    expected_counts: tuple[int, ...],
+    expected_returns: tuple[tuple[str, int], ...],
+    label: str,
+) -> None:
+    """Require lexical control under the stated returning-call assumption."""
+    code = strip_comments_and_literals(body)
+    actual_counts = tuple(
+        len(re.findall(rf"\b{keyword}\b", code))
+        for keyword in CONTROL_FLOW_KEYWORDS
+    )
+    require(
+        actual_counts == expected_counts,
+        f"{label} control-keyword census differs",
+    )
+    returns = tuple(
+        (normalized_code(match.group(0)), brace_depth_at(code, match.start()))
+        for match in re.finditer(r"\breturn\b[^;{}]*;", code)
+    )
+    require(returns == expected_returns, f"{label} return set differs")
+    labels = re.findall(
+        r"(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*:",
+        code,
+    )
+    require(not labels, f"{label} carries a source label")
+
+
+def require_exact_code_interval(
+    body: str,
+    start_marker: str,
+    end_marker: str,
+    expected_code: str,
+    expected_depth: int,
+    label: str,
+) -> tuple[int, int]:
+    """Require one direct, closed C interval between exact source anchors."""
+    start_match = require_one_match(body, re.escape(start_marker), label)
+    require_outer_function_match(
+        body,
+        start_match,
+        label,
+        expected_depth=expected_depth,
+    )
+    interval_end = body.find(end_marker, start_match.start())
+    require(interval_end >= 0, f"{label} end marker is absent")
+    interval_end += len(end_marker)
+    actual_code = normalized_code(body[start_match.start() : interval_end])
+    require(actual_code == expected_code, f"{label} exact interval differs")
+    return start_match.start(), interval_end
+
+
+def require_no_conditional_preprocessor(body: str, label: str) -> None:
+    """Reject conditional preprocessing inside one audited function."""
+    require(
+        C_CONDITIONAL_DIRECTIVE.search(body) is None,
+        f"{label} contains a conditional preprocessing directive",
+    )
+
+
+def require_definition_outside_conditional(
+    code: str,
+    definition_offset: int,
+    label: str,
+) -> None:
+    """Reject a function definition enclosed by conditional preprocessing."""
+    conditional_stack = conditional_stack_at(code, definition_offset, label)
+    require(
+        not conditional_stack,
+        f"{label} is enclosed by conditional preprocessing",
+    )
+
+
+def conditional_stack_at(
+    code: str,
+    offset: int,
+    label: str,
+) -> list[tuple[str, str, str]]:
+    """Return the exact conditional preprocessing stack at one offset."""
+    conditional_stack: list[tuple[str, str, str]] = []
+    for directive in C_CONDITIONAL_DIRECTIVE.finditer(code, 0, offset):
+        kind = directive.group("kind")
+        tail = directive.group("tail").strip()
+        if kind in {"if", "ifdef", "ifndef"}:
+            conditional_stack.append((kind, tail, "initial"))
+        elif kind in {"elif", "else"}:
+            require(
+                bool(conditional_stack),
+                f"{label} follows an unmatched #{kind}",
+            )
+            opening_kind, opening_tail, _branch = conditional_stack[-1]
+            conditional_stack[-1] = (opening_kind, opening_tail, kind)
+        elif conditional_stack:
+            conditional_stack.pop()
+        else:
+            raise InterfaceError(f"{label} follows an unmatched #endif")
+    return conditional_stack
+
+
+def require_no_local_macro_overrides(
+    source: str,
+    protected_names: tuple[str, ...],
+    label: str,
+) -> None:
+    """Reject primary source file overrides of protected identifiers."""
+    code = strip_comments_and_literals(source)
+    overridden = sorted(
+        {
+            match.group("name")
+            for match in C_MACRO_OVERRIDE.finditer(code)
+            if match.group("name") in protected_names
+        }
+    )
+    require(not overridden, f"{label} overrides protected macros: {overridden}")
 
 
 def identifier_counts(texts: dict[str, str], identifier: str) -> dict[str, int]:
@@ -417,20 +663,135 @@ def identifier_counts(texts: dict[str, str], identifier: str) -> dict[str, int]:
     }
 
 
-def function_body(source: str, name: str) -> str:
+def function_body(
+    source: str,
+    name: str,
+    *,
+    require_unconditional: bool = False,
+    expected_enclosing_condition: str | None = None,
+    expected_enclosing_stack: tuple[tuple[str, str, str], ...] | None = None,
+    protect_identifiers: bool = False,
+) -> str:
     """Return one column-zero C function definition, brace to brace."""
-    lines = strip_comments(source).splitlines()
-    scan_lines = strip_comments_and_literals(source).splitlines()
-    start = None
-    for index, line in enumerate(scan_lines):
-        if re.match(rf"^(?:[A-Za-z_].*\b)?{re.escape(name)}\s*\(", line):
-            start = index
-            break
-    require(start is not None, f"function {name} is absent")
+    code = strip_comments(source)
+    definition_code = strip_comments_and_literals(source)
+    definition = re.search(
+        rf"(?m)^(?:[A-Za-z_].*\b)?{re.escape(name)}\s*\(",
+        definition_code,
+    )
+    require(definition is not None, f"function {name} is absent")
+    conditional_requirements = sum(
+        (
+            require_unconditional,
+            expected_enclosing_condition is not None,
+            expected_enclosing_stack is not None,
+        )
+    )
+    require(
+        conditional_requirements <= 1,
+        f"function {name} has conflicting conditional requirements",
+    )
+    if require_unconditional:
+        require_definition_outside_conditional(
+            definition_code,
+            definition.start(),
+            f"function {name}",
+        )
+    elif expected_enclosing_condition is not None:
+        require(
+            conditional_stack_at(
+                definition_code,
+                definition.start(),
+                f"function {name}",
+            )
+            == [("if", expected_enclosing_condition, "initial")],
+            f"function {name} conditional scope differs",
+        )
+    elif expected_enclosing_stack is not None:
+        require(
+            conditional_stack_at(
+                definition_code,
+                definition.start(),
+                f"function {name}",
+            )
+            == list(expected_enclosing_stack),
+            f"function {name} conditional scope differs",
+        )
+    lines = code.splitlines()
+    scan_lines = definition_code.splitlines()
+    start = code.count("\n", 0, definition.start())
     for index in range(start, len(scan_lines)):
         if FUNCTION_END.match(scan_lines[index]):
-            return "\n".join(lines[start : index + 1])
+            function_text = "\n".join(lines[start : index + 1])
+            if protect_identifiers:
+                protected_identifier_set = set(
+                    C_IDENTIFIER.findall(
+                        strip_comments_and_literals(function_text)
+                    )
+                )
+                enclosing_conditions = []
+                if expected_enclosing_condition is not None:
+                    enclosing_conditions.append(expected_enclosing_condition)
+                if expected_enclosing_stack is not None:
+                    enclosing_conditions.extend(
+                        condition_tail
+                        for _kind, condition_tail, _branch
+                        in expected_enclosing_stack
+                    )
+                for condition in enclosing_conditions:
+                    protected_identifier_set.update(
+                        C_IDENTIFIER.findall(condition)
+                    )
+                protected_identifier_set.discard("defined")
+                require_no_local_macro_overrides(
+                    source,
+                    tuple(sorted(protected_identifier_set)),
+                    f"function {name}",
+                )
+            return function_text
     raise InterfaceError(f"function {name} has no closing brace")
+
+
+def initializer_body(
+    source: str,
+    name: str,
+    *,
+    protect_identifiers: bool = False,
+) -> str:
+    """Return one unconditional C initializer through its closing brace."""
+    code = strip_comments_and_literals(source)
+    definition = re.search(
+        rf"(?m)^[A-Za-z_][^\n]*\b{re.escape(name)}\s*=\s*\{{",
+        code,
+    )
+    require(definition is not None, f"initializer {name} is absent")
+    require_definition_outside_conditional(
+        code,
+        definition.start(),
+        f"initializer {name}",
+    )
+    opening = code.find("{", definition.start())
+    require(opening >= 0, f"initializer {name} has no opening brace")
+    depth = 0
+    for offset in range(opening, len(code)):
+        if code[offset] == "{":
+            depth += 1
+        elif code[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                initializer_text = code[definition.start() : offset + 1]
+                if protect_identifiers:
+                    protected_identifiers = tuple(
+                        sorted(set(C_IDENTIFIER.findall(initializer_text)))
+                    )
+                    require_no_local_macro_overrides(
+                        source,
+                        protected_identifiers,
+                        f"initializer {name}",
+                    )
+                return initializer_text
+            require(depth >= 0, f"initializer {name} has invalid brace order")
+    raise InterfaceError(f"initializer {name} has no closing brace")
 
 
 def direct_call_names(body: str, function_name: str) -> tuple[str, ...]:
@@ -955,11 +1316,11 @@ def validate_rs4xx_output_schema_paths(
     require_one_match(
         source_without_comments,
         r"#define RS480_CP_ME_RAM_DUMP_LIMIT 0x100u\s*"
-        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED\s*\\\s*"
+        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED\s*"
         r"\(RS480_CP_ME_RAM_DUMP_LIMIT \+ 2\)\s*"
-        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED\s*\\\s*"
+        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED\s*"
         r"\(RS480_CP_ME_RAM_DUMP_LIMIT \+ 4\)\s*"
-        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED\s*\\\s*"
+        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED\s*"
         r"\(RS480_CP_ME_RAM_DUMP_LIMIT \+ 6\)",
         "RS4xx CP-ME encoded terminal positions",
     )
@@ -1568,7 +1929,12 @@ def validate_palm_reset_registration(
     )
 
     driver_source = texts["drivers/gpu/drm/radeon/radeon_drv.c"]
-    dispatcher_body = function_body(driver_source, "radeon_dev_debugfs_register")
+    dispatcher_body = function_body(
+        driver_source,
+        "radeon_dev_debugfs_register",
+        expected_enclosing_condition="RADEON_OBSERVE_DEV",
+        protect_identifiers=True,
+    )
     require_one_match(
         dispatcher_body,
         r"^static void radeon_dev_debugfs_register\(struct drm_minor \*minor\)"
@@ -1576,9 +1942,36 @@ def validate_palm_reset_registration(
         r"radeon_evergreen_dev_debugfs_register\(minor\);\s*\}$",
         "development debugfs dispatcher",
     )
-    require_one_match(
-        driver_source,
+    kms_driver_body = initializer_body(driver_source, "kms_driver")
+    kms_directives = list(C_CONDITIONAL_DIRECTIVE.finditer(kms_driver_body))
+    require(
+        [
+            (directive.group("kind"), directive.group("tail").strip())
+            for directive in kms_directives
+        ]
+        == [("if", "RADEON_OBSERVE_DEV"), ("endif", "")],
+        "DRM development debugfs callback conditional region differs",
+    )
+    kms_debugfs_match = require_one_match(
+        kms_driver_body,
         r"\.debugfs_init = radeon_dev_debugfs_register",
+        "DRM development debugfs callback",
+    )
+    require(
+        conditional_stack_at(
+            kms_driver_body,
+            kms_debugfs_match.start(),
+            "DRM development debugfs callback",
+        )
+        == [("if", "RADEON_OBSERVE_DEV", "initial")],
+        "DRM development debugfs callback branch differs",
+    )
+    callback_region = kms_driver_body[
+        kms_directives[0].start() : kms_directives[-1].end()
+    ]
+    require_no_local_macro_overrides(
+        driver_source,
+        tuple(sorted(set(C_IDENTIFIER.findall(callback_region)))),
         "DRM development debugfs callback",
     )
     require(
@@ -1591,7 +1984,32 @@ def validate_palm_reset_registration(
     )
 
     palm_source = texts["drivers/gpu/drm/radeon/radeon_evergreen_dev.c"]
-    write_body = function_body(palm_source, "radeon_force_pci_reset_safe_write")
+    require_no_local_macro_overrides(
+        palm_source,
+        PALM_REGISTRATION_PROTECTED_MACROS,
+        "Palm reset registration source",
+    )
+    reset_fops_body = initializer_body(
+        palm_source,
+        "radeon_force_pci_reset_safe_fops",
+        protect_identifiers=True,
+    )
+    require_no_conditional_preprocessor(
+        reset_fops_body,
+        "Palm reset file operations",
+    )
+    require_one_match(
+        reset_fops_body,
+        r"\.write\s*=\s*radeon_force_pci_reset_safe_write\s*,",
+        "Palm reset file operations write callback",
+    )
+    write_body = function_body(
+        palm_source,
+        "radeon_force_pci_reset_safe_write",
+        require_unconditional=True,
+        protect_identifiers=True,
+    )
+    require_no_conditional_preprocessor(write_body, "Palm reset write body")
     write_position_gate = require_one_match(
         write_body,
         r"if \(\*ppos != 0\)\s*return -ESPIPE;",
@@ -1685,7 +2103,12 @@ def validate_palm_reset_registration(
         (write_unlock, "Palm reset writer lock release"),
         (write_return, "Palm reset write result"),
     ):
-        require_outer_function_match(write_body, match, label)
+        require_outer_function_match(
+            write_body,
+            match,
+            label,
+            allowed_label="out_unlock" if match is write_unlock else None,
+        )
     write_code = strip_comments_and_literals(write_body)
     require(
         re.findall(
@@ -1717,7 +2140,16 @@ def validate_palm_reset_registration(
         "Palm reset execution has an unbound source reference",
     )
 
-    register_body = function_body(palm_source, "radeon_evergreen_dev_debugfs_register")
+    register_body = function_body(
+        palm_source,
+        "radeon_evergreen_dev_debugfs_register",
+        require_unconditional=True,
+        protect_identifiers=True,
+    )
+    require_no_conditional_preprocessor(
+        register_body,
+        "Palm reset registration body",
+    )
     register_minor = require_one_match(
         register_body,
         r"if \(!minor \|\| minor->type != DRM_MINOR_PRIMARY \|\| !minor->dev \|\|"
@@ -1750,11 +2182,44 @@ def validate_palm_reset_registration(
         < register_file.start(),
         "Palm reset minor, device, scope, and registration order differs",
     )
-
-    reset_body = function_body(
-        texts["drivers/gpu/drm/radeon/evergreen.c"],
-        "evergreen_gpu_pci_config_reset_safe",
+    register_code = strip_comments_and_literals(register_body)
+    require(
+        re.fullmatch(
+            r"void\s+radeon_evergreen_dev_debugfs_register\s*"
+            r"\(\s*struct\s+drm_minor\s*\*minor\s*\)\s*\{\s*"
+            r"struct\s+radeon_device\s*\*rdev\s*;\s*"
+            r"if\s*\(\s*!minor\s*\|\|\s*"
+            r"minor->type\s*!=\s*DRM_MINOR_PRIMARY\s*\|\|\s*"
+            r"!minor->dev\s*\|\|\s*!minor->debugfs_root\s*\)\s*"
+            r"return\s*;\s*"
+            r"rdev\s*=\s*minor->dev->dev_private\s*;\s*"
+            r"if\s*\(\s*!rdev\s*\|\|\s*"
+            r"rdev->family\s*!=\s*CHIP_PALM\s*\|\|\s*"
+            r"!radeon_dev_profile_enabled\s*\(\s*rdev\s*,\s*"
+            r"RADEON_DEV_PROFILE_MUTATE\s*\)\s*\)\s*return\s*;\s*"
+            r"debugfs_create_file\s*\(\s*,\s*0200\s*,\s*"
+            r"minor->debugfs_root\s*,\s*rdev\s*,\s*"
+            r"&radeon_force_pci_reset_safe_fops\s*\)\s*;\s*"
+            r"\}\s*",
+            register_code,
+        )
+        is not None,
+        "Palm reset registration statement sequence differs",
     )
+
+    reset_source = texts["drivers/gpu/drm/radeon/evergreen.c"]
+    require_no_local_macro_overrides(
+        reset_source,
+        PALM_RESET_PROTECTED_MACROS,
+        "Palm reset implementation source",
+    )
+    reset_body = function_body(
+        reset_source,
+        "evergreen_gpu_pci_config_reset_safe",
+        require_unconditional=True,
+        protect_identifiers=True,
+    )
+    require_no_conditional_preprocessor(reset_body, "Palm reset body")
     reset_family = require_one_match(
         reset_body,
         r"^int evergreen_gpu_pci_config_reset_safe"
@@ -1793,14 +2258,60 @@ def validate_palm_reset_registration(
         r'radeon_dev_mark_mutation\(rdev, "Palm PCI config reset"\);',
         "Palm reset mutation marker",
     )
+    for match, label in (
+        (reset_lock, "Palm reset writer lock assertion"),
+        (reset_available, "Palm reset body availability refusal"),
+        (reset_unsafe, "Palm reset exact unsafe Boolean refusal"),
+        (reset_marker, "Palm reset mutation marker"),
+    ):
+        require_outer_function_match(reset_body, match, label)
     hardware_accesses = list(PALM_RESET_HARDWARE_ACCESS.finditer(reset_body))
     require(
         bool(hardware_accesses), "Palm reset body has no classified hardware access"
     )
     first_hardware = hardware_accesses[0]
+    require_outer_function_match(
+        reset_body,
+        first_hardware,
+        "Palm reset first classified hardware access",
+    )
     require(
         first_hardware.group(0).startswith("WREG32("),
         "Palm reset first classified hardware access is not CP halt",
+    )
+    reset_code = strip_comments_and_literals(reset_body)
+    reset_prefix = re.match(
+        r"int\s+evergreen_gpu_pci_config_reset_safe\s*"
+        r"\(\s*struct\s+radeon_device\s*\*rdev\s*\)\s*\{\s*"
+        r"struct\s+evergreen_mc_save\s+save\s*;\s*"
+        r"u32\s+tmp\s*,\s*i\s*;\s*int\s+r\s*;\s*"
+        r"if\s*\(\s*!rdev\s*\|\|\s*rdev->family\s*!=\s*CHIP_PALM\s*\)\s*"
+        r"return\s+-ENODEV\s*;\s*"
+        r"lockdep_assert_held_write\s*\(\s*&rdev->exclusive_lock\s*\)\s*;\s*"
+        r"r\s*=\s*radeon_dev_hardware_available\s*\(\s*rdev\s*\)\s*;\s*"
+        r"if\s*\(\s*r\s*\)\s*return\s+r\s*;\s*"
+        r"if\s*\(\s*!radeon_palm_dev_pci_reset_unsafe\s*"
+        r"\(\s*rdev\s*\)\s*\)\s*\{\s*"
+        r"dev_warn\s*\(\s*rdev->dev\s*,\s*\)\s*;\s*"
+        r"return\s+-EPERM\s*;\s*\}\s*"
+        r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,\s*\)\s*;\s*"
+        r"dev_info\s*\(\s*rdev->dev\s*,\s*\)\s*;\s*"
+        r"(?P<first_hardware>WREG32\s*\(\s*CP_ME_CNTL\s*,\s*"
+        r"CP_ME_HALT\s*\|\s*CP_PFP_HALT\s*\)\s*;)",
+        reset_code,
+    )
+    require(
+        reset_prefix is not None
+        and reset_prefix.start("first_hardware") == first_hardware.start(),
+        "Palm reset pre-hardware statement sequence differs",
+    )
+    require(
+        not re.findall(r"\bgoto\s+[A-Za-z_][A-Za-z0-9_]*\s*;", reset_code)
+        and not re.findall(
+            r"(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*:",
+            reset_code,
+        ),
+        "Palm reset body carries a goto or label",
     )
     require(
         reset_family.end()
@@ -1863,15 +2374,19 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
     path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     require(path in texts, f"wedged reset-probe source is absent: {path}")
     source = texts[path]
-    function_start = source.find("static int rs480_wedged_3d_reset(")
-    function_end = source.find(
-        "\nstatic int rs480_reset_hang_probe_show(", function_start
+    wedged_body = function_body(
+        source,
+        "rs480_wedged_3d_reset",
+        expected_enclosing_stack=(
+            ("if", "defined(CONFIG_DEBUG_FS)", "initial"),
+            ("if", "RADEON_MUTATE_DEV", "initial"),
+        ),
+        protect_identifiers=True,
     )
-    require(
-        function_start >= 0 and function_end > function_start,
-        "wedged reset-probe function boundary is absent",
+    require_no_conditional_preprocessor(
+        wedged_body,
+        "wedged reset-probe function",
     )
-    function_body = source[function_start:function_end]
     reset_call = "reset_result = radeon_gpu_reset_forced(rdev);"
     read_lock = "down_read(&rdev->exclusive_lock);"
     parked_branch = "if (rdev->gpu_parked) {"
@@ -1891,11 +2406,37 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
         read_unlock,
     ):
         require(
-            function_body.count(marker) == 1,
+            wedged_body.count(marker) == 1,
             f"wedged reset-probe carries an invalid marker count: {marker}",
         )
 
-    post_reset = function_body.split(reset_call, 1)[1]
+    reset_call_end = wedged_body.find(reset_call) + len(reset_call)
+    wedged_prefix = normalized_code(wedged_body[:reset_call_end])
+    expected_wedged_prefix = (
+        "static int rs480_wedged_3d_reset(struct radeon_device *rdev, "
+        "struct seq_file *m, bool require_backend_idle) { const char "
+        "*state_name = require_backend_idle ? : ; const char *verdict; "
+        "u32 pre_reset_status, post_reset_status; int reset_result; "
+        "pre_reset_status = RREG32(R_000E40_RBBM_STATUS); if "
+        "(require_backend_idle ? !rs480_frontend_wedged(pre_reset_status) "
+        ": !rs480_frontend_busy(pre_reset_status)) { seq_printf(m, , "
+        "state_name, pre_reset_status, require_backend_idle ? : ); "
+        "return 0; } radeon_dev_mark_mutation(rdev, ); reset_result = "
+        "radeon_gpu_reset_forced(rdev);"
+    )
+    require(
+        wedged_prefix == expected_wedged_prefix,
+        "wedged reset-probe pre-reset transaction differs",
+    )
+    require_control_flow_census(
+        wedged_body,
+        (4, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+        (("return 0;", 2), ("return 0;", 1)),
+        "wedged reset-probe function",
+    )
+    require_no_opaque_control(wedged_body, "wedged reset-probe function")
+
+    post_reset = wedged_body.split(reset_call, 1)[1]
     read_lock_at = post_reset.find(read_lock)
     parked_branch_at = post_reset.find(parked_branch)
     parked_sentinel_at = post_reset.find(parked_sentinel)
@@ -1913,6 +2454,21 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
         < read_unlock_at,
         "wedged reset-probe post-state transaction order differs",
     )
+    marker_depths = (
+        (reset_call, 1),
+        (read_lock, 1),
+        (parked_branch, 1),
+        (parked_sentinel, 2),
+        (else_branch, 2),
+        (status_read, 2),
+        (read_unlock, 1),
+    )
+    for marker, expected_depth in marker_depths:
+        require(
+            brace_depth_at(wedged_body, wedged_body.find(marker))
+            == expected_depth,
+            f"wedged reset-probe marker is not at depth {expected_depth}: {marker}",
+        )
 
     before_read_lock = C_LINE_COMMENT.sub(
         "", C_BLOCK_COMMENT.sub("", post_reset[:read_lock_at])
@@ -1941,13 +2497,26 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
     path = "drivers/gpu/drm/radeon/radeon_device.c"
     require(path in texts, f"forced GPU-reset source is absent: {path}")
     source = texts[path]
-    function_start = source.find("static int radeon_gpu_reset_internal(")
-    function_end = source.find("\n/**\n * radeon_gpu_reset -", function_start)
-    require(
-        function_start >= 0 and function_end > function_start,
-        "forced GPU-reset implementation boundary is absent",
+    reset_function_body = function_body(
+        source,
+        "radeon_gpu_reset_internal",
+        require_unconditional=True,
+        protect_identifiers=True,
     )
-    function_body = source[function_start:function_end]
+    require_no_conditional_preprocessor(
+        reset_function_body,
+        "forced GPU-reset implementation",
+    )
+    wrapper_body = function_body(
+        source,
+        "radeon_gpu_reset_forced",
+        expected_enclosing_condition="RADEON_MUTATE_DEV",
+        protect_identifiers=True,
+    )
+    require_no_conditional_preprocessor(
+        wrapper_body,
+        "forced GPU-reset wrapper",
+    )
     transaction_pattern = (
         r"down_write\(&rdev->exclusive_lock\);\s*"
         r"if \(!force_reset && !rdev->needs_reset\) \{\s*"
@@ -1965,17 +2534,61 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         r"int radeon_gpu_reset_forced\(struct radeon_device \*rdev\)\s*"
         r"\{\s*return radeon_gpu_reset_internal\(rdev, true\);\s*\}"
     )
-    require(
-        re.search(transaction_pattern, function_body, re.DOTALL) is not None,
-        "forced GPU-reset request is outside the writer transaction",
+    transaction_match = require_one_match(
+        reset_function_body,
+        transaction_pattern,
+        "forced GPU-reset writer transaction",
+    )
+    require_outer_function_match(
+        reset_function_body,
+        transaction_match,
+        "forced GPU-reset writer transaction",
     )
     reset_counter = "atomic_inc(&rdev->gpu_reset_counter);"
-    reset_counter_at = function_body.find(reset_counter)
+    reset_counter_at = reset_function_body.find(reset_counter)
     require(
         reset_counter_at >= 0,
         "forced GPU-reset counter transition is absent",
     )
-    reset_body = function_body[reset_counter_at + len(reset_counter):]
+    expected_reset_prefix = (
+        "static int radeon_gpu_reset_internal(struct radeon_device *rdev, "
+        "bool force_reset) { unsigned ring_sizes[RADEON_NUM_RINGS]; "
+        "uint32_t *ring_data[RADEON_NUM_RINGS]; bool saved = false; "
+        "bool gpu_parked; int i, r; down_write(&rdev->exclusive_lock); "
+        "if (!force_reset && !rdev->needs_reset) { "
+        "up_write(&rdev->exclusive_lock); return 0; } if "
+        "(rdev->gpu_parked) { rdev->needs_reset = false; "
+        "up_write(&rdev->exclusive_lock); dev_err_once(rdev->dev, ); "
+        "return -EIO; } if (force_reset) rdev->needs_reset = true; "
+        "atomic_inc(&rdev->gpu_reset_counter);"
+    )
+    require(
+        normalized_code(
+            reset_function_body[: reset_counter_at + len(reset_counter)]
+        )
+        == expected_reset_prefix,
+        "forced GPU-reset declaration and writer transaction prefix differs",
+    )
+    require_control_flow_census(
+        reset_function_body,
+        (19, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        (
+            ("return 0;", 2),
+            ("return -EIO;", 2),
+            ("return r;", 2),
+            ("return r;", 1),
+        ),
+        "forced GPU-reset implementation",
+    )
+    require_no_opaque_control(
+        reset_function_body,
+        "forced GPU-reset implementation",
+    )
+    require(
+        brace_depth_at(reset_function_body, reset_counter_at) == 1,
+        "forced GPU-reset counter transition is not an outer function statement",
+    )
+    reset_body = reset_function_body[reset_counter_at + len(reset_counter):]
     require(
         "up_write(&rdev->exclusive_lock);" not in reset_body,
         "forced GPU-reset writer lock ends before a legitimate downgrade",
@@ -1988,43 +2601,48 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         reset_body.count("up_read(&rdev->exclusive_lock);") == 2,
         "forced GPU-reset read-lock release paths differ",
     )
-    parked_exit_pattern = (
-        r"rdev->in_reset = true;\s*"
-        r"rdev->needs_reset = false;\s*"
-        r"msleep\(1\);\s*"
-        r"dev_err\(rdev->dev,\s*"
-        r'"parked: downgrading exclusive lock\\n"\);\s*'
-        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
-        r"msleep\(1\);\s*"
-        r"dev_info\(rdev->dev,\s*"
-        r'"GPU reset failed, GPU parked, host kept alive\\n"\);\s*'
-        r"rdev->in_reset = false;\s*"
-        r"up_read\(&rdev->exclusive_lock\);\s*"
-        r"msleep\(1\);\s*"
-        r"dev_err\(rdev->dev,\s*"
-        r'"parked: radeon_gpu_reset returning %d to caller\\n",\s*r\);\s*'
-        r"return r;"
+    parked_exit_start = (
+        'dev_err(rdev->dev, "parked: async agents quiesced, '
+        'entering quiet epoch\\n");'
     )
-    ordinary_exit_pattern = (
-        r"rdev->in_reset = true;\s*"
-        r"rdev->needs_reset = false;\s*"
-        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
-        r"drm_helper_resume_force_mode\(rdev_to_drm\(rdev\)\);.*?"
-        r"rdev->needs_reset = r == -EAGAIN;\s*"
-        r"rdev->in_reset = false;\s*"
-        r"up_read\(&rdev->exclusive_lock\);\s*"
-        r"return r;"
+    expected_parked_exit = (
+        "dev_err(rdev->dev, ); rdev->in_reset = true; "
+        "rdev->needs_reset = false; msleep(1); dev_err(rdev->dev, ); "
+        "downgrade_write(&rdev->exclusive_lock); msleep(1); "
+        "dev_info(rdev->dev, ); rdev->in_reset = false; "
+        "up_read(&rdev->exclusive_lock); msleep(1); "
+        "dev_err(rdev->dev, , r); return r;"
+    )
+    require_exact_code_interval(
+        reset_function_body,
+        parked_exit_start,
+        "return r;",
+        expected_parked_exit,
+        2,
+        "forced GPU-reset parked exit",
+    )
+    expected_ordinary_exit = (
+        "radeon_hpd_init(rdev); rdev->in_reset = true; "
+        "rdev->needs_reset = false; "
+        "downgrade_write(&rdev->exclusive_lock); "
+        "drm_helper_resume_force_mode(rdev_to_drm(rdev)); if "
+        "((rdev->pm.pm_method == PM_METHOD_DPM) && rdev->pm.dpm_enabled) "
+        "radeon_pm_compute_clocks(rdev); if (!r) { "
+        "r = radeon_ib_ring_tests(rdev); if (r && saved) r = -EAGAIN; "
+        "} else { dev_info(rdev->dev, ); } "
+        "rdev->needs_reset = r == -EAGAIN; rdev->in_reset = false; "
+        "up_read(&rdev->exclusive_lock); return r;"
+    )
+    require_exact_code_interval(
+        reset_function_body,
+        "radeon_hpd_init(rdev);",
+        "return r;",
+        expected_ordinary_exit,
+        1,
+        "forced GPU-reset ordinary exit",
     )
     require(
-        len(re.findall(parked_exit_pattern, reset_body, re.DOTALL)) == 1,
-        "forced GPU-reset parked exit does not downgrade at its quiet epoch",
-    )
-    require(
-        len(re.findall(ordinary_exit_pattern, reset_body, re.DOTALL)) == 1,
-        "forced GPU-reset ordinary exit does not downgrade before mode resume",
-    )
-    require(
-        re.search(wrapper_pattern, texts[path], re.DOTALL) is not None,
+        re.fullmatch(wrapper_pattern, wrapper_body, re.DOTALL) is not None,
         "forced GPU-reset entry does not select the forced transaction",
     )
 
@@ -3505,6 +4123,46 @@ def self_test(root: Path) -> int:
     validate_mutation_audit(source_texts, features)
     registration_source_mutations = (
         (
+            "conditional dispatcher selects an active empty definition",
+            "drivers/gpu/drm/radeon/radeon_drv.c",
+            "static void radeon_dev_debugfs_register(struct drm_minor *minor)\n"
+            "{\n"
+            "\tradeon_rs480_re_debugfs_register(minor);\n"
+            "\tradeon_evergreen_dev_debugfs_register(minor);\n"
+            "}",
+            "#if 0\n"
+            "static void radeon_dev_debugfs_register(struct drm_minor *minor)\n"
+            "{\n"
+            "\tradeon_rs480_re_debugfs_register(minor);\n"
+            "\tradeon_evergreen_dev_debugfs_register(minor);\n"
+            "}\n"
+            "#else\n"
+            "static void radeon_dev_debugfs_register(struct drm_minor *minor)\n"
+            "{\n"
+            "}\n"
+            "#endif",
+        ),
+        (
+            "conditional DRM callback selects a null field",
+            "drivers/gpu/drm/radeon/radeon_drv.c",
+            ".debugfs_init = radeon_dev_debugfs_register,",
+            "#if 0\n"
+            "\t.debugfs_init = radeon_dev_debugfs_register,\n"
+            "#else\n"
+            "\t.debugfs_init = NULL,\n"
+            "#endif",
+        ),
+        (
+            "conditional file operations select a null write callback",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            ".write = radeon_force_pci_reset_safe_write,",
+            "#if 0\n"
+            "\t.write = radeon_force_pci_reset_safe_write,\n"
+            "#else\n"
+            "\t.write = NULL,\n"
+            "#endif",
+        ),
+        (
             "direct RS4xx callback",
             "drivers/gpu/drm/radeon/radeon_drv.c",
             ".debugfs_init = radeon_dev_debugfs_register",
@@ -3571,6 +4229,13 @@ def self_test(root: Path) -> int:
             "removed_lock_assertion;",
         ),
         (
+            "conditional lock assertion without braces",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "lockdep_assert_held_write(&rdev->exclusive_lock);",
+            "if (false)\n"
+            "\t\tlockdep_assert_held_write(&rdev->exclusive_lock);",
+        ),
+        (
             "reset body releases caller lock",
             "drivers/gpu/drm/radeon/evergreen.c",
             "lockdep_assert_held_write(&rdev->exclusive_lock);",
@@ -3620,6 +4285,26 @@ def self_test(root: Path) -> int:
             "r = radeon_dev_hardware_available(rdev);\n\tif (false)\n\t\treturn r;",
         ),
         (
+            "conditional reset availability assignment without braces",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "r = radeon_dev_hardware_available(rdev);",
+            "if (false)\n\t\tr = radeon_dev_hardware_available(rdev);",
+        ),
+        (
+            "conditional unsafe Boolean refusal without braces",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "if (!radeon_palm_dev_pci_reset_unsafe(rdev)) {",
+            "if (false)\n"
+            "\t\tif (!radeon_palm_dev_pci_reset_unsafe(rdev)) {",
+        ),
+        (
+            "conditional mutation marker without braces",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'radeon_dev_mark_mutation(rdev, "Palm PCI config reset");',
+            "if (false)\n"
+            '\t\tradeon_dev_mark_mutation(rdev, "Palm PCI config reset");',
+        ),
+        (
             "unlock before reset",
             "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
             "\t*ppos = 1;\n\trc = evergreen_gpu_pci_config_reset_safe(rdev);",
@@ -3635,6 +4320,179 @@ def self_test(root: Path) -> int:
             "\tif (!rdev || rdev->family != CHIP_PALM)\n"
             "\t\treturn -ENODEV;",
         ),
+        (
+            "first reset hardware access is conditional without braces",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tif (false)\n"
+            "\t\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+        ),
+        (
+            "continued comment hides first reset hardware access",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\t// continued comment \\\n"
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+        ),
+        (
+            "registration primary-minor refusal is conditional without braces",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "if (!minor || minor->type != DRM_MINOR_PRIMARY || !minor->dev ||\n"
+            "\t    !minor->debugfs_root)\n"
+            "\t\treturn;",
+            "if (false)\n"
+            "\t\tif (!minor || minor->type != DRM_MINOR_PRIMARY || "
+            "!minor->dev ||\n"
+            "\t\t    !minor->debugfs_root)\n"
+            "\t\t\treturn;",
+        ),
+        (
+            "registration device lookup is conditional without braces",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "rdev = minor->dev->dev_private;",
+            "if (false)\n\t\trdev = minor->dev->dev_private;",
+        ),
+        (
+            "registration scope refusal is conditional without braces",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "if (!rdev || rdev->family != CHIP_PALM ||\n"
+            "\t    !radeon_dev_profile_enabled(rdev, "
+            "RADEON_DEV_PROFILE_MUTATE))\n"
+            "\t\treturn;",
+            "if (false)\n"
+            "\t\tif (!rdev || rdev->family != CHIP_PALM ||\n"
+            "\t\t    !radeon_dev_profile_enabled(rdev, "
+            "RADEON_DEV_PROFILE_MUTATE))\n"
+            "\t\t\treturn;",
+        ),
+        (
+            "registration file creation is conditional without braces",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            'debugfs_create_file("radeon_force_pci_reset_safe", 0200,\n'
+            "\t\t\t    minor->debugfs_root, rdev,\n"
+            "\t\t\t    &radeon_force_pci_reset_safe_fops);",
+            "if (false)\n"
+            '\t\tdebugfs_create_file("radeon_force_pci_reset_safe", 0200,\n'
+            "\t\t\t\t    minor->debugfs_root, rdev,\n"
+                "\t\t\t\t    &radeon_force_pci_reset_safe_fops);",
+        ),
+        (
+            "local debugfs_create_file override",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)",
+            "#undef debugfs_create_file\n"
+            "#define debugfs_create_file(...) ((void)0)\n"
+            "void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)",
+        ),
+        (
+            "local WREG32 override",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+            "#undef WREG32\n"
+            "#define WREG32(reg, value) do { } while (0)\n"
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+        ),
+        (
+            "local digraph debugfs_create_file override",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)",
+            "%:undef debugfs_create_file\n"
+            "%:define debugfs_create_file(...) ((void)0)\n"
+            "void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)",
+        ),
+        (
+            "local digraph WREG32 override",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+            "%:undef WREG32\n"
+            "%:define WREG32(reg, value) do { } while (0)\n"
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+        ),
+        (
+            "local DRM_MINOR_PRIMARY override",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)",
+            "#undef DRM_MINOR_PRIMARY\n"
+            "#define DRM_MINOR_PRIMARY DRM_MINOR_RENDER\n"
+            "void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor)",
+        ),
+        (
+            "local CP_ME_CNTL override",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+            "#undef CP_ME_CNTL\n"
+            "#define CP_ME_CNTL DMA_RB_CNTL\n"
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+        ),
+        (
+            "local ENODEV override",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "static ssize_t\nradeon_force_pci_reset_safe_write",
+            "#undef ENODEV\n"
+            "#define ENODEV 0\n"
+            "static ssize_t\nradeon_force_pci_reset_safe_write",
+        ),
+        (
+            "local EPERM override",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+            "#undef EPERM\n"
+            "#define EPERM 0\n"
+            "int evergreen_gpu_pci_config_reset_safe(struct radeon_device *rdev)",
+        ),
+        (
+            "first reset hardware access is a disabled for expression",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tfor (; false; WREG32(CP_ME_CNTL, "
+            "CP_ME_HALT | CP_PFP_HALT))\n\t\t;",
+        ),
+        (
+            "first reset hardware access is disabled by preprocessing",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\t;\n#if 0\n"
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);\n"
+            "#endif\n\t;",
+        ),
+        (
+            "first reset hardware access follows an early return",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\treturn 0;\n"
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+        ),
+        (
+            "first reset hardware access follows an infinite loop",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+            'dev_info(rdev->dev, "GPU pci config reset '
+            '(bounded MC-wait safe variant)\\n");\n\n'
+            "\tfor (;;)\n\t\t;\n"
+            "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);",
+        ),
     )
     for label, path, needle, replacement in registration_source_mutations:
         require(
@@ -3649,6 +4507,145 @@ def self_test(root: Path) -> int:
             pass
         else:
             raise InterfaceError(f"self-test accepted {label}")
+
+    conditionally_disabled_functions = (
+        (
+            "Palm reset write function",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "static ssize_t\nradeon_force_pci_reset_safe_write",
+            "\n\nstatic const struct file_operations",
+            "#",
+        ),
+        (
+            "Palm reset registration function",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "void radeon_evergreen_dev_debugfs_register",
+            None,
+            "#",
+        ),
+        (
+            "Palm reset implementation function",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "int evergreen_gpu_pci_config_reset_safe",
+            "\n\nint evergreen_asic_reset",
+            "#",
+        ),
+        (
+            "Palm reset implementation function under a digraph conditional",
+            "drivers/gpu/drm/radeon/evergreen.c",
+            "int evergreen_gpu_pci_config_reset_safe",
+            "\n\nint evergreen_asic_reset",
+            "%:",
+        ),
+        (
+            "Palm reset registration function under form-feed whitespace",
+            "drivers/gpu/drm/radeon/radeon_evergreen_dev.c",
+            "void radeon_evergreen_dev_debugfs_register",
+            None,
+            "#\f",
+        ),
+    )
+    for (
+        label,
+        path,
+        start_anchor,
+        end_anchor,
+        directive_prefix,
+    ) in conditionally_disabled_functions:
+        candidate_texts = copy.deepcopy(source_texts)
+        candidate_source = candidate_texts[path]
+        require(
+            candidate_source.count(start_anchor) == 1,
+            f"self-test conditional start is ambiguous: {label}",
+        )
+        function_start = candidate_source.find(start_anchor)
+        function_end = (
+            len(candidate_source)
+            if end_anchor is None
+            else candidate_source.find(end_anchor, function_start)
+        )
+        require(
+            function_end > function_start,
+            f"self-test conditional end is absent: {label}",
+        )
+        candidate_texts[path] = (
+            candidate_source[:function_start]
+            + f"{directive_prefix}if 0\n"
+            + candidate_source[function_start:function_end]
+            + f"{directive_prefix}endif\n"
+            + candidate_source[function_end:]
+        )
+        try:
+            validate_palm_reset_registration(registration_rows, candidate_texts)
+        except InterfaceError:
+            pass
+        else:
+            raise InterfaceError(f"self-test accepted disabled {label}")
+
+    bypassed_palm_reset = copy.deepcopy(source_texts)
+    palm_reset_path = "drivers/gpu/drm/radeon/evergreen.c"
+    family_refusal = (
+        "if (!rdev || rdev->family != CHIP_PALM)\n"
+        "\t\treturn -ENODEV;"
+    )
+    first_hardware_context = (
+        'dev_info(rdev->dev, "GPU pci config reset '
+        '(bounded MC-wait safe variant)\\n");\n\n'
+        "\tWREG32(CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);"
+    )
+    palm_reset_source = bypassed_palm_reset[palm_reset_path]
+    require(
+        palm_reset_source.count(family_refusal) == 1
+        and palm_reset_source.count(first_hardware_context) == 1,
+        "self-test Palm reset bypass anchors differ from the source",
+    )
+    palm_reset_source = palm_reset_source.replace(
+        family_refusal,
+        family_refusal + "\n\tgoto bypass_safety;",
+        1,
+    )
+    bypassed_palm_reset[palm_reset_path] = palm_reset_source.replace(
+        first_hardware_context,
+        first_hardware_context.replace(
+            "\tWREG32",
+            "bypass_safety:\n\t;\n\tWREG32",
+            1,
+        ),
+        1,
+    )
+    try:
+        validate_palm_reset_registration(registration_rows, bypassed_palm_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a goto over Palm reset safety gates")
+
+    unreachable_palm_reset = copy.deepcopy(source_texts)
+    palm_reset_source = unreachable_palm_reset[palm_reset_path]
+    palm_reset_start = palm_reset_source.find(
+        "\tlockdep_assert_held_write(&rdev->exclusive_lock);"
+    )
+    palm_reset_end = palm_reset_source.find(
+        "\n}\n\nint evergreen_asic_reset",
+        palm_reset_start,
+    )
+    require(
+        palm_reset_start >= 0 and palm_reset_end > palm_reset_start,
+        "self-test Palm reset body boundary differs from the source",
+    )
+    unreachable_palm_reset[palm_reset_path] = (
+        palm_reset_source[:palm_reset_start]
+        + "\tif (false) {\n"
+        + palm_reset_source[palm_reset_start:palm_reset_end]
+        + "\n\t}\n\treturn -EPERM;"
+        + palm_reset_source[palm_reset_end:]
+    )
+    try:
+        validate_palm_reset_registration(registration_rows, unreachable_palm_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an unreachable Palm reset body")
 
     early_registration = copy.deepcopy(source_texts)
     early_registration["drivers/gpu/drm/radeon/radeon_kms.c"] += (
@@ -3772,8 +4769,190 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a missing mutation call")
 
-    wrong_post_state = copy.deepcopy(source_texts)
     reset_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    reset_source = source_texts[reset_source_path]
+    wedged_function_start = reset_source.find(
+        "static int rs480_wedged_3d_reset("
+    )
+    wedged_function_end = reset_source.find(
+        "\nstatic int rs480_reset_hang_probe_show(",
+        wedged_function_start,
+    )
+    require(
+        wedged_function_start >= 0
+        and wedged_function_end > wedged_function_start,
+        "self-test wedged reset function boundary differs from the source",
+    )
+
+    overridden_forced_reset = copy.deepcopy(source_texts)
+    overridden_forced_reset[reset_source_path] = (
+        reset_source[:wedged_function_start]
+        + "#undef radeon_gpu_reset_forced\n"
+        + "#define radeon_gpu_reset_forced radeon_gpu_reset\n"
+        + reset_source[wedged_function_start:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(overridden_forced_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an overridden wedged forced-reset call"
+        )
+
+    inactive_wedged_reset = copy.deepcopy(source_texts)
+    inactive_wedged_reset[reset_source_path] = (
+        reset_source[:wedged_function_start]
+        + "#if 0\n"
+        + reset_source[wedged_function_start:wedged_function_end]
+        + "\n#else\n"
+        + "static int rs480_wedged_3d_reset(struct radeon_device *rdev, "
+        + "struct seq_file *m, bool require_backend_idle)\n"
+        + "{\n"
+        + "\t(void)rdev;\n"
+        + "\t(void)m;\n"
+        + "\t(void)require_backend_idle;\n"
+        + "\treturn 0;\n"
+        + "}\n"
+        + "#endif"
+        + reset_source[wedged_function_end:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(inactive_wedged_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an inactive wedged reset implementation"
+        )
+
+    early_return_before_wedged_reset = copy.deepcopy(source_texts)
+    early_return_before_wedged_reset[reset_source_path] = reset_source.replace(
+        "\treset_result = radeon_gpu_reset_forced(rdev);",
+        "\treturn 0;\n\treset_result = radeon_gpu_reset_forced(rdev);",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(early_return_before_wedged_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an early return before the wedged reset"
+        )
+
+    conditional_wedged_reset = copy.deepcopy(source_texts)
+    conditional_wedged_reset[reset_source_path] = reset_source.replace(
+        "\treset_result = radeon_gpu_reset_forced(rdev);",
+        "\treset_result = 0;\n"
+        "\tif (false)\n"
+        "\t\treset_result = radeon_gpu_reset_forced(rdev);",
+        1,
+    )
+    try:
+        validate_wedged_reset_probe_post_state(conditional_wedged_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an unbraced conditional wedged reset"
+        )
+
+    goto_wedged_body = reset_source[
+        wedged_function_start:wedged_function_end
+    ].replace(
+        "\treset_result = radeon_gpu_reset_forced(rdev);",
+        "\tgoto bypass_wd3;\n"
+        "\treset_result = radeon_gpu_reset_forced(rdev);",
+        1,
+    ).replace(
+        "\tup_read(&rdev->exclusive_lock);",
+        "\tup_read(&rdev->exclusive_lock);\n"
+        "bypass_wd3:\n"
+        "\t;",
+        1,
+    )
+    bypassed_wedged_reset = copy.deepcopy(source_texts)
+    bypassed_wedged_reset[reset_source_path] = (
+        reset_source[:wedged_function_start]
+        + goto_wedged_body
+        + reset_source[wedged_function_end:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(bypassed_wedged_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a goto over the wedged reset")
+
+    config_guard_start = reset_source.rfind(
+        "#if defined(CONFIG_DEBUG_FS)",
+        0,
+        wedged_function_start,
+    )
+    mutate_guard_start = reset_source.rfind(
+        "#if RADEON_MUTATE_DEV",
+        0,
+        wedged_function_start,
+    )
+    require(
+        config_guard_start >= 0 and mutate_guard_start > config_guard_start,
+        "self-test wedged enclosing guards differ from the source",
+    )
+    disabled_wedged_debugfs = copy.deepcopy(source_texts)
+    disabled_wedged_debugfs[reset_source_path] = (
+        reset_source[:config_guard_start]
+        + "#undef CONFIG_DEBUG_FS\n"
+        + reset_source[config_guard_start:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(disabled_wedged_debugfs)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an overridden WD3 debugfs condition"
+        )
+
+    disabled_wedged_mutation = copy.deepcopy(source_texts)
+    disabled_wedged_mutation[reset_source_path] = (
+        reset_source[:mutate_guard_start]
+        + "#undef RADEON_MUTATE_DEV\n"
+        + "#define RADEON_MUTATE_DEV 0\n"
+        + reset_source[mutate_guard_start:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(disabled_wedged_mutation)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an overridden WD3 mutation condition"
+        )
+
+    unreachable_wedged_body = reset_source[
+        wedged_function_start:wedged_function_end
+    ].replace(
+        "\tup_read(&rdev->exclusive_lock);",
+        "\tunreachable();\n\tup_read(&rdev->exclusive_lock);",
+        1,
+    )
+    unreachable_wedged_exit = copy.deepcopy(source_texts)
+    unreachable_wedged_exit[reset_source_path] = (
+        reset_source[:wedged_function_start]
+        + unreachable_wedged_body
+        + reset_source[wedged_function_end:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(unreachable_wedged_exit)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted unreachable before the wedged unlock"
+        )
+
+    wrong_post_state = copy.deepcopy(source_texts)
     wrong_post_state[reset_source_path] = re.sub(
         r"(reset_result = radeon_gpu_reset_forced\(rdev\);.*?)"
         r"if \(rdev->gpu_parked\)",
@@ -3788,6 +4967,38 @@ def self_test(root: Path) -> int:
         pass
     else:
         raise InterfaceError("self-test accepted return-code post-state gate")
+
+    unreachable_post_state = copy.deepcopy(source_texts)
+    unreachable_source = unreachable_post_state[reset_source_path]
+    unreachable_start = unreachable_source.find(
+        '\tradeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");'
+    )
+    unreachable_unlock = unreachable_source.find(
+        "\tup_read(&rdev->exclusive_lock);",
+        unreachable_start,
+    )
+    unreachable_end = unreachable_unlock + len(
+        "\tup_read(&rdev->exclusive_lock);"
+    )
+    require(
+        unreachable_start >= 0 and unreachable_unlock > unreachable_start,
+        "self-test wedged reset transaction boundary differs from the source",
+    )
+    unreachable_post_state[reset_source_path] = (
+        unreachable_source[:unreachable_start]
+        + "\tif (false) {\n"
+        + unreachable_source[unreachable_start:unreachable_end]
+        + "\n\t}\n\treset_result = -EPERM;\n\tpost_reset_status = 0;"
+        + unreachable_source[unreachable_end:]
+    )
+    try:
+        validate_wedged_reset_probe_post_state(unreachable_post_state)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an unreachable wedged reset transaction"
+        )
 
     intervening_post_reset_mmio = copy.deepcopy(source_texts)
     intervening_post_reset_mmio[reset_source_path] = intervening_post_reset_mmio[
@@ -3862,8 +5073,261 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted an unserialized forced reset call")
 
-    missing_forced_writer = copy.deepcopy(source_texts)
     reset_implementation_path = "drivers/gpu/drm/radeon/radeon_device.c"
+    reset_implementation_source = source_texts[reset_implementation_path]
+    internal_function_start = reset_implementation_source.find(
+        "static int radeon_gpu_reset_internal("
+    )
+    wrapper_function_start = reset_implementation_source.find(
+        "int radeon_gpu_reset_forced("
+    )
+    wrapper_function_end = reset_implementation_source.find(
+        "\n#endif",
+        wrapper_function_start,
+    )
+    require(
+        internal_function_start >= 0
+        and wrapper_function_start > internal_function_start
+        and wrapper_function_end > wrapper_function_start,
+        "self-test forced reset function boundaries differ from the source",
+    )
+
+    overridden_writer_lock = copy.deepcopy(source_texts)
+    overridden_writer_lock[reset_implementation_path] = (
+        reset_implementation_source[:internal_function_start]
+        + "#undef down_write\n"
+        + "#define down_write down_read\n"
+        + reset_implementation_source[internal_function_start:]
+    )
+    try:
+        validate_forced_gpu_reset_transaction(overridden_writer_lock)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an overridden forced-reset writer lock"
+        )
+
+    inactive_forced_wrapper = copy.deepcopy(source_texts)
+    inactive_forced_wrapper[reset_implementation_path] = (
+        reset_implementation_source[:wrapper_function_start]
+        + "#if 0\n"
+        + reset_implementation_source[
+            wrapper_function_start:wrapper_function_end
+        ]
+        + "\n#else\n"
+        + "int radeon_gpu_reset_forced(struct radeon_device *rdev)\n"
+        + "{\n"
+        + "\treturn radeon_gpu_reset_internal(rdev, false);\n"
+        + "}\n"
+        + "#endif"
+        + reset_implementation_source[wrapper_function_end:]
+    )
+    try:
+        validate_forced_gpu_reset_transaction(inactive_forced_wrapper)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an inactive forced-reset wrapper"
+        )
+
+    mutate_wrapper_guard_start = reset_implementation_source.rfind(
+        "#if RADEON_MUTATE_DEV",
+        0,
+        wrapper_function_start,
+    )
+    require(
+        mutate_wrapper_guard_start >= 0,
+        "self-test forced wrapper guard differs from the source",
+    )
+    disabled_forced_wrapper = copy.deepcopy(source_texts)
+    disabled_forced_wrapper[reset_implementation_path] = (
+        reset_implementation_source[:mutate_wrapper_guard_start]
+        + "#undef RADEON_MUTATE_DEV\n"
+        + "#define RADEON_MUTATE_DEV 0\n"
+        + reset_implementation_source[mutate_wrapper_guard_start:]
+    )
+    try:
+        validate_forced_gpu_reset_transaction(disabled_forced_wrapper)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an overridden forced-wrapper condition"
+        )
+
+    early_return_before_writer = copy.deepcopy(source_texts)
+    early_return_before_writer[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            "\tdown_write(&rdev->exclusive_lock);",
+            "\treturn 0;\n\tdown_write(&rdev->exclusive_lock);",
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(early_return_before_writer)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an early return before the writer lock"
+        )
+
+    trapped_after_reset_counter = copy.deepcopy(source_texts)
+    trapped_after_reset_counter[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            "\tatomic_inc(&rdev->gpu_reset_counter);",
+            "\tatomic_inc(&rdev->gpu_reset_counter);\n\tBUG();",
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(trapped_after_reset_counter)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted a nonlocal exit after the reset counter"
+        )
+
+    asm_after_reset_counter = copy.deepcopy(source_texts)
+    asm_after_reset_counter[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            "\tatomic_inc(&rdev->gpu_reset_counter);",
+            "\tatomic_inc(&rdev->gpu_reset_counter);\n"
+            '\t__asm__ __volatile__("ud2");',
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(asm_after_reset_counter)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted inline assembly after the reset counter"
+        )
+
+    parked_transition = "\t\trdev->in_reset = true;"
+    early_parked_return = copy.deepcopy(source_texts)
+    early_parked_return[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            parked_transition,
+            "\t\treturn r;\n" + parked_transition,
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(early_parked_return)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an early parked reset return")
+
+    conditional_parked_exit = copy.deepcopy(source_texts)
+    conditional_parked_exit[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            parked_transition,
+            "\t\tif (false)\n\t\t\t" + parked_transition.lstrip(),
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(conditional_parked_exit)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted a conditional parked reset transition"
+        )
+
+    looping_parked_exit = copy.deepcopy(source_texts)
+    looping_parked_exit[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            parked_transition,
+            "\t\tfor (;;)\n\t\t\t;\n" + parked_transition,
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(looping_parked_exit)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted a looping parked reset exit")
+
+    ordinary_transition = (
+        "\tradeon_hpd_init(rdev);\n\n"
+        "\trdev->in_reset = true;"
+    )
+    early_ordinary_return = copy.deepcopy(source_texts)
+    early_ordinary_return[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            ordinary_transition,
+            "\tradeon_hpd_init(rdev);\n\n"
+            "\treturn r;\n"
+            "\trdev->in_reset = true;",
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(early_ordinary_return)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError("self-test accepted an early ordinary reset return")
+
+    conditional_ordinary_exit = copy.deepcopy(source_texts)
+    conditional_ordinary_exit[reset_implementation_path] = (
+        reset_implementation_source.replace(
+            ordinary_transition,
+            "\tradeon_hpd_init(rdev);\n\n"
+            "\tif (false)\n"
+            "\t\trdev->in_reset = true;",
+            1,
+        )
+    )
+    try:
+        validate_forced_gpu_reset_transaction(conditional_ordinary_exit)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted a conditional ordinary reset transition"
+        )
+
+    parked_exit_start = reset_implementation_source.find(
+        '\t\tdev_err(rdev->dev, "parked: async agents quiesced, '
+        'entering quiet epoch\\n");'
+    )
+    parked_exit_return = reset_implementation_source.find(
+        "\t\treturn r;",
+        parked_exit_start,
+    )
+    parked_exit_end = parked_exit_return + len("\t\treturn r;")
+    require(
+        parked_exit_start >= 0 and parked_exit_return > parked_exit_start,
+        "self-test parked reset exit boundary differs from the source",
+    )
+    digraph_parked_exit = copy.deepcopy(source_texts)
+    digraph_parked_exit[reset_implementation_path] = (
+        reset_implementation_source[:parked_exit_start]
+        + "\t\tif (false) <%\n"
+        + reset_implementation_source[parked_exit_start:parked_exit_end]
+        + "\n\t\t%>"
+        + reset_implementation_source[parked_exit_end:]
+    )
+    try:
+        validate_forced_gpu_reset_transaction(digraph_parked_exit)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted a digraph-controlled parked reset exit"
+        )
+
+    missing_forced_writer = copy.deepcopy(source_texts)
     missing_forced_writer[reset_implementation_path] = re.sub(
         r"(static int radeon_gpu_reset_internal\(.*?\n\{.*?)"
         r"\tdown_write\(&rdev->exclusive_lock\);\n",
@@ -3878,6 +5342,51 @@ def self_test(root: Path) -> int:
         pass
     else:
         raise InterfaceError("self-test accepted a forced reset without writer lock")
+
+    unreachable_forced_reset = copy.deepcopy(source_texts)
+    forced_source = unreachable_forced_reset[reset_implementation_path]
+    forced_function_start = forced_source.find(
+        "static int radeon_gpu_reset_internal("
+    )
+    forced_function_end = forced_source.find(
+        "\n/**\n * radeon_gpu_reset -",
+        forced_function_start,
+    )
+    require(
+        forced_function_start >= 0 and forced_function_end > forced_function_start,
+        "self-test forced reset function boundary differs from the source",
+    )
+    forced_body = forced_source[forced_function_start:forced_function_end]
+    forced_transaction_start = forced_body.find(
+        "\tdown_write(&rdev->exclusive_lock);"
+    )
+    forced_transaction_return = forced_body.rfind("\treturn r;")
+    forced_transaction_end = forced_transaction_return + len("\treturn r;")
+    require(
+        forced_transaction_start >= 0
+        and forced_transaction_return > forced_transaction_start,
+        "self-test forced reset transaction boundary differs from the source",
+    )
+    unreachable_body = (
+        forced_body[:forced_transaction_start]
+        + "\tif (false) {\n"
+        + forced_body[forced_transaction_start:forced_transaction_end]
+        + "\n\t}\n\treturn -EPERM;"
+        + forced_body[forced_transaction_end:]
+    )
+    unreachable_forced_reset[reset_implementation_path] = (
+        forced_source[:forced_function_start]
+        + unreachable_body
+        + forced_source[forced_function_end:]
+    )
+    try:
+        validate_forced_gpu_reset_transaction(unreachable_forced_reset)
+    except InterfaceError:
+        pass
+    else:
+        raise InterfaceError(
+            "self-test accepted an unreachable forced GPU-reset transaction"
+        )
 
     premature_forced_unlock = copy.deepcopy(source_texts)
     premature_forced_unlock[reset_implementation_path] = premature_forced_unlock[
@@ -3923,7 +5432,6 @@ def self_test(root: Path) -> int:
         "\trdev->needs_reset = false;\n\n"
         "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
     )
-    reset_implementation_source = source_texts[reset_implementation_path]
     require(
         reset_implementation_source.count(reset_counter_line) == 1
         and reset_implementation_source.count(ordinary_downgrade_context) == 1,
@@ -4016,10 +5524,11 @@ def self_test(root: Path) -> int:
     print(
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
-        "22 Palm registration source, 4 registration contract, "
+        f"{len(registration_source_mutations) + 11} Palm registration source, "
+        "4 registration contract, "
         f"{schema_rejection_count} output-schema, "
         f"{summary_rejection_count} summary-total, "
-        "5 reset-post-state, 6 forced-reset, 1 retired-denominator, "
+        "15 reset-post-state, 18 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
     )
     return 0

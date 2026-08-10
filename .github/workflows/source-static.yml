@@ -366,6 +366,52 @@ jobs:
               --mutate-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
 
+  source-map-kernel-lanes:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
+    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    timeout-minutes: 130
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+          clean: true
+      - name: complete kernel source map lanes
+        env:
+          KERNEL_BUILD_ROOT_618: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
+          KERNEL_BUILD_ROOT_71: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_71 }}
+          LLVM_TOOLCHAIN_BIN_618: ${{ vars.RADEON_LLVM_TOOLCHAIN_BIN_618 }}
+          LLVM_TOOLCHAIN_BIN_71: ${{ vars.RADEON_LLVM_TOOLCHAIN_BIN_71 }}
+        run: |
+          set -eu
+          for value in \
+            "$KERNEL_BUILD_ROOT_618" \
+            "$KERNEL_BUILD_ROOT_71" \
+            "$LLVM_TOOLCHAIN_BIN_618" \
+            "$LLVM_TOOLCHAIN_BIN_71"
+          do
+            [ -n "$value" ] || {
+              echo "a source map kernel or toolchain path is unset" >&2
+              exit 1
+            }
+          done
+          mkdir -p "$HOME/.cache/gororoba-ci"
+          output="$RUNNER_TEMP/radeon-driver-source-map"
+          timeout 6900 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+            python3 scripts/capture_radeon_driver_source_map.py \
+              --output "$output" \
+              --kernel-build-root "$KERNEL_BUILD_ROOT_618" \
+              --kernel-build-root "$KERNEL_BUILD_ROOT_71" \
+              --kernel-toolchain-bin \
+                "6.18.38-2-cachyos-lts=$LLVM_TOOLCHAIN_BIN_618" \
+              --kernel-toolchain-bin \
+                "7.1.4-1-cachyos=$LLVM_TOOLCHAIN_BIN_71"
+          timeout 600 python3 scripts/capture_radeon_driver_source_map.py \
+            --verify "$output" \
+            --require-all-kernel-lanes
+
   lint:
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 30
@@ -386,6 +432,15 @@ jobs:
         run: python3 scripts/check_kernel_build_root.py --self-test
       - name: source manifest calibration
         run: python3 scripts/manifest_source_tree.py --self-test
+      - name: Radeon driver source map calibration
+        run: python3 scripts/capture_radeon_driver_source_map.py --self-test
+      - name: Radeon driver source only map
+        run: |
+          output="${RUNNER_TEMP}/radeon-driver-source-map"
+          python3 scripts/capture_radeon_driver_source_map.py \
+            --output "$output"
+          python3 scripts/capture_radeon_driver_source_map.py \
+            --verify "$output"
       - name: source closure calibration
         run: python3 scripts/check_source_closure.py --self-test
       - name: source equivalence attestation calibration
