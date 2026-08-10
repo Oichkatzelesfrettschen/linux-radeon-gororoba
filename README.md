@@ -155,17 +155,18 @@ reject a finite opaque control set, and assume other intervening calls return.
 They do not prove a compiler control flow graph, included header macro state,
 or runtime execution.
 
-The RS482 VRAM and GTT capacity policy expands the live source denominator to
-73 partition bound roots, 13 exact hazards, and 55 exact declared bindings.
-The added graph covers module request normalization, RS400 initialization,
-address fit, TTM capacity, allocator movement, capacity ioctls, GEM
-observations, and the excluded raw VRAM and GTT reader boundary. Previously
-sealed source-map bundles retain their historical denominators and do not
-acquire these rows retroactively.
+The RS482 VRAM and GTT capacity contract contributes 73 partition bound roots,
+13 exact hazards, 55 exact declared bindings, and six contextual witnesses.
+The integrated RS4xx policy closes 119 roots, 30 hazards, 63 bindings, and
+eight witnesses. The added failed-reset graph covers terminal state
+publication, hardware-access admission, retained GART and TTM ownership, PCI
+runtime rollback, and deferred debugfs registration. Previously sealed
+source-map bundles retain their historical denominators and do not acquire
+these rows retroactively.
 
 `docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
-the complete reference attestation, its four retained path witnesses, the two
-live capacity payload-reader witnesses, the coefficient derivations, the trust
+the complete reference attestation, its four retained path witnesses, the
+current eight-witness topology, the coefficient derivations, the trust
 boundaries, and the next verification gates.
 
 Two captures compare through normalized tables rather than analyzer database

@@ -82,6 +82,10 @@ POLICY_PATH = Path("policy/radeon-driver-source-map.toml")
 SCRIPT_PATH = Path("scripts/capture_radeon_driver_source_map.py")
 KERNEL_ROOT_VALIDATOR_PATH = Path("scripts/check_kernel_build_root.py")
 CANONICAL_SOURCE_ROOT = "drivers/gpu/drm/radeon"
+CANONICAL_ANALYZER_SOURCE_ROOT = "/tmp/gororoba-radeon-driver-source-map-input"
+CANONICAL_CSCOPE_SOURCE_ROOT = (
+    f"{CANONICAL_ANALYZER_SOURCE_ROOT}/{CANONICAL_SOURCE_ROOT}"
+)
 MAX_SOURCE_FILES = 256
 MAX_SOURCE_BYTES = 7_100_000
 EXPECTED_ROOT_DENOMINATOR_COUNT = 119
@@ -96,7 +100,7 @@ EXPECTED_BINDING_DENOMINATOR_COUNT = 63
 EXPECTED_BINDING_DENOMINATOR_SHA256 = (
     "e7674df3c0cdb43ccad8a62a2a1a3b5345a0705355f7f6b8ff779465eca0845f"
 )
-EXPECTED_SELFTEST_VERDICT_COUNT = 239
+EXPECTED_SELFTEST_VERDICT_COUNT = 245
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -269,6 +273,7 @@ ABSOLUTE_PATH_TOKEN = re.compile(
     rb"(?<![A-Za-z0-9._+<>=:@%/-])/(?:[A-Za-z0-9._+@%=-]+(?:/[A-Za-z0-9._+@%=-]+)*)?"
 )
 PORTABLE_ABSOLUTE_ROOTS = (
+    CANONICAL_ANALYZER_SOURCE_ROOT,
     "/tmp/source",
     "/tmp/capture",
     CANONICAL_PREPROCESSOR_WORK,
@@ -3088,7 +3093,37 @@ def policy_root_symbols(policy: Policy) -> list[str]:
     )
 
 
-def canonical_analyzer_sandbox() -> list[str]:
+def cscope_flat_source_denominator(
+    entries: list[SourceEntry],
+) -> tuple[str, list[str]]:
+    analyzer_paths = sorted(
+        entry.path
+        for entry in entries
+        if entry.source_class in {"c", "header"}
+    )
+    require(analyzer_paths, "cscope source denominator is empty")
+    source_parent = Path(analyzer_paths[0]).parent.as_posix()
+    require(
+        source_parent == CANONICAL_SOURCE_ROOT
+        and all(Path(path).parent.as_posix() == source_parent for path in analyzer_paths),
+        "cscope source denominator is not one flat directory",
+    )
+    basenames = [Path(path).name for path in analyzer_paths]
+    require(
+        len(set(basenames)) == len(basenames),
+        "cscope source denominator repeats a basename",
+    )
+    return source_parent, basenames
+
+
+def canonical_analyzer_sandbox(
+    working_directory: str = CANONICAL_ANALYZER_SOURCE_ROOT,
+) -> list[str]:
+    require(
+        working_directory
+        in {CANONICAL_ANALYZER_SOURCE_ROOT, CANONICAL_CSCOPE_SOURCE_ROOT},
+        "canonical analyzer sandbox working directory is invalid",
+    )
     return [
         "bwrap",
         "--die-with-parent",
@@ -3098,17 +3133,17 @@ def canonical_analyzer_sandbox() -> list[str]:
         "--tmpfs",
         "/tmp",
         "--dir",
-        "/tmp/source",
+        CANONICAL_ANALYZER_SOURCE_ROOT,
         "--dir",
         "/tmp/capture",
         "--ro-bind",
         "<source-root>",
-        "/tmp/source",
+        CANONICAL_ANALYZER_SOURCE_ROOT,
         "--bind",
         "<capture-root>",
         "/tmp/capture",
         "--chdir",
-        "/tmp/source",
+        working_directory,
     ]
 
 
@@ -3124,9 +3159,12 @@ def expected_command_records(
     require(
         c_and_header_paths and c_paths, "command contract source denominator is empty"
     )
+    _cscope_source_parent, cscope_basenames = cscope_flat_source_denominator(
+        source_entries
+    )
     symbols = policy_root_symbols(policy)
-    display_components = max(len(Path(path).parts) for path in c_and_header_paths)
     sandbox = canonical_analyzer_sandbox()
+    cscope_sandbox = canonical_analyzer_sandbox(CANONICAL_CSCOPE_SOURCE_ROOT)
     records: list[tuple[str, ...]] = []
 
     def add(
@@ -3165,7 +3203,7 @@ def expected_command_records(
         ],
     )
     global_environment = {
-        "GTAGSROOT": "/tmp/source",
+        "GTAGSROOT": CANONICAL_ANALYZER_SOURCE_ROOT,
         "GTAGSDBPATH": "/tmp/capture/indexes/global",
     }
     add(
@@ -3245,15 +3283,14 @@ def expected_command_records(
         "diagnostics/cscope-index.stdout",
         "diagnostics/cscope-index.stderr",
         [
-            *sandbox,
+            *cscope_sandbox,
             "cscope",
             "-b",
             "-k",
             "-c",
-            "-i",
-            "/tmp/capture/inputs/c-and-header-files.txt",
             "-f",
             "/tmp/capture/indexes/cscope/cscope.out",
+            *cscope_basenames,
         ],
     )
     for symbol in symbols:
@@ -3270,11 +3307,11 @@ def expected_command_records(
                 f"queries/cscope/{query_kind}-{symbol}.txt",
                 f"diagnostics/cscope/{query_kind}-{symbol}.stderr",
                 [
-                    *sandbox,
+                    *cscope_sandbox,
                     "cscope",
                     "-d",
                     "-L",
-                    f"-p{display_components}",
+                    "-p1",
                     mode,
                     symbol,
                     "-f",
@@ -3475,7 +3512,16 @@ def verify_command_records(
     )
 
 
-def analyzer_sandbox(source_root: Path, capture_root: Path) -> list[str]:
+def analyzer_sandbox(
+    source_root: Path,
+    capture_root: Path,
+    working_directory: str = CANONICAL_ANALYZER_SOURCE_ROOT,
+) -> list[str]:
+    require(
+        working_directory
+        in {CANONICAL_ANALYZER_SOURCE_ROOT, CANONICAL_CSCOPE_SOURCE_ROOT},
+        "analyzer sandbox working directory is invalid",
+    )
     return [
         shutil.which("bwrap") or "bwrap",
         "--die-with-parent",
@@ -3485,17 +3531,17 @@ def analyzer_sandbox(source_root: Path, capture_root: Path) -> list[str]:
         "--tmpfs",
         "/tmp",
         "--dir",
-        "/tmp/source",
+        CANONICAL_ANALYZER_SOURCE_ROOT,
         "--dir",
         "/tmp/capture",
         "--ro-bind",
         str(source_root),
-        "/tmp/source",
+        CANONICAL_ANALYZER_SOURCE_ROOT,
         "--bind",
         str(capture_root),
         "/tmp/capture",
         "--chdir",
-        "/tmp/source",
+        working_directory,
     ]
 
 
@@ -3656,6 +3702,8 @@ def write_source_inputs(
     ]
     c_files = [entry.path for entry in entries if entry.source_class == "c"]
     require(c_and_headers and c_files, "analyzer input denominator is empty")
+    _cscope_source_parent, cscope_basenames = cscope_flat_source_denominator(entries)
+    cscope_basename_payload = ("\n".join(cscope_basenames) + "\n").encode("utf-8")
     source_list = capture_root / "inputs/c-and-header-files.txt"
     c_list = capture_root / "inputs/c-files.txt"
     write_text(source_list, "\n".join(c_and_headers) + "\n")
@@ -3669,7 +3717,13 @@ def write_source_inputs(
                 "c-and-header-files",
                 len(c_and_headers),
                 sha256_file(source_list),
-                "cscope;ctags;gnu-global;lizard",
+                "ctags;gnu-global;lizard",
+            ),
+            (
+                "cscope-basenames",
+                len(cscope_basenames),
+                sha256_bytes(cscope_basename_payload),
+                "cscope",
             ),
             ("c-files", len(c_files), sha256_file(c_list), "cflow"),
         ],
@@ -3799,7 +3853,7 @@ def build_lexical_index(
         "diagnostics/global-index.stderr",
     )
     environment = {
-        "GTAGSROOT": "/tmp/source",
+        "GTAGSROOT": CANONICAL_ANALYZER_SOURCE_ROOT,
         "GTAGSDBPATH": "/tmp/capture/indexes/global",
     }
     definitions = recorder.run(
@@ -3986,6 +4040,8 @@ def parse_cscope_rows(
     query_symbol: str,
     entries: dict[str, SourceEntry],
     source_root: Path,
+    *,
+    source_path_prefix: str | None = None,
 ) -> list[tuple[Any, ...]]:
     require(
         query_kind in {"definition", "calls", "callers"},
@@ -4003,7 +4059,20 @@ def parse_cscope_rows(
         require(
             len(fields) == 4, f"cscope {query_symbol} row {row_number} is malformed"
         )
-        source_path, function, line_text, source_text = fields
+        raw_source_path, function, line_text, source_text = fields
+        if source_path_prefix is not None:
+            require(
+                source_path_prefix == CANONICAL_SOURCE_ROOT,
+                "cscope source path prefix is invalid",
+            )
+            require(
+                Path(raw_source_path).name == raw_source_path,
+                f"cscope emitted a non-flat path for {query_symbol}: "
+                f"{raw_source_path}",
+            )
+            source_path = f"{source_path_prefix}/{raw_source_path}"
+        else:
+            source_path = raw_source_path
         entry = entries.get(source_path)
         require(
             entry is not None and entry.source_class in {"c", "header"},
@@ -4047,6 +4116,27 @@ def parse_cscope_rows(
     return rows
 
 
+def cscope_raw_paths_are_flat(raw_payloads: list[bytes]) -> bool:
+    source_paths: list[str] = []
+    for raw in raw_payloads:
+        for row_number, line in enumerate(
+            raw.decode("utf-8", errors="strict").splitlines(), 1
+        ):
+            fields = line.split(maxsplit=3)
+            require(
+                len(fields) == 4,
+                f"cscope raw row {row_number} is malformed during path classification",
+            )
+            source_paths.append(fields[0])
+    require(source_paths, "cscope raw query denominator is empty")
+    flat_rows = [Path(path).name == path for path in source_paths]
+    require(
+        all(flat_rows) or not any(flat_rows),
+        "cscope raw queries mix flat and repository-relative paths",
+    )
+    return all(flat_rows)
+
+
 def build_cscope_index(
     capture_root: Path,
     source_root: Path,
@@ -4063,12 +4153,20 @@ def build_cscope_index(
     )
     cscope = shutil.which("cscope") or "cscope"
     entry_map = {entry.path: entry for entry in entries}
-    analyzer_paths = [
-        entry.path for entry in entries if entry.source_class in {"c", "header"}
-    ]
-    display_components = max(len(Path(path).parts) for path in analyzer_paths)
-    sandbox = analyzer_sandbox(source_root, capture_root)
-    sandbox_source_list = "/tmp/capture/inputs/c-and-header-files.txt"
+    source_path_prefix, cscope_basenames = cscope_flat_source_denominator(entries)
+    expected_source_list = "\n".join(
+        f"{source_path_prefix}/{basename}" for basename in cscope_basenames
+    )
+    require(
+        source_list.read_text(encoding="utf-8")
+        == expected_source_list + "\n",
+        "cscope source input differs from the analyzer denominator",
+    )
+    sandbox = analyzer_sandbox(
+        source_root,
+        capture_root,
+        CANONICAL_CSCOPE_SOURCE_ROOT,
+    )
     sandbox_database = "/tmp/capture/indexes/cscope/cscope.out"
     recorder.run(
         "cscope-index",
@@ -4078,10 +4176,9 @@ def build_cscope_index(
             "-b",
             "-k",
             "-c",
-            "-i",
-            sandbox_source_list,
             "-f",
             sandbox_database,
+            *cscope_basenames,
         ],
         source_root,
         "diagnostics/cscope-index.stdout",
@@ -4099,7 +4196,7 @@ def build_cscope_index(
                     cscope,
                     "-d",
                     "-L",
-                    f"-p{display_components}",
+                    "-p1",
                     mode,
                     symbol,
                     "-f",
@@ -4116,6 +4213,7 @@ def build_cscope_index(
                     symbol,
                     entry_map,
                     source_root,
+                    source_path_prefix=source_path_prefix,
                 )
             )
     rows.sort(key=lambda row: (row[0], row[1], row[2], row[4], row[3], row[5]))
@@ -4133,6 +4231,107 @@ def build_cscope_index(
         rows,
     )
     return rows
+
+
+def verify_cscope_sandbox_alignment(
+    capture_root: Path,
+    source_root: Path,
+    entries: dict[str, SourceEntry],
+    symbols: list[str],
+) -> None:
+    """Prove cscope file and line identity over every declared root query."""
+
+    source_path_prefix, cscope_basenames = cscope_flat_source_denominator(
+        list(entries.values())
+    )
+    database = capture_root / "indexes/cscope/cscope-alignment.out"
+    database.parent.mkdir(parents=True)
+    sandbox = analyzer_sandbox(
+        source_root,
+        capture_root,
+        CANONICAL_CSCOPE_SOURCE_ROOT,
+    )
+    cscope = shutil.which("cscope") or "cscope"
+    environment = command_environment_contract(str(capture_root))
+    build = subprocess.run(
+        [
+            *sandbox,
+            cscope,
+            "-b",
+            "-k",
+            "-c",
+            "-f",
+            "/tmp/capture/indexes/cscope/cscope-alignment.out",
+            *cscope_basenames,
+        ],
+        cwd=source_root,
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    require(
+        build.returncode == 0 and not build.stdout and not build.stderr,
+        "cscope alignment database build differs",
+    )
+    rows: list[tuple[Any, ...]] = []
+    dumb_create_calls: list[tuple[Any, ...]] = []
+    for symbol in symbols:
+        for query_kind, mode in (
+            ("definition", "-1"),
+            ("calls", "-2"),
+            ("callers", "-3"),
+        ):
+            query = subprocess.run(
+                [
+                    *sandbox,
+                    cscope,
+                    "-d",
+                    "-L",
+                    "-p1",
+                    mode,
+                    symbol,
+                    "-f",
+                    "/tmp/capture/indexes/cscope/cscope-alignment.out",
+                ],
+                cwd=source_root,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            require(
+                query.returncode == 0 and not query.stderr,
+                f"cscope alignment query differs for {query_kind} {symbol}",
+            )
+            parsed = parse_cscope_rows(
+                query.stdout,
+                query_kind,
+                symbol,
+                entries,
+                source_root,
+                source_path_prefix=source_path_prefix,
+            )
+            rows.extend(parsed)
+            if query_kind == "calls" and symbol == "radeon_mode_dumb_create":
+                dumb_create_calls = parsed
+    require(
+        len(rows) > len(symbols),
+        "cscope alignment root-query result denominator is too small",
+    )
+    expected_calls = {
+        "ALIGN",
+        "DIV_ROUND_UP",
+        "drm_gem_handle_create",
+        "drm_gem_object_put",
+        "radeon_align_pitch",
+        "radeon_device_lock_hardware",
+        "radeon_device_unlock_hardware",
+        "radeon_gem_object_create",
+    }
+    require(
+        len(dumb_create_calls) == len(expected_calls)
+        and {str(row[3]) for row in dumb_create_calls} == expected_calls,
+        "cscope sandbox call alignment differs",
+    )
 
 
 def replay_cscope_queries(
@@ -4160,7 +4359,36 @@ def replay_cscope_queries(
         if entry.source_class in {"c", "header"}
     ]
     require(analyzer_paths, "cscope replay source denominator is empty")
-    display_components = max(len(Path(path).parts) for path in analyzer_paths)
+    raw_payloads = [
+        (capture_root / f"queries/cscope/{query_kind}-{symbol}.txt").read_bytes()
+        for symbol in symbols
+        for query_kind in ("definition", "calls", "callers")
+    ]
+    flat_paths = cscope_raw_paths_are_flat(raw_payloads)
+    source_path_prefix: str | None = None
+    if flat_paths:
+        source_path_prefix, _basenames = cscope_flat_source_denominator(
+            list(entries.values())
+        )
+        sandbox = analyzer_sandbox(
+            source_root,
+            capture_root,
+            CANONICAL_CSCOPE_SOURCE_ROOT,
+        )
+        query_prefix = [*sandbox, str(cscope_path)]
+        query_database = "/tmp/capture/indexes/cscope/cscope.out"
+        display_option = "-p1"
+        query_environment = command_environment_contract("/tmp/capture")
+    else:
+        query_prefix = [str(cscope_path)]
+        query_database = str(database)
+        display_option = f"-p{max(len(Path(path).parts) for path in analyzer_paths)}"
+        query_environment = {
+            **os.environ,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "TZ": "UTC",
+        }
     replayed_rows: list[tuple[Any, ...]] = []
     for symbol in symbols:
         for query_kind, mode in (
@@ -4170,17 +4398,17 @@ def replay_cscope_queries(
         ):
             result = subprocess.run(
                 [
-                    str(cscope_path),
+                    *query_prefix,
                     "-d",
                     "-L",
-                    f"-p{display_components}",
+                    display_option,
                     mode,
                     symbol,
                     "-f",
-                    str(database),
+                    query_database,
                 ],
                 cwd=source_root,
-                env={**os.environ, "LC_ALL": "C", "LANG": "C", "TZ": "UTC"},
+                env=query_environment,
                 capture_output=True,
                 check=False,
             )
@@ -4200,6 +4428,7 @@ def replay_cscope_queries(
                     symbol,
                     entries,
                     source_root,
+                    source_path_prefix=source_path_prefix,
                 )
             )
     replayed_rows.sort(key=lambda row: (row[0], row[1], row[2], row[4], row[3], row[5]))
@@ -8017,7 +8246,7 @@ def verify_no_host_path_leaks(
             candidate = match.group(0).decode("ascii")
             if source_derived_raw and not candidate.startswith(
                 (
-                    "/tmp/source",
+                    CANONICAL_ANALYZER_SOURCE_ROOT,
                     "/tmp/capture",
                     "/gororoba/",
                 )
@@ -8548,6 +8777,10 @@ def verify_capture(
         entry.path for entry in source_entries if entry.source_class in {"c", "header"}
     ]
     c_paths = [entry.path for entry in source_entries if entry.source_class == "c"]
+    _cscope_source_parent, cscope_basenames = cscope_flat_source_denominator(
+        source_entries
+    )
+    cscope_basename_payload = ("\n".join(cscope_basenames) + "\n").encode("utf-8")
     source_list_path = root / "inputs/c-and-header-files.txt"
     c_list_path = root / "inputs/c-files.txt"
     expected_source_list = "\n".join(c_and_header_paths) + "\n"
@@ -8576,7 +8809,13 @@ def verify_capture(
                 "c-and-header-files",
                 str(len(c_and_header_paths)),
                 sha256_file(source_list_path),
-                "cscope;ctags;gnu-global;lizard",
+                "ctags;gnu-global;lizard",
+            ],
+            [
+                "cscope-basenames",
+                str(len(cscope_basenames)),
+                sha256_bytes(cscope_basename_payload),
+                "cscope",
             ],
             [
                 "c-files",
@@ -8751,6 +8990,16 @@ def verify_capture(
         observed_cscope_files == expected_cscope_files,
         "cscope raw query file denominator differs",
     )
+    cscope_raw_payloads = [
+        (cscope_query_root / f"{query_kind}-{symbol}.txt").read_bytes()
+        for symbol in cscope_symbols
+        for query_kind in ("definition", "calls", "callers")
+    ]
+    cscope_source_path_prefix: str | None = None
+    if cscope_raw_paths_are_flat(cscope_raw_payloads):
+        cscope_source_path_prefix, _basenames = cscope_flat_source_denominator(
+            source_entries
+        )
     reparsed_cscope_rows: list[tuple[Any, ...]] = []
     for symbol in cscope_symbols:
         for query_kind in ("definition", "calls", "callers"):
@@ -8762,6 +9011,7 @@ def verify_capture(
                     symbol,
                     entry_map,
                     root / "source",
+                    source_path_prefix=cscope_source_path_prefix,
                 )
             )
     reparsed_cscope_rows.sort(
@@ -11686,6 +11936,56 @@ def self_test(repository: Path, policy_path: Path) -> int:
             )
             == 1,
         )
+        check(
+            "cscope parser normalizes one admitted flat source path",
+            len(
+                parse_cscope_rows(
+                    b"cscope_test.c cscope_test 3 return 0;\n",
+                    "definition",
+                    "cscope_test",
+                    cscope_entries,
+                    cscope_source_root,
+                    source_path_prefix=policy.source_root,
+                )
+            )
+            == 1,
+        )
+        rejects(
+            "cscope flat parser rejects a repository-relative source path",
+            lambda: parse_cscope_rows(
+                good_cscope,
+                "definition",
+                "cscope_test",
+                cscope_entries,
+                cscope_source_root,
+                source_path_prefix=policy.source_root,
+            ),
+        )
+        nested_cscope_entry = SourceEntry(
+            f"{policy.source_root}/nested/cscope_test.c",
+            cscope_entry.mode,
+            cscope_entry.object_id,
+            cscope_entry.size,
+            cscope_entry.sha256,
+            cscope_entry.source_class,
+        )
+        rejects(
+            "cscope flat denominator rejects a nested source path",
+            lambda: cscope_flat_source_denominator([nested_cscope_entry]),
+        )
+        rejects(
+            "cscope flat denominator rejects a repeated basename",
+            lambda: cscope_flat_source_denominator([cscope_entry, cscope_entry]),
+        )
+        rejects(
+            "cscope path classifier rejects mixed flat and repository paths",
+            lambda: cscope_raw_paths_are_flat(
+                [
+                    b"cscope_test.c cscope_test 3 return 0;\n",
+                    good_cscope,
+                ]
+            ),
+        )
         rejects(
             "cscope parser rejects a basename-only path",
             lambda: parse_cscope_rows(
@@ -11741,22 +12041,26 @@ def self_test(repository: Path, policy_path: Path) -> int:
         write_text(replay_source_root / cscope_path, cscope_content)
         replay_database = cscope_replay_root / "indexes/cscope/cscope.out"
         replay_database.parent.mkdir(parents=True)
-        replay_source_list = cscope_replay_root / "inputs/c-and-header-files.txt"
-        write_text(replay_source_list, f"{cscope_path}\n")
         cscope_executable = Path(shutil.which("cscope") or "cscope")
+        replay_sandbox = analyzer_sandbox(
+            replay_source_root,
+            cscope_replay_root,
+            CANONICAL_CSCOPE_SOURCE_ROOT,
+        )
+        replay_environment = command_environment_contract("/tmp/capture")
         cscope_build = subprocess.run(
             [
+                *replay_sandbox,
                 str(cscope_executable),
                 "-b",
                 "-k",
                 "-c",
-                "-i",
-                str(replay_source_list),
                 "-f",
-                str(replay_database),
+                "/tmp/capture/indexes/cscope/cscope.out",
+                Path(cscope_path).name,
             ],
             cwd=replay_source_root,
-            env={**os.environ, "LC_ALL": "C", "LANG": "C", "TZ": "UTC"},
+            env=replay_environment,
             capture_output=True,
             check=False,
         )
@@ -11766,7 +12070,6 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         replay_rows: list[tuple[Any, ...]] = []
         replay_raw: dict[str, bytes] = {}
-        replay_display_components = len(Path(cscope_path).parts)
         for query_kind, mode in (
             ("definition", "-1"),
             ("calls", "-2"),
@@ -11774,17 +12077,18 @@ def self_test(repository: Path, policy_path: Path) -> int:
         ):
             query_result = subprocess.run(
                 [
+                    *replay_sandbox,
                     str(cscope_executable),
                     "-d",
                     "-L",
-                    f"-p{replay_display_components}",
+                    "-p1",
                     mode,
                     "cscope_test",
                     "-f",
-                    str(replay_database),
+                    "/tmp/capture/indexes/cscope/cscope.out",
                 ],
                 cwd=replay_source_root,
-                env={**os.environ, "LC_ALL": "C", "LANG": "C", "TZ": "UTC"},
+                env=replay_environment,
                 capture_output=True,
                 check=False,
             )
@@ -11802,6 +12106,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
                     "cscope_test",
                     cscope_entries,
                     replay_source_root,
+                    source_path_prefix=policy.source_root,
                 )
             )
         replay_rows.sort(
@@ -12168,6 +12473,15 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 )
             ).strip()
             and (blob_export_root / ignored_metadata_path).is_file(),
+        )
+        accepts(
+            "cscope sandbox preserves file and line alignment",
+            lambda: verify_cscope_sandbox_alignment(
+                temp / "cscope-sandbox-alignment",
+                blob_export_root,
+                blob_export_entries,
+                policy_root_symbols(policy),
+            ),
         )
         accepts(
             "live declared bindings match the exported HEAD source",
