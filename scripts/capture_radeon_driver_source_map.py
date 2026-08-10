@@ -36,7 +36,14 @@ from unittest import mock
 
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
-COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v2"
+COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
+CURRENT_COMPARISON_SCHEMAS = frozenset((COMPARISON_SCHEMA,))
+RETAINED_CAPTURE_COMPARISON_SCHEMAS = frozenset(
+    (
+        "gororoba-radeon-driver-source-map-comparison-v2",
+        COMPARISON_SCHEMA,
+    )
+)
 LEXICAL_SCHEMA = "radeon-driver-lexical-map-v1"
 DECLARED_BINDING_SCHEMA = "radeon-driver-declared-bindings-v2"
 PATH_WITNESS_SCHEMA = "radeon-driver-contextual-path-witnesses-v2"
@@ -46,6 +53,9 @@ PROFILE_SYMBOL_DELTA_SUMMARY_SCHEMA = (
 )
 PROFILE_SYMBOL_DELTA_MEMBERS_SCHEMA = (
     "radeon-driver-profile-symbol-delta-members-v1"
+)
+PROFILE_SYMBOL_DELTA_MEMBER_COMPARISON_SCHEMA = (
+    "radeon-driver-profile-symbol-delta-member-delta-v2"
 )
 PROFILE_SYMBOL_DELTA_SUMMARY_COLUMNS = (
     "kernel_release",
@@ -640,6 +650,7 @@ def canonical_tsv_bytes(
     rows: list[tuple[Any, ...]] | list[list[str]],
 ) -> bytes:
     """Serialize one TSV through the repository canonical byte grammar."""
+    require_unique_tsv_columns(columns, schema)
     stream = io.StringIO(newline="")
     stream.write(f"# schema: {schema}\n")
     writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
@@ -647,6 +658,24 @@ def canonical_tsv_bytes(
     for row in rows:
         writer.writerow(row)
     return stream.getvalue().encode("utf-8")
+
+
+def require_unique_tsv_columns(
+    columns: tuple[str, ...] | list[str],
+    label: str,
+) -> None:
+    seen_columns: set[str] = set()
+    duplicates: set[str] = set()
+    for column in columns:
+        if column in seen_columns:
+            duplicates.add(column)
+        else:
+            seen_columns.add(column)
+    duplicate_columns = sorted(duplicates)
+    require(
+        not duplicate_columns,
+        f"{label} repeats columns: {', '.join(duplicate_columns)}",
+    )
 
 
 def write_tsv(path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
@@ -659,6 +688,7 @@ def read_tsv(path: Path, expected_schema: str) -> tuple[list[str], list[list[str
     require(len(lines) >= 2, f"missing columns: {path}")
     parsed = list(csv.reader(lines[1:], delimiter="\t"))
     require(parsed and parsed[0], f"empty columns: {path}")
+    require_unique_tsv_columns(parsed[0], str(path))
     return parsed[0], parsed[1:]
 
 
@@ -689,6 +719,7 @@ def read_canonical_ascii_tsv(
     parsed = list(csv.reader(lines[1:], delimiter="\t"))
     require(parsed and parsed[0], f"empty columns: {path}")
     columns, rows = parsed[0], parsed[1:]
+    require_unique_tsv_columns(columns, label)
     require(
         content == canonical_tsv_bytes(expected_schema, columns, rows),
         f"{label} bytes are not canonical",
@@ -911,7 +942,11 @@ def validate_required_path_witnesses(
     )
 
 
-def load_policy(path: Path) -> Policy:
+def load_policy(
+    path: Path,
+    *,
+    accepted_comparison_schemas: frozenset[str] = CURRENT_COMPARISON_SCHEMAS,
+) -> Policy:
     try:
         content = path.read_bytes()
         content.decode("ascii")
@@ -943,7 +978,10 @@ def load_policy(path: Path) -> Policy:
     capture_schema = string_value(data, "capture_schema", "policy")
     comparison_schema = string_value(data, "comparison_schema", "policy")
     require(capture_schema == CAPTURE_SCHEMA, "policy capture schema differs from the producer")
-    require(comparison_schema == COMPARISON_SCHEMA, "policy comparison schema differs from the producer")
+    require(
+        comparison_schema in accepted_comparison_schemas,
+        "policy comparison schema differs from the producer",
+    )
     source_root = string_value(data, "source_root", "policy")
     require(
         source_root == CANONICAL_SOURCE_ROOT,
@@ -6806,7 +6844,10 @@ def verify_capture(
         "retained source-map policy",
     )
     require(sha256_bytes(policy_content) == manifest["policy_sha256"], "retained source-map policy digest differs")
-    policy = load_policy(policy_path)
+    policy = load_policy(
+        policy_path,
+        accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+    )
     require(policy.capture_schema == manifest["schema"], "retained policy schema differs")
     require(
         manifest["source_file_count"] <= policy.max_source_files
@@ -8338,8 +8379,8 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
         )
         write_tsv(
             stage / "profile-symbol-delta-member-delta.tsv",
-            "radeon-driver-profile-symbol-delta-member-delta-v1",
-            ("change", *symbol_member_columns),
+            PROFILE_SYMBOL_DELTA_MEMBER_COMPARISON_SCHEMA,
+            ("capture_change", *symbol_member_columns),
             symbol_member_rows,
         )
 
@@ -9618,6 +9659,37 @@ def self_test(repository: Path, policy_path: Path) -> int:
             and bool(observed_open_flags & os.O_NOCTTY)
             and bool(observed_open_flags & os.O_NOFOLLOW),
         )
+
+        class DuplicateColumnsWithoutCount(list[str]):
+            def count(self, value: str) -> int:
+                raise AssertionError(f"quadratic count invoked for {value}")
+
+        duplicate_writer_path = temp / "duplicate-writer.tsv"
+        rejects(
+            "TSV writer rejects duplicate column names",
+            lambda: write_tsv(
+                duplicate_writer_path,
+                "duplicate-column-fixture-v1",
+                DuplicateColumnsWithoutCount(["change", "change"]),
+                [],
+            ),
+        )
+        check(
+            "rejected duplicate TSV is not written",
+            not duplicate_writer_path.exists(),
+        )
+        duplicate_reader_path = temp / "duplicate-reader.tsv"
+        write_text(
+            duplicate_reader_path,
+            "# schema: duplicate-column-fixture-v1\nchange\tchange\n",
+        )
+        rejects(
+            "TSV reader rejects duplicate column names",
+            lambda: read_tsv(
+                duplicate_reader_path,
+                "duplicate-column-fixture-v1",
+            ),
+        )
         comparison_left = temp / "comparison-left"
         comparison_right = temp / "comparison-right"
         comparison_left.mkdir()
@@ -10351,6 +10423,42 @@ def self_test(repository: Path, policy_path: Path) -> int:
         wrong_schema = temp / "wrong-schema.toml"
         write_text(wrong_schema, live_policy.replace("schema = 1", "schema = 2", 1))
         rejects("policy rejects a foreign schema", lambda: load_policy(wrong_schema))
+        legacy_comparison_policy = temp / "legacy-comparison-policy.toml"
+        write_text(
+            legacy_comparison_policy,
+            live_policy.replace(
+                f'comparison_schema = "{COMPARISON_SCHEMA}"',
+                'comparison_schema = "gororoba-radeon-driver-source-map-comparison-v2"',
+                1,
+            ),
+        )
+        rejects(
+            "live policy rejects legacy comparison production",
+            lambda: load_policy(legacy_comparison_policy),
+        )
+        accepts(
+            "retained capture policy accepts comparison schema v2",
+            lambda: load_policy(
+                legacy_comparison_policy,
+                accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+            ),
+        )
+        unsupported_comparison_policy = temp / "unsupported-comparison-policy.toml"
+        write_text(
+            unsupported_comparison_policy,
+            live_policy.replace(
+                f'comparison_schema = "{COMPARISON_SCHEMA}"',
+                'comparison_schema = "gororoba-radeon-driver-source-map-comparison-v1"',
+                1,
+            ),
+        )
+        rejects(
+            "retained capture policy rejects comparison schema v1",
+            lambda: load_policy(
+                unsupported_comparison_policy,
+                accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+            ),
+        )
         unknown_key = temp / "unknown-key.toml"
         write_text(unknown_key, live_policy + '\nunknown_policy_key = "rejected"\n')
         rejects("policy rejects an unknown key", lambda: load_policy(unknown_key))
