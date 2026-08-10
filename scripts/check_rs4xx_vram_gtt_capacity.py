@@ -36,6 +36,85 @@ MAX_TSV_BYTES = 256 * 1024
 MAX_TSV_ROWS = 64
 MAX_TSV_LINE_BYTES = 16 * 1024
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
+EXPECTED_SELFTEST_BAD_COUNT = 47
+
+EXPECTED_SELFTEST_ERRORS = {
+    "missing-policy-row": "capacity policy denominator differs",
+    "reordered-policy-rows": "capacity policy row order differs",
+    "runtime-promotion": "runtime status exceeds source authority",
+    "optimum-promotion": "exact policy row identity differs",
+    "dependency-cycle": "dependency cycle",
+    "missing-matrix-state": "matrix is not the exact four-state denominator",
+    "reordered-matrix-rows": "matrix row order differs",
+    "wrong-metadata-cost": "512 MiB matrix fields differ: ['static_metadata_bytes']",
+    "wrong-fixed-vram": "128 MiB matrix fields differ: ['vram_mib']",
+    "promoted-effective-capacity": (
+        "128 MiB matrix fields differ: ['effective_capacity_status']"
+    ),
+    "multiple-defaults": (
+        "128 MiB matrix fields differ: ['rs482_first_probe_auto_default']"
+    ),
+    "missing-exclusion": "capacity exclusion denominator differs",
+    "reordered-exclusion-rows": "capacity exclusion denominator differs",
+    "changed-exclusion-source_disposition": (
+        "auto-minus-one: exact exclusion row identity differs"
+    ),
+    "changed-exclusion-denominator_disposition": (
+        "auto-minus-one: exact exclusion row identity differs"
+    ),
+    "changed-exclusion-reason": (
+        "auto-minus-one: exact exclusion row identity differs"
+    ),
+    "changed-exclusion-reactivation_condition": (
+        "auto-minus-one: exact exclusion row identity differs"
+    ),
+    "missing-coefficient": "capacity coefficient denominator or order differs",
+    "reordered-coefficients": ("capacity coefficient denominator or order differs"),
+    "wrong-movement-slope": (
+        "RADEON_MOVE_THRESHOLD_USAGE_SLOPE: coefficient fields differ"
+    ),
+    "wrong-movement-knee": (
+        "RS482_MOVE_THRESHOLD_128_MIB_KNEE: coefficient fields differ"
+    ),
+    "changed-intake-commit": "capacity source lineage rows differ",
+    "changed-intake-blob": "capacity source lineage rows differ",
+    "changed-intake-content-sha256": "capacity source lineage rows differ",
+    "changed-intake-preserved-count": "capacity source lineage rows differ",
+    "missing-intake-lineage-row": "capacity source lineage rows differ",
+    "missing-intake-policy-row": "capacity intake policy row denominator differs",
+    "changed-intake-matrix-projection": ("capacity intake matrix projection differs"),
+    "changed-module-default": "exact gartsize declaration identity differs",
+    "overridden-module-parameter-declaration": (
+        "gartsize declaration overrides protected macros"
+    ),
+    "removed-argument-validation-call": "exact function token identity differs",
+    "overridden-function-identifier": (
+        "function radeon_check_arguments overrides protected macros"
+    ),
+    "changed-auto-default": "exact function token identity differs",
+    "inactive-good-active-bad-function": (
+        "function radeon_gart_size_auto is enclosed by conditional preprocessing"
+    ),
+    "inactive-good-active-bad-register-macro": (
+        "RS480_VA_SIZE_512MB definition is not unique"
+    ),
+    "function-like-register-macro-redefinition": (
+        "RS480_VA_SIZE_512MB definition is not unique"
+    ),
+    "undefined-register-macro": "protected encodings are undefined",
+    "duplicate-capacity-ioctl-binding": ("RADEON_GEM_INFO command denominator differs"),
+    "inactive-good-active-bad-ioctl-binding": (
+        "capacity ioctl table contains a conditional directive"
+    ),
+    "crlf-tsv": "TSV must use canonical LF termination",
+    "missing-final-lf": "TSV must use canonical LF termination",
+    "extra-empty-row": "TSV contains an empty physical row",
+    "quoted-key-alias": "128 MiB matrix fields differ: ['config_id']",
+    "duplicate-header-name": "unexpected or duplicate schema columns",
+    "oversized-tsv": "input exceeds 262144 bytes",
+    "fifo-input": "input is not a regular file",
+    "symlink-input": "cannot open regular input",
+}
 
 POLICY_HEADER = (
     "row_id",
@@ -637,9 +716,6 @@ def validate_graph(rows: dict[str, dict[str, str]]) -> None:
 
 
 def validate_policy_rows(policy_rows: list[dict[str, str]]) -> None:
-    row_order = tuple(row["row_id"] for row in policy_rows)
-    if row_order != EXPECTED_POLICY_ORDER:
-        raise CapacityError("capacity policy row order differs")
     rows = {row["row_id"]: row for row in policy_rows}
     if len(rows) != len(policy_rows):
         raise CapacityError("capacity policy row IDs are not unique")
@@ -649,6 +725,9 @@ def validate_policy_rows(policy_rows: list[dict[str, str]]) -> None:
         raise CapacityError(
             f"capacity policy denominator differs: missing={missing} extra={extra}"
         )
+    row_order = tuple(row["row_id"] for row in policy_rows)
+    if row_order != EXPECTED_POLICY_ORDER:
+        raise CapacityError("capacity policy row order differs")
     for row_id, (status, dependencies) in EXPECTED_ROWS.items():
         row = rows[row_id]
         if row["source_status"] != status:
@@ -703,10 +782,10 @@ def validate_matrix_rows(matrix_rows: list[dict[str, str]]) -> None:
         if gtt_mib in rows:
             raise CapacityError(f"matrix duplicates {gtt_mib} MiB")
         rows[gtt_mib] = row
-    if tuple(int(row["gtt_mib"]) for row in matrix_rows) != expected_order:
-        raise CapacityError("matrix row order differs")
     if set(rows) != set(expected_order):
         raise CapacityError("matrix is not the exact four-state denominator")
+    if tuple(int(row["gtt_mib"]) for row in matrix_rows) != expected_order:
+        raise CapacityError("matrix row order differs")
     for gtt_mib, row in rows.items():
         expected = matrix_expected(gtt_mib)
         if row != expected:
@@ -1283,7 +1362,8 @@ def selftest(root: Path) -> None:
         for row in cyclic_policy
         if row["row_id"] == "RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE"
     )["depends_on"] = "RS482_CAPACITY_OPTIMUM"
-    mutations.append(("dependency-cycle", lambda: validate_policy_rows(cyclic_policy)))
+    cyclic_rows = {row["row_id"]: row for row in cyclic_policy}
+    mutations.append(("dependency-cycle", lambda: validate_graph(cyclic_rows)))
 
     missing_matrix = copy.deepcopy(matrix_rows[:-1])
     mutations.append(
@@ -1449,6 +1529,13 @@ def selftest(root: Path) -> None:
         )
     )
 
+    run_capacity_mutation_matrix(root, mutations)
+
+
+def run_capacity_mutation_matrix(
+    root: Path,
+    mutations: list[tuple[str, Callable[[], None]]],
+) -> None:
     driver_source = read_ascii_source(root / SUBTREE / "radeon_drv.c")
     changed_declaration = replace_once(
         driver_source,
@@ -1699,11 +1786,35 @@ def selftest(root: Path) -> None:
             )
         )
 
+        expected_names = set(EXPECTED_SELFTEST_ERRORS)
+        mutation_names = [name for name, _mutation in mutations]
+        if len(EXPECTED_SELFTEST_ERRORS) != EXPECTED_SELFTEST_BAD_COUNT:
+            raise CapacityError("selftest expected-error denominator differs")
+        if len(mutation_names) != EXPECTED_SELFTEST_BAD_COUNT:
+            raise CapacityError(
+                "selftest mutation count differs: "
+                f"expected {EXPECTED_SELFTEST_BAD_COUNT}, found {len(mutation_names)}"
+            )
+        if len(set(mutation_names)) != len(mutation_names):
+            raise CapacityError("selftest mutation names are not unique")
+        if set(mutation_names) != expected_names:
+            missing = sorted(expected_names - set(mutation_names))
+            extra = sorted(set(mutation_names) - expected_names)
+            raise CapacityError(
+                f"selftest mutation denominator differs: missing={missing} extra={extra}"
+            )
+
         failures = 0
         for name, mutation in mutations:
             try:
                 mutation()
-            except CapacityError:
+            except CapacityError as error:
+                expected_error = EXPECTED_SELFTEST_ERRORS[name]
+                if expected_error not in str(error):
+                    raise CapacityError(
+                        "selftest known-bad wrong error: "
+                        f"{name}: expected {expected_error!r}, found {str(error)!r}"
+                    ) from error
                 failures += 1
             else:
                 raise CapacityError(f"selftest accepted known-bad mutation: {name}")
