@@ -9847,6 +9847,18 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "capture path policy accepts the canonical host make command",
             lambda: verify_no_host_path_leaks(portable_root),
         )
+        write_text(
+            portable_root / "metadata/example.tsv",
+            "tool\t/usr/bin/make\n",
+        )
+        rejects(
+            "capture path policy rejects host make outside command metadata",
+            lambda: verify_no_host_path_leaks(portable_root),
+        )
+        write_text(
+            portable_root / "metadata/example.tsv",
+            "tool\t/tmp/source/drivers/gpu/drm/radeon/radeon_device.c\n",
+        )
         noncanonical_make_row = list(canonical_make_row)
         noncanonical_make_arguments = json.loads(noncanonical_make_row[6])
         noncanonical_make_arguments[0] = "/usr/bin/make-wrapper"
