@@ -571,9 +571,45 @@ rows and the complete kernel-lane command contract from 176 to 266 rows. The
 analyzer, kernel build, and profile command sets otherwise remain unchanged.
 
 `scripts/check_rs4xx_vram_gtt_capacity.py` owns the semantic source contract.
-The source map owns structural candidates only. A fresh capture must reproduce
-the expanded denominator before its counts replace the sealed reference
-figures in this document.
+The source map owns structural candidates only. The source-only attestation
+below reproduces the expanded denominator. It does not replace the sealed
+six-lane reference figures.
+
+### RS482 capacity source-only attestation
+
+The retained bundle uses this mechanism path beneath the source-intelligence
+root:
+
+```text
+rs482-vram-gtt-capacity-source-map/7d4ba8ae75d94d0e608de56762ee97cb1d9c4188-source-only
+```
+
+The producer creates the bundle and then verifies it offline with exit zero.
+The capture contains 779 regular files. Its ledger covers the other 778 files.
+
+<!-- markdownlint-disable MD013 -->
+
+| Field | Exact value |
+| --- | --- |
+| Source commit | `7d4ba8ae75d94d0e608de56762ee97cb1d9c4188` |
+| Source tree | `f10cd2f5fbe4715cf13aae0546a4b9e650bf7e99` |
+| Driver tree | `6fd8d3c6ec245c31f195ef86c15fadf5e206642d` |
+| Driver-source inputs | 222 files and 6,909,890 bytes |
+| Lexical map | 98,390 rows |
+| Cscope denominator | 73 root symbols, 219 raw queries, and 1,053 parsed rows |
+| Command denominator | 246 rows: 226 bwrap, 16 cflow, and one each for ctags, readtags, lizard, and scc |
+| Declared bindings | 55 total and 14 in GART and memory |
+| Unified call candidates | 15,643 rows |
+| Manifest SHA-256 | `fb65e6d3999ff0b2d8350f89f9cf491d465dff1a52f74ec14a8a3a805f222704` |
+| Ledger SHA-256 | `2713ff2fb983294a3af6ca40220b38ef7902ee9134137993dbb73b197810bf89` |
+
+<!-- markdownlint-enable MD013 -->
+
+The driver tree equals the sealed six-lane reference driver tree. The ten-row
+call-candidate increase comes from the ten new declared bindings. The source
+capture carries no kernel lane, linked module, profile delta, runtime event, or
+hardware verdict. Required CI still runs the complete two-kernel, six-profile
+producer after publication.
 
 ## Roadmap and completion gates
 
