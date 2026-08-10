@@ -6648,6 +6648,7 @@ def verify_no_host_path_leaks(root: Path, forbidden_paths: tuple[Path, ...] = ()
             "/bin",
             "/tmp",
             "/usr/bin",
+            "/usr/bin/make",
         }:
             return True
         if (
@@ -9834,6 +9835,33 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         accepts(
             "capture path policy accepts every declared virtual root",
+            lambda: verify_no_host_path_leaks(portable_root),
+        )
+        write_tsv(
+            portable_root / "metadata/command-metadata.tsv",
+            "radeon-driver-command-metadata-v1",
+            command_columns,
+            [canonical_make_row],
+        )
+        accepts(
+            "capture path policy accepts the canonical host make command",
+            lambda: verify_no_host_path_leaks(portable_root),
+        )
+        noncanonical_make_row = list(canonical_make_row)
+        noncanonical_make_arguments = json.loads(noncanonical_make_row[6])
+        noncanonical_make_arguments[0] = "/usr/bin/make-wrapper"
+        noncanonical_make_row[6] = json.dumps(
+            noncanonical_make_arguments,
+            separators=(",", ":"),
+        )
+        write_tsv(
+            portable_root / "metadata/command-metadata.tsv",
+            "radeon-driver-command-metadata-v1",
+            command_columns,
+            [noncanonical_make_row],
+        )
+        rejects(
+            "capture path policy rejects a noncanonical host make command",
             lambda: verify_no_host_path_leaks(portable_root),
         )
         denominator_root = temp / "capture-denominator"
