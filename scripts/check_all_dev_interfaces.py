@@ -72,10 +72,22 @@ C_COMMENT_OR_LITERAL = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
     re.DOTALL,
 )
+C_TOKEN = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
+    r"|[A-Za-z_][A-Za-z0-9_]*"
+    r"|0[xX][0-9A-Fa-f]+[uUlL]*|[0-9]+[uUlL]*"
+    r"|>>=|<<=|\+\+|--|->|==|!=|<=|>=|&&|\|\|"
+    r"|[{}()\[\];,.*+\-/%&|^~!<>=?:]"
+)
 PALM_RESET_HARDWARE_ACCESS = re.compile(
     r"\b(?:WREG32|RREG32|r600_rlc_stop|rv770_set_clk_bypass_mode|"
     r"pci_clear_master|evergreen_mc_stop|evergreen_mc_wait_for_idle|"
     r"evergreen_mc_resume|radeon_pci_config_reset)\s*\("
+)
+RS4XX_CP_ME_HARDWARE_ACCESS = re.compile(
+    r"\b(?:WREG32|RREG32)[A-Za-z0-9_]*\s*\("
+    r"|\b(?:read[blqw]|write[blqw]|ioread[0-9]+|iowrite[0-9]+)\s*\("
+    r"|->(?:rreg|wreg)\s*\("
 )
 PROFILE_RANK = {
     "prod": 0,
@@ -102,8 +114,10 @@ RUNTIME_SOURCE_PATTERNS = {
         r"rdev->dev_context\.profile = profile",
     ),
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
-        r"static bool rs480_debugfs_refuse_if_parked\(.*?\)\n\{.*?"
+        r"static void rs480_debugfs_emit_schema\(.*?\)\n\{.*?"
         r"RADEON_DEV_OUTPUT_SCHEMA_LINE",
+        r"static bool rs480_debugfs_refuse_if_parked\(.*?\)\n\{.*?"
+        r"rs480_debugfs_emit_schema",
         r"void radeon_rs480_re_debugfs_register\(.*?\)\n\{.*?"
         r"RADEON_DEV_PROFILE_OBSERVE",
         r"static void rs480_candidate_regs_debugfs_init\(.*?\)\n\{.*?"
@@ -135,6 +149,84 @@ RUNTIME_SOURCE_PATTERNS = {
         r"radeon_dev_profile_enabled\(.*?"
         r"RADEON_DEV_PROFILE_MUTATE",
     ),
+}
+RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
+    {
+        "rs400_debugfs_gart_page_table_show",
+        "rs480_candidate_config_regs_show",
+        "rs480_candidate_firmware_read_regs_show",
+        "rs480_candidate_ga_regs_show",
+        "rs480_candidate_gart_mc_regs_show",
+        "rs480_candidate_gart_status_regs_show",
+        "rs480_candidate_gb_regs_show",
+        "rs480_candidate_mc_benign_regs_show",
+        "rs480_candidate_rb3d_regs_show",
+        "rs480_candidate_sc_regs_show",
+        "rs480_candidate_vap_regs_show",
+        "rs480_candidate_vip_straggler_regs_show",
+        "rs480_candidate_zb_regs_show",
+        "rs480_cp_ib_scratch_oracle_show",
+        "rs480_cp_me_oracle_show",
+        "rs480_cp_me_ram_inject_show",
+        "rs480_cp_me_ram_seq_show",
+        "rs480_force_clock_3d_read_show",
+        "rs480_force_clock_read_show",
+        "rs480_frontier_probe_show",
+        "rs480_gated_read_show",
+        "rs480_hazard_read_show",
+        "rs480_pll_regs_show",
+        "rs480_reset_hang_probe_show",
+        "rs480_safe_regs_show",
+        "rs480_sclk_cntl_show",
+        "rs480_uma_status_show",
+        "rs480_vertex_probe_show",
+    }
+)
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 30
+RS4XX_DEBUGFS_NODE_COUNT = 31
+RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
+RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
+    "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
+}
+RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
+    "radeon_rs480_candidate_config_regs": "rs480_candidate_config_regs_fops",
+    "radeon_rs480_candidate_firmware_read_regs": (
+        "rs480_candidate_firmware_read_regs_fops"
+    ),
+    "radeon_rs480_candidate_ga_regs": "rs480_candidate_ga_regs_fops",
+    "radeon_rs480_candidate_gart_mc_regs": "rs480_candidate_gart_mc_regs_fops",
+    "radeon_rs480_candidate_gart_status_regs": (
+        "rs480_candidate_gart_status_regs_fops"
+    ),
+    "radeon_rs480_candidate_gb_regs": "rs480_candidate_gb_regs_fops",
+    "radeon_rs480_candidate_mc_benign_regs": (
+        "rs480_candidate_mc_benign_regs_fops"
+    ),
+    "radeon_rs480_candidate_rb3d_regs": "rs480_candidate_rb3d_regs_fops",
+    "radeon_rs480_candidate_regs": "rs480_candidate_config_regs_fops",
+    "radeon_rs480_candidate_sc_regs": "rs480_candidate_sc_regs_fops",
+    "radeon_rs480_candidate_vap_regs": "rs480_candidate_vap_regs_fops",
+    "radeon_rs480_candidate_vip_straggler_regs": (
+        "rs480_candidate_vip_straggler_regs_fops"
+    ),
+    "radeon_rs480_candidate_z_regs": "rs480_candidate_zb_regs_fops",
+    "radeon_rs480_candidate_zb_regs": "rs480_candidate_zb_regs_fops",
+    "radeon_rs480_cp_ib_scratch_oracle": "rs480_cp_ib_scratch_oracle_fops",
+    "radeon_rs480_cp_me_oracle": "rs480_cp_me_oracle_fops",
+    "radeon_rs480_cp_me_ram_dump": "rs480_cp_me_ram_dump_fops",
+    "radeon_rs480_cp_me_ram_inject": "rs480_cp_me_ram_inject_fops",
+    "radeon_rs480_force_clock_3d_read": "rs480_force_clock_3d_read_fops",
+    "radeon_rs480_force_clock_read": "rs480_force_clock_read_fops",
+    "radeon_rs480_frontier_probe": "rs480_frontier_probe_fops",
+    "radeon_rs480_gart_page_table": "rs400_debugfs_gart_page_table_fops",
+    "radeon_rs480_gated_read": "rs480_gated_read_fops",
+    "radeon_rs480_hazard_read": "rs480_hazard_read_fops",
+    "radeon_rs480_pll_regs": "rs480_pll_regs_fops",
+    "radeon_rs480_reset_hang_probe": "rs480_reset_hang_probe_fops",
+    "radeon_rs480_safe_regs": "rs480_safe_regs_fops",
+    "radeon_rs480_sclk_cntl": "rs480_sclk_cntl_fops",
+    "radeon_rs480_uma_status": "rs480_uma_status_fops",
+    "radeon_rs480_vertex_probe": "rs480_vertex_probe_fops",
 }
 MUTATION_AUDIT_PATTERNS = {
     "palm-reset-controls": (
@@ -283,6 +375,14 @@ def strip_comments_and_literals(source: str) -> str:
     return C_COMMENT_OR_LITERAL.sub(blank, source)
 
 
+def c_tokens(source: str, label: str) -> tuple[str, ...]:
+    """Tokenize the bounded C subset used by exact mechanism shapes."""
+    comment_free = strip_comments(source)
+    residual = C_TOKEN.sub("", comment_free)
+    require(not residual.strip(), f"{label} contains an unparsed C token")
+    return tuple(C_TOKEN.findall(comment_free))
+
+
 def brace_depth_at(source: str, position: int) -> int:
     """Return lexical brace depth before a position in comment-free C."""
     prefix = strip_comments_and_literals(source[:position])
@@ -320,16 +420,43 @@ def identifier_counts(texts: dict[str, str], identifier: str) -> dict[str, int]:
 def function_body(source: str, name: str) -> str:
     """Return one column-zero C function definition, brace to brace."""
     lines = strip_comments(source).splitlines()
+    scan_lines = strip_comments_and_literals(source).splitlines()
     start = None
-    for index, line in enumerate(lines):
+    for index, line in enumerate(scan_lines):
         if re.match(rf"^(?:[A-Za-z_].*\b)?{re.escape(name)}\s*\(", line):
             start = index
             break
     require(start is not None, f"function {name} is absent")
-    for index in range(start, len(lines)):
-        if FUNCTION_END.match(lines[index]):
+    for index in range(start, len(scan_lines)):
+        if FUNCTION_END.match(scan_lines[index]):
             return "\n".join(lines[start : index + 1])
     raise InterfaceError(f"function {name} has no closing brace")
+
+
+def direct_call_names(body: str, function_name: str) -> tuple[str, ...]:
+    """Return the direct C call names inside one parsed function body."""
+    control = strip_comments_and_literals(body)
+    opening_brace = control.find("{")
+    require(opening_brace >= 0, f"function {function_name} has no opening brace")
+    inner_body = control[opening_brace + 1 :]
+    require(
+        re.search(r"[\)\]]\s*\(", inner_body) is None,
+        f"function {function_name} uses an indirect call",
+    )
+    control_keywords = {
+        "_Static_assert",
+        "for",
+        "if",
+        "sizeof",
+        "switch",
+        "typeof",
+        "while",
+    }
+    return tuple(
+        name
+        for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", inner_body)
+        if name not in control_keywords
+    )
 
 
 def require_one_match(body: str, pattern: str, label: str) -> re.Match[str]:
@@ -541,6 +668,874 @@ def validate_output_schema_version(root: Path) -> None:
         pinned.group(1) == macro.group(1),
         "build-features.toml output_schema_version differs from "
         "RADEON_DEV_OUTPUT_SCHEMA_VERSION",
+    )
+
+
+def validate_rs4xx_output_schema_paths(
+    rows: list[dict[str, str]],
+    source: str,
+    expected_show_functions: frozenset[str] = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS,
+) -> None:
+    """Prove that every readable RS4xx development node reaches the schema
+    emitter before its first output or control-flow exit."""
+    rs4xx_nodes = {
+        row["marker"]
+        for row in rows
+        if row["marker_type"] == "debugfs-file"
+        and row["source_path"] == "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    }
+    readable_nodes = rs4xx_nodes - RS4XX_WRITE_ONLY_DEBUGFS_NODES
+    require(
+        len(readable_nodes) == RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT,
+        "RS4xx readable debugfs node denominator differs",
+    )
+
+    source_without_comments = strip_comments(source)
+    registration_pattern = re.compile(
+        r'debugfs_create_file\(\s*"(?P<node>radeon_rs480_[^"]+)"\s*,'
+        r"\s*(?P<mode>0[0-7]+)\s*,.*?,"
+        r"\s*&(?P<fops>[A-Za-z0-9_]+)\s*\);",
+        re.DOTALL,
+    )
+    registrations = list(registration_pattern.finditer(source_without_comments))
+    registered_node_fops = {
+        match.group("node"): match.group("fops") for match in registrations
+    }
+    expected_all_node_fops = {
+        **RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
+        **RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS,
+    }
+    require(
+        len(registered_node_fops) == len(registrations),
+        "RS4xx debugfs registration contains a duplicate node",
+    )
+    require(
+        len(registered_node_fops) == RS4XX_DEBUGFS_NODE_COUNT
+        and registered_node_fops == expected_all_node_fops,
+        "RS4xx debugfs node-to-fops map differs",
+    )
+    readable_node_fops = {
+        node: fops
+        for node, fops in registered_node_fops.items()
+        if node not in RS4XX_WRITE_ONLY_DEBUGFS_NODES
+    }
+    require(
+        readable_node_fops == RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
+        "RS4xx readable debugfs node-to-fops map differs",
+    )
+    registered_node_modes = {
+        match.group("node"): match.group("mode")
+        for match in registrations
+    }
+    expected_all_node_modes = {
+        node: (
+            "0600"
+            if node == "radeon_rs480_cp_me_ram_inject"
+            else "0200"
+            if node in RS4XX_WRITE_ONLY_DEBUGFS_NODES
+            else "0400"
+        )
+        for node in expected_all_node_fops
+    }
+    require(
+        registered_node_modes == expected_all_node_modes,
+        "RS4xx debugfs node modes differ",
+    )
+    require(
+        rs4xx_nodes == set(expected_all_node_fops)
+        and readable_nodes == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS),
+        "RS4xx debugfs manifest and fops maps differ",
+    )
+
+    discovered_show_functions = frozenset(
+        re.findall(
+            r"^static int ([A-Za-z0-9_]+_show)\s*\(",
+            source_without_comments,
+            re.MULTILINE,
+        )
+    )
+    require(
+        discovered_show_functions == expected_show_functions,
+        "RS4xx output-schema show-function denominator differs",
+    )
+    custom_fops = {
+        "rs480_cp_me_ram_dump_fops",
+        "rs480_cp_me_ram_inject_fops",
+    }
+    defined_show_names = set(
+        re.findall(
+            r"\bDEFINE_SHOW_ATTRIBUTE\(([A-Za-z0-9_]+)\);",
+            source_without_comments,
+        )
+    )
+    require(
+        {f"{name}_fops" for name in defined_show_names}
+        == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS.values()) - custom_fops,
+        "RS4xx DEFINE_SHOW_ATTRIBUTE fops denominator differs",
+    )
+    require(
+        {f"{name}_show" for name in defined_show_names}
+        == set(discovered_show_functions)
+        - {"rs480_cp_me_ram_inject_show", "rs480_cp_me_ram_seq_show"},
+        "RS4xx DEFINE_SHOW_ATTRIBUTE handler denominator differs",
+    )
+    require(
+        len(
+            re.findall(
+                r"\bRADEON_DEV_OUTPUT_SCHEMA_LINE\b",
+                strip_comments_and_literals(source),
+            )
+        )
+        == 1,
+        "RS4xx schema-line emission is not centralized",
+    )
+    output_call = re.compile(r"\bseq_[A-Za-z0-9_]+\s*\(")
+    schema_output_route = re.compile(
+        r"\b(?:rs480_debugfs_emit_schema|"
+        r"rs480_debugfs_refuse_(?:hardware_access|if_parked))\s*\("
+    )
+    control_exit = re.compile(r"\b(?:goto|return)\b")
+
+    emitter_body = function_body(source, "rs480_debugfs_emit_schema")
+    require_one_match(
+        emitter_body,
+        r"^static void rs480_debugfs_emit_schema\(struct seq_file \*m\)\s*"
+        r"\{\s*if \(m->count == 0\)\s*"
+        r"seq_puts\(m, RADEON_DEV_OUTPUT_SCHEMA_LINE\);\s*\}$",
+        "RS4xx schema emitter",
+    )
+
+    hardware_refusal_body = function_body(
+        source,
+        "rs480_debugfs_refuse_hardware_access",
+    )
+    require(
+        "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in hardware_refusal_body
+        and "rs480_debugfs_emit_schema" not in hardware_refusal_body,
+        "RS4xx hardware-refusal gate emits an output schema",
+    )
+    refusal_body = function_body(source, "rs480_debugfs_refuse_if_parked")
+    refusal_schema = require_one_match(
+        refusal_body,
+        r"\brs480_debugfs_emit_schema\(m\);",
+        "RS4xx parked-state schema route",
+    )
+    require_outer_function_match(
+        refusal_body,
+        refusal_schema,
+        "RS4xx parked-state schema route",
+    )
+    refusal_prefix = strip_comments_and_literals(
+        refusal_body[: refusal_schema.start()]
+    )
+    require(
+        output_call.search(refusal_prefix) is None
+        and control_exit.search(refusal_prefix) is None,
+        "RS4xx parked-state helper bypasses its schema route",
+    )
+    refusal_delegate = require_one_match(
+        refusal_body,
+        r"\breturn rs480_debugfs_refuse_hardware_access\(m, rdev\);",
+        "RS4xx parked-state hardware-refusal route",
+    )
+    require_outer_function_match(
+        refusal_body,
+        refusal_delegate,
+        "RS4xx parked-state hardware-refusal route",
+    )
+    require(
+        refusal_schema.start() < refusal_delegate.start(),
+        "RS4xx parked-state route checks hardware before emitting its schema",
+    )
+
+    candidate_body = function_body(source, "rs480_candidate_regs_emit")
+    candidate_refusal = require_one_match(
+        candidate_body,
+        r"\bif \(rs480_debugfs_refuse_if_parked\(m, rdev\)\)",
+        "RS4xx candidate-register schema route",
+    )
+    require_outer_function_match(
+        candidate_body,
+        candidate_refusal,
+        "RS4xx candidate-register schema route",
+    )
+    candidate_prefix = strip_comments_and_literals(
+        candidate_body[: candidate_refusal.start()]
+    )
+    require(
+        output_call.search(candidate_prefix) is None
+        and control_exit.search(candidate_prefix) is None,
+        "RS4xx candidate-register helper bypasses its schema route",
+    )
+
+    route_patterns = (
+        (
+            "direct schema emitter",
+            re.compile(r"^\trs480_debugfs_emit_schema\(m\);", re.MULTILINE),
+        ),
+        (
+            "parked-state schema route",
+            re.compile(
+                r"^\tif\s*\(\s*rs480_debugfs_refuse_if_parked\(\s*m\s*,"
+                r"[^)]*\)\s*\)",
+                re.MULTILINE,
+            ),
+        ),
+        (
+            "candidate-register schema route",
+            re.compile(
+                r"^\treturn\s+rs480_candidate_regs_emit\(\s*m\s*,",
+                re.MULTILINE,
+            ),
+        ),
+    )
+    guarded_route_prefix = re.compile(
+        r"\b(?:if|for|while|switch|goto|return)\b|\?|"
+        r"^\s*#|^\s*[A-Za-z_][A-Za-z0-9_]*:\s*$",
+        re.MULTILINE,
+    )
+    for function_name in sorted(discovered_show_functions):
+        if function_name == "rs480_cp_me_ram_seq_show":
+            continue
+        body = function_body(source, function_name)
+        route_search_body = strip_comments_and_literals(body)
+        routes = [
+            (match.start(), label, match)
+            for label, pattern in route_patterns
+            for match in pattern.finditer(route_search_body)
+        ]
+        require(bool(routes), f"{function_name} has no output-schema route")
+        _, label, first_route = min(routes, key=lambda route: route[0])
+        require_outer_function_match(body, first_route, f"{function_name} {label}")
+        prefix = strip_comments_and_literals(body[: first_route.start()])
+        require(
+            control_exit.search(prefix) is None,
+            f"{function_name} can exit before its output-schema route",
+        )
+        require(
+            output_call.search(prefix) is None,
+            f"{function_name} can emit output before its output-schema route",
+        )
+        require(
+            guarded_route_prefix.search(prefix) is None,
+            f"{function_name} conditionally reaches its output-schema route",
+        )
+
+    terminal_position_body = function_body(
+        source, "rs480_cp_me_ram_seq_terminal_position"
+    )
+    terminal_position_gate = require_one_match(
+        terminal_position_body,
+        r"if \(READ_ONCE\(rdev->gpu_parked\)\)\s*"
+        r"return RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED;\s*"
+        r"if \(READ_ONCE\(rdev->asic_suspended\)\)\s*"
+        r"return RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;\s*"
+        r"if \(READ_ONCE\(radeon_rs480_cp_me_ram_dump\) != 1\)\s*"
+        r"return RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;",
+        "RS4xx CP-ME terminal gate order",
+    )
+    require_outer_function_match(
+        terminal_position_body,
+        terminal_position_gate,
+        "RS4xx CP-ME terminal gate order",
+    )
+    terminal_position_prefix = strip_comments_and_literals(
+        terminal_position_body[: terminal_position_gate.start()]
+    )
+    terminal_position_control = strip_comments_and_literals(terminal_position_body)
+    require(
+        guarded_route_prefix.search(terminal_position_prefix) is None
+        and ";" not in terminal_position_prefix
+        and output_call.search(terminal_position_control) is None
+        and schema_output_route.search(terminal_position_control) is None
+        and RS4XX_CP_ME_HARDWARE_ACCESS.search(terminal_position_control) is None
+        and len(re.findall(r"\breturn\b", terminal_position_control)) == 4,
+        "RS4xx CP-ME terminal gate has a prefix diversion, hardware access, output, or extra exit",
+    )
+    require_one_match(
+        source_without_comments,
+        r"#define RS480_CP_ME_RAM_DUMP_LIMIT 0x100u\s*"
+        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED\s*\\\s*"
+        r"\(RS480_CP_ME_RAM_DUMP_LIMIT \+ 2\)\s*"
+        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED\s*\\\s*"
+        r"\(RS480_CP_ME_RAM_DUMP_LIMIT \+ 4\)\s*"
+        r"#define RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED\s*\\\s*"
+        r"\(RS480_CP_ME_RAM_DUMP_LIMIT \+ 6\)",
+        "RS4xx CP-ME encoded terminal positions",
+    )
+    terminal_test_body = function_body(source, "rs480_cp_me_ram_seq_is_terminal")
+    require_one_match(
+        terminal_test_body,
+        r"return position == RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED \|\|\s*"
+        r"position == RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED \|\|\s*"
+        r"position == RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;",
+        "RS4xx CP-ME terminal-position predicate",
+    )
+    terminal_emit_body = function_body(
+        source, "rs480_cp_me_ram_seq_emit_terminal"
+    )
+    terminal_emit_control = strip_comments_and_literals(terminal_emit_body)
+    terminal_mapping = require_one_match(
+        terminal_emit_body,
+        r"switch \(position\)\s*\{\s*"
+        r"case RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\s*"
+        r'seq_puts\(m, "terminal_status\\tstatus=disarmed\\n"\);\s*'
+        r"break;\s*"
+        r"case RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\s*"
+        r'seq_puts\(m, "terminal_status\\tstatus=gpu-parked\\n"\);\s*'
+        r"break;\s*"
+        r"case RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\s*"
+        r'seq_puts\(m, "terminal_status\\tstatus=asic-suspended\\n"\);\s*'
+        r"break;\s*"
+        r"default:\s*"
+        r'seq_puts\(m, "terminal_status\\tstatus=invalid\\n"\);\s*'
+        r"break;\s*\}",
+        "RS4xx CP-ME terminal position-to-status mapping",
+    )
+    require_outer_function_match(
+        terminal_emit_body,
+        terminal_mapping,
+        "RS4xx CP-ME terminal position-to-status mapping",
+    )
+    require(
+        terminal_emit_control.count("seq_puts(m,") == 4
+        and terminal_emit_body.count('"terminal_status') == 4
+        and '"terminal_status\\tstatus=disarmed\\n"' in terminal_emit_body
+        and '"terminal_status\\tstatus=gpu-parked\\n"' in terminal_emit_body
+        and '"terminal_status\\tstatus=asic-suspended\\n"' in terminal_emit_body
+        and '"terminal_status\\tstatus=invalid\\n"' in terminal_emit_body
+        and "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in terminal_emit_body,
+        "RS4xx CP-ME terminal emitter is not total and fail-closed",
+    )
+
+    dump_start_body = function_body(source, "rs480_cp_me_ram_seq_start")
+    dump_header_start = require_one_match(
+        dump_start_body,
+        r"if \(\*pos == 0\)\s*return SEQ_START_TOKEN;",
+        "RS4xx CP-ME dump header start",
+    )
+    dump_start_terminal = require_one_match(
+        dump_start_body,
+        r"if \(rs480_cp_me_ram_seq_is_terminal\(\*pos\)\)\s*"
+        r"return pos;",
+        "RS4xx CP-ME dump terminal replay start",
+    )
+    dump_start_gate = require_one_match(
+        dump_start_body,
+        r"terminal_position = rs480_cp_me_ram_seq_terminal_position\(rdev\);\s*"
+        r"if \(terminal_position\)\s*\{\s*\*pos = terminal_position;\s*"
+        r"return pos;\s*\}",
+        "RS4xx CP-ME dump start terminal route",
+    )
+    dump_limit_start = require_one_match(
+        dump_start_body,
+        r"if \(\*pos > RS480_CP_ME_RAM_DUMP_LIMIT\)\s*return NULL;",
+        "RS4xx CP-ME dump start bound",
+    )
+    for label, match in (
+        ("header start", dump_header_start),
+        ("terminal replay start", dump_start_terminal),
+        ("start bound", dump_limit_start),
+        ("start terminal route", dump_start_gate),
+    ):
+        require_outer_function_match(
+            dump_start_body,
+            match,
+            f"RS4xx CP-ME dump {label}",
+        )
+    dump_start_returns = list(re.finditer(r"\breturn pos;", dump_start_body))
+    require(
+        len(dump_start_returns) == 3,
+        "RS4xx CP-ME dump start record count differs",
+    )
+    dump_start_return = dump_start_returns[-1]
+    require(
+        dump_header_start.start()
+        < dump_start_terminal.start()
+        < dump_limit_start.start()
+        < dump_start_gate.start()
+        < dump_start_return.start(),
+        "RS4xx CP-ME dump start gates are out of order",
+    )
+    dump_start_control = strip_comments_and_literals(dump_start_body)
+    require(
+        output_call.search(dump_start_control) is None
+        and schema_output_route.search(dump_start_control) is None
+        and RS4XX_CP_ME_HARDWARE_ACCESS.search(dump_start_control) is None
+        and len(re.findall(r"\breturn\b", dump_start_control)) == 5
+        and re.search(r"\+\+\*pos", dump_start_control) is None,
+        "RS4xx CP-ME dump start reaches hardware, emits output, or changes the position",
+    )
+
+    dump_next_body = function_body(source, "rs480_cp_me_ram_seq_next")
+    dump_next_snapshot = require_one_match(
+        dump_next_body,
+        r"bool was_terminal = rs480_cp_me_ram_seq_is_terminal\(\*pos\);",
+        "RS4xx CP-ME dump terminal snapshot",
+    )
+    dump_next_increment = require_one_match(
+        dump_next_body,
+        r"\+\+\*pos;",
+        "RS4xx CP-ME dump iterator increment",
+    )
+    dump_next_eof = require_one_match(
+        dump_next_body,
+        r"if \(was_terminal\)\s*return NULL;",
+        "RS4xx CP-ME dump terminal EOF",
+    )
+    dump_next_gate = require_one_match(
+        dump_next_body,
+        r"terminal_position = rs480_cp_me_ram_seq_terminal_position\(rdev\);\s*"
+        r"if \(terminal_position\)\s*\{\s*\*pos = terminal_position;\s*"
+        r"return pos;\s*\}",
+        "RS4xx CP-ME dump iterator terminal route",
+    )
+    dump_limit_next = require_one_match(
+        dump_next_body,
+        r"if \(\*pos > RS480_CP_ME_RAM_DUMP_LIMIT\)\s*return NULL;",
+        "RS4xx CP-ME dump iterator bound",
+    )
+    for label, match in (
+        ("terminal snapshot", dump_next_snapshot),
+        ("iterator increment", dump_next_increment),
+        ("terminal EOF", dump_next_eof),
+        ("iterator bound", dump_limit_next),
+        ("iterator terminal route", dump_next_gate),
+    ):
+        require_outer_function_match(
+            dump_next_body,
+            match,
+            f"RS4xx CP-ME dump {label}",
+        )
+    dump_next_returns = list(re.finditer(r"\breturn pos;", dump_next_body))
+    require(
+        len(dump_next_returns) == 2,
+        "RS4xx CP-ME dump next record count differs",
+    )
+    dump_next_return = dump_next_returns[-1]
+    require(
+        dump_next_snapshot.start()
+        < dump_next_increment.start()
+        < dump_next_eof.start()
+        < dump_limit_next.start()
+        < dump_next_gate.start()
+        < dump_next_return.start(),
+        "RS4xx CP-ME dump iterator routes are out of order",
+    )
+    dump_next_control = strip_comments_and_literals(dump_next_body)
+    require(
+        output_call.search(dump_next_control) is None
+        and schema_output_route.search(dump_next_control) is None
+        and RS4XX_CP_ME_HARDWARE_ACCESS.search(dump_next_control) is None
+        and len(re.findall(r"\breturn\b", dump_next_control)) == 4
+        and re.search(r"\bgoto\b", dump_next_control) is None,
+        "RS4xx CP-ME dump iterator reaches hardware, emits output, or has extra exits",
+    )
+
+    dump_stop_body = function_body(source, "rs480_cp_me_ram_seq_stop")
+    require_one_match(
+        dump_stop_body,
+        r"^static void rs480_cp_me_ram_seq_stop\(struct seq_file \*m, void \*v\)"
+        r"\s*\{\s*\}$",
+        "RS4xx CP-ME dump stop",
+    )
+    dump_show_body = function_body(source, "rs480_cp_me_ram_seq_show")
+    expected_function_shapes = {
+        "rs480_cp_me_ram_seq_terminal_position": """
+static loff_t rs480_cp_me_ram_seq_terminal_position(struct radeon_device *rdev)
+{
+    if (READ_ONCE(rdev->gpu_parked))
+        return RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED;
+    if (READ_ONCE(rdev->asic_suspended))
+        return RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;
+    if (READ_ONCE(radeon_rs480_cp_me_ram_dump) != 1)
+        return RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;
+    return 0;
+}
+""",
+        "rs480_cp_me_ram_seq_is_terminal": """
+static bool rs480_cp_me_ram_seq_is_terminal(loff_t position)
+{
+    return position == RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED ||
+           position == RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED ||
+           position == RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED;
+}
+""",
+        "rs480_cp_me_ram_seq_emit_terminal": """
+static void rs480_cp_me_ram_seq_emit_terminal(struct seq_file *m,
+                                               loff_t position)
+{
+    switch (position) {
+    case RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:
+        seq_puts(m, "terminal_status\\tstatus=disarmed\\n");
+        break;
+    case RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:
+        seq_puts(m, "terminal_status\\tstatus=gpu-parked\\n");
+        break;
+    case RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:
+        seq_puts(m, "terminal_status\\tstatus=asic-suspended\\n");
+        break;
+    default:
+        seq_puts(m, "terminal_status\\tstatus=invalid\\n");
+        break;
+    }
+}
+""",
+        "rs480_cp_me_ram_seq_start": """
+static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)
+{
+    struct radeon_device *rdev = m->private;
+    loff_t terminal_position;
+
+    if (*pos == 0)
+        return SEQ_START_TOKEN;
+    if (rs480_cp_me_ram_seq_is_terminal(*pos))
+        return pos;
+    if (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)
+        return NULL;
+    terminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);
+    if (terminal_position) {
+        *pos = terminal_position;
+        return pos;
+    }
+    return pos;
+}
+""",
+        "rs480_cp_me_ram_seq_next": """
+static void *rs480_cp_me_ram_seq_next(struct seq_file *m, void *v, loff_t *pos)
+{
+    struct radeon_device *rdev = m->private;
+    loff_t terminal_position;
+    bool was_terminal = rs480_cp_me_ram_seq_is_terminal(*pos);
+
+    ++*pos;
+    if (was_terminal)
+        return NULL;
+    if (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)
+        return NULL;
+    terminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);
+    if (terminal_position) {
+        *pos = terminal_position;
+        return pos;
+    }
+    return pos;
+}
+""",
+        "rs480_cp_me_ram_seq_stop": """
+static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)
+{
+}
+""",
+        "rs480_cp_me_ram_seq_show": """
+static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
+{
+    struct radeon_device *rdev = m->private;
+    loff_t terminal_position;
+
+    if (v == SEQ_START_TOKEN) {
+        rs480_debugfs_emit_schema(m);
+        return 0;
+    }
+    if (rs480_cp_me_ram_seq_is_terminal(m->index)) {
+        rs480_cp_me_ram_seq_emit_terminal(m, m->index);
+        return 0;
+    }
+    terminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);
+    if (terminal_position) {
+        m->index = terminal_position;
+        rs480_cp_me_ram_seq_emit_terminal(m, terminal_position);
+        return 0;
+    }
+    unsigned int addr = (unsigned int)m->index - 1;
+    u32 datah, datal;
+
+    WREG32(RADEON_CP_ME_RAM_RADDR, addr);
+    datah = RREG32(RADEON_CP_ME_RAM_DATAH);
+    datal = RREG32(RADEON_CP_ME_RAM_DATAL);
+    seq_printf(m, "%04x %08x %08x\\n", addr, datah, datal);
+    return 0;
+}
+""",
+    }
+    expected_direct_calls = {
+        "rs480_cp_me_ram_seq_terminal_position": (
+            "READ_ONCE",
+            "READ_ONCE",
+            "READ_ONCE",
+        ),
+        "rs480_cp_me_ram_seq_is_terminal": (),
+        "rs480_cp_me_ram_seq_emit_terminal": (
+            "seq_puts",
+            "seq_puts",
+            "seq_puts",
+            "seq_puts",
+        ),
+        "rs480_cp_me_ram_seq_start": (
+            "rs480_cp_me_ram_seq_is_terminal",
+            "rs480_cp_me_ram_seq_terminal_position",
+        ),
+        "rs480_cp_me_ram_seq_next": (
+            "rs480_cp_me_ram_seq_is_terminal",
+            "rs480_cp_me_ram_seq_terminal_position",
+        ),
+        "rs480_cp_me_ram_seq_stop": (),
+        "rs480_cp_me_ram_seq_show": (
+            "rs480_debugfs_emit_schema",
+            "rs480_cp_me_ram_seq_is_terminal",
+            "rs480_cp_me_ram_seq_emit_terminal",
+            "rs480_cp_me_ram_seq_terminal_position",
+            "rs480_cp_me_ram_seq_emit_terminal",
+            "WREG32",
+            "RREG32",
+            "RREG32",
+            "seq_printf",
+        ),
+    }
+    direct_call_bodies = {
+        "rs480_cp_me_ram_seq_terminal_position": terminal_position_body,
+        "rs480_cp_me_ram_seq_is_terminal": terminal_test_body,
+        "rs480_cp_me_ram_seq_emit_terminal": terminal_emit_body,
+        "rs480_cp_me_ram_seq_start": dump_start_body,
+        "rs480_cp_me_ram_seq_next": dump_next_body,
+        "rs480_cp_me_ram_seq_stop": dump_stop_body,
+        "rs480_cp_me_ram_seq_show": dump_show_body,
+    }
+    for function_name, expected_shape in expected_function_shapes.items():
+        require(
+            c_tokens(direct_call_bodies[function_name], function_name)
+            == c_tokens(expected_shape, f"expected {function_name}"),
+            f"{function_name} exact mechanism shape differs",
+        )
+    terminal_macro_names = {
+        "RS480_CP_ME_RAM_DUMP_LIMIT",
+        "RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED",
+        "RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED",
+        "RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED",
+    }
+    mechanism_identifiers = {
+        token
+        for expected_shape in expected_function_shapes.values()
+        for token in c_tokens(expected_shape, "expected CP-ME mechanism shape")
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token)
+    }
+    source_without_comments = strip_comments(source)
+    for identifier in sorted(mechanism_identifiers - terminal_macro_names):
+        require(
+            re.search(
+                rf"^[ \t]*#[ \t]*(?:define|undef)[ \t]+{re.escape(identifier)}\b",
+                source_without_comments,
+                re.MULTILINE,
+            )
+            is None,
+            f"RS4xx CP-ME mechanism identifier {identifier} is redefined",
+        )
+    for identifier in sorted(terminal_macro_names):
+        definitions = re.findall(
+            rf"^[ \t]*#[ \t]*define[ \t]+{re.escape(identifier)}\b",
+            source_without_comments,
+            re.MULTILINE,
+        )
+        undefinitions = re.findall(
+            rf"^[ \t]*#[ \t]*undef[ \t]+{re.escape(identifier)}\b",
+            source_without_comments,
+            re.MULTILINE,
+        )
+        require(
+            len(definitions) == 1 and not undefinitions,
+            f"RS4xx CP-ME terminal macro {identifier} definition differs",
+        )
+    critical_region_start = source.find("#define RS480_CP_ME_RAM_DUMP_LIMIT")
+    critical_region_end = source.find("static const struct seq_operations ")
+    require(
+        0 <= critical_region_start < critical_region_end,
+        "RS4xx CP-ME critical preprocessor region is absent",
+    )
+    critical_directives = re.findall(
+        r"^[ \t]*#[ \t]*([A-Za-z_][A-Za-z0-9_]*)\b",
+        strip_comments(source[critical_region_start:critical_region_end]),
+        re.MULTILINE,
+    )
+    require(
+        critical_directives == ["define", "define", "define", "define"],
+        "RS4xx CP-ME critical preprocessor directive topology differs",
+    )
+    arm_identifier_uses = re.findall(
+        r"\bradeon_rs480_cp_me_ram_dump\b",
+        strip_comments_and_literals(source),
+    )
+    require(
+        len(arm_identifier_uses) == 1,
+        "RS4xx CP-ME arm state has a source-side writer or extra reader",
+    )
+    for function_name, expected_calls in expected_direct_calls.items():
+        require(
+            direct_call_names(direct_call_bodies[function_name], function_name)
+            == expected_calls,
+            f"{function_name} direct-call topology differs",
+        )
+    require(
+        "rs480_debugfs_refuse_if_parked" not in dump_show_body
+        and "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in dump_show_body,
+        "RS4xx CP-ME dump data route can re-emit its schema",
+    )
+    dump_header = require_one_match(
+        dump_show_body,
+        r"if \(v == SEQ_START_TOKEN\)\s*\{.*?\n\t\}",
+        "RS4xx CP-ME dump header record",
+    )
+    dump_header_schema = require_one_match(
+        dump_header.group(0),
+        r"\brs480_debugfs_emit_schema\(m\);",
+        "RS4xx CP-ME dump header schema",
+    )
+    require_one_match(
+        dump_header.group(0)[dump_header_schema.end() :],
+        r"^\s*return 0;\s*\}$",
+        "RS4xx CP-ME dump retry-stable header return",
+    )
+    require(
+        "rs480_debugfs_refuse_hardware_access" not in dump_header.group(0),
+        "RS4xx CP-ME dump header performs a second hardware-state read",
+    )
+    dump_header_prefix = strip_comments_and_literals(
+        dump_header.group(0)[: dump_header_schema.start()]
+    )
+    require(
+        output_call.search(dump_header_prefix) is None
+        and schema_output_route.search(dump_header_prefix) is None
+        and control_exit.search(dump_header_prefix) is None,
+        "RS4xx CP-ME dump header emits or exits before its schema",
+    )
+    require(
+        ";" not in dump_header_prefix
+        and RS4XX_CP_ME_HARDWARE_ACCESS.search(dump_header_prefix) is None,
+        "RS4xx CP-ME dump header performs work before its schema",
+    )
+    dump_data_body = dump_show_body[dump_header.end() :]
+    terminal_replay = require_one_match(
+        dump_data_body,
+        r"if \(rs480_cp_me_ram_seq_is_terminal\(m->index\)\)\s*\{\s*"
+        r"rs480_cp_me_ram_seq_emit_terminal\(m, m->index\);\s*return 0;\s*\}",
+        "RS4xx CP-ME dump terminal replay record",
+    )
+    require(
+        brace_depth_at(dump_show_body, dump_header.end() + terminal_replay.start())
+        == 1,
+        "RS4xx CP-ME dump terminal replay record is not an unconditional outer function statement",
+    )
+    dump_data_gate = require_one_match(
+        dump_data_body,
+        r"terminal_position = rs480_cp_me_ram_seq_terminal_position\(rdev\);\s*"
+        r"if \(terminal_position\)\s*\{\s*"
+        r"m->index = terminal_position;\s*"
+        r"rs480_cp_me_ram_seq_emit_terminal\(m, terminal_position\);\s*"
+        r"return 0;\s*\}",
+        "RS4xx CP-ME dump data terminal record",
+    )
+    require(
+        brace_depth_at(dump_show_body, dump_header.end() + dump_data_gate.start())
+        == 1,
+        "RS4xx CP-ME dump data terminal record is not an unconditional outer function statement",
+    )
+    dump_address = require_one_match(
+        dump_data_body,
+        r"unsigned int addr = \(unsigned int\)m->index - 1;",
+        "RS4xx CP-ME dump address bound",
+    )
+    dump_mmio = require_one_match(
+        dump_data_body,
+        r"WREG32\(RADEON_CP_ME_RAM_RADDR, addr\);\s*"
+        r"datah = RREG32\(RADEON_CP_ME_RAM_DATAH\);\s*"
+        r"datal = RREG32\(RADEON_CP_ME_RAM_DATAL\);",
+        "RS4xx CP-ME dump MMIO sequence",
+    )
+    dump_hardware_calls = list(RS4XX_CP_ME_HARDWARE_ACCESS.finditer(dump_show_body))
+    require(
+        dump_data_body.count("rs480_cp_me_ram_seq_emit_terminal(m,") == 2
+        and dump_data_gate.end() < dump_address.start()
+        and dump_data_gate.end() < dump_mmio.start()
+        and len(dump_hardware_calls) == 3
+        and all(
+            call.start() >= dump_header.end() + dump_mmio.start()
+            for call in dump_hardware_calls
+        )
+        and "rs480_debugfs_refuse_hardware_access" not in dump_data_body
+        and "rs480_debugfs_refuse_if_parked" not in dump_data_body
+        and "rs480_debugfs_emit_schema" not in dump_data_body
+        and "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in dump_data_body,
+        "RS4xx CP-ME dump data terminal topology differs",
+    )
+    dump_data_prefix = strip_comments_and_literals(
+        dump_data_body[: terminal_replay.start()]
+    )
+    dump_data_between_routes = strip_comments_and_literals(
+        dump_data_body[terminal_replay.end() : dump_data_gate.start()]
+    )
+    require(
+        output_call.search(dump_data_prefix) is None
+        and schema_output_route.search(dump_data_prefix) is None
+        and control_exit.search(dump_data_prefix) is None,
+        "RS4xx CP-ME dump data emits or exits before its terminal replay route",
+    )
+    require(
+        output_call.search(dump_data_between_routes) is None
+        and schema_output_route.search(dump_data_between_routes) is None
+        and RS4XX_CP_ME_HARDWARE_ACCESS.search(dump_data_between_routes) is None
+        and control_exit.search(dump_data_between_routes) is None,
+        "RS4xx CP-ME dump data reaches hardware, emits, or exits between terminal routes",
+    )
+    require(
+        dump_data_gate.start() < dump_address.start() < dump_mmio.start(),
+        "RS4xx CP-ME dump checks state after computing or issuing MMIO",
+    )
+
+    require_one_match(
+        source_without_comments,
+        r"static const struct seq_operations rs480_cp_me_ram_seq_ops = \{\s*"
+        r"\.start\s*=\s*rs480_cp_me_ram_seq_start,\s*"
+        r"\.next\s*=\s*rs480_cp_me_ram_seq_next,\s*"
+        r"\.stop\s*=\s*rs480_cp_me_ram_seq_stop,\s*"
+        r"\.show\s*=\s*rs480_cp_me_ram_seq_show,\s*\};",
+        "RS4xx CP-ME dump sequence operation bindings",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static int rs480_cp_me_ram_dump_open\(struct inode \*inode, "
+        r"struct file \*file\)\s*\{\s*"
+        r"int ret = seq_open\(file, &rs480_cp_me_ram_seq_ops\);\s*"
+        r"if \(!ret\)\s*"
+        r"\(\(struct seq_file \*\)file->private_data\)->private = "
+        r"inode->i_private;\s*return ret;\s*\}",
+        "RS4xx CP-ME dump open binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static const struct file_operations rs480_cp_me_ram_dump_fops = \{\s*"
+        r"\.owner\s*=\s*THIS_MODULE,\s*"
+        r"\.open\s*=\s*rs480_cp_me_ram_dump_open,\s*"
+        r"\.read\s*=\s*seq_read,\s*"
+        r"\.llseek\s*=\s*seq_lseek,\s*"
+        r"\.release\s*=\s*seq_release,\s*\};",
+        "RS4xx CP-ME dump fops binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static int rs480_cp_me_ram_inject_open\(struct inode \*inode, "
+        r"struct file \*file\)\s*\{\s*"
+        r"int r = single_open\(file, rs480_cp_me_ram_inject_show, "
+        r"inode->i_private\);\s*"
+        r"return r \? r : nonseekable_open\(inode, file\);\s*\}",
+        "RS4xx CP-ME injection show binding",
+    )
+    require_one_match(
+        source_without_comments,
+        r"static const struct file_operations rs480_cp_me_ram_inject_fops = \{\s*"
+        r"\.owner\s*=\s*THIS_MODULE,\s*"
+        r"\.open\s*=\s*rs480_cp_me_ram_inject_open,\s*"
+        r"\.read\s*=\s*seq_read,\s*"
+        r"\.write\s*=\s*rs480_cp_me_ram_inject_write,\s*"
+        r"\.release\s*=\s*single_release,\s*\};",
+        "RS4xx CP-ME injection fops binding",
     )
 
 
@@ -1308,6 +2303,10 @@ def validate(
             root / "policy/dev-interface-registration-contract.tsv"
         )
         validate_output_schema_version(root)
+        validate_rs4xx_output_schema_paths(
+            rows,
+            source_texts["drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"],
+        )
         validate_runtime_sources(source_texts)
         validate_palm_reset_registration(registration_rows, source_texts)
         validate_mutation_audit(source_texts, features)
@@ -1485,6 +2484,1022 @@ def self_test(root: Path) -> int:
     registration_rows = read_registration_contract(
         root / "policy/dev-interface-registration-contract.tsv"
     )
+    rs4xx_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    validate_rs4xx_output_schema_paths(rows, source_texts[rs4xx_source_path])
+    rs4xx_source = source_texts[rs4xx_source_path]
+    schema_rejection_count = 0
+
+    def reject_schema_mutant(
+        label: str,
+        candidate: str,
+        expected_show_functions: frozenset[str] = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS,
+    ) -> None:
+        nonlocal schema_rejection_count
+        try:
+            validate_rs4xx_output_schema_paths(
+                rows,
+                candidate,
+                expected_show_functions,
+            )
+        except InterfaceError:
+            schema_rejection_count += 1
+            return
+        raise InterfaceError(f"self-test accepted {label}")
+
+    missing_common_schema = rs4xx_source.replace(
+        "\t\tseq_puts(m, RADEON_DEV_OUTPUT_SCHEMA_LINE);",
+        "\t\tremoved_schema_line;",
+        1,
+    )
+    require(
+        missing_common_schema != rs4xx_source,
+        "self-test common schema fixture differs from the source",
+    )
+    reject_schema_mutant("a missing common schema line", missing_common_schema)
+
+    early_disarmed_functions = (
+        "rs480_candidate_vap_regs_show",
+        "rs480_candidate_firmware_read_regs_show",
+        "rs480_candidate_vip_straggler_regs_show",
+    )
+    for function_name in early_disarmed_functions:
+        missing_early_schema, replacement_count = re.subn(
+            rf"(static int {re.escape(function_name)}\(.*?\n\{{\n)"
+            r"\trs480_debugfs_emit_schema\(m\);\n",
+            r"\1",
+            rs4xx_source,
+            count=1,
+            flags=re.DOTALL,
+        )
+        require(
+            replacement_count == 1,
+            f"self-test early schema fixture differs for {function_name}",
+        )
+        reject_schema_mutant(
+            f"an early schema bypass in {function_name}",
+            missing_early_schema,
+        )
+
+    early_emitter_return = rs4xx_source.replace(
+        "static void rs480_debugfs_emit_schema(struct seq_file *m)\n"
+        "{\n"
+        "\tif (m->count == 0)",
+        "static void rs480_debugfs_emit_schema(struct seq_file *m)\n"
+        "{\n"
+        "\tif (m->count != 0)\n"
+        "\t\treturn;\n"
+        "\tif (m->count == 0)",
+        1,
+    )
+    require(
+        early_emitter_return != rs4xx_source,
+        "self-test schema-emitter return fixture differs from the source",
+    )
+    reject_schema_mutant("an early schema-emitter return", early_emitter_return)
+
+    refusal_helper_output, replacement_count = re.subn(
+        r"(static bool rs480_debugfs_refuse_if_parked\(.*?\n\{\n)"
+        r"(\trs480_debugfs_emit_schema\(m\);)",
+        r'\1\tseq_puts(m, "bad\\n");\n\2',
+        rs4xx_source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    require(
+        replacement_count == 1,
+        "self-test refusal-helper output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "refusal-helper output before its schema route",
+        refusal_helper_output,
+    )
+
+    alternate_seq_output = rs4xx_source.replace(
+        "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
+        "{\n",
+        "static int rs480_safe_regs_show(struct seq_file *m, void *unused)\n"
+        "{\n"
+        "\tseq_put_decimal_ull(m, \"\", 7);\n",
+        1,
+    )
+    require(
+        alternate_seq_output != rs4xx_source,
+        "self-test alternate seq output fixture differs from the source",
+    )
+    reject_schema_mutant("output through an alternate seq API", alternate_seq_output)
+
+    candidate_helper_output, replacement_count = re.subn(
+        r"(static int rs480_candidate_regs_emit\(.*?\n\{\n)"
+        r"(\tif \(rs480_debugfs_refuse_if_parked\(m, rdev\)\))",
+        r'\1\tseq_puts(m, "bad\\n");\n\2',
+        rs4xx_source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    require(
+        replacement_count == 1,
+        "self-test candidate-helper output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "candidate-helper output before its schema route",
+        candidate_helper_output,
+    )
+
+    write_only_fops = rs4xx_source.replace(
+        'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,\n'
+        "\t\t\t    &rs480_safe_regs_fops);",
+        'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,\n'
+        "\t\t\t    &rs480_mc_flush_fops);",
+        1,
+    )
+    require(
+        write_only_fops != rs4xx_source,
+        "self-test node-to-fops fixture differs from the source",
+    )
+    reject_schema_mutant("a readable node with write-only fops", write_only_fops)
+
+    unreadable_mode = rs4xx_source.replace(
+        'debugfs_create_file("radeon_rs480_safe_regs", 0400, root, rdev,',
+        'debugfs_create_file("radeon_rs480_safe_regs", 0200, root, rdev,',
+        1,
+    )
+    require(
+        unreadable_mode != rs4xx_source,
+        "self-test readable-node mode fixture differs from the source",
+    )
+    reject_schema_mutant("a schema-bearing node without read mode", unreadable_mode)
+
+    missing_dump_header = rs4xx_source.replace(
+        "if (*pos == 0)\n\t\treturn SEQ_START_TOKEN;",
+        "if (*pos == 0)\n\t\treturn NULL;",
+        1,
+    )
+    require(
+        missing_dump_header != rs4xx_source,
+        "self-test CP-ME dump header fixture differs from the source",
+    )
+    reject_schema_mutant("a CP-ME dump without its header record", missing_dump_header)
+
+    early_dump_header_output = rs4xx_source.replace(
+        "\tif (v == SEQ_START_TOKEN) {\n"
+        "\t\trs480_debugfs_emit_schema(m);",
+        "\tif (v == SEQ_START_TOKEN) {\n"
+        "\t\tseq_puts(m, \"bad\\n\");\n"
+        "\t\trs480_debugfs_emit_schema(m);",
+        1,
+    )
+    require(
+        early_dump_header_output != rs4xx_source,
+        "self-test CP-ME header output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME header output before its schema",
+        early_dump_header_output,
+    )
+
+    early_dump_return = rs4xx_source.replace(
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\treturn pos;\n"
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        early_dump_return != rs4xx_source,
+        "self-test CP-ME dump ordering fixture differs from the source",
+    )
+    reject_schema_mutant("an early CP-ME dump iterator return", early_dump_return)
+
+    paginated_dump_schema = rs4xx_source.replace(
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {",
+        "\trs480_debugfs_emit_schema(m);\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {",
+        1,
+    )
+    require(
+        paginated_dump_schema != rs4xx_source,
+        "self-test CP-ME dump pagination fixture differs from the source",
+    )
+    reject_schema_mutant("a schema emitter in CP-ME data records", paginated_dump_schema)
+
+    direct_paginated_schema = rs4xx_source.replace(
+        "\t}\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\t}\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        direct_paginated_schema != rs4xx_source,
+        "self-test direct paginated schema fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a direct schema emitter in CP-ME data records",
+        direct_paginated_schema,
+    )
+
+    early_dump_data_output = rs4xx_source.replace(
+        "\t}\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\t}\n"
+        "\tseq_puts(m, \"bad\\n\");\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        early_dump_data_output != rs4xx_source,
+        "self-test CP-ME data output fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME data output before its hardware-refusal route",
+        early_dump_data_output,
+    )
+
+    wrong_dump_start_binding = rs4xx_source.replace(
+        "\t.start = rs480_cp_me_ram_seq_start,",
+        "\t.start = rs480_cp_me_ram_seq_next,",
+        1,
+    )
+    require(
+        wrong_dump_start_binding != rs4xx_source,
+        "self-test CP-ME sequence binding fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a CP-ME sequence with the wrong start binding",
+        wrong_dump_start_binding,
+    )
+
+    unbounded_dump_next = rs4xx_source.replace(
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        unbounded_dump_next != rs4xx_source,
+        "self-test CP-ME dump termination fixture differs from the source",
+    )
+    reject_schema_mutant("an unbounded CP-ME dump iterator", unbounded_dump_next)
+
+    early_dump_next_return = rs4xx_source.replace(
+        "\t++*pos;\n"
+        "\tif (was_terminal)\n"
+        "\t\treturn NULL;",
+        "\t++*pos;\n"
+        "\treturn pos;\n"
+        "\tif (was_terminal)\n"
+        "\t\treturn NULL;",
+        1,
+    )
+    require(
+        early_dump_next_return != rs4xx_source,
+        "self-test CP-ME next-return fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME dump next return",
+        early_dump_next_return,
+    )
+
+    dump_start_schema = rs4xx_source.replace(
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n"
+        "{\n",
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)\n"
+        "{\n"
+        "\trs480_debugfs_emit_schema(m);\n",
+        1,
+    )
+    require(
+        dump_start_schema != rs4xx_source,
+        "self-test CP-ME start-schema fixture differs from the source",
+    )
+    reject_schema_mutant("schema output from CP-ME dump start", dump_start_schema)
+
+    extra_dump_start_return = rs4xx_source.replace(
+        "\tif (*pos == 0)\n"
+        "\t\treturn SEQ_START_TOKEN;\n"
+        "\tif (rs480_cp_me_ram_seq_is_terminal(*pos))",
+        "\tif (*pos == 0)\n"
+        "\t\treturn SEQ_START_TOKEN;\n"
+        "\treturn NULL;\n"
+        "\tif (rs480_cp_me_ram_seq_is_terminal(*pos))",
+        1,
+    )
+    require(
+        extra_dump_start_return != rs4xx_source,
+        "self-test CP-ME start-return fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an extra CP-ME dump start return",
+        extra_dump_start_return,
+    )
+
+    dump_next_schema = rs4xx_source.replace(
+        "\t++*pos;\n"
+        "\tif (was_terminal)\n"
+        "\t\treturn NULL;",
+        "\t++*pos;\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "\tif (was_terminal)\n"
+        "\t\treturn NULL;",
+        1,
+    )
+    require(
+        dump_next_schema != rs4xx_source,
+        "self-test CP-ME next-schema fixture differs from the source",
+    )
+    reject_schema_mutant("schema output from CP-ME dump next", dump_next_schema)
+
+    dump_next_refusal = rs4xx_source.replace(
+        "\t++*pos;\n"
+        "\tif (was_terminal)\n"
+        "\t\treturn NULL;",
+        "\t++*pos;\n"
+        "\trs480_debugfs_refuse_if_parked(m, rdev);\n"
+        "\tif (was_terminal)\n"
+        "\t\treturn NULL;",
+        1,
+    )
+    require(
+        dump_next_refusal != rs4xx_source,
+        "self-test CP-ME next-refusal fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "refusal output from CP-ME dump next",
+        dump_next_refusal,
+    )
+
+    dump_stop_schema = rs4xx_source.replace(
+        "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n"
+        "{\n"
+        "}",
+        "static void rs480_cp_me_ram_seq_stop(struct seq_file *m, void *v)\n"
+        "{\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "}",
+        1,
+    )
+    require(
+        dump_stop_schema != rs4xx_source,
+        "self-test CP-ME stop-schema fixture differs from the source",
+    )
+    reject_schema_mutant("schema output from CP-ME dump stop", dump_stop_schema)
+
+    early_dump_open_return = rs4xx_source.replace(
+        "static int rs480_cp_me_ram_dump_open(struct inode *inode, struct file *file)\n"
+        "{\n",
+        "static int rs480_cp_me_ram_dump_open(struct inode *inode, struct file *file)\n"
+        "{\n"
+        "\tif (radeon_rs480_cp_me_ram_dump != 1)\n"
+        "\t\treturn -ENODEV;\n",
+        1,
+    )
+    require(
+        early_dump_open_return != rs4xx_source,
+        "self-test CP-ME dump-open fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME dump open return",
+        early_dump_open_return,
+    )
+
+    early_inject_open_return = rs4xx_source.replace(
+        "static int rs480_cp_me_ram_inject_open(struct inode *inode, "
+        "struct file *file)\n"
+        "{\n",
+        "static int rs480_cp_me_ram_inject_open(struct inode *inode, "
+        "struct file *file)\n"
+        "{\n"
+        "\tif (radeon_rs480_cp_me_ram_inject == 0)\n"
+        "\t\treturn -ENODEV;\n",
+        1,
+    )
+    require(
+        early_inject_open_return != rs4xx_source,
+        "self-test CP-ME injection-open fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME injection open return",
+        early_inject_open_return,
+    )
+
+    readable_mc_flush = rs4xx_source.replace(
+        'debugfs_create_file("radeon_rs480_mc_flush", 0200,',
+        'debugfs_create_file("radeon_rs480_mc_flush", 0400,',
+        1,
+    )
+    require(
+        readable_mc_flush != rs4xx_source,
+        "self-test MC-flush mode fixture differs from the source",
+    )
+    reject_schema_mutant("a readable MC-flush node", readable_mc_flush)
+
+    wrong_mc_flush_fops = rs4xx_source.replace(
+        "\t\t\t    &rs480_mc_flush_fops);",
+        "\t\t\t    &rs480_safe_regs_fops);",
+        1,
+    )
+    require(
+        wrong_mc_flush_fops != rs4xx_source,
+        "self-test MC-flush fops fixture differs from the source",
+    )
+    reject_schema_mutant("an MC-flush node with read fops", wrong_mc_flush_fops)
+
+    missing_mc_flush_node = rs4xx_source.replace(
+        '\tdebugfs_create_file("radeon_rs480_mc_flush", 0200,\n'
+        "\t\t\t    rdev_to_drm(rdev)->primary->debugfs_root, rdev,\n"
+        "\t\t\t    &rs480_mc_flush_fops);\n",
+        "",
+        1,
+    )
+    require(
+        missing_mc_flush_node != rs4xx_source,
+        "self-test MC-flush registration fixture differs from the source",
+    )
+    reject_schema_mutant("a missing MC-flush node", missing_mc_flush_node)
+
+    conditional_vap_schema = rs4xx_source.replace(
+        "static int rs480_candidate_vap_regs_show(struct seq_file *m, void *unused)\n"
+        "{\n"
+        "\trs480_debugfs_emit_schema(m);\n",
+        "static int rs480_candidate_vap_regs_show(struct seq_file *m, void *unused)\n"
+        "{\n"
+        "\tif (radeon_rs480_hazard_readers_armed == 1)\n"
+        "\t\trs480_debugfs_emit_schema(m);\n",
+        1,
+    )
+    require(
+        conditional_vap_schema != rs4xx_source,
+        "self-test conditional VAP schema fixture differs from the source",
+    )
+    reject_schema_mutant("a conditional VAP schema route", conditional_vap_schema)
+
+    gart_schema_route = (
+        "\trs480_debugfs_emit_schema(m);\n"
+        "\tseq_puts(m,\n"
+        '\t\t "row_type\\tstart_index'
+    )
+    literal_gart_schema = rs4xx_source.replace(
+        gart_schema_route,
+        '\t(void)"rs480_debugfs_emit_schema(m);";\n'
+        "\tseq_puts(m,\n"
+        '\t\t "row_type\\tstart_index',
+        1,
+    )
+    require(
+        literal_gart_schema != rs4xx_source,
+        "self-test literal GART schema fixture differs from the source",
+    )
+    reject_schema_mutant("a literal GART schema route", literal_gart_schema)
+
+    disabled_gart_schema = rs4xx_source.replace(
+        gart_schema_route,
+        "#if 0\n"
+        "\trs480_debugfs_emit_schema(m);\n"
+        "#endif\n"
+        "\tseq_puts(m,\n"
+        '\t\t "row_type\\tstart_index',
+        1,
+    )
+    require(
+        disabled_gart_schema != rs4xx_source,
+        "self-test disabled GART schema fixture differs from the source",
+    )
+    reject_schema_mutant("a disabled GART schema route", disabled_gart_schema)
+
+    early_dump_header_refusal = rs4xx_source.replace(
+        "\tif (v == SEQ_START_TOKEN) {\n"
+        "\t\trs480_debugfs_emit_schema(m);\n",
+        "\tif (v == SEQ_START_TOKEN) {\n"
+        "\t\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\t\trs480_debugfs_emit_schema(m);\n",
+        1,
+    )
+    require(
+        early_dump_header_refusal != rs4xx_source,
+        "self-test early CP-ME header-refusal fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME header refusal before its schema",
+        early_dump_header_refusal,
+    )
+
+    missing_dump_data_arm = rs4xx_source.replace(
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {",
+        "\tif (terminal_position) {",
+        1,
+    )
+    require(
+        missing_dump_data_arm != rs4xx_source,
+        "self-test CP-ME data-arm fixture differs from the source",
+    )
+    reject_schema_mutant("a missing CP-ME data arm gate", missing_dump_data_arm)
+
+    missing_start_terminal_route = rs4xx_source.replace(
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {\n"
+        "\t\t*pos = terminal_position;\n"
+        "\t\treturn pos;\n"
+        "\t}\n",
+        "",
+        1,
+    )
+    require(
+        missing_start_terminal_route != rs4xx_source,
+        "self-test CP-ME start terminal-route fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a missing CP-ME start terminal route",
+        missing_start_terminal_route,
+    )
+
+    start_mmio_before_gate = rs4xx_source.replace(
+        "\tloff_t terminal_position;\n\n"
+        "\tif (*pos == 0)",
+        "\tloff_t terminal_position;\n\n"
+        "\tterminal_position = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
+        "\tif (*pos == 0)",
+        1,
+    )
+    require(
+        start_mmio_before_gate != rs4xx_source,
+        "self-test CP-ME start MMIO fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME start MMIO before its terminal gate",
+        start_mmio_before_gate,
+    )
+
+    start_helper_mmio = rs4xx_source.replace(
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)",
+        "static void rs480_cp_me_ram_unguarded_read(struct radeon_device *rdev)\n"
+        "{\n"
+        "\tu32 value = RREG32(RADEON_CP_ME_RAM_DATAL);\n\n"
+        "\t(void)value;\n"
+        "}\n\n"
+        "static void *rs480_cp_me_ram_seq_start(struct seq_file *m, loff_t *pos)",
+        1,
+    )
+    start_helper_mmio = start_helper_mmio.replace(
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\trs480_cp_me_ram_unguarded_read(rdev);\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        start_helper_mmio != rs4xx_source,
+        "self-test CP-ME start helper-MMIO fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME start MMIO through an unvalidated helper",
+        start_helper_mmio,
+    )
+
+    early_terminal_gate_diversion = rs4xx_source.replace(
+        "static loff_t rs480_cp_me_ram_seq_terminal_position("
+        "struct radeon_device *rdev)\n"
+        "{\n"
+        "\tif (READ_ONCE(rdev->gpu_parked))",
+        "static loff_t rs480_cp_me_ram_seq_terminal_position("
+        "struct radeon_device *rdev)\n"
+        "{\n"
+        "\tif (READ_ONCE(rdev->gpu_parked))\n"
+        "\t\tgoto no_terminal;\n"
+        "\tif (READ_ONCE(rdev->gpu_parked))",
+        1,
+    )
+    early_terminal_gate_diversion = early_terminal_gate_diversion.replace(
+        "\tif (READ_ONCE(radeon_rs480_cp_me_ram_dump) != 1)\n"
+        "\t\treturn RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n"
+        "\treturn 0;\n"
+        "}",
+        "\tif (READ_ONCE(radeon_rs480_cp_me_ram_dump) != 1)\n"
+        "\t\treturn RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n"
+        "no_terminal:\n"
+        "\treturn 0;\n"
+        "}",
+        1,
+    )
+    require(
+        early_terminal_gate_diversion != rs4xx_source,
+        "self-test CP-ME terminal diversion fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an early CP-ME terminal gate diversion",
+        early_terminal_gate_diversion,
+    )
+
+    missing_next_terminal_route = rs4xx_source.replace(
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {\n"
+        "\t\t*pos = terminal_position;\n"
+        "\t\treturn pos;\n"
+        "\t}\n"
+        "\treturn pos;",
+        "\treturn pos;",
+        1,
+    )
+    require(
+        missing_next_terminal_route != rs4xx_source,
+        "self-test CP-ME next terminal-route fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a missing CP-ME next terminal route",
+        missing_next_terminal_route,
+    )
+
+    late_bound_next = rs4xx_source.replace(
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {\n"
+        "\t\t*pos = terminal_position;\n"
+        "\t\treturn pos;\n"
+        "\t}\n",
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {\n"
+        "\t\t*pos = terminal_position;\n"
+        "\t\treturn pos;\n"
+        "\t}\n"
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n",
+        1,
+    )
+    require(
+        late_bound_next != rs4xx_source,
+        "self-test CP-ME late-bound fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a CP-ME terminal route after the completed-data bound",
+        late_bound_next,
+    )
+
+    conditional_next_bound = rs4xx_source.replace(
+        "\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\treturn NULL;\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\tif (rdev->gpu_parked && !rdev->gpu_parked) {\n"
+        "\t\tif (*pos > RS480_CP_ME_RAM_DUMP_LIMIT)\n"
+        "\t\t\treturn NULL;\n"
+        "\t}\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        conditional_next_bound != rs4xx_source,
+        "self-test CP-ME conditional-bound fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a conditional CP-ME iterator bound",
+        conditional_next_bound,
+    )
+
+    late_show_terminal_route = rs4xx_source.replace(
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {\n"
+        "\t\tm->index = terminal_position;\n"
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\treturn 0;\n"
+        "\t}\n"
+        "\tunsigned int addr = (unsigned int)m->index - 1;\n"
+        "\tu32 datah, datal;\n\n"
+        "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
+        "\tdatah = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
+        "\tdatal = RREG32(RADEON_CP_ME_RAM_DATAL);",
+        "\tunsigned int addr = (unsigned int)m->index - 1;\n"
+        "\tu32 datah, datal;\n\n"
+        "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
+        "\tdatah = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
+        "\tdatal = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
+        "\tif (terminal_position) {\n"
+        "\t\tm->index = terminal_position;\n"
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\treturn 0;\n"
+        "\t}",
+        1,
+    )
+    require(
+        late_show_terminal_route != rs4xx_source,
+        "self-test CP-ME late-show terminal fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a CP-ME terminal route after MMIO",
+        late_show_terminal_route,
+    )
+
+    interroute_show_mmio = rs4xx_source.replace(
+        "\tif (rs480_cp_me_ram_seq_is_terminal(m->index)) {\n"
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, m->index);\n"
+        "\t\treturn 0;\n"
+        "\t}\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        "\tif (rs480_cp_me_ram_seq_is_terminal(m->index)) {\n"
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, m->index);\n"
+        "\t\treturn 0;\n"
+        "\t}\n"
+        "\tm->index = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
+        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);",
+        1,
+    )
+    require(
+        interroute_show_mmio != rs4xx_source,
+        "self-test CP-ME interroute MMIO fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "CP-ME show MMIO between terminal routes",
+        interroute_show_mmio,
+    )
+
+    offset_dump_address = rs4xx_source.replace(
+        "\tunsigned int addr = (unsigned int)m->index - 1;",
+        "\tunsigned int addr = (unsigned int)m->index - 1 + 0x100;",
+        1,
+    )
+    require(
+        offset_dump_address != rs4xx_source,
+        "self-test CP-ME address-offset fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an offset CP-ME dump address expression",
+        offset_dump_address,
+    )
+
+    missing_show_terminal_route = rs4xx_source.replace(
+        "\t\tm->index = terminal_position;\n"
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\treturn 0;\n",
+        "\t\tm->index = terminal_position;\n"
+        "\t\treturn 0;\n",
+        1,
+    )
+    require(
+        missing_show_terminal_route != rs4xx_source,
+        "self-test CP-ME show terminal-route fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a missing CP-ME show terminal record",
+        missing_show_terminal_route,
+    )
+
+    duplicate_show_terminal_route = rs4xx_source.replace(
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\treturn 0;\n",
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\treturn 0;\n",
+        1,
+    )
+    require(
+        duplicate_show_terminal_route != rs4xx_source,
+        "self-test CP-ME duplicate terminal-route fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a duplicated CP-ME show terminal record",
+        duplicate_show_terminal_route,
+    )
+
+    silent_show_terminal_route = rs4xx_source.replace(
+        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\t\treturn 0;\n",
+        "\t\treturn 0;\n",
+        1,
+    )
+    require(
+        silent_show_terminal_route != rs4xx_source,
+        "self-test CP-ME silent terminal-route fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a silent CP-ME show terminal route",
+        silent_show_terminal_route,
+    )
+
+    duplicate_terminal_status = rs4xx_source.replace(
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n",
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n",
+        1,
+    )
+    require(
+        duplicate_terminal_status != rs4xx_source,
+        "self-test CP-ME duplicate status fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a duplicated CP-ME terminal status mapping",
+        duplicate_terminal_status,
+    )
+
+    missing_terminal_status = rs4xx_source.replace(
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n",
+        "",
+        1,
+    )
+    require(
+        missing_terminal_status != rs4xx_source,
+        "self-test CP-ME missing status fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a missing CP-ME terminal status mapping",
+        missing_terminal_status,
+    )
+
+    all_statuses_in_default = rs4xx_source.replace(
+        "\tswitch (position) {\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        "\t\tbreak;\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        "\t\tbreak;\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        "\t\tbreak;\n"
+        "\tdefault:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        "\t\tbreak;\n"
+        "\t}\n",
+        "\tswitch (position) {\n"
+        "\tdefault:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        "\t\tbreak;\n"
+        "\t}\n",
+        1,
+    )
+    require(
+        all_statuses_in_default != rs4xx_source,
+        "self-test CP-ME default mapping fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "all CP-ME terminal statuses in one default arm",
+        all_statuses_in_default,
+    )
+
+    overwritten_terminal_position = rs4xx_source.replace(
+        "\tswitch (position) {",
+        "\tposition = RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n"
+        "\tswitch (position) {",
+        1,
+    )
+    require(
+        overwritten_terminal_position != rs4xx_source,
+        "self-test CP-ME overwritten-position fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an overwritten CP-ME terminal position",
+        overwritten_terminal_position,
+    )
+
+    redefined_terminal_selector = rs4xx_source.replace(
+        "static bool rs480_cp_me_ram_seq_is_terminal(loff_t position)",
+        "#define rs480_cp_me_ram_seq_terminal_position(rdev) (0)\n\n"
+        "static bool rs480_cp_me_ram_seq_is_terminal(loff_t position)",
+        1,
+    )
+    require(
+        redefined_terminal_selector != rs4xx_source,
+        "self-test CP-ME selector-redefinition fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a preprocessor-redefined CP-ME terminal selector",
+        redefined_terminal_selector,
+    )
+
+    registration_arms_dump = rs4xx_source.replace(
+        "\tif (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)\n"
+        "\t\treturn;\n\n"
+        "\t/* Compatibility alias for the first config-aperture candidate cohort. */",
+        "\tif (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)\n"
+        "\t\treturn;\n\n"
+        "\tradeon_rs480_cp_me_ram_dump = 1;\n\n"
+        "\t/* Compatibility alias for the first config-aperture candidate cohort. */",
+        1,
+    )
+    require(
+        registration_arms_dump != rs4xx_source,
+        "self-test CP-ME registration-arm fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "candidate registration that arms the CP-ME dump",
+        registration_arms_dump,
+    )
+
+    nested_terminal_mapping = rs4xx_source.replace(
+        "\tswitch (position) {\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        "\t\tbreak;\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        "\t\tbreak;\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        "\t\tbreak;\n"
+        "\tdefault:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        "\t\tbreak;\n"
+        "\t}\n",
+        "\tif (position == -1) {\n"
+        "\tswitch (position) {\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=disarmed\\n\");\n"
+        "\t\tbreak;\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_PARKED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=gpu-parked\\n\");\n"
+        "\t\tbreak;\n"
+        "\tcase RS480_CP_ME_RAM_DUMP_TERMINAL_SUSPENDED:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=asic-suspended\\n\");\n"
+        "\t\tbreak;\n"
+        "\tdefault:\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        "\t\tbreak;\n"
+        "\t}\n"
+        "\t}\n"
+        "\treturn;\n",
+        1,
+    )
+    require(
+        nested_terminal_mapping != rs4xx_source,
+        "self-test CP-ME nested mapping fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a conditionally nested CP-ME terminal mapping",
+        nested_terminal_mapping,
+    )
+
+    header_second_state_read = rs4xx_source.replace(
+        "\t\trs480_debugfs_emit_schema(m);\n"
+        "\t\treturn 0;",
+        "\t\trs480_debugfs_emit_schema(m);\n"
+        "\t\tif (rs480_debugfs_refuse_hardware_access(m, rdev))\n"
+        "\t\t\treturn 0;\n"
+        "\t\treturn 0;",
+        1,
+    )
+    require(
+        header_second_state_read != rs4xx_source,
+        "self-test CP-ME header state-read fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a second CP-ME header state read",
+        header_second_state_read,
+    )
+
+    header_index_mutation = rs4xx_source.replace(
+        "\t\trs480_debugfs_emit_schema(m);\n"
+        "\t\treturn 0;",
+        "\t\trs480_debugfs_emit_schema(m);\n"
+        "\t\tm->index = RS480_CP_ME_RAM_DUMP_TERMINAL_DISARMED;\n"
+        "\t\treturn 0;",
+        1,
+    )
+    require(
+        header_index_mutation != rs4xx_source,
+        "self-test CP-ME header index-mutation fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "a CP-ME header index mutation",
+        header_index_mutation,
+    )
+
+    extra_header_terminal_record = rs4xx_source.replace(
+        "\t\trs480_debugfs_emit_schema(m);\n"
+        "\t\treturn 0;",
+        "\t\trs480_debugfs_emit_schema(m);\n"
+        "\t\tseq_puts(m, \"terminal_status\\tstatus=invalid\\n\");\n"
+        "\t\treturn 0;",
+        1,
+    )
+    require(
+        extra_header_terminal_record != rs4xx_source,
+        "self-test CP-ME extra header record fixture differs from the source",
+    )
+    reject_schema_mutant(
+        "an extra CP-ME header terminal record",
+        extra_header_terminal_record,
+    )
+
+    first_show_function = min(RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS)
+    shrunk_show_denominator = RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS - {first_show_function}
+    reject_schema_mutant(
+        "a shrunk schema denominator",
+        rs4xx_source,
+        frozenset(shrunk_show_denominator),
+    )
+
     validate_runtime_sources(source_texts)
     validate_palm_reset_registration(registration_rows, source_texts)
     validate_mutation_audit(source_texts, features)
@@ -2002,6 +4017,7 @@ def self_test(root: Path) -> int:
         "all-dev interface self-test: 9 manifest rejection, "
         "6 build-profile, 12 runtime-profile, 2 mutation-audit, "
         "22 Palm registration source, 4 registration contract, "
+        f"{schema_rejection_count} output-schema, "
         f"{summary_rejection_count} summary-total, "
         "5 reset-post-state, 6 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"
