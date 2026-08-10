@@ -138,9 +138,10 @@ their file-operation readers. The raw readers remain excluded from the
 allocator-only capture because a structural binding does not prove safe
 payload visibility.
 
-The retained source-only capture for commit `7d4ba8ae` closes 73 roots, 219
+The retained source-only capture for commit `c4f4177` closes 73 roots, 219
 raw cscope queries, 1,053 parsed cscope rows, 246 commands, 55 declared
-bindings, and 15,643 call candidates. Its driver tree remains
+bindings, 13 hazards, six contextual witnesses, and 15,643 call candidates.
+Its driver tree remains
 `6fd8d3c6ec245c31f195ef86c15fadf5e206642d`. The source-intelligence contract
 records its complete path and hashes. This capture has no kernel lanes and
 does not change any runtime or silicon status.

@@ -601,7 +601,7 @@ The retained bundle uses this mechanism path beneath the source-intelligence
 root:
 
 ```text
-rs482-vram-gtt-capacity-source-map/7d4ba8ae75d94d0e608de56762ee97cb1d9c4188-source-only
+rs482-vram-gtt-capacity-source-map/c4f41777616d3d568e4929d9711d61dfd3db9c65-source-only
 ```
 
 The producer creates the bundle and then verifies it offline with exit zero.
@@ -611,17 +611,20 @@ The capture contains 779 regular files. Its ledger covers the other 778 files.
 
 | Field | Exact value |
 | --- | --- |
-| Source commit | `7d4ba8ae75d94d0e608de56762ee97cb1d9c4188` |
-| Source tree | `f10cd2f5fbe4715cf13aae0546a4b9e650bf7e99` |
+| Source commit | `c4f41777616d3d568e4929d9711d61dfd3db9c65` |
+| Source tree | `d3cb95a7c9baaf0e7df0d87f2d740a5747f0054f` |
 | Driver tree | `6fd8d3c6ec245c31f195ef86c15fadf5e206642d` |
 | Driver-source inputs | 222 files and 6,909,890 bytes |
 | Lexical map | 98,390 rows |
 | Cscope denominator | 73 root symbols, 219 raw queries, and 1,053 parsed rows |
 | Command denominator | 246 rows: 226 bwrap, 16 cflow, and one each for ctags, readtags, lizard, and scc |
 | Declared bindings | 55 total and 14 in GART and memory |
+| Hazard denominator | 13 exact policy identities |
+| Contextual paths | Six witnesses, 37 ordered edges, and six typed joins |
 | Unified call candidates | 15,643 rows |
-| Manifest SHA-256 | `fb65e6d3999ff0b2d8350f89f9cf491d465dff1a52f74ec14a8a3a805f222704` |
-| Ledger SHA-256 | `2713ff2fb983294a3af6ca40220b38ef7902ee9134137993dbb73b197810bf89` |
+| Policy SHA-256 | `42ad90a3ad1e3eb31351b8ea9deae66fea18171a64ee41d02948e8221097ba53` |
+| Manifest SHA-256 | `0fe0de69a821003fd474b62e0a5fda21a3cb1765c7f25ba0aa04419e453106a0` |
+| Ledger SHA-256 | `329640d61baac0ebf53e8a83b5a07c8da2f0b701fcd5b372317c41efe256dd06` |
 
 <!-- markdownlint-enable MD013 -->
 
