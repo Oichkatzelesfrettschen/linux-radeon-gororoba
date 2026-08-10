@@ -37,6 +37,8 @@ from unittest import mock
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
 COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
+CURRENT_POLICY_SCHEMA = 2
+RETAINED_POLICY_SCHEMAS = frozenset((1, CURRENT_POLICY_SCHEMA))
 CURRENT_COMPARISON_SCHEMAS = frozenset((COMPARISON_SCHEMA,))
 RETAINED_CAPTURE_COMPARISON_SCHEMAS = frozenset(
     (
@@ -48,12 +50,8 @@ LEXICAL_SCHEMA = "radeon-driver-lexical-map-v1"
 DECLARED_BINDING_SCHEMA = "radeon-driver-declared-bindings-v2"
 PATH_WITNESS_SCHEMA = "radeon-driver-contextual-path-witnesses-v2"
 PATH_WITNESS_JOIN_SCHEMA = "radeon-driver-contextual-path-joins-v1"
-PROFILE_SYMBOL_DELTA_SUMMARY_SCHEMA = (
-    "radeon-driver-profile-symbol-delta-summary-v1"
-)
-PROFILE_SYMBOL_DELTA_MEMBERS_SCHEMA = (
-    "radeon-driver-profile-symbol-delta-members-v1"
-)
+PROFILE_SYMBOL_DELTA_SUMMARY_SCHEMA = "radeon-driver-profile-symbol-delta-summary-v1"
+PROFILE_SYMBOL_DELTA_MEMBERS_SCHEMA = "radeon-driver-profile-symbol-delta-members-v1"
 PROFILE_SYMBOL_DELTA_MEMBER_COMPARISON_SCHEMA = (
     "radeon-driver-profile-symbol-delta-member-delta-v2"
 )
@@ -84,6 +82,19 @@ KERNEL_ROOT_VALIDATOR_PATH = Path("scripts/check_kernel_build_root.py")
 CANONICAL_SOURCE_ROOT = "drivers/gpu/drm/radeon"
 MAX_SOURCE_FILES = 256
 MAX_SOURCE_BYTES = 7_000_000
+EXPECTED_ROOT_DENOMINATOR_COUNT = 73
+EXPECTED_ROOT_DENOMINATOR_SHA256 = (
+    "a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814"
+)
+EXPECTED_HAZARD_DENOMINATOR_COUNT = 13
+EXPECTED_HAZARD_DENOMINATOR_SHA256 = (
+    "79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5"
+)
+EXPECTED_BINDING_DENOMINATOR_COUNT = 55
+EXPECTED_BINDING_DENOMINATOR_SHA256 = (
+    "e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77"
+)
+EXPECTED_SELFTEST_VERDICT_COUNT = 175
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -126,9 +137,7 @@ PATH_WITNESS_JOIN_KINDS = {
     "debugfs-read-event",
     "debugfs-write-event",
 }
-PATH_WITNESS_SEMANTIC_LIMIT = (
-    "ordered-source-witness-not-runtime-reachability"
-)
+PATH_WITNESS_SEMANTIC_LIMIT = "ordered-source-witness-not-runtime-reachability"
 REQUIRED_PATH_WITNESS_ENDPOINTS = {
     "rs480-command-submission-packet-validation": (
         "drm_ioctl_dispatch",
@@ -145,6 +154,14 @@ REQUIRED_PATH_WITNESS_ENDPOINTS = {
     "palm-debugfs-pci-config-reset": (
         "drm_primary_minor_debugfs_init",
         "radeon_pci_config_reset",
+    ),
+    "radeon-vram-debugfs-payload-read": (
+        "radeon_bo_init",
+        "radeon_ttm_vram_read",
+    ),
+    "radeon-gtt-debugfs-payload-read": (
+        "radeon_bo_init",
+        "radeon_ttm_gtt_read",
     ),
 }
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
@@ -227,7 +244,7 @@ class Partition:
 
 
 @dataclass(frozen=True)
-class GuardIdentifierCensus:
+class IdentifierCensus:
     owner: str
     identifiers: tuple[str, ...]
 
@@ -236,7 +253,8 @@ class GuardIdentifierCensus:
 class Hazard:
     symbol: str
     side_effect_class: str
-    guard_identifier_census: tuple[GuardIdentifierCensus, ...]
+    guard_identifier_census: tuple[IdentifierCensus, ...]
+    effect_identifier_census: tuple[IdentifierCensus, ...]
     evidence_rank: str
 
 
@@ -334,6 +352,7 @@ class ToolchainPrefixEntry:
 
 @dataclass(frozen=True)
 class Policy:
+    policy_schema: int
     capture_schema: str
     comparison_schema: str
     source_root: str
@@ -379,6 +398,61 @@ def require(condition: bool, message: str) -> None:
 
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def root_denominator_sha256(partitions: list[Partition]) -> str:
+    records = sorted(
+        (partition.name, root) for partition in partitions for root in partition.roots
+    )
+    payload = (
+        json.dumps(records, ensure_ascii=True, separators=(",", ":")) + "\n"
+    ).encode("ascii")
+    return sha256_bytes(payload)
+
+
+def hazard_denominator_sha256(hazards: list[Hazard]) -> str:
+    records = sorted(
+        (
+            hazard.symbol,
+            hazard.side_effect_class,
+            tuple(
+                ("guard", census.owner, census.identifiers)
+                for census in hazard.guard_identifier_census
+            ),
+            tuple(
+                ("effect", census.owner, census.identifiers)
+                for census in hazard.effect_identifier_census
+            ),
+            hazard.evidence_rank,
+        )
+        for hazard in hazards
+    )
+    payload = (
+        json.dumps(records, ensure_ascii=True, separators=(",", ":")) + "\n"
+    ).encode("ascii")
+    return sha256_bytes(payload)
+
+
+def binding_denominator_sha256(bindings: list[Binding]) -> str:
+    records = sorted(
+        (
+            binding.name,
+            binding.partition,
+            binding.kind,
+            binding.scope,
+            binding.caller,
+            binding.callee,
+            binding.path,
+            binding.pattern,
+            binding.expected_matches,
+            binding.match_literals,
+        )
+        for binding in bindings
+    )
+    payload = (
+        json.dumps(records, ensure_ascii=True, separators=(",", ":")) + "\n"
+    ).encode("ascii")
+    return sha256_bytes(payload)
 
 
 def sha256_file(path: Path) -> str:
@@ -464,11 +538,7 @@ def read_bounded_file(path: Path, maximum_size: int, label: str) -> bytes:
     try:
         descriptor = os.open(
             path,
-            os.O_RDONLY
-            | os.O_CLOEXEC
-            | os.O_NOCTTY
-            | os.O_NOFOLLOW
-            | os.O_NONBLOCK,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOCTTY | os.O_NOFOLLOW | os.O_NONBLOCK,
         )
     except OSError as exc:
         raise SourceMapError(f"{label} is absent: {path}") from exc
@@ -518,8 +588,7 @@ def read_bounded_file(path: Path, maximum_size: int, label: str) -> bytes:
             status_after.st_ctime_ns,
         )
         require(
-            stable_before == stable_after
-            and len(content) == status_before.st_size,
+            stable_before == stable_after and len(content) == status_before.st_size,
             f"{label} changes while it is read",
         )
         return content
@@ -528,7 +597,10 @@ def read_bounded_file(path: Path, maximum_size: int, label: str) -> bytes:
 
 
 def git_object_id(object_type: str, content: bytes) -> str:
-    require(object_type in {"blob", "commit", "tree"}, f"unsupported Git object type: {object_type}")
+    require(
+        object_type in {"blob", "commit", "tree"},
+        f"unsupported Git object type: {object_type}",
+    )
     header = f"{object_type} {len(content)}\0".encode("ascii")
     return hashlib.sha1(header + content, usedforsecurity=False).hexdigest()
 
@@ -543,9 +615,13 @@ def commit_identity(content: bytes) -> tuple[str, str]:
         tree_id = tree_text.decode("ascii")
     except UnicodeDecodeError as exc:
         raise SourceMapError("Git commit tree identity is not ASCII") from exc
-    require(HEX_40.fullmatch(tree_id) is not None, "Git commit tree identity is invalid")
+    require(
+        HEX_40.fullmatch(tree_id) is not None, "Git commit tree identity is invalid"
+    )
     committer_lines = [line for line in lines if line.startswith(b"committer ")]
-    require(len(committer_lines) == 1, "Git commit object has an invalid committer header")
+    require(
+        len(committer_lines) == 1, "Git commit object has an invalid committer header"
+    )
     match = re.search(rb" ([0-9]+) [+-][0-9]{4}$", committer_lines[0])
     require(match is not None, "Git commit object has an invalid committer timestamp")
     timestamp = int(match.group(1))
@@ -554,7 +630,9 @@ def commit_identity(content: bytes) -> tuple[str, str]:
             "%Y-%m-%dT%H:%M:%SZ"
         )
     except (OverflowError, OSError, ValueError) as exc:
-        raise SourceMapError("Git commit timestamp is outside the supported range") from exc
+        raise SourceMapError(
+            "Git commit timestamp is outside the supported range"
+        ) from exc
     return tree_id, timestamp_utc
 
 
@@ -567,18 +645,29 @@ def parse_git_tree_object(content: bytes) -> list[tuple[str, bytes, str]]:
         name_end = content.find(b"\0", mode_end + 1)
         require(name_end > mode_end + 1, "Git tree object carries an invalid name")
         object_end = name_end + 21
-        require(object_end <= len(content), "Git tree object carries a truncated object ID")
+        require(
+            object_end <= len(content), "Git tree object carries a truncated object ID"
+        )
         try:
             mode = content[offset:mode_end].decode("ascii")
         except UnicodeDecodeError as exc:
             raise SourceMapError("Git tree object carries a non-ASCII mode") from exc
         name = content[mode_end + 1 : name_end]
-        require(mode in {"40000", "100644", "100755", "120000", "160000"}, f"Git tree object carries an invalid mode: {mode}")
-        require(b"/" not in name and b"\0" not in name, "Git tree object carries an invalid basename")
+        require(
+            mode in {"40000", "100644", "100755", "120000", "160000"},
+            f"Git tree object carries an invalid mode: {mode}",
+        )
+        require(
+            b"/" not in name and b"\0" not in name,
+            "Git tree object carries an invalid basename",
+        )
         entries.append((mode, name, content[name_end + 1 : object_end].hex()))
         offset = object_end
     require(offset == len(content), "Git tree object has trailing bytes")
-    require(len({name for _mode, name, _object_id in entries}) == len(entries), "Git tree object repeats a basename")
+    require(
+        len({name for _mode, name, _object_id in entries}) == len(entries),
+        "Git tree object repeats a basename",
+    )
     ordered = sorted(
         entries,
         key=lambda entry: entry[1] + (b"/" if entry[0] == "40000" else b"\0"),
@@ -592,9 +681,15 @@ def retained_driver_tree_id(entries: list[SourceEntry], source_root: str) -> str
     leaves: list[tuple[tuple[bytes, ...], str, str]] = []
     for entry in entries:
         path_parts = tuple(entry.path.split("/"))
-        require(path_parts[: len(root_parts)] == root_parts, f"retained source path leaves source root: {entry.path}")
+        require(
+            path_parts[: len(root_parts)] == root_parts,
+            f"retained source path leaves source root: {entry.path}",
+        )
         relative_parts = path_parts[len(root_parts) :]
-        require(relative_parts and all(relative_parts), f"retained source path has an empty component: {entry.path}")
+        require(
+            relative_parts and all(relative_parts),
+            f"retained source path has an empty component: {entry.path}",
+        )
         leaves.append(
             (
                 tuple(component.encode("utf-8") for component in relative_parts),
@@ -605,21 +700,43 @@ def retained_driver_tree_id(entries: list[SourceEntry], source_root: str) -> str
 
     def tree_id(tree_leaves: list[tuple[tuple[bytes, ...], str, str]]) -> str:
         files: dict[bytes, tuple[str, str]] = {}
-        directories: dict[bytes, list[tuple[tuple[bytes, ...], str, str]]] = defaultdict(list)
+        directories: dict[bytes, list[tuple[tuple[bytes, ...], str, str]]] = (
+            defaultdict(list)
+        )
         for path_parts, mode, object_id in tree_leaves:
             name = path_parts[0]
             if len(path_parts) == 1:
-                require(name not in files and name not in directories, "retained source tree repeats a path")
+                require(
+                    name not in files and name not in directories,
+                    "retained source tree repeats a path",
+                )
                 files[name] = (mode, object_id)
             else:
-                require(name not in files, "retained source tree uses one path as a file and directory")
+                require(
+                    name not in files,
+                    "retained source tree uses one path as a file and directory",
+                )
                 directories[name].append((path_parts[1:], mode, object_id))
         serialized: list[tuple[bytes, bool, bytes]] = []
         for name, (mode, object_id) in files.items():
-            require(mode in {"100644", "100755"}, f"retained source file mode is invalid: {mode}")
-            require(HEX_40.fullmatch(object_id) is not None, "retained source blob ID is invalid")
+            require(
+                mode in {"100644", "100755"},
+                f"retained source file mode is invalid: {mode}",
+            )
+            require(
+                HEX_40.fullmatch(object_id) is not None,
+                "retained source blob ID is invalid",
+            )
             serialized.append(
-                (name, False, mode.encode("ascii") + b" " + name + b"\0" + bytes.fromhex(object_id))
+                (
+                    name,
+                    False,
+                    mode.encode("ascii")
+                    + b" "
+                    + name
+                    + b"\0"
+                    + bytes.fromhex(object_id),
+                )
             )
         for name, children in directories.items():
             child_id = tree_id(children)
@@ -678,13 +795,17 @@ def require_unique_tsv_columns(
     )
 
 
-def write_tsv(path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
+def write_tsv(
+    path: Path, schema: str, columns: tuple[str, ...], rows: list[tuple[Any, ...]]
+) -> None:
     write_bytes(path, canonical_tsv_bytes(schema, columns, rows))
 
 
 def read_tsv(path: Path, expected_schema: str) -> tuple[list[str], list[list[str]]]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    require(lines and lines[0] == f"# schema: {expected_schema}", f"invalid schema: {path}")
+    require(
+        lines and lines[0] == f"# schema: {expected_schema}", f"invalid schema: {path}"
+    )
     require(len(lines) >= 2, f"missing columns: {path}")
     parsed = list(csv.reader(lines[1:], delimiter="\t"))
     require(parsed and parsed[0], f"empty columns: {path}")
@@ -734,16 +855,55 @@ def reject_unknown(mapping: dict[str, Any], allowed: set[str], label: str) -> No
 
 def string_value(mapping: dict[str, Any], key: str, label: str) -> str:
     value = mapping.get(key)
-    require(isinstance(value, str) and value, f"{label}.{key} must be a nonempty string")
+    require(
+        isinstance(value, str) and value, f"{label}.{key} must be a nonempty string"
+    )
     return value
 
 
-def string_list(mapping: dict[str, Any], key: str, label: str, allow_empty: bool = False) -> tuple[str, ...]:
+def string_list(
+    mapping: dict[str, Any], key: str, label: str, allow_empty: bool = False
+) -> tuple[str, ...]:
     value = mapping.get(key)
     require(isinstance(value, list), f"{label}.{key} must be a list")
     require(allow_empty or bool(value), f"{label}.{key} must not be empty")
-    require(all(isinstance(item, str) and item for item in value), f"{label}.{key} contains an invalid string")
+    require(
+        all(isinstance(item, str) and item for item in value),
+        f"{label}.{key} contains an invalid string",
+    )
     return tuple(value)
+
+
+def identifier_census_list(
+    mapping: dict[str, Any], key: str, label: str
+) -> tuple[IdentifierCensus, ...]:
+    raw_census = mapping.get(key, [])
+    require(isinstance(raw_census, list), f"{label}.{key} must be a list")
+    censuses: list[IdentifierCensus] = []
+    for census_index, census in enumerate(raw_census):
+        census_label = f"{label}.{key}[{census_index}]"
+        require(isinstance(census, dict), f"{census_label} must be a table")
+        reject_unknown(census, {"owner", "identifiers"}, census_label)
+        owner = string_value(census, "owner", census_label)
+        identifiers = string_list(census, "identifiers", census_label)
+        require(
+            C_IDENTIFIER.fullmatch(owner) is not None,
+            f"{census_label}.owner is invalid",
+        )
+        require(
+            all(C_IDENTIFIER.fullmatch(identifier) for identifier in identifiers),
+            f"{census_label}.identifiers contains an invalid C identifier",
+        )
+        require(
+            len(set(identifiers)) == len(identifiers),
+            f"{census_label}.identifiers repeats a value",
+        )
+        censuses.append(IdentifierCensus(owner, identifiers))
+    require(
+        len({census.owner for census in censuses}) == len(censuses),
+        f"{label}.{key} repeats an owner",
+    )
+    return tuple(censuses)
 
 
 def validate_path_witness_shape(
@@ -801,10 +961,7 @@ def validate_path_witness_shape(
         )
         require(
             all(
-                value
-                and value.isascii()
-                and "\t" not in value
-                and "\n" not in value
+                value and value.isascii() and "\t" not in value and "\n" not in value
                 for value in (
                     edge.caller,
                     edge.callee,
@@ -895,8 +1052,7 @@ def validate_path_witness_shape(
         )
         if bindings is not None:
             evidence_bindings = [
-                bindings.get(evidence_id)
-                for evidence_id in join.evidence_ids
+                bindings.get(evidence_id) for evidence_id in join.evidence_ids
             ]
             require(
                 all(binding is not None for binding in evidence_bindings),
@@ -933,8 +1089,7 @@ def validate_required_path_witnesses(
     witnesses: tuple[PathWitness, ...] | list[PathWitness],
 ) -> None:
     endpoints = {
-        witness.name: (witness.entry, witness.terminal)
-        for witness in witnesses
+        witness.name: (witness.entry, witness.terminal) for witness in witnesses
     }
     require(
         endpoints == REQUIRED_PATH_WITNESS_ENDPOINTS,
@@ -945,6 +1100,7 @@ def validate_required_path_witnesses(
 def load_policy(
     path: Path,
     *,
+    accepted_policy_schemas: frozenset[int] = frozenset((CURRENT_POLICY_SCHEMA,)),
     accepted_comparison_schemas: frozenset[str] = CURRENT_COMPARISON_SCHEMAS,
 ) -> Policy:
     try:
@@ -954,6 +1110,11 @@ def load_policy(
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise SourceMapError(f"cannot read ASCII policy {path}: {exc}") from exc
 
+    policy_schema = data.get("schema")
+    require(
+        isinstance(policy_schema, int) and policy_schema in accepted_policy_schemas,
+        "policy.schema is unsupported",
+    )
     top_keys = {
         "schema",
         "capture_schema",
@@ -973,11 +1134,24 @@ def load_policy(
         "path_witness",
         "bounded_query",
     }
+    if policy_schema == CURRENT_POLICY_SCHEMA:
+        top_keys.update(
+            {
+                "root_denominator_count",
+                "root_denominator_sha256",
+                "hazard_denominator_count",
+                "hazard_denominator_sha256",
+                "binding_denominator_count",
+                "binding_denominator_sha256",
+            }
+        )
     reject_unknown(data, top_keys, "policy")
-    require(data.get("schema") == 1, "policy.schema must equal 1")
     capture_schema = string_value(data, "capture_schema", "policy")
     comparison_schema = string_value(data, "comparison_schema", "policy")
-    require(capture_schema == CAPTURE_SCHEMA, "policy capture schema differs from the producer")
+    require(
+        capture_schema == CAPTURE_SCHEMA,
+        "policy capture schema differs from the producer",
+    )
     require(
         comparison_schema in accepted_comparison_schemas,
         "policy comparison schema differs from the producer",
@@ -997,15 +1171,53 @@ def load_policy(
         max_source_bytes == MAX_SOURCE_BYTES,
         "max_source_bytes differs from the verifier ceiling",
     )
+    if policy_schema == CURRENT_POLICY_SCHEMA:
+        require(
+            data.get("root_denominator_count") == EXPECTED_ROOT_DENOMINATOR_COUNT,
+            "root denominator count declaration differs",
+        )
+        require(
+            data.get("root_denominator_sha256") == EXPECTED_ROOT_DENOMINATOR_SHA256,
+            "root denominator digest declaration differs",
+        )
+        require(
+            data.get("hazard_denominator_count") == EXPECTED_HAZARD_DENOMINATOR_COUNT,
+            "hazard denominator count declaration differs",
+        )
+        require(
+            data.get("hazard_denominator_sha256") == EXPECTED_HAZARD_DENOMINATOR_SHA256,
+            "hazard denominator digest declaration differs",
+        )
+        require(
+            data.get("binding_denominator_count") == EXPECTED_BINDING_DENOMINATOR_COUNT,
+            "binding denominator count declaration differs",
+        )
+        require(
+            data.get("binding_denominator_sha256")
+            == EXPECTED_BINDING_DENOMINATOR_SHA256,
+            "binding denominator digest declaration differs",
+        )
     required_tools = string_list(data, "required_tools", "policy")
     optional_tools = string_list(data, "optional_tools", "policy", allow_empty=True)
-    require(len(set(required_tools)) == len(required_tools), "required_tools repeats a tool")
-    require(not set(required_tools) & set(optional_tools), "required and optional tools overlap")
+    require(
+        len(set(required_tools)) == len(required_tools), "required_tools repeats a tool"
+    )
+    require(
+        not set(required_tools) & set(optional_tools),
+        "required and optional tools overlap",
+    )
 
     source_classes = data.get("source_classes")
     require(isinstance(source_classes, dict), "source_classes must be a table")
-    reject_unknown(source_classes, {"c", "header", "register_policy", "makefile", "kconfig"}, "source_classes")
-    require(all(isinstance(value, str) and value for value in source_classes.values()), "source_classes has an invalid pattern")
+    reject_unknown(
+        source_classes,
+        {"c", "header", "register_policy", "makefile", "kconfig"},
+        "source_classes",
+    )
+    require(
+        all(isinstance(value, str) and value for value in source_classes.values()),
+        "source_classes has an invalid pattern",
+    )
 
     extractor = data.get("callback_extractor")
     require(isinstance(extractor, dict), "callback_extractor must be a table")
@@ -1017,7 +1229,10 @@ def load_policy(
     }
     reject_unknown(extractor, extractor_keys, "callback_extractor")
     require(set(extractor) == extractor_keys, "callback_extractor is incomplete")
-    require(all(isinstance(value, int) and value >= 0 for value in extractor.values()), "callback extractor minima must be nonnegative")
+    require(
+        all(isinstance(value, int) and value >= 0 for value in extractor.values()),
+        "callback extractor minima must be nonnegative",
+    )
 
     tool = data.get("tool")
     require(isinstance(tool, dict), "tool must be a table")
@@ -1042,8 +1257,13 @@ def load_policy(
         "tool.ctags",
     )
     global_version = string_value(global_policy, "version", "tool.gnu_global")
-    global_config_sha256 = string_value(global_policy, "config_sha256", "tool.gnu_global")
-    require(HEX_64.fullmatch(global_config_sha256) is not None, "GNU Global config digest is invalid")
+    global_config_sha256 = string_value(
+        global_policy, "config_sha256", "tool.gnu_global"
+    )
+    require(
+        HEX_64.fullmatch(global_config_sha256) is not None,
+        "GNU Global config digest is invalid",
+    )
     ctags_version_first_line = string_value(
         ctags_policy,
         "version_first_line",
@@ -1080,14 +1300,19 @@ def load_policy(
         try:
             re.compile(pattern)
         except re.error as exc:
-            raise SourceMapError(f"invalid tool diagnostic pattern {pattern!r}: {exc}") from exc
+            raise SourceMapError(
+                f"invalid tool diagnostic pattern {pattern!r}: {exc}"
+            ) from exc
 
     preprocessor = data.get("preprocessor")
     require(isinstance(preprocessor, dict), "preprocessor must be a table")
     reject_unknown(preprocessor, {"translation_units", "kernel"}, "preprocessor")
     translation_units = string_list(preprocessor, "translation_units", "preprocessor")
     kernels = preprocessor.get("kernel")
-    require(isinstance(kernels, list) and kernels, "preprocessor.kernel must be a nonempty table list")
+    require(
+        isinstance(kernels, list) and kernels,
+        "preprocessor.kernel must be a nonempty table list",
+    )
     kernel_lanes: list[KernelLane] = []
     for index, kernel in enumerate(kernels):
         label = f"preprocessor.kernel[{index}]"
@@ -1116,7 +1341,10 @@ def load_policy(
                 string_list(kernel, "profiles", label),
             )
         )
-    require(len({lane.release for lane in kernel_lanes}) == len(kernel_lanes), "kernel release repeats")
+    require(
+        len({lane.release for lane in kernel_lanes}) == len(kernel_lanes),
+        "kernel release repeats",
+    )
     for lane in kernel_lanes:
         for declared_path in (
             lane.declaration,
@@ -1150,64 +1378,74 @@ def load_policy(
             )
         )
     require(partitions, "policy carries no partitions")
-    require(len({item.name for item in partitions}) == len(partitions), "partition name repeats")
+    require(
+        len({item.name for item in partitions}) == len(partitions),
+        "partition name repeats",
+    )
     roots = [root for item in partitions for root in item.roots]
-    require(len(set(roots)) == len(roots), "a root symbol appears in more than one partition")
-    require(all(C_IDENTIFIER.fullmatch(root) for root in roots), "a root symbol is not a C identifier")
+    require(
+        len(set(roots)) == len(roots),
+        "a root symbol appears in more than one partition",
+    )
+    require(
+        all(C_IDENTIFIER.fullmatch(root) for root in roots),
+        "a root symbol is not a C identifier",
+    )
+    if policy_schema == CURRENT_POLICY_SCHEMA:
+        require(
+            len(roots) == EXPECTED_ROOT_DENOMINATOR_COUNT,
+            "root denominator count differs",
+        )
+        require(
+            root_denominator_sha256(partitions) == EXPECTED_ROOT_DENOMINATOR_SHA256,
+            "root denominator identity differs",
+        )
 
     hazards: list[Hazard] = []
     for index, item in enumerate(data.get("hazard", [])):
         label = f"hazard[{index}]"
         require(isinstance(item, dict), f"{label} must be a table")
-        reject_unknown(
-            item,
-            {
-                "symbol",
-                "side_effect_class",
-                "guard_identifier_census",
-                "evidence_rank",
-            },
-            label,
-        )
+        hazard_keys = {
+            "symbol",
+            "side_effect_class",
+            "guard_identifier_census",
+            "evidence_rank",
+        }
+        if policy_schema == CURRENT_POLICY_SCHEMA:
+            hazard_keys.add("effect_identifier_census")
+        reject_unknown(item, hazard_keys, label)
         symbol = string_value(item, "symbol", label)
-        require(C_IDENTIFIER.fullmatch(symbol) is not None, f"{label}.symbol is invalid")
-        raw_census = item.get("guard_identifier_census")
         require(
-            isinstance(raw_census, list),
-            f"{label}.guard_identifier_census must be a list",
+            C_IDENTIFIER.fullmatch(symbol) is not None, f"{label}.symbol is invalid"
         )
-        guard_identifier_census: list[GuardIdentifierCensus] = []
-        for census_index, census in enumerate(raw_census):
-            census_label = f"{label}.guard_identifier_census[{census_index}]"
-            require(isinstance(census, dict), f"{census_label} must be a table")
-            reject_unknown(census, {"owner", "identifiers"}, census_label)
-            owner = string_value(census, "owner", census_label)
-            identifiers = string_list(census, "identifiers", census_label)
-            require(C_IDENTIFIER.fullmatch(owner) is not None, f"{census_label}.owner is invalid")
-            require(
-                all(C_IDENTIFIER.fullmatch(identifier) for identifier in identifiers),
-                f"{census_label}.identifiers contains an invalid C identifier",
-            )
-            require(
-                len(set(identifiers)) == len(identifiers),
-                f"{census_label}.identifiers repeats a value",
-            )
-            guard_identifier_census.append(GuardIdentifierCensus(owner, identifiers))
-        require(
-            len({census.owner for census in guard_identifier_census})
-            == len(guard_identifier_census),
-            f"{label}.guard_identifier_census repeats an owner",
+        guard_identifier_census = identifier_census_list(
+            item, "guard_identifier_census", label
+        )
+        effect_identifier_census = identifier_census_list(
+            item, "effect_identifier_census", label
         )
         hazards.append(
             Hazard(
                 symbol,
                 string_value(item, "side_effect_class", label),
-                tuple(guard_identifier_census),
+                guard_identifier_census,
+                effect_identifier_census,
                 string_value(item, "evidence_rank", label),
             )
         )
     require(hazards, "policy carries no hazards")
-    require(len({item.symbol for item in hazards}) == len(hazards), "hazard symbol repeats")
+    require(
+        len({item.symbol for item in hazards}) == len(hazards), "hazard symbol repeats"
+    )
+    if policy_schema == CURRENT_POLICY_SCHEMA:
+        require(
+            len(hazards) == EXPECTED_HAZARD_DENOMINATOR_COUNT,
+            "hazard denominator count differs",
+        )
+        require(
+            hazard_denominator_sha256(hazards) == EXPECTED_HAZARD_DENOMINATOR_SHA256,
+            "hazard denominator identity differs",
+        )
 
     partition_names = {item.name for item in partitions}
     bindings: list[Binding] = []
@@ -1228,11 +1466,19 @@ def load_policy(
         }
         reject_unknown(item, keys, label)
         expected = item.get("expected_matches")
-        require(isinstance(expected, int) and expected > 0, f"{label}.expected_matches must be positive")
+        require(
+            isinstance(expected, int) and expected > 0,
+            f"{label}.expected_matches must be positive",
+        )
         partition_name = string_value(item, "partition", label)
-        require(partition_name in partition_names, f"{label} names an unknown partition")
+        require(
+            partition_name in partition_names, f"{label} names an unknown partition"
+        )
         path_value = string_value(item, "path", label)
-        require(path_value.startswith(source_root + "/"), f"{label}.path is outside the source root")
+        require(
+            path_value.startswith(source_root + "/"),
+            f"{label}.path is outside the source root",
+        )
         pattern = string_value(item, "pattern", label)
         try:
             re.compile(pattern, re.MULTILINE | re.DOTALL)
@@ -1256,11 +1502,25 @@ def load_policy(
             bindings[-1].scope in {"brace", "match"},
             f"{label}.scope must equal brace or match",
         )
-        require(isinstance(bindings[-1].match_literals, bool), f"{label}.match_literals must be Boolean")
+        require(
+            isinstance(bindings[-1].match_literals, bool),
+            f"{label}.match_literals must be Boolean",
+        )
     require(bindings, "policy carries no declared bindings")
-    require(len({item.name for item in bindings}) == len(bindings), "binding name repeats")
+    require(
+        len({item.name for item in bindings}) == len(bindings), "binding name repeats"
+    )
     binding_edges = {(item.kind, item.caller, item.callee) for item in bindings}
     require(len(binding_edges) == len(bindings), "declared binding edge repeats")
+    if policy_schema == CURRENT_POLICY_SCHEMA:
+        require(
+            len(bindings) == EXPECTED_BINDING_DENOMINATOR_COUNT,
+            "binding denominator count differs",
+        )
+        require(
+            binding_denominator_sha256(bindings) == EXPECTED_BINDING_DENOMINATOR_SHA256,
+            "binding denominator identity differs",
+        )
 
     path_witnesses: list[PathWitness] = []
     for index, item in enumerate(data.get("path_witness", [])):
@@ -1349,7 +1609,8 @@ def load_policy(
         len({item.name for item in path_witnesses}) == len(path_witnesses),
         "path witness name repeats",
     )
-    validate_required_path_witnesses(path_witnesses)
+    if policy_schema == CURRENT_POLICY_SCHEMA:
+        validate_required_path_witnesses(path_witnesses)
 
     bounded_queries: list[BoundedQuery] = []
     for index, item in enumerate(data.get("bounded_query", [])):
@@ -1366,7 +1627,10 @@ def load_policy(
         except re.error as exc:
             raise SourceMapError(f"{label}.pattern is invalid: {exc}") from exc
         paths = string_list(item, "paths", label)
-        require(all(path.startswith(source_root + "/") for path in paths), f"{label}.paths leave the source root")
+        require(
+            all(path.startswith(source_root + "/") for path in paths),
+            f"{label}.paths leave the source root",
+        )
         expected_matches = item.get("expected_matches")
         require(
             isinstance(expected_matches, int) and expected_matches >= 0,
@@ -1382,9 +1646,13 @@ def load_policy(
             )
         )
     require(bounded_queries, "policy carries no bounded queries")
-    require(len({item.name for item in bounded_queries}) == len(bounded_queries), "bounded query name repeats")
+    require(
+        len({item.name for item in bounded_queries}) == len(bounded_queries),
+        "bounded query name repeats",
+    )
 
     return Policy(
+        policy_schema,
         capture_schema,
         comparison_schema,
         source_root,
@@ -1426,7 +1694,9 @@ def git_output(repository: Path, *args: str, text: bool = True) -> str | bytes:
 
 
 def resolve_repository(path: Path) -> Path:
-    resolved = Path(str(git_output(path, "rev-parse", "--show-toplevel")).strip()).resolve()
+    resolved = Path(
+        str(git_output(path, "rev-parse", "--show-toplevel")).strip()
+    ).resolve()
     require((resolved / ".git").exists(), f"repository has no Git metadata: {resolved}")
     return resolved
 
@@ -1446,7 +1716,10 @@ def parse_release_paths(specifications: list[str]) -> dict[str, Path]:
     result: dict[str, Path] = {}
     for specification in specifications:
         release, separator, raw_path = specification.partition("=")
-        require(separator == "=" and release and raw_path, f"invalid release path: {specification}")
+        require(
+            separator == "=" and release and raw_path,
+            f"invalid release path: {specification}",
+        )
         require(
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", release) is not None,
             f"invalid kernel release in path: {release}",
@@ -1457,7 +1730,9 @@ def parse_release_paths(specifications: list[str]) -> dict[str, Path]:
 
 
 def load_source_closure(repository: Path, commit: str, expected_root: str) -> bytes:
-    content = git_output(repository, "show", f"{commit}:source-closure.toml", text=False)
+    content = git_output(
+        repository, "show", f"{commit}:source-closure.toml", text=False
+    )
     assert isinstance(content, bytes)
     try:
         declaration = tomllib.loads(content.decode("ascii"))
@@ -1465,13 +1740,21 @@ def load_source_closure(repository: Path, commit: str, expected_root: str) -> by
         raise SourceMapError(f"source closure is not valid ASCII TOML: {exc}") from exc
     closure = declaration.get("closure")
     require(isinstance(closure, dict), "source closure has no closure table")
-    require(closure.get("upstream_path") == expected_root, "source root differs from source-closure.toml")
+    require(
+        closure.get("upstream_path") == expected_root,
+        "source root differs from source-closure.toml",
+    )
     excluded = declaration.get("excluded")
     require(isinstance(excluded, list) and excluded, "source closure has no exclusions")
     patterns = {entry.get("pattern") for entry in excluded if isinstance(entry, dict)}
-    require("*_reg_safe.h" in patterns, "source closure does not exclude generated register headers")
+    require(
+        "*_reg_safe.h" in patterns,
+        "source closure does not exclude generated register headers",
+    )
     repository_only = declaration.get("repository_only")
-    require(isinstance(repository_only, list), "source closure repository_only is invalid")
+    require(
+        isinstance(repository_only, list), "source closure repository_only is invalid"
+    )
     paths = {entry.get("path") for entry in repository_only if isinstance(entry, dict)}
     require(".gitignore" in paths, "source closure does not classify driver .gitignore")
     return content
@@ -1507,27 +1790,68 @@ def parse_ls_tree(raw: bytes, policy: Policy) -> list[tuple[str, str, str, int, 
         except (ValueError, UnicodeDecodeError) as exc:
             raise SourceMapError("git ls-tree emitted a malformed record") from exc
         require(object_type == "blob", f"non-blob source entry: {path}")
-        require(mode in {"100644", "100755"}, f"special or symlinked source entry: {path}")
-        require(HEX_40.fullmatch(object_id) is not None, f"invalid source object ID: {path}")
+        require(
+            mode in {"100644", "100755"}, f"special or symlinked source entry: {path}"
+        )
+        require(
+            HEX_40.fullmatch(object_id) is not None, f"invalid source object ID: {path}"
+        )
         require(size_text.isdigit(), f"invalid source size: {path}")
-        require(path.startswith(policy.source_root + "/"), f"source path escaped root: {path}")
-        require("\n" not in path and "\t" not in path and not any(ord(char) < 32 for char in path), f"source path carries a control character: {path!r}")
+        require(
+            path.startswith(policy.source_root + "/"),
+            f"source path escaped root: {path}",
+        )
+        require(
+            "\n" not in path
+            and "\t" not in path
+            and not any(ord(char) < 32 for char in path),
+            f"source path carries a control character: {path!r}",
+        )
         path_parts = Path(path).parts
-        require(".." not in path_parts and not Path(path).is_absolute(), f"source path traverses: {path}")
+        require(
+            ".." not in path_parts and not Path(path).is_absolute(),
+            f"source path traverses: {path}",
+        )
         entries.append((mode, object_type, object_id, int(size_text), path))
     require(entries, "tracked source denominator is empty")
-    require(len({entry[4] for entry in entries}) == len(entries), "tracked source path repeats")
+    require(
+        len({entry[4] for entry in entries}) == len(entries),
+        "tracked source path repeats",
+    )
     return sorted(entries, key=lambda item: item[4].encode("utf-8"))
 
 
-def export_source(repository: Path, commit: str, policy: Policy, destination: Path) -> list[SourceEntry]:
-    raw_tree = git_output(repository, "ls-tree", "-r", "-z", "-l", commit, "--", policy.source_root, text=False)
+def export_source(
+    repository: Path, commit: str, policy: Policy, destination: Path
+) -> list[SourceEntry]:
+    raw_tree = git_output(
+        repository,
+        "ls-tree",
+        "-r",
+        "-z",
+        "-l",
+        commit,
+        "--",
+        policy.source_root,
+        text=False,
+    )
     assert isinstance(raw_tree, bytes)
     tree_entries = parse_ls_tree(raw_tree, policy)
-    admitted = [entry for entry in tree_entries if source_class(policy, entry[4]) is not None]
-    require(len(admitted) <= policy.max_source_files, "source file count exceeds the policy ceiling")
-    require(sum(entry[3] for entry in admitted) <= policy.max_source_bytes, "source byte count exceeds the policy ceiling")
-    require(len(tree_entries) == len(admitted), "source closure contains an unclassified tracked path")
+    admitted = [
+        entry for entry in tree_entries if source_class(policy, entry[4]) is not None
+    ]
+    require(
+        len(admitted) <= policy.max_source_files,
+        "source file count exceeds the policy ceiling",
+    )
+    require(
+        sum(entry[3] for entry in admitted) <= policy.max_source_bytes,
+        "source byte count exceeds the policy ceiling",
+    )
+    require(
+        len(tree_entries) == len(admitted),
+        "source closure contains an unclassified tracked path",
+    )
 
     source_entries: list[SourceEntry] = []
     for mode, _object_type, object_id, size, path in admitted:
@@ -1573,18 +1897,28 @@ def write_source_tree_proof(
     source_root: str,
 ) -> None:
     proof_root = capture_root / "metadata/git-source-proof"
-    commit_content = git_output(repository, "cat-file", "commit", source_commit, text=False)
+    commit_content = git_output(
+        repository, "cat-file", "commit", source_commit, text=False
+    )
     assert isinstance(commit_content, bytes)
-    require(git_object_id("commit", commit_content) == source_commit, "source commit object identity differs")
+    require(
+        git_object_id("commit", commit_content) == source_commit,
+        "source commit object identity differs",
+    )
     commit_tree, _commit_timestamp = commit_identity(commit_content)
     require(commit_tree == source_tree, "source commit object names a different tree")
     write_bytes(proof_root / "commit.bin", commit_content)
 
     current_tree = source_tree
     for filename, component in source_tree_proof_paths(source_root):
-        tree_content = git_output(repository, "cat-file", "tree", current_tree, text=False)
+        tree_content = git_output(
+            repository, "cat-file", "tree", current_tree, text=False
+        )
         assert isinstance(tree_content, bytes)
-        require(git_object_id("tree", tree_content) == current_tree, "source tree object identity differs")
+        require(
+            git_object_id("tree", tree_content) == current_tree,
+            "source tree object identity differs",
+        )
         write_bytes(proof_root / filename, tree_content)
         component_bytes = component.encode("utf-8")
         matches = [
@@ -1592,9 +1926,15 @@ def write_source_tree_proof(
             for mode, name, object_id in parse_git_tree_object(tree_content)
             if mode == "40000" and name == component_bytes
         ]
-        require(len(matches) == 1, f"source tree proof does not resolve directory: {component}")
+        require(
+            len(matches) == 1,
+            f"source tree proof does not resolve directory: {component}",
+        )
         current_tree = matches[0]
-    require(current_tree == driver_tree, "source tree proof resolves a different driver tree")
+    require(
+        current_tree == driver_tree,
+        "source tree proof resolves a different driver tree",
+    )
 
 
 def verify_source_tree_proof(
@@ -1609,8 +1949,7 @@ def verify_source_tree_proof(
         filename for filename, _component in source_tree_proof_paths(source_root)
     }
     require(
-        regular_tree_files(proof_root, "retained source Git proof")
-        == expected_files,
+        regular_tree_files(proof_root, "retained source Git proof") == expected_files,
         "retained source Git proof file denominator differs",
     )
     commit_content = read_bounded_file(
@@ -1618,25 +1957,43 @@ def verify_source_tree_proof(
         MAX_MANIFEST_BYTES,
         "retained source commit proof",
     )
-    require(git_object_id("commit", commit_content) == source_commit, "retained source commit object identity differs")
+    require(
+        git_object_id("commit", commit_content) == source_commit,
+        "retained source commit object identity differs",
+    )
     commit_tree, timestamp_utc = commit_identity(commit_content)
-    require(commit_tree == source_tree, "retained source commit names a different source tree")
+    require(
+        commit_tree == source_tree,
+        "retained source commit names a different source tree",
+    )
 
     current_tree = source_tree
     for filename, component in source_tree_proof_paths(source_root):
         tree_path = proof_root / filename
-        require(tree_path.is_file() and not tree_path.is_symlink(), f"retained source tree proof is absent: {filename}")
+        require(
+            tree_path.is_file() and not tree_path.is_symlink(),
+            f"retained source tree proof is absent: {filename}",
+        )
         tree_content = tree_path.read_bytes()
-        require(git_object_id("tree", tree_content) == current_tree, f"retained source tree object identity differs: {filename}")
+        require(
+            git_object_id("tree", tree_content) == current_tree,
+            f"retained source tree object identity differs: {filename}",
+        )
         component_bytes = component.encode("utf-8")
         matches = [
             object_id
             for mode, name, object_id in parse_git_tree_object(tree_content)
             if mode == "40000" and name == component_bytes
         ]
-        require(len(matches) == 1, f"retained source tree proof does not resolve directory: {component}")
+        require(
+            len(matches) == 1,
+            f"retained source tree proof does not resolve directory: {component}",
+        )
         current_tree = matches[0]
-    require(current_tree == driver_tree, "retained source tree proof resolves a different driver tree")
+    require(
+        current_tree == driver_tree,
+        "retained source tree proof resolves a different driver tree",
+    )
     return timestamp_utc
 
 
@@ -1674,7 +2031,10 @@ def write_git_file_proof(
 ) -> None:
     commit_content = git_output(repository, "cat-file", "commit", commit, text=False)
     assert isinstance(commit_content, bytes)
-    require(git_object_id("commit", commit_content) == commit, "Git file proof commit identity differs")
+    require(
+        git_object_id("commit", commit_content) == commit,
+        "Git file proof commit identity differs",
+    )
     commit_tree, _timestamp_utc = commit_identity(commit_content)
     require(commit_tree == tree, "Git file proof commit names a different tree")
     write_bytes(proof_root / "commit.bin", commit_content)
@@ -1688,7 +2048,10 @@ def write_git_file_proof(
         require(tree_id is not None, "Git file proof cannot resolve a parent tree")
         tree_content = git_output(repository, "cat-file", "tree", tree_id, text=False)
         assert isinstance(tree_content, bytes)
-        require(git_object_id("tree", tree_content) == tree_id, "Git file proof tree identity differs")
+        require(
+            git_object_id("tree", tree_content) == tree_id,
+            "Git file proof tree identity differs",
+        )
         write_bytes(
             proof_root / git_file_proof_tree_filename(directory_parts),
             tree_content,
@@ -1714,8 +2077,7 @@ def verify_git_file_proof(
     repository_paths = set(retained_paths)
     directories = git_file_proof_directories(repository_paths)
     expected_files = {"commit.bin"} | {
-        git_file_proof_tree_filename(directory_parts)
-        for directory_parts in directories
+        git_file_proof_tree_filename(directory_parts) for directory_parts in directories
     }
     require(
         regular_tree_files(proof_root, label) == expected_files,
@@ -1726,7 +2088,10 @@ def verify_git_file_proof(
         MAX_MANIFEST_BYTES,
         f"{label} commit",
     )
-    require(git_object_id("commit", commit_content) == commit, f"{label} commit identity differs")
+    require(
+        git_object_id("commit", commit_content) == commit,
+        f"{label} commit identity differs",
+    )
     commit_tree, timestamp_utc = commit_identity(commit_content)
     require(commit_tree == tree, f"{label} commit names a different tree")
 
@@ -1777,7 +2142,9 @@ def verify_git_file_proof(
             f"{label} retained blob differs: {repository_path}",
         )
         retained_mode = "100755" if retained.lstat().st_mode & 0o111 else "100644"
-        require(retained_mode == mode, f"{label} retained mode differs: {repository_path}")
+        require(
+            retained_mode == mode, f"{label} retained mode differs: {repository_path}"
+        )
     return timestamp_utc
 
 
@@ -1827,7 +2194,10 @@ def retain_producer_inputs(
         if retained_path == POLICY_PATH.as_posix():
             continue
         source = repository / repository_path
-        require(source.is_file() and not source.is_symlink(), f"producer input is absent: {repository_path}")
+        require(
+            source.is_file() and not source.is_symlink(),
+            f"producer input is absent: {repository_path}",
+        )
         target = capture_root / retained_path
         write_bytes(target, source.read_bytes())
         target.chmod(0o755 if source.stat().st_mode & 0o111 else 0o644)
@@ -1898,9 +2268,7 @@ def command_environment_contract(
     """Build the complete allowlisted environment for retained commands."""
     extra = additions or {}
     require(
-        set(extra).issubset(
-            {"GTAGSDBPATH", "GTAGSROOT", "LD_LIBRARY_PATH", "PATH"}
-        ),
+        set(extra).issubset({"GTAGSDBPATH", "GTAGSROOT", "LD_LIBRARY_PATH", "PATH"}),
         "command environment carries an unapproved variable",
     )
     return {
@@ -1941,9 +2309,7 @@ def kernel_make_base_command(
         f"-ffile-prefix-map={toolchain_prefix_text}={CANONICAL_KERNEL_TOOLCHAIN} "
         f"-fmacro-prefix-map={toolchain_prefix_text}={CANONICAL_KERNEL_TOOLCHAIN}"
     )
-    kcflags = (
-        f"-I{include_trace} -include {profile_header_path} {prefix_maps}"
-    )
+    kcflags = f"-I{include_trace} -include {profile_header_path} {prefix_maps}"
     return [
         "/usr/bin/make",
         f"LLVM={toolchain_bin_text}/",
@@ -1976,7 +2342,9 @@ class CommandRecorder:
 
     def sanitize(self, value: str) -> str:
         output = value
-        for raw, token in sorted(self.replacements, key=lambda item: len(item[0]), reverse=True):
+        for raw, token in sorted(
+            self.replacements, key=lambda item: len(item[0]), reverse=True
+        ):
             output = output.replace(raw, token)
         return output
 
@@ -2001,7 +2369,10 @@ class CommandRecorder:
         require_empty_stderr: bool = True,
         input_bytes: bytes | None = None,
     ) -> bytes:
-        require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", command_id) is not None, f"invalid command ID: {command_id}")
+        require(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", command_id) is not None,
+            f"invalid command ID: {command_id}",
+        )
         executable_replacements = [
             (item, Path(item).name)
             for item in argv
@@ -2185,12 +2556,12 @@ def expected_command_records(
     active_releases: set[str],
 ) -> list[tuple[str, ...]]:
     c_and_header_paths = [
-        entry.path
-        for entry in source_entries
-        if entry.source_class in {"c", "header"}
+        entry.path for entry in source_entries if entry.source_class in {"c", "header"}
     ]
     c_paths = [entry.path for entry in source_entries if entry.source_class == "c"]
-    require(c_and_header_paths and c_paths, "command contract source denominator is empty")
+    require(
+        c_and_header_paths and c_paths, "command contract source denominator is empty"
+    )
     symbols = policy_root_symbols(policy)
     display_components = max(len(Path(path).parts) for path in c_and_header_paths)
     sandbox = canonical_analyzer_sandbox()
@@ -2429,9 +2800,7 @@ def expected_command_records(
         not active_releases or active_releases == policy_releases,
         "command contract kernel release set differs from policy",
     )
-    translation_targets = [
-        f"{Path(path).stem}.i" for path in policy.translation_units
-    ]
+    translation_targets = [f"{Path(path).stem}.i" for path in policy.translation_units]
     toolchain_environment = {
         "PATH": "/usr/bin:/bin",
         "LD_LIBRARY_PATH": "<kernel-toolchain-root>/lib",
@@ -2602,7 +2971,9 @@ def command_version(tool: str, executable: str) -> tuple[int, str, str]:
         text=True,
         env=command_environment_contract("/tmp"),
     )
-    combined = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    combined = "\n".join(
+        part.strip() for part in (result.stdout, result.stderr) if part.strip()
+    )
     combined = combined.replace(executable, Path(executable).name)
     first_line = combined.splitlines()[0] if combined else ""
     return result.returncode, first_line, combined
@@ -2623,8 +2994,7 @@ def capture_tool_versions(capture_root: Path, policy: Policy) -> dict[str, str]:
                 Path(executable) == Path(f"/usr/bin/{tool}")
                 and (
                     tool != "sh"
-                    or Path(executable).resolve(strict=True)
-                    == Path("/usr/bin/bash")
+                    or Path(executable).resolve(strict=True) == Path("/usr/bin/bash")
                 ),
                 f"host build command path differs: {tool}",
             )
@@ -2644,8 +3014,13 @@ def capture_tool_versions(capture_root: Path, policy: Policy) -> dict[str, str]:
         )
     expected_global = f"global (GNU Global) {policy.global_version}"
     expected_gtags = f"gtags (GNU Global) {policy.global_version}"
-    require(versions.get("global") == expected_global, "GNU Global version differs from policy")
-    require(versions.get("gtags") == expected_gtags, "GNU gtags version differs from policy")
+    require(
+        versions.get("global") == expected_global,
+        "GNU Global version differs from policy",
+    )
+    require(
+        versions.get("gtags") == expected_gtags, "GNU gtags version differs from policy"
+    )
     ctags_path = Path(shutil.which("ctags") or "ctags")
     readtags_path = Path(shutil.which("readtags") or "readtags")
     require(
@@ -2677,7 +3052,10 @@ def capture_tool_versions(capture_root: Path, policy: Policy) -> dict[str, str]:
         env={**os.environ, "LC_ALL": "C", "LANG": "C"},
     )
     require(config.returncode == 0 and not config.stderr, "gtags --config failed")
-    require(sha256_bytes(config.stdout) == policy.global_config_sha256, "GNU Global configuration differs from policy")
+    require(
+        sha256_bytes(config.stdout) == policy.global_config_sha256,
+        "GNU Global configuration differs from policy",
+    )
     write_tsv(
         capture_root / "metadata/tool-versions.tsv",
         "radeon-driver-tool-versions-v1",
@@ -2696,13 +3074,24 @@ def capture_tool_versions(capture_root: Path, policy: Policy) -> dict[str, str]:
 
 def source_manifest_rows(entries: list[SourceEntry]) -> list[tuple[Any, ...]]:
     return [
-        (entry.path, entry.source_class, entry.mode, entry.size, entry.object_id, entry.sha256)
+        (
+            entry.path,
+            entry.source_class,
+            entry.mode,
+            entry.size,
+            entry.object_id,
+            entry.sha256,
+        )
         for entry in entries
     ]
 
 
-def write_source_inputs(capture_root: Path, entries: list[SourceEntry]) -> tuple[Path, Path]:
-    c_and_headers = [entry.path for entry in entries if entry.source_class in {"c", "header"}]
+def write_source_inputs(
+    capture_root: Path, entries: list[SourceEntry]
+) -> tuple[Path, Path]:
+    c_and_headers = [
+        entry.path for entry in entries if entry.source_class in {"c", "header"}
+    ]
     c_files = [entry.path for entry in entries if entry.source_class == "c"]
     require(c_and_headers and c_files, "analyzer input denominator is empty")
     source_list = capture_root / "inputs/c-and-header-files.txt"
@@ -2714,7 +3103,12 @@ def write_source_inputs(capture_root: Path, entries: list[SourceEntry]) -> tuple
         "radeon-driver-tool-inputs-v1",
         ("input_name", "file_count", "content_sha256", "consumers"),
         [
-            ("c-and-header-files", len(c_and_headers), sha256_file(source_list), "cscope;ctags;gnu-global;lizard"),
+            (
+                "c-and-header-files",
+                len(c_and_headers),
+                sha256_file(source_list),
+                "cscope;ctags;gnu-global;lizard",
+            ),
             ("c-files", len(c_files), sha256_file(c_list), "cflow"),
         ],
     )
@@ -2728,19 +3122,48 @@ def parse_global_rows(
     source_root: Path | None = None,
 ) -> list[tuple[Any, ...]]:
     rows: list[tuple[Any, ...]] = []
-    for line_number, raw_line in enumerate(raw.decode("utf-8", errors="strict").splitlines(), 1):
+    for line_number, raw_line in enumerate(
+        raw.decode("utf-8", errors="strict").splitlines(), 1
+    ):
         fields = raw_line.split(maxsplit=3)
-        require(len(fields) == 4, f"GNU Global {record_kind} row {line_number} is malformed")
+        require(
+            len(fields) == 4, f"GNU Global {record_kind} row {line_number} is malformed"
+        )
         symbol, source_line, source_path, _snippet = fields
-        require(C_IDENTIFIER.fullmatch(symbol) is not None, f"GNU Global emitted an invalid identifier: {symbol}")
-        require(source_line.isdigit() and int(source_line) > 0, f"GNU Global emitted an invalid line: {source_line}")
+        require(
+            C_IDENTIFIER.fullmatch(symbol) is not None,
+            f"GNU Global emitted an invalid identifier: {symbol}",
+        )
+        require(
+            source_line.isdigit() and int(source_line) > 0,
+            f"GNU Global emitted an invalid line: {source_line}",
+        )
         entry = entries.get(source_path)
-        require(entry is not None and entry.source_class in {"c", "header"}, f"GNU Global emitted a foreign path: {source_path}")
+        require(
+            entry is not None and entry.source_class in {"c", "header"},
+            f"GNU Global emitted a foreign path: {source_path}",
+        )
         if source_root is not None:
-            line_count = len((source_root / source_path).read_text(encoding="utf-8").splitlines())
-            require(int(source_line) <= line_count, f"GNU Global line is outside {source_path}: {source_line}")
-        rows.append((record_kind, symbol, source_path, int(source_line), entry.sha256, "gnu-global"))
-    require(len(set(rows)) == len(rows), f"GNU Global emitted duplicate {record_kind} rows")
+            line_count = len(
+                (source_root / source_path).read_text(encoding="utf-8").splitlines()
+            )
+            require(
+                int(source_line) <= line_count,
+                f"GNU Global line is outside {source_path}: {source_line}",
+            )
+        rows.append(
+            (
+                record_kind,
+                symbol,
+                source_path,
+                int(source_line),
+                entry.sha256,
+                "gnu-global",
+            )
+        )
+    require(
+        len(set(rows)) == len(rows), f"GNU Global emitted duplicate {record_kind} rows"
+    )
     return rows
 
 
@@ -2857,8 +3280,17 @@ def build_lexical_index(
     ]
     rows.extend(parse_global_rows(definitions, "definition", entry_map, source_root))
     rows.extend(parse_global_rows(references, "reference", entry_map, source_root))
-    rows.sort(key=lambda row: (str(row[0]), str(row[2]).encode("utf-8"), int(row[3]), str(row[1])))
-    require(len(set(rows)) == len(rows), "lexical map contains duplicate normalized rows")
+    rows.sort(
+        key=lambda row: (
+            str(row[0]),
+            str(row[2]).encode("utf-8"),
+            int(row[3]),
+            str(row[1]),
+        )
+    )
+    require(
+        len(set(rows)) == len(rows), "lexical map contains duplicate normalized rows"
+    )
     write_tsv(
         capture_root / "radeon-driver-lexical-map.tsv",
         LEXICAL_SCHEMA,
@@ -2958,9 +3390,7 @@ def build_ctags_index(
     )
     lines = raw.decode("utf-8", errors="strict").splitlines()
     selected = [
-        line
-        for line in lines
-        if line and line.split("\t", 1)[0] in set(symbols)
+        line for line in lines if line and line.split("\t", 1)[0] in set(symbols)
     ]
     write_text(
         capture_root / "queries/readtags-root-symbols.txt",
@@ -2995,12 +3425,22 @@ def parse_cscope_rows(
     entries: dict[str, SourceEntry],
     source_root: Path,
 ) -> list[tuple[Any, ...]]:
-    require(query_kind in {"definition", "calls", "callers"}, f"cscope query kind is invalid: {query_kind}")
-    require(C_IDENTIFIER.fullmatch(query_symbol) is not None, f"cscope query symbol is invalid: {query_symbol}")
+    require(
+        query_kind in {"definition", "calls", "callers"},
+        f"cscope query kind is invalid: {query_kind}",
+    )
+    require(
+        C_IDENTIFIER.fullmatch(query_symbol) is not None,
+        f"cscope query symbol is invalid: {query_symbol}",
+    )
     rows: list[tuple[Any, ...]] = []
-    for row_number, line in enumerate(raw.decode("utf-8", errors="strict").splitlines(), 1):
+    for row_number, line in enumerate(
+        raw.decode("utf-8", errors="strict").splitlines(), 1
+    ):
         fields = line.split(maxsplit=3)
-        require(len(fields) == 4, f"cscope {query_symbol} row {row_number} is malformed")
+        require(
+            len(fields) == 4, f"cscope {query_symbol} row {row_number} is malformed"
+        )
         source_path, function, line_text, source_text = fields
         entry = entries.get(source_path)
         require(
@@ -3011,8 +3451,13 @@ def parse_cscope_rows(
             function == "<global>" or C_IDENTIFIER.fullmatch(function) is not None,
             f"cscope function is invalid for {query_symbol}: {function}",
         )
-        require(line_text.isdigit() and int(line_text) > 0, f"cscope line is invalid for {query_symbol}")
-        source_lines = (source_root / source_path).read_text(encoding="utf-8").splitlines()
+        require(
+            line_text.isdigit() and int(line_text) > 0,
+            f"cscope line is invalid for {query_symbol}",
+        )
+        source_lines = (
+            (source_root / source_path).read_text(encoding="utf-8").splitlines()
+        )
         source_line = int(line_text)
         require(
             source_line <= len(source_lines),
@@ -3033,7 +3478,10 @@ def parse_cscope_rows(
                 normalized_source,
             )
         )
-    require(len(set(rows)) == len(rows), f"cscope emitted duplicate rows for {query_kind} {query_symbol}")
+    require(
+        len(set(rows)) == len(rows),
+        f"cscope emitted duplicate rows for {query_kind} {query_symbol}",
+    )
     return rows
 
 
@@ -3112,7 +3560,14 @@ def build_cscope_index(
     write_tsv(
         capture_root / "queries/cscope-root-symbols.tsv",
         "radeon-driver-cscope-root-queries-v1",
-        ("query_kind", "query_symbol", "source_path", "function", "line", "source_text"),
+        (
+            "query_kind",
+            "query_symbol",
+            "source_path",
+            "function",
+            "line",
+            "source_text",
+        ),
         rows,
     )
     return rows
@@ -3171,10 +3626,7 @@ def replay_cscope_queries(
                 result.returncode == 0 and not result.stderr,
                 f"cscope replay failed for {query_kind} {symbol}",
             )
-            raw_path = (
-                capture_root
-                / f"queries/cscope/{query_kind}-{symbol}.txt"
-            )
+            raw_path = capture_root / f"queries/cscope/{query_kind}-{symbol}.txt"
             require(
                 result.stdout == raw_path.read_bytes(),
                 f"cscope replay differs for {query_kind} {symbol}",
@@ -3188,9 +3640,7 @@ def replay_cscope_queries(
                     source_root,
                 )
             )
-    replayed_rows.sort(
-        key=lambda row: (row[0], row[1], row[2], row[4], row[3], row[5])
-    )
+    replayed_rows.sort(key=lambda row: (row[0], row[1], row[2], row[4], row[3], row[5]))
     require(
         [tuple(str(value) for value in row) for row in replayed_rows]
         == [tuple(row) for row in retained_rows],
@@ -3316,8 +3766,7 @@ def replay_global_queries(
             replay_exact_command(
                 [str(gtags), "--dump", str(database / database_name)],
                 source_root,
-                capture_root
-                / f"indexes/global/{database_name}.dump.tsv",
+                capture_root / f"indexes/global/{database_name}.dump.tsv",
                 capture_root
                 / f"diagnostics/global-dump-{database_name.lower()}.stderr",
             )
@@ -3372,8 +3821,8 @@ def replay_cflow_outputs(
     source_root = capture_root / "source"
     cflow = pinned_tool_path(tool_rows, "cflow")
     c_files = (
-        capture_root / "inputs/c-files.txt"
-    ).read_text(encoding="utf-8").splitlines()
+        (capture_root / "inputs/c-files.txt").read_text(encoding="utf-8").splitlines()
+    )
     parser_args = [
         str(cflow),
         "-q",
@@ -3409,8 +3858,7 @@ def replay_cflow_outputs(
             [*parser_args, "--format=dot", *roots, *c_files],
             source_root,
             capture_root / f"cflow/partitions/{partition.name}.dot",
-            capture_root
-            / f"diagnostics/cflow-{partition.name}-dot.stderr",
+            capture_root / f"diagnostics/cflow-{partition.name}-dot.stderr",
             output_replacements=diagnostic_replacements,
         )
 
@@ -3474,10 +3922,8 @@ def replay_metric_outputs(
             b"<capture-root>/analysis/scc.json",
         )
         require(
-            normalized_stdout
-            == (capture_root / "diagnostics/scc.stdout").read_bytes()
-            and result.stderr
-            == (capture_root / "diagnostics/scc.stderr").read_bytes(),
+            normalized_stdout == (capture_root / "diagnostics/scc.stdout").read_bytes()
+            and result.stderr == (capture_root / "diagnostics/scc.stderr").read_bytes(),
             "SCC replay diagnostics differ",
         )
         require(
@@ -3490,17 +3936,24 @@ def replay_metric_outputs(
 def parse_cflow_edges(raw: bytes) -> list[tuple[str, str, str]]:
     stack: dict[int, str] = {}
     edges: set[tuple[str, str, str]] = set()
-    for line_number, line in enumerate(raw.decode("utf-8", errors="strict").splitlines(), 1):
+    for line_number, line in enumerate(
+        raw.decode("utf-8", errors="strict").splitlines(), 1
+    ):
         match = CFLOW_ROW.match(line)
         require(match is not None, f"cflow row {line_number} is malformed")
         depth = int(match.group(1))
         symbol = match.group(2).strip()
         detail = match.group(3).strip()
-        require(C_IDENTIFIER.fullmatch(symbol) is not None, f"cflow emitted an invalid symbol: {symbol}")
+        require(
+            C_IDENTIFIER.fullmatch(symbol) is not None,
+            f"cflow emitted an invalid symbol: {symbol}",
+        )
         require(depth >= 0, "cflow emitted a negative depth")
         if depth > 0:
             caller = stack.get(depth - 1)
-            require(caller is not None, f"cflow depth skips a parent at row {line_number}")
+            require(
+                caller is not None, f"cflow depth skips a parent at row {line_number}"
+            )
             callee_kind = "external" if detail == "<>" else "driver"
             edges.add((caller, symbol, callee_kind))
         stack[depth] = symbol
@@ -3640,7 +4093,10 @@ def binding_matches(source: str, binding: Binding) -> list[re.Match[str]]:
         if binding.scope != "brace":
             return True
         opening = code_mask.find("{", match.start(), match.end())
-        require(opening >= 0, f"brace-scoped binding {binding.name} does not match an opening brace")
+        require(
+            opening >= 0,
+            f"brace-scoped binding {binding.name} does not match an opening brace",
+        )
         depth = 0
         for offset in range(opening, match.end()):
             token = code_mask[offset]
@@ -3648,7 +4104,10 @@ def binding_matches(source: str, binding: Binding) -> list[re.Match[str]]:
                 depth += 1
             elif token == "}":
                 depth -= 1
-                require(depth >= 0, f"brace-scoped binding {binding.name} has an invalid brace order")
+                require(
+                    depth >= 0,
+                    f"brace-scoped binding {binding.name} has an invalid brace order",
+                )
                 if depth == 0:
                     return not code_mask[offset + 1 : match.end()].strip()
         return depth > 0
@@ -3699,7 +4158,10 @@ def verify_declared_bindings(
                 )
             )
     rows.sort(key=lambda row: (row[0], row[4]))
-    require(len(rows) == sum(item.expected_matches for item in policy.bindings), "binding output does not close the policy denominator")
+    require(
+        len(rows) == sum(item.expected_matches for item in policy.bindings),
+        "binding output does not close the policy denominator",
+    )
     if write_output:
         write_tsv(
             capture_root / "radeon-driver-declared-bindings.tsv",
@@ -3742,28 +4204,54 @@ def extract_callback_candidates(
         for match in FIELD_INITIALIZER.finditer(code):
             selector, target = match.groups()
             line = physical_line_after_splicing(source, match.start())
-            rows.append(("field-initializer", entry.path, line, selector, target, entry.sha256))
+            rows.append(
+                ("field-initializer", entry.path, line, selector, target, entry.sha256)
+            )
             counts["minimum_field_initializers"] += 1
 
         for match in DEFINE_SHOW.finditer(code):
             symbol = match.group(1)
             line = physical_line_after_splicing(source, match.start())
-            rows.append(("define-show-attribute", entry.path, line, f"{symbol}_fops", f"{symbol}_show", entry.sha256))
-            generated_edges.add((f"{symbol}_fops", f"{symbol}_show", "macro-generated-vfs"))
+            rows.append(
+                (
+                    "define-show-attribute",
+                    entry.path,
+                    line,
+                    f"{symbol}_fops",
+                    f"{symbol}_show",
+                    entry.sha256,
+                )
+            )
+            generated_edges.add(
+                (f"{symbol}_fops", f"{symbol}_show", "macro-generated-vfs")
+            )
             counts["minimum_define_show_attributes"] += 1
 
         for match in DEFINE_DEBUGFS.finditer(code):
             fops, getter, setter = match.groups()
             line = physical_line_after_splicing(source, match.start())
             for selector, target in (("get", getter), ("set", setter)):
-                rows.append(("define-debugfs-attribute", entry.path, line, f"{fops}:{selector}", target, entry.sha256))
+                rows.append(
+                    (
+                        "define-debugfs-attribute",
+                        entry.path,
+                        line,
+                        f"{fops}:{selector}",
+                        target,
+                        entry.sha256,
+                    )
+                )
                 generated_edges.add((fops, target, "macro-generated-vfs"))
 
         for match in DRM_IOCTL.finditer(code):
             ioctl_name, target = match.groups()
             line = physical_line_after_splicing(source, match.start())
-            rows.append(("drm-ioctl", entry.path, line, ioctl_name, target, entry.sha256))
-            generated_edges.add((f"DRM_IOCTL_{ioctl_name}", target, "macro-generated-ioctl"))
+            rows.append(
+                ("drm-ioctl", entry.path, line, ioctl_name, target, entry.sha256)
+            )
+            generated_edges.add(
+                (f"DRM_IOCTL_{ioctl_name}", target, "macro-generated-ioctl")
+            )
             counts["minimum_drm_ioctl_bindings"] += 1
 
         for match in WORK_BINDING.finditer(code):
@@ -3780,7 +4268,10 @@ def extract_callback_candidates(
             generated_edges.add((macro, target, "macro-generated-module-entry"))
 
     for minimum, expected in policy.extractor_minimums.items():
-        require(counts[minimum] >= expected, f"callback extractor {minimum} fell below {expected}: {counts[minimum]}")
+        require(
+            counts[minimum] >= expected,
+            f"callback extractor {minimum} fell below {expected}: {counts[minimum]}",
+        )
     rows.sort(key=lambda row: (row[0], row[1], row[2], row[3], row[4]))
     require(len(set(rows)) == len(rows), "callback extractor emitted duplicate rows")
     if write_output:
@@ -3946,7 +4437,9 @@ def build_contextual_path_witnesses(
         "path witness join output does not close the policy denominator",
     )
     require(len(set(edge_rows)) == len(edge_rows), "path witness output repeats a row")
-    require(len(set(join_rows)) == len(join_rows), "path witness join output repeats a row")
+    require(
+        len(set(join_rows)) == len(join_rows), "path witness join output repeats a row"
+    )
     if write_output:
         write_tsv(
             capture_root / "analysis/contextual-path-witnesses.tsv",
@@ -4204,7 +4697,10 @@ def derive_complexity_and_coefficients(
     cflow_edges: list[tuple[str, str, str]],
     declared_rows: list[tuple[Any, ...]],
     allowed_source_paths: set[str],
-) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+) -> tuple[
+    list[tuple[Any, ...]],
+    list[tuple[Any, ...]],
+]:
     functions = parse_lizard_rows(
         capture_root / "analysis/lizard.csv",
         allowed_source_paths,
@@ -4227,6 +4723,58 @@ def derive_complexity_and_coefficients(
 
     coefficient_rows: list[tuple[Any, ...]] = []
     guard_identifier_rows: list[tuple[Any, ...]] = []
+
+    def derive_identifier_rows(
+        hazard: Hazard,
+        censuses: tuple[IdentifierCensus, ...],
+        census_kind: str,
+    ) -> tuple[int, list[tuple[Any, ...]]]:
+        required_identifier_count = 0
+        rows: list[tuple[Any, ...]] = []
+        semantic_limit = {
+            "guard": "lexical-identifier-census-not-control-flow-proof",
+            "effect": "lexical-effect-identifier-census-not-side-effect-proof",
+        }[census_kind]
+        for census in censuses:
+            owner_candidates = by_symbol.get(census.owner, [])
+            require(
+                len(owner_candidates) == 1,
+                f"{census_kind} census owner {census.owner} resolves to "
+                f"{len(owner_candidates)} lizard functions",
+            )
+            owner_function = owner_candidates[0]
+            owner_path = source_root / owner_function["path"]
+            owner_source = owner_path.read_text(encoding="utf-8")
+            owner_body = "\n".join(
+                owner_source.splitlines()[
+                    owner_function["start"] - 1 : owner_function["end"]
+                ]
+            )
+            missing_identifiers = missing_code_identifiers(
+                owner_body,
+                census.identifiers,
+            )
+            require(
+                not missing_identifiers,
+                f"hazard {hazard.symbol} {census_kind} census owner "
+                f"{census.owner} lost identifiers: " + ", ".join(missing_identifiers),
+            )
+            required_identifier_count += len(census.identifiers)
+            for identifier in census.identifiers:
+                rows.append(
+                    (
+                        hazard.symbol,
+                        census.owner,
+                        owner_function["path"],
+                        owner_function["start"],
+                        identifier,
+                        sha256_file(owner_path),
+                        "policy-declared",
+                        semantic_limit,
+                    )
+                )
+        return required_identifier_count, rows
+
     for hazard in policy.hazards:
         candidates = by_symbol.get(hazard.symbol, [])
         require(
@@ -4234,47 +4782,17 @@ def derive_complexity_and_coefficients(
             f"hazard {hazard.symbol} resolves to {len(candidates)} lizard functions",
         )
         function = candidates[0]
-        required_guard_identifier_count = 0
-        for census in hazard.guard_identifier_census:
-            guard_candidates = by_symbol.get(census.owner, [])
-            require(
-                len(guard_candidates) == 1,
-                "guard census owner "
-                f"{census.owner} resolves to {len(guard_candidates)} "
-                "lizard functions",
-            )
-            guard_function = guard_candidates[0]
-            guard_path = source_root / guard_function["path"]
-            guard_source = guard_path.read_text(encoding="utf-8")
-            guard_body = "\n".join(
-                guard_source.splitlines()[
-                    guard_function["start"] - 1 : guard_function["end"]
-                ]
-            )
-            missing_identifiers = missing_code_identifiers(
-                guard_body,
-                census.identifiers,
-            )
-            require(
-                not missing_identifiers,
-                f"hazard {hazard.symbol} guard census owner "
-                f"{census.owner} lost identifiers: "
-                + ", ".join(missing_identifiers),
-            )
-            required_guard_identifier_count += len(census.identifiers)
-            for identifier in census.identifiers:
-                guard_identifier_rows.append(
-                    (
-                        hazard.symbol,
-                        census.owner,
-                        guard_function["path"],
-                        guard_function["start"],
-                        identifier,
-                        sha256_file(guard_path),
-                        "policy-declared",
-                        "lexical-identifier-census-not-control-flow-proof",
-                    )
-                )
+        required_guard_identifier_count, hazard_guard_rows = derive_identifier_rows(
+            hazard,
+            hazard.guard_identifier_census,
+            "guard",
+        )
+        guard_identifier_rows.extend(hazard_guard_rows)
+        derive_identifier_rows(
+            hazard,
+            hazard.effect_identifier_census,
+            "effect",
+        )
         coefficient_rows.append(
             (
                 hazard.symbol,
@@ -4284,8 +4802,7 @@ def derive_complexity_and_coefficients(
                 function["ccn"],
                 len(fan_in[hazard.symbol]),
                 len(fan_out[hazard.symbol]),
-                len(indirect_in[hazard.symbol])
-                + len(indirect_out[hazard.symbol]),
+                len(indirect_in[hazard.symbol]) + len(indirect_out[hazard.symbol]),
                 hazard.side_effect_class,
                 len(hazard.guard_identifier_census),
                 required_guard_identifier_count,
@@ -4343,15 +4860,13 @@ def build_complexity_and_coefficients(
         "diagnostics/scc.stderr",
     )
     normalize_scc_json(capture_root / "analysis/scc.json")
-    coefficient_rows, guard_identifier_rows = (
-        derive_complexity_and_coefficients(
-            capture_root,
-            source_root,
-            policy,
-            cflow_edges,
-            declared_rows,
-            set(source_list.read_text(encoding="utf-8").splitlines()),
-        )
+    coefficient_rows, guard_identifier_rows = derive_complexity_and_coefficients(
+        capture_root,
+        source_root,
+        policy,
+        cflow_edges,
+        declared_rows,
+        set(source_list.read_text(encoding="utf-8").splitlines()),
     )
     write_tsv(
         capture_root / "analysis/hazard-guard-identifier-census.tsv",
@@ -4389,13 +4904,17 @@ def build_complexity_and_coefficients(
     )
 
 
-def parse_top_level_toml(repository: Path, commit: str, path: str) -> tuple[bytes, dict[str, Any]]:
+def parse_top_level_toml(
+    repository: Path, commit: str, path: str
+) -> tuple[bytes, dict[str, Any]]:
     content = git_output(repository, "show", f"{commit}:{path}", text=False)
     assert isinstance(content, bytes)
     try:
         data = tomllib.loads(content.decode("ascii"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise SourceMapError(f"{path} is not valid ASCII TOML at {commit}: {exc}") from exc
+        raise SourceMapError(
+            f"{path} is not valid ASCII TOML at {commit}: {exc}"
+        ) from exc
     return content, data
 
 
@@ -4418,9 +4937,13 @@ def profile_header(
     )
 
 
-def sanitize_preprocessor_bytes(content: bytes, replacements: list[tuple[Path, str]]) -> bytes:
+def sanitize_preprocessor_bytes(
+    content: bytes, replacements: list[tuple[Path, str]]
+) -> bytes:
     output = content
-    for path, token in sorted(replacements, key=lambda item: len(str(item[0])), reverse=True):
+    for path, token in sorted(
+        replacements, key=lambda item: len(str(item[0])), reverse=True
+    ):
         output = output.replace(str(path).encode("utf-8"), token.encode("ascii"))
     return output
 
@@ -4454,7 +4977,9 @@ def resolve_toolchain_manifest_symlink(
     entries_by_path: dict[str, ToolchainPrefixEntry],
 ) -> ToolchainPrefixEntry:
     """Resolve one retained relative symlink through the admitted path set."""
-    require(entry.entry_type == "symlink", "toolchain manifest resolver needs a symlink")
+    require(
+        entry.entry_type == "symlink", "toolchain manifest resolver needs a symlink"
+    )
     current_parts = list(Path(entry.relative_path).parent.parts)
     if current_parts == ["."]:
         current_parts = []
@@ -4524,10 +5049,7 @@ def load_toolchain_prefix_manifest(
     )
     require(
         len(rows) <= MAX_TOOLCHAIN_PREFIX_ENTRIES
-        and (
-            expected_entry_count is None
-            or len(rows) == expected_entry_count
-        ),
+        and (expected_entry_count is None or len(rows) == expected_entry_count),
         "kernel toolchain prefix row denominator differs",
     )
     expected_columns = [
@@ -4606,15 +5128,12 @@ def load_toolchain_prefix_manifest(
                 link_target.isascii()
                 and link_target not in {"", "-"}
                 and not any(
-                    character == "\\"
-                    or ord(character) < 32
-                    or ord(character) == 127
+                    character == "\\" or ord(character) < 32 or ord(character) == 127
                     for character in link_target
                 )
                 and not Path(link_target).is_absolute()
                 and size == len(os.fsencode(link_target))
-                and identity_sha256
-                == sha256_bytes(link_target.encode("ascii"))
+                and identity_sha256 == sha256_bytes(link_target.encode("ascii"))
                 and HEX_64.fullmatch(resolved_sha256) is not None,
                 f"kernel toolchain symlink identity differs: {relative_path}",
             )
@@ -4670,6 +5189,7 @@ def derive_toolchain_prefix_entries(
     expected_entries: list[ToolchainPrefixEntry] | None = None,
 ) -> list[ToolchainPrefixEntry]:
     """Derive the exact root-owned, nonwritable LLVM prefix tree."""
+
     def require_no_extended_attributes(path: Path, label: str) -> None:
         try:
             extended_attributes = os.listxattr(path, follow_symlinks=False)
@@ -4792,8 +5312,7 @@ def derive_toolchain_prefix_entries(
                 entry_size = status.st_size
             else:
                 raise SourceMapError(
-                    "kernel toolchain prefix contains a special file: "
-                    f"{relative_path}"
+                    f"kernel toolchain prefix contains a special file: {relative_path}"
                 )
             if expected_entries is not None:
                 expected_entry = expected_by_path.get(relative_path)
@@ -4832,8 +5351,7 @@ def derive_toolchain_prefix_entries(
             elif entry_type == "regular":
                 require(
                     status.st_size <= MAX_TOOLCHAIN_REGULAR_FILE_BYTES,
-                    "kernel toolchain file exceeds its byte boundary: "
-                    f"{relative_path}",
+                    f"kernel toolchain file exceeds its byte boundary: {relative_path}",
                 )
                 regular_total_bytes += status.st_size
                 require(
@@ -5021,16 +5539,11 @@ def load_toolchain_closure(
         and isinstance(declaration_data["prefix_tree_manifest"], str)
         and declaration_data["prefix_tree_manifest"]
         and isinstance(declaration_data["prefix_entry_count"], int)
-        and 0
-        < declaration_data["prefix_entry_count"]
-        <= MAX_TOOLCHAIN_PREFIX_ENTRIES
-        and HEX_64.fullmatch(
-            declaration_data["prefix_tree_manifest_sha256"]
-        )
+        and 0 < declaration_data["prefix_entry_count"] <= MAX_TOOLCHAIN_PREFIX_ENTRIES
+        and HEX_64.fullmatch(declaration_data["prefix_tree_manifest_sha256"])
         is not None
         and all(
-            isinstance(declaration_data[key], int)
-            and declaration_data[key] > 0
+            isinstance(declaration_data[key], int) and declaration_data[key] > 0
             for key in (
                 "prefix_directory_count",
                 "prefix_regular_count",
@@ -5055,9 +5568,7 @@ def load_toolchain_closure(
         declaration_data["prefix_tree_manifest_sha256"],
     )
     prefix_counts = {
-        entry_type: sum(
-            entry.entry_type == entry_type for entry in prefix_entries
-        )
+        entry_type: sum(entry.entry_type == entry_type for entry in prefix_entries)
         for entry_type in ("directory", "regular", "symlink")
     }
     resource_prefix = declaration_data["resource_directory"]
@@ -5069,31 +5580,23 @@ def load_toolchain_closure(
     ]
     require(
         len(prefix_entries) == declaration_data["prefix_entry_count"]
-        and prefix_counts["directory"]
-        == declaration_data["prefix_directory_count"]
-        and prefix_counts["regular"]
-        == declaration_data["prefix_regular_count"]
-        and prefix_counts["symlink"]
-        == declaration_data["prefix_symlink_count"]
+        and prefix_counts["directory"] == declaration_data["prefix_directory_count"]
+        and prefix_counts["regular"] == declaration_data["prefix_regular_count"]
+        and prefix_counts["symlink"] == declaration_data["prefix_symlink_count"]
         and len(resource_entries) == declaration_data["resource_entry_count"]
-        and sum(
-            entry.entry_type == "directory" for entry in resource_entries
-        )
+        and sum(entry.entry_type == "directory" for entry in resource_entries)
         == declaration_data["resource_directory_count"]
         and sum(entry.entry_type == "regular" for entry in resource_entries)
         == declaration_data["resource_regular_count"]
         and all(entry.entry_type != "symlink" for entry in resource_entries),
         "kernel toolchain prefix identity differs",
     )
-    prefix_by_path = {
-        entry.relative_path: entry for entry in prefix_entries
-    }
+    prefix_by_path = {entry.relative_path: entry for entry in prefix_entries}
     require(
         prefix_by_path.get(resource_prefix) is not None
         and prefix_by_path[resource_prefix].entry_type == "directory"
         and prefix_by_path.get(resource_prefix + "/include") is not None
-        and prefix_by_path[resource_prefix + "/include"].entry_type
-        == "directory",
+        and prefix_by_path[resource_prefix + "/include"].entry_type == "directory",
         "kernel toolchain resource directory rows differ",
     )
     packages = declaration_data["package"]
@@ -5106,10 +5609,18 @@ def load_toolchain_closure(
         "signature_result",
         "signer_fingerprint",
     }
-    require(isinstance(packages, list) and len(packages) == 4, "kernel toolchain package denominator differs")
+    require(
+        isinstance(packages, list) and len(packages) == 4,
+        "kernel toolchain package denominator differs",
+    )
     for index, package in enumerate(packages):
-        require(isinstance(package, dict), f"kernel toolchain package {index} is invalid")
-        require(set(package) == package_keys, f"kernel toolchain package {index} fields differ")
+        require(
+            isinstance(package, dict), f"kernel toolchain package {index} is invalid"
+        )
+        require(
+            set(package) == package_keys,
+            f"kernel toolchain package {index} fields differ",
+        )
         require(
             package["component"] in {"clang", "llvm", "llvm-libs", "lld"}
             and isinstance(package["archive"], str)
@@ -5166,8 +5677,23 @@ def load_toolchain_closure(
     require(columns == expected_columns, "kernel toolchain manifest columns differ")
     entries: list[ToolchainClosureEntry] = []
     for row_number, row in enumerate(rows, 3):
-        require(len(row) == len(columns), f"kernel toolchain manifest row {row_number} width differs")
-        kind, logical_name, relative_path, entry_type, mode, size_text, identity_sha256, link_target, resolved_sha256, version_first_line, version_output_sha256 = row
+        require(
+            len(row) == len(columns),
+            f"kernel toolchain manifest row {row_number} width differs",
+        )
+        (
+            kind,
+            logical_name,
+            relative_path,
+            entry_type,
+            mode,
+            size_text,
+            identity_sha256,
+            link_target,
+            resolved_sha256,
+            version_first_line,
+            version_output_sha256,
+        ) = row
         path = Path(relative_path)
         require(
             not path.is_absolute()
@@ -5176,17 +5702,32 @@ def load_toolchain_closure(
             and len(path.parts) == 2,
             f"kernel toolchain manifest path is invalid: {relative_path}",
         )
-        require(kind in {"command", "library", "support"}, f"kernel toolchain manifest kind is invalid: {kind}")
-        require(entry_type in {"regular", "symlink"}, f"kernel toolchain manifest type is invalid: {relative_path}")
-        require(re.fullmatch(r"0[0-7]{3}", mode) is not None, f"kernel toolchain manifest mode is invalid: {relative_path}")
-        require(size_text.isdigit() and int(size_text) > 0, f"kernel toolchain manifest size is invalid: {relative_path}")
+        require(
+            kind in {"command", "library", "support"},
+            f"kernel toolchain manifest kind is invalid: {kind}",
+        )
+        require(
+            entry_type in {"regular", "symlink"},
+            f"kernel toolchain manifest type is invalid: {relative_path}",
+        )
+        require(
+            re.fullmatch(r"0[0-7]{3}", mode) is not None,
+            f"kernel toolchain manifest mode is invalid: {relative_path}",
+        )
+        require(
+            size_text.isdigit() and int(size_text) > 0,
+            f"kernel toolchain manifest size is invalid: {relative_path}",
+        )
         require(
             HEX_64.fullmatch(identity_sha256) is not None
             and HEX_64.fullmatch(resolved_sha256) is not None,
             f"kernel toolchain manifest digest is invalid: {relative_path}",
         )
         if entry_type == "regular":
-            require(link_target == "-" and identity_sha256 == resolved_sha256, f"regular toolchain entry identity differs: {relative_path}")
+            require(
+                link_target == "-" and identity_sha256 == resolved_sha256,
+                f"regular toolchain entry identity differs: {relative_path}",
+            )
         else:
             target = Path(link_target)
             require(
@@ -5204,7 +5745,10 @@ def load_toolchain_closure(
                 f"kernel toolchain command row differs: {logical_name}",
             )
         else:
-            require(version_first_line == "-" and version_output_sha256 == "-", f"non-command toolchain row carries a version: {relative_path}")
+            require(
+                version_first_line == "-" and version_output_sha256 == "-",
+                f"non-command toolchain row carries a version: {relative_path}",
+            )
         if kind == "library":
             require(
                 logical_name in LLVM_KERNEL_LIBRARIES
@@ -5237,8 +5781,7 @@ def load_toolchain_closure(
     supports = [entry for entry in entries if entry.kind == "support"]
     require(
         {entry.logical_name for entry in commands} == set(LLVM_KERNEL_TOOLS)
-        and {entry.logical_name for entry in libraries}
-        == set(LLVM_KERNEL_LIBRARIES),
+        and {entry.logical_name for entry in libraries} == set(LLVM_KERNEL_LIBRARIES),
         "kernel toolchain command or library denominator differs",
     )
     require(
@@ -5268,9 +5811,7 @@ def validate_toolchain_semantic_closure(
     prefix_entries: list[ToolchainPrefixEntry],
 ) -> None:
     """Join every semantic command and library to the finite prefix tree."""
-    prefix_by_path = {
-        entry.relative_path: entry for entry in prefix_entries
-    }
+    prefix_by_path = {entry.relative_path: entry for entry in prefix_entries}
     for entry in entries:
         prefix_entry = prefix_by_path.get(entry.relative_path)
         shared_identity_matches = (
@@ -5281,17 +5822,14 @@ def validate_toolchain_semantic_closure(
             and prefix_entry.identity_sha256 == entry.identity_sha256
             and prefix_entry.link_target == entry.link_target
         )
-        resolved_identity_matches = (
-            prefix_entry is not None
-            and (
-                (
-                    entry.entry_type == "regular"
-                    and entry.resolved_sha256 == prefix_entry.identity_sha256
-                )
-                or (
-                    entry.entry_type == "symlink"
-                    and entry.resolved_sha256 == prefix_entry.resolved_sha256
-                )
+        resolved_identity_matches = prefix_entry is not None and (
+            (
+                entry.entry_type == "regular"
+                and entry.resolved_sha256 == prefix_entry.identity_sha256
+            )
+            or (
+                entry.entry_type == "symlink"
+                and entry.resolved_sha256 == prefix_entry.resolved_sha256
             )
         )
         require(
@@ -5306,12 +5844,8 @@ def require_exact_toolchain_prefix(
     actual_entries: list[ToolchainPrefixEntry],
 ) -> None:
     """Require exact prefix membership and identities with bounded residuals."""
-    expected_by_path = {
-        entry.relative_path: entry for entry in expected_entries
-    }
-    actual_by_path = {
-        entry.relative_path: entry for entry in actual_entries
-    }
+    expected_by_path = {entry.relative_path: entry for entry in expected_entries}
+    actual_by_path = {entry.relative_path: entry for entry in actual_entries}
     missing_paths = sorted(set(expected_by_path) - set(actual_by_path))
     unexpected_paths = sorted(set(actual_by_path) - set(expected_by_path))
     require(
@@ -5326,8 +5860,7 @@ def require_exact_toolchain_prefix(
     ]
     require(
         not changed_paths,
-        "kernel toolchain live prefix entries differ: "
-        f"changed={changed_paths[:20]}",
+        f"kernel toolchain live prefix entries differ: changed={changed_paths[:20]}",
     )
 
 
@@ -5367,10 +5900,16 @@ def validate_kernel_toolchain(
     list[ToolchainClosureEntry],
     list[ToolchainPrefixEntry],
 ]:
-    require(bin_directory.is_dir(), f"kernel toolchain bin directory is absent: {bin_directory}")
+    require(
+        bin_directory.is_dir(),
+        f"kernel toolchain bin directory is absent: {bin_directory}",
+    )
     toolchain_prefix = bin_directory.parent
     library_directory = toolchain_prefix / "lib"
-    require(library_directory.is_dir(), f"kernel toolchain library directory is absent: {library_directory}")
+    require(
+        library_directory.is_dir(),
+        f"kernel toolchain library directory is absent: {library_directory}",
+    )
     try:
         kernel_declaration_data = tomllib.loads(
             kernel_declaration.read_text(encoding="ascii")
@@ -5445,8 +5984,7 @@ def validate_kernel_toolchain(
         resource_outputs[query_name] = query_result.stdout.strip()
     expected_resource_directory = toolchain_prefix / "lib/clang/22"
     require(
-        resource_outputs["resource_directory"]
-        == expected_resource_directory.as_posix()
+        resource_outputs["resource_directory"] == expected_resource_directory.as_posix()
         and resource_outputs["resource_include_directory"]
         == (expected_resource_directory / "include").as_posix(),
         f"kernel toolchain Clang resource path differs: {release}",
@@ -5470,7 +6008,10 @@ def validate_kernel_toolchain(
             part.strip() for part in (result.stdout, result.stderr) if part.strip()
         )
         combined = combined.replace(str(toolchain_prefix), CANONICAL_KERNEL_TOOLCHAIN)
-        require(result.returncode == 0 and combined, f"cannot read kernel toolchain version: {release} {tool}")
+        require(
+            result.returncode == 0 and combined,
+            f"cannot read kernel toolchain version: {release} {tool}",
+        )
         expected = command_entries[tool]
         require(
             combined.splitlines()[0] == expected.version_first_line
@@ -5487,11 +6028,7 @@ def validate_kernel_toolchain(
                 expected.resolved_sha256,
                 combined.splitlines()[0],
                 sha256_bytes(combined.encode("utf-8")),
-                (
-                    "<kernel-toolchain-root>/lib/clang/22"
-                    if tool == "clang"
-                    else "-"
-                ),
+                ("<kernel-toolchain-root>/lib/clang/22" if tool == "clang" else "-"),
                 (
                     "<kernel-toolchain-root>/lib/clang/22/include"
                     if tool == "clang"
@@ -5730,9 +6267,7 @@ def validate_toolchain_runtime_rows(
         "toolchain runtime library rows repeat",
     )
     expected_runtime_pairs = {
-        (release, tool)
-        for release in lane_releases
-        for tool in LLVM_KERNEL_TOOLS
+        (release, tool) for release in lane_releases for tool in LLVM_KERNEL_TOOLS
     }
     require(
         {(row[0], row[1]) for row in runtime_rows} == expected_runtime_pairs,
@@ -5743,7 +6278,16 @@ def validate_toolchain_runtime_rows(
             len(row) == 8 and all(isinstance(value, str) for value in row),
             "toolchain runtime library row width or type differs",
         )
-        release, command, soname, provider, resolved_path, digest, build_id, package_owner = row
+        (
+            release,
+            command,
+            soname,
+            provider,
+            resolved_path,
+            digest,
+            build_id,
+            package_owner,
+        ) = row
         require(
             release in lane_releases
             and command in LLVM_KERNEL_TOOLS
@@ -5791,8 +6335,7 @@ def validate_toolchain_runtime_rows(
                     or resolved_path.startswith("/lib/")
                     or resolved_path.startswith("/lib64/")
                 )
-                and re.fullmatch(r"[A-Za-z0-9@._+:-]+", package_owner)
-                is not None,
+                and re.fullmatch(r"[A-Za-z0-9@._+:-]+", package_owner) is not None,
                 "host runtime library provenance is invalid",
             )
         else:
@@ -5872,9 +6415,7 @@ def derive_profile_symbol_delta_rows(
     if not symbol_maps:
         return [], []
     declared_keys = {
-        (lane.release, profile)
-        for lane in kernel_lanes
-        for profile in lane.profiles
+        (lane.release, profile) for lane in kernel_lanes for profile in lane.profiles
     }
     require(
         set(symbol_maps) == declared_keys,
@@ -6065,7 +6606,10 @@ def capture_preprocessor_views(
     kernel_toolchain_bins: dict[str, Path],
 ) -> list[dict[str, Any]]:
     if not kernel_roots:
-        require(not kernel_toolchain_bins, "kernel toolchain paths require kernel build roots")
+        require(
+            not kernel_toolchain_bins,
+            "kernel toolchain paths require kernel build roots",
+        )
         write_tsv(
             capture_root / "preprocessed/preprocessor-inputs.tsv",
             "radeon-driver-preprocessor-inputs-v1",
@@ -6161,7 +6705,10 @@ def capture_preprocessor_views(
         lane = lane_by_release[release]
         declaration = repository / lane.declaration
         manifest = repository / lane.manifest
-        require(declaration.is_file() and manifest.is_file(), f"kernel root evidence is absent for {release}")
+        require(
+            declaration.is_file() and manifest.is_file(),
+            f"kernel root evidence is absent for {release}",
+        )
         toolchain_declaration = repository / lane.toolchain_declaration
         toolchain_manifest = repository / lane.toolchain_manifest
         toolchain_prefix_manifest = repository / lane.toolchain_prefix_manifest
@@ -6172,7 +6719,10 @@ def capture_preprocessor_views(
             f"kernel toolchain evidence is absent for {release}",
         )
         toolchain_bin = kernel_toolchain_bins.get(release)
-        require(toolchain_bin is not None, f"kernel toolchain bin directory is not declared: {release}")
+        require(
+            toolchain_bin is not None,
+            f"kernel toolchain bin directory is not declared: {release}",
+        )
         (
             release_toolchain_rows,
             toolchain_environment,
@@ -6241,7 +6791,9 @@ def capture_preprocessor_views(
         )
 
         for profile in lane.profiles:
-            with tempfile.TemporaryDirectory(prefix="radeon-preprocess-", dir=capture_root.parent) as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="radeon-preprocess-", dir=capture_root.parent
+            ) as temporary:
                 work = Path(temporary)
                 driver_work = work / policy.source_root
                 driver_work.parent.mkdir(parents=True, exist_ok=True)
@@ -6277,7 +6829,10 @@ def capture_preprocessor_views(
                     environment=toolchain_environment,
                 )
                 module = driver_work / "radeon.ko"
-                require(module.is_file(), f"preprocessor module build omitted radeon.ko for {release} {profile}")
+                require(
+                    module.is_file(),
+                    f"preprocessor module build omitted radeon.ko for {release} {profile}",
+                )
                 lane_output = capture_root / f"preprocessed/{release}/{profile}"
                 retained_module = lane_output / "radeon.ko"
                 retained_module.parent.mkdir(parents=True, exist_ok=True)
@@ -6299,9 +6854,17 @@ def capture_preprocessor_views(
                     environment=toolchain_environment,
                 )
                 defined_symbols = module_symbols_path.read_bytes()
-                defined_symbol_lines = defined_symbols.decode("utf-8", errors="strict").splitlines()
-                require(defined_symbol_lines, f"linked module has no defined symbols: {release} {profile}")
-                targets = [Path(path).with_suffix(".i").name for path in policy.translation_units]
+                defined_symbol_lines = defined_symbols.decode(
+                    "utf-8", errors="strict"
+                ).splitlines()
+                require(
+                    defined_symbol_lines,
+                    f"linked module has no defined symbols: {release} {profile}",
+                )
+                targets = [
+                    Path(path).with_suffix(".i").name
+                    for path in policy.translation_units
+                ]
                 recorder.run(
                     f"preprocess-units-{release}-{profile}",
                     [*make_base, *targets],
@@ -6318,10 +6881,21 @@ def capture_preprocessor_views(
                 for translation_unit in policy.translation_units:
                     stem = Path(translation_unit).stem
                     preprocessed = driver_work / f"{stem}.i"
-                    require(preprocessed.is_file(), f"preprocessed translation unit is absent: {release} {profile} {stem}")
-                    normalized = sanitize_preprocessor_bytes(preprocessed.read_bytes(), replacements)
-                    require(str(work).encode("utf-8") not in normalized, f"preprocessed output retains work path: {stem}")
-                    require(str(kernel_root).encode("utf-8") not in normalized, f"preprocessed output retains kernel root: {stem}")
+                    require(
+                        preprocessed.is_file(),
+                        f"preprocessed translation unit is absent: {release} {profile} {stem}",
+                    )
+                    normalized = sanitize_preprocessor_bytes(
+                        preprocessed.read_bytes(), replacements
+                    )
+                    require(
+                        str(work).encode("utf-8") not in normalized,
+                        f"preprocessed output retains work path: {stem}",
+                    )
+                    require(
+                        str(kernel_root).encode("utf-8") not in normalized,
+                        f"preprocessed output retains kernel root: {stem}",
+                    )
                     require(
                         str(toolchain_prefix).encode("utf-8") not in normalized,
                         f"preprocessed output retains kernel toolchain path: {stem}",
@@ -6334,10 +6908,20 @@ def capture_preprocessor_views(
                     dependency_rel = ""
                     if command_file.is_file():
                         command_rel = f"preprocessed/{release}/{profile}/{stem}.o.cmd"
-                        write_bytes(capture_root / command_rel, sanitize_preprocessor_bytes(command_file.read_bytes(), replacements))
+                        write_bytes(
+                            capture_root / command_rel,
+                            sanitize_preprocessor_bytes(
+                                command_file.read_bytes(), replacements
+                            ),
+                        )
                     if dependency_file.is_file():
                         dependency_rel = f"preprocessed/{release}/{profile}/{stem}.o.d"
-                        write_bytes(capture_root / dependency_rel, sanitize_preprocessor_bytes(dependency_file.read_bytes(), replacements))
+                        write_bytes(
+                            capture_root / dependency_rel,
+                            sanitize_preprocessor_bytes(
+                                dependency_file.read_bytes(), replacements
+                            ),
+                        )
                     input_rows.append(
                         (
                             release,
@@ -6451,7 +7035,9 @@ def write_hash_ledger(root: Path) -> None:
         root / relative
         for relative in sorted(regular_tree_files(root, "capture") - {HASH_LEDGER})
     ]
-    rows = [f"{sha256_file(path)}  {path.relative_to(root).as_posix()}" for path in paths]
+    rows = [
+        f"{sha256_file(path)}  {path.relative_to(root).as_posix()}" for path in paths
+    ]
     write_text(ledger, "\n".join(rows) + "\n")
 
 
@@ -6506,10 +7092,7 @@ def expected_capture_files(
     expected.update(
         f"metadata/git-source-proof/{filename}"
         for filename in {"commit.bin"}
-        | {
-            name
-            for name, _component in source_tree_proof_paths(policy.source_root)
-        }
+        | {name for name, _component in source_tree_proof_paths(policy.source_root)}
     )
 
     def add_file_proof(
@@ -6518,9 +7101,7 @@ def expected_capture_files(
     ) -> None:
         proof_files = {"commit.bin"} | {
             git_file_proof_tree_filename(directory_parts)
-            for directory_parts in git_file_proof_directories(
-                set(retained_paths)
-            )
+            for directory_parts in git_file_proof_directories(set(retained_paths))
         }
         expected.update(f"{prefix}/{path}" for path in proof_files)
 
@@ -6560,9 +7141,7 @@ def expected_capture_files(
         if lane.release not in active_releases:
             continue
         for profile in lane.profiles:
-            expected.add(
-                f"preprocessed/{lane.release}/{profile}/radeon.ko"
-            )
+            expected.add(f"preprocessed/{lane.release}/{profile}/radeon.ko")
     require(
         all(
             path
@@ -6616,14 +7195,26 @@ def verify_hash_ledger(root: Path) -> int:
         match = re.fullmatch(r"([0-9a-f]{64})  ([^\r\n]+)", line)
         require(match is not None, f"hash ledger row {line_number} is malformed")
         digest, relative = match.groups()
-        require(relative != HASH_LEDGER and not relative.startswith("./"), f"hash ledger row {line_number} has a forbidden path")
+        require(
+            relative != HASH_LEDGER and not relative.startswith("./"),
+            f"hash ledger row {line_number} has a forbidden path",
+        )
         require(relative not in declared, f"hash ledger repeats path: {relative}")
-        require(not Path(relative).is_absolute() and ".." not in Path(relative).parts, f"hash ledger path escapes: {relative}")
+        require(
+            not Path(relative).is_absolute() and ".." not in Path(relative).parts,
+            f"hash ledger path escapes: {relative}",
+        )
         declared[relative] = digest
     actual_paths = actual_tree - {HASH_LEDGER}
-    require(set(declared) == actual_paths, "hash ledger coverage differs from retained files")
+    require(
+        set(declared) == actual_paths,
+        "hash ledger coverage differs from retained files",
+    )
     for relative, digest in declared.items():
-        require(sha256_file(root / relative) == digest, f"hash ledger digest differs: {relative}")
+        require(
+            sha256_file(root / relative) == digest,
+            f"hash ledger digest differs: {relative}",
+        )
     return len(declared)
 
 
@@ -6635,7 +7226,9 @@ def repository_contains(repository: Path, path: Path) -> bool:
     return True
 
 
-def verify_no_host_path_leaks(root: Path, forbidden_paths: tuple[Path, ...] = ()) -> None:
+def verify_no_host_path_leaks(
+    root: Path, forbidden_paths: tuple[Path, ...] = ()
+) -> None:
     forbidden_markers = {
         str(path.resolve()).encode("utf-8")
         for path in (*forbidden_paths, Path.home())
@@ -6722,10 +7315,11 @@ def verify_no_host_path_leaks(root: Path, forbidden_paths: tuple[Path, ...] = ()
                 leaked.add(marker.decode("utf-8", errors="replace"))
         if b".radeon-source-map-" in content:
             leaked.add(".radeon-source-map-")
-        source_derived_raw = (
-            relative.parts
-            and relative.parts[0] in {"indexes", "queries", "preprocessed"}
-        )
+        source_derived_raw = relative.parts and relative.parts[0] in {
+            "indexes",
+            "queries",
+            "preprocessed",
+        }
         for match in ABSOLUTE_PATH_TOKEN.finditer(content):
             candidate = match.group(0).decode("ascii")
             if source_derived_raw and not candidate.startswith(
@@ -6792,9 +7386,13 @@ def verify_capture(
         "preprocessor_lanes",
         "semantic_limit",
     }
-    require(set(manifest) == required_manifest, "capture manifest keys differ from schema")
+    require(
+        set(manifest) == required_manifest, "capture manifest keys differ from schema"
+    )
     require(manifest["schema"] == CAPTURE_SCHEMA, "capture manifest schema differs")
-    require(manifest["git_object_format"] == "sha1", "capture Git object format differs")
+    require(
+        manifest["git_object_format"] == "sha1", "capture Git object format differs"
+    )
     for key in (
         "source_commit",
         "source_tree",
@@ -6802,7 +7400,11 @@ def verify_capture(
         "producer_commit",
         "producer_tree",
     ):
-        require(isinstance(manifest[key], str) and HEX_40.fullmatch(manifest[key]) is not None, f"capture manifest {key} is invalid")
+        require(
+            isinstance(manifest[key], str)
+            and HEX_40.fullmatch(manifest[key]) is not None,
+            f"capture manifest {key} is invalid",
+        )
     for key in (
         "policy_sha256",
         "source_closure_sha256",
@@ -6810,7 +7412,11 @@ def verify_capture(
         "source_path_set_sha256",
         "source_manifest_sha256",
     ):
-        require(isinstance(manifest[key], str) and HEX_64.fullmatch(manifest[key]) is not None, f"capture manifest {key} is invalid")
+        require(
+            isinstance(manifest[key], str)
+            and HEX_64.fullmatch(manifest[key]) is not None,
+            f"capture manifest {key} is invalid",
+        )
     integer_bounds = {
         "source_file_count": (1, MAX_SOURCE_FILES),
         "source_byte_count": (1, MAX_SOURCE_BYTES),
@@ -6829,7 +7435,11 @@ def verify_capture(
             type(value) is int and minimum <= value <= maximum,
             f"capture manifest {key} exceeds its declared bounds",
         )
-    require(manifest["semantic_limit"] == "candidate-research-graph-not-runtime-reachability", "capture semantic limit differs")
+    require(
+        manifest["semantic_limit"]
+        == "candidate-research-graph-not-runtime-reachability",
+        "capture semantic limit differs",
+    )
     require(
         isinstance(manifest["preprocessor_lanes"], list)
         and len(manifest["preprocessor_lanes"]) <= 64,
@@ -6837,18 +7447,26 @@ def verify_capture(
     )
 
     policy_path = root / POLICY_PATH
-    require(POLICY_PATH.as_posix() in capture_files, "retained source-map policy is absent")
+    require(
+        POLICY_PATH.as_posix() in capture_files, "retained source-map policy is absent"
+    )
     policy_content = read_bounded_file(
         policy_path,
         MAX_MANIFEST_BYTES,
         "retained source-map policy",
     )
-    require(sha256_bytes(policy_content) == manifest["policy_sha256"], "retained source-map policy digest differs")
+    require(
+        sha256_bytes(policy_content) == manifest["policy_sha256"],
+        "retained source-map policy digest differs",
+    )
     policy = load_policy(
         policy_path,
+        accepted_policy_schemas=RETAINED_POLICY_SCHEMAS,
         accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
     )
-    require(policy.capture_schema == manifest["schema"], "retained policy schema differs")
+    require(
+        policy.capture_schema == manifest["schema"], "retained policy schema differs"
+    )
     require(
         manifest["source_file_count"] <= policy.max_source_files
         and manifest["source_byte_count"] <= policy.max_source_bytes,
@@ -6872,7 +7490,10 @@ def verify_capture(
         "status",
     }
     for lane in manifest["preprocessor_lanes"]:
-        require(isinstance(lane, dict) and set(lane) == lane_keys, "preprocessor lane shape differs")
+        require(
+            isinstance(lane, dict) and set(lane) == lane_keys,
+            "preprocessor lane shape differs",
+        )
         require(
             isinstance(lane["kernel_release"], str)
             and isinstance(lane["profile"], str)
@@ -6896,8 +7517,7 @@ def verify_capture(
         module_path = root / lane["module_path"]
         symbols_path = root / lane_prefix / "module-defined-symbols.txt"
         require(
-            module_path.is_file()
-            and sha256_file(module_path) == lane["module_sha256"],
+            module_path.is_file() and sha256_file(module_path) == lane["module_sha256"],
             "retained preprocessor module identity differs",
         )
         require(symbols_path.is_file(), "retained module symbol map is absent")
@@ -6943,17 +7563,14 @@ def verify_capture(
             observed_lane_pairs == expected_lane_pairs,
             "required preprocessor capture does not close every policy lane",
         )
-    symbol_summary_rows, symbol_member_rows = (
-        verify_profile_symbol_delta_artifacts(
-            root,
-            policy,
-            manifest["preprocessor_lanes"],
-        )
+    symbol_summary_rows, symbol_member_rows = verify_profile_symbol_delta_artifacts(
+        root,
+        policy,
+        manifest["preprocessor_lanes"],
     )
     require(
         manifest["profile_symbol_comparison_count"] == len(symbol_summary_rows)
-        and manifest["profile_symbol_delta_member_count"]
-        == len(symbol_member_rows),
+        and manifest["profile_symbol_delta_member_count"] == len(symbol_member_rows),
         "profile symbol delta denominator differs",
     )
     source_timestamp = verify_source_tree_proof(
@@ -7002,8 +7619,7 @@ def verify_capture(
         "retained producer input file denominator differs",
     )
     require(
-        sha256_file(root / "source-closure.toml")
-        == manifest["source_closure_sha256"],
+        sha256_file(root / "source-closure.toml") == manifest["source_closure_sha256"],
         "retained source closure digest differs",
     )
     require(
@@ -7043,7 +7659,10 @@ def verify_capture(
         ]
         for lane in manifest["preprocessor_lanes"]
     ]
-    require(retained_lane_rows == expected_lane_rows, "preprocessor lane table differs from manifest")
+    require(
+        retained_lane_rows == expected_lane_rows,
+        "preprocessor lane table differs from manifest",
+    )
 
     input_columns, preprocessor_rows = read_tsv(
         root / "preprocessed/preprocessor-inputs.tsv",
@@ -7074,10 +7693,24 @@ def verify_capture(
     observed_preprocessor_keys: set[tuple[str, str, str]] = set()
     for row in preprocessor_rows:
         require(len(row) == 7, "preprocessor input row width differs")
-        release, profile, translation_unit, preprocessed_path, digest, command_path, dependency_path = row
+        (
+            release,
+            profile,
+            translation_unit,
+            preprocessed_path,
+            digest,
+            command_path,
+            dependency_path,
+        ) = row
         key = (release, profile, translation_unit)
-        require(key in expected_preprocessor_keys, f"preprocessor input row is foreign: {key}")
-        require(key not in observed_preprocessor_keys, f"preprocessor input row repeats: {key}")
+        require(
+            key in expected_preprocessor_keys,
+            f"preprocessor input row is foreign: {key}",
+        )
+        require(
+            key not in observed_preprocessor_keys,
+            f"preprocessor input row repeats: {key}",
+        )
         observed_preprocessor_keys.add(key)
         stem = Path(translation_unit).stem
         lane_prefix = f"preprocessed/{release}/{profile}"
@@ -7120,8 +7753,15 @@ def verify_capture(
         columns == ["path", "source_class", "mode", "size", "object_id", "sha256"],
         "file-list columns differ",
     )
-    require(len(source_rows) == manifest["source_file_count"], "file-list count differs from manifest")
-    require(sha256_file(root / "metadata/file-list.tsv") == manifest["source_manifest_sha256"], "file-list digest differs")
+    require(
+        len(source_rows) == manifest["source_file_count"],
+        "file-list count differs from manifest",
+    )
+    require(
+        sha256_file(root / "metadata/file-list.tsv")
+        == manifest["source_manifest_sha256"],
+        "file-list digest differs",
+    )
     require(
         all(
             len(row) == 6
@@ -7129,8 +7769,7 @@ def verify_capture(
             and int(row[3]) <= policy.max_source_bytes
             for row in source_rows
         )
-        and sum(int(row[3]) for row in source_rows)
-        == manifest["source_byte_count"],
+        and sum(int(row[3]) for row in source_rows) == manifest["source_byte_count"],
         "file-list byte denominator exceeds manifest or policy bounds",
     )
     total_bytes = 0
@@ -7150,28 +7789,57 @@ def verify_capture(
             and not any(ord(character) < 32 for character in path),
             f"file-list path leaves the source root: {path!r}",
         )
-        require(source_kind == source_class(policy, path), f"file-list source class differs: {path}")
+        require(
+            source_kind == source_class(policy, path),
+            f"file-list source class differs: {path}",
+        )
         require(mode in {"100644", "100755"}, f"file-list mode is invalid: {path}")
         require(size_text.isdigit(), f"file-list size is invalid: {path}")
-        require(HEX_40.fullmatch(object_id) is not None and HEX_64.fullmatch(digest) is not None, f"file-list identity is invalid: {path}")
+        require(
+            HEX_40.fullmatch(object_id) is not None
+            and HEX_64.fullmatch(digest) is not None,
+            f"file-list identity is invalid: {path}",
+        )
         source_path = root / "source" / path
-        require(source_path.is_file() and not source_path.is_symlink(), f"retained source is absent or symlinked: {path}")
-        require(source_path.stat().st_size == int(size_text), f"retained source size differs: {path}")
+        require(
+            source_path.is_file() and not source_path.is_symlink(),
+            f"retained source is absent or symlinked: {path}",
+        )
+        require(
+            source_path.stat().st_size == int(size_text),
+            f"retained source size differs: {path}",
+        )
         content = source_path.read_bytes()
-        require(sha256_bytes(content) == digest, f"retained source digest differs: {path}")
-        require(git_object_id("blob", content) == object_id, f"retained source Git blob identity differs: {path}")
+        require(
+            sha256_bytes(content) == digest, f"retained source digest differs: {path}"
+        )
+        require(
+            git_object_id("blob", content) == object_id,
+            f"retained source Git blob identity differs: {path}",
+        )
         retained_mode = "100755" if source_path.stat().st_mode & 0o111 else "100644"
         require(retained_mode == mode, f"retained source mode differs: {path}")
         total_bytes += int(size_text)
-        source_entries.append(SourceEntry(path, mode, object_id, int(size_text), digest, source_kind))
+        source_entries.append(
+            SourceEntry(path, mode, object_id, int(size_text), digest, source_kind)
+        )
     require(
         source_rows == sorted(source_rows, key=lambda row: row[0].encode("utf-8")),
         "file-list rows are not canonically ordered",
     )
-    require(total_bytes == manifest["source_byte_count"], "retained source byte count differs")
+    require(
+        total_bytes == manifest["source_byte_count"],
+        "retained source byte count differs",
+    )
     path_set = b"".join(path.encode("utf-8") + b"\0" for path in sorted(seen_paths))
-    require(sha256_bytes(path_set) == manifest["source_path_set_sha256"], "retained source path-set digest differs")
-    require(not any(path.endswith("_reg_safe.h") for path in seen_paths), "retained source carries a generated register header")
+    require(
+        sha256_bytes(path_set) == manifest["source_path_set_sha256"],
+        "retained source path-set digest differs",
+    )
+    require(
+        not any(path.endswith("_reg_safe.h") for path in seen_paths),
+        "retained source carries a generated register header",
+    )
     require(
         retained_driver_tree_id(source_entries, policy.source_root)
         == manifest["driver_tree"],
@@ -7183,9 +7851,7 @@ def verify_capture(
     )
 
     c_and_header_paths = [
-        entry.path
-        for entry in source_entries
-        if entry.source_class in {"c", "header"}
+        entry.path for entry in source_entries if entry.source_class in {"c", "header"}
     ]
     c_paths = [entry.path for entry in source_entries if entry.source_class == "c"]
     source_list_path = root / "inputs/c-and-header-files.txt"
@@ -7228,15 +7894,32 @@ def verify_capture(
         "tool-input rows differ from retained source",
     )
 
-    lexical_columns, lexical_rows = read_tsv(root / "radeon-driver-lexical-map.tsv", LEXICAL_SCHEMA)
+    lexical_columns, lexical_rows = read_tsv(
+        root / "radeon-driver-lexical-map.tsv", LEXICAL_SCHEMA
+    )
     require(
-        lexical_columns == ["record_kind", "symbol", "source_path", "line", "source_sha256", "provenance"],
+        lexical_columns
+        == [
+            "record_kind",
+            "symbol",
+            "source_path",
+            "line",
+            "source_sha256",
+            "provenance",
+        ],
         "lexical-map columns differ",
     )
-    require(len(lexical_rows) == manifest["lexical_row_count"], "lexical row count differs")
+    require(
+        len(lexical_rows) == manifest["lexical_row_count"], "lexical row count differs"
+    )
     file_rows = {row[2] for row in lexical_rows if row[0] == "file"}
-    analyzer_files = {entry.path for entry in source_entries if entry.source_class in {"c", "header"}}
-    require(file_rows == analyzer_files, "lexical map does not preserve the complete C and header denominator")
+    analyzer_files = {
+        entry.path for entry in source_entries if entry.source_class in {"c", "header"}
+    }
+    require(
+        file_rows == analyzer_files,
+        "lexical map does not preserve the complete C and header denominator",
+    )
     entry_map = {entry.path: entry for entry in source_entries}
     expected_lexical_rows = derive_lexical_rows(
         root,
@@ -7263,8 +7946,7 @@ def verify_capture(
         record = canonical_ctags_record(line, "Ctags", row_number)
         source_entry = entry_map.get(record[1])
         require(
-            source_entry is not None
-            and source_entry.source_class in {"c", "header"},
+            source_entry is not None and source_entry.source_class in {"c", "header"},
             f"Ctags row {row_number} names a foreign source path: {record[1]}",
         )
         ctags_source_classes.add(source_entry.source_class)
@@ -7278,8 +7960,10 @@ def verify_capture(
         "Ctags index repeats a normalized source record",
     )
     readtags_all_lines = (
-        root / "indexes/ctags/readtags-all.txt"
-    ).read_text(encoding="utf-8").splitlines()
+        (root / "indexes/ctags/readtags-all.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     require(
         readtags_all_lines and all(readtags_all_lines),
         "readtags full selection is empty or carries an empty row",
@@ -7295,8 +7979,10 @@ def verify_capture(
     )
     root_symbols = policy_root_symbols(policy)
     readtags_lines = (
-        root / "queries/readtags-root-symbols.txt"
-    ).read_text(encoding="utf-8").splitlines()
+        (root / "queries/readtags-root-symbols.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     require(readtags_lines, "readtags root selection is empty")
     expected_readtags_lines = [
         line
@@ -7312,19 +7998,13 @@ def verify_capture(
         "radeon-driver-ctags-root-coverage-v1",
     )
     require(
-        ctags_coverage_columns
-        == ["symbol", "ctags_record_count", "classification"],
+        ctags_coverage_columns == ["symbol", "ctags_record_count", "classification"],
         "Ctags root coverage columns differ",
     )
     expected_ctags_coverage = [
         [
             symbol,
-            str(
-                sum(
-                    line.split("\t", 1)[0] == symbol
-                    for line in readtags_lines
-                )
-            ),
+            str(sum(line.split("\t", 1)[0] == symbol for line in readtags_lines)),
             "indexed",
         ]
         for symbol in root_symbols
@@ -7334,9 +8014,7 @@ def verify_capture(
         and all(int(row[1]) > 0 for row in ctags_coverage_rows),
         "Ctags root coverage differs from the retained selection",
     )
-    ctags_stderr = (
-        root / "diagnostics/ctags-index.stderr"
-    ).read_text(encoding="utf-8")
+    ctags_stderr = (root / "diagnostics/ctags-index.stderr").read_text(encoding="utf-8")
     require(
         all(
             any(re.fullmatch(pattern, line) for pattern in policy.ctags_stderr)
@@ -7344,8 +8022,7 @@ def verify_capture(
             if line
         )
         and not any(
-            line.startswith("ctags: Warning:")
-            for line in ctags_stderr.splitlines()
+            line.startswith("ctags: Warning:") for line in ctags_stderr.splitlines()
         ),
         "Ctags diagnostics exceed the exact notice policy",
     )
@@ -7443,22 +8120,18 @@ def verify_capture(
     )
     require(
         bounded_summary_rows
-        == [
-            [str(value) for value in row]
-            for row in expected_bounded_summary
-        ],
+        == [[str(value) for value in row] for row in expected_bounded_summary],
         "bounded query summary differs from offline replay",
     )
     require(
         bounded_match_rows
-        == [
-            [str(value) for value in row]
-            for row in expected_bounded_matches
-        ],
+        == [[str(value) for value in row] for row in expected_bounded_matches],
         "bounded query matches differ from offline replay",
     )
 
-    binding_columns, binding_rows = read_tsv(root / "radeon-driver-declared-bindings.tsv", DECLARED_BINDING_SCHEMA)
+    binding_columns, binding_rows = read_tsv(
+        root / "radeon-driver-declared-bindings.tsv", DECLARED_BINDING_SCHEMA
+    )
     require(
         binding_columns
         == [
@@ -7476,8 +8149,14 @@ def verify_capture(
         ],
         "declared-binding columns differ",
     )
-    require(len(binding_rows) == manifest["declared_binding_count"], "declared binding count differs")
-    require(len(binding_rows) == sum(item.expected_matches for item in policy.bindings), "declared binding denominator differs from retained policy")
+    require(
+        len(binding_rows) == manifest["declared_binding_count"],
+        "declared binding count differs",
+    )
+    require(
+        len(binding_rows) == sum(item.expected_matches for item in policy.bindings),
+        "declared binding denominator differs from retained policy",
+    )
     verified_rows = verify_declared_bindings(
         root,
         root / "source",
@@ -7485,9 +8164,14 @@ def verify_capture(
         policy,
         write_output=False,
     )
-    normalized_verified_rows = [tuple(str(value) for value in row) for row in verified_rows]
+    normalized_verified_rows = [
+        tuple(str(value) for value in row) for row in verified_rows
+    ]
     normalized_binding_rows = [tuple(row) for row in binding_rows]
-    require(normalized_verified_rows == normalized_binding_rows, "retained binding revalidation rows differ")
+    require(
+        normalized_verified_rows == normalized_binding_rows,
+        "retained binding revalidation rows differ",
+    )
 
     (
         expected_cflow_edges,
@@ -7511,8 +8195,7 @@ def verify_capture(
         "cflow lexical edge columns differ",
     )
     require(
-        cflow_rows
-        == [[str(value) for value in row] for row in expected_cflow_rows],
+        cflow_rows == [[str(value) for value in row] for row in expected_cflow_rows],
         "cflow lexical edges differ from retained raw output",
     )
     partition_columns, partition_rows = read_tsv(
@@ -7520,8 +8203,7 @@ def verify_capture(
         "radeon-driver-partition-lexical-edges-v1",
     )
     require(
-        partition_columns
-        == ["partition", "caller", "callee", "callee_kind"],
+        partition_columns == ["partition", "caller", "callee", "callee_kind"],
         "partition lexical edge columns differ",
     )
     require(
@@ -7530,14 +8212,12 @@ def verify_capture(
         "partition lexical edges differ from retained raw output",
     )
 
-    expected_extracted_rows, expected_generated_edges = (
-        extract_callback_candidates(
-            root,
-            root / "source",
-            source_entries,
-            policy,
-            write_output=False,
-        )
+    expected_extracted_rows, expected_generated_edges = extract_callback_candidates(
+        root,
+        root / "source",
+        source_entries,
+        policy,
+        write_output=False,
     )
     extracted_columns, extracted_rows = read_tsv(
         root / "analysis/extracted-binding-candidates.tsv",
@@ -7618,10 +8298,7 @@ def verify_capture(
     )
     require(
         guard_rows
-        == [
-            [str(value) for value in row]
-            for row in expected_guard_identifier_rows
-        ],
+        == [[str(value) for value in row] for row in expected_guard_identifier_rows],
         "hazard guard identifier census differs from lizard and source replay",
     )
     coefficient_columns, coefficient_rows = read_tsv(
@@ -7662,10 +8339,7 @@ def verify_capture(
         expected_command_records(
             policy,
             source_entries,
-            {
-                lane["kernel_release"]
-                for lane in manifest["preprocessor_lanes"]
-            },
+            {lane["kernel_release"] for lane in manifest["preprocessor_lanes"]},
         ),
     )
 
@@ -7686,18 +8360,40 @@ def verify_capture(
         "tool-version columns differ",
     )
     expected_tools = set(policy.required_tools) | set(policy.optional_tools)
-    require({row[0] for row in tool_rows} == expected_tools, "tool-version denominator differs")
+    require(
+        {row[0] for row in tool_rows} == expected_tools,
+        "tool-version denominator differs",
+    )
     require(all(len(row) == 6 for row in tool_rows), "tool-version row width differs")
     for row in tool_rows:
-        tool, required, executable_name, executable_sha256, version, version_sha256 = row
-        require(required == ("yes" if tool in policy.required_tools else "no"), f"tool requirement differs: {tool}")
+        tool, required, executable_name, executable_sha256, version, version_sha256 = (
+            row
+        )
+        require(
+            required == ("yes" if tool in policy.required_tools else "no"),
+            f"tool requirement differs: {tool}",
+        )
         require("/" not in executable_name, f"tool executable retains a path: {tool}")
         if executable_name == "absent":
-            require(tool not in policy.required_tools, f"required tool is recorded absent: {tool}")
-            require(executable_sha256 == "absent" and not version and version_sha256 == "absent", f"absent tool row differs: {tool}")
+            require(
+                tool not in policy.required_tools,
+                f"required tool is recorded absent: {tool}",
+            )
+            require(
+                executable_sha256 == "absent"
+                and not version
+                and version_sha256 == "absent",
+                f"absent tool row differs: {tool}",
+            )
         else:
-            require(HEX_64.fullmatch(executable_sha256) is not None, f"tool executable digest is invalid: {tool}")
-            require(version and HEX_64.fullmatch(version_sha256) is not None, f"tool version identity is invalid: {tool}")
+            require(
+                HEX_64.fullmatch(executable_sha256) is not None,
+                f"tool executable digest is invalid: {tool}",
+            )
+            require(
+                version and HEX_64.fullmatch(version_sha256) is not None,
+                f"tool version identity is invalid: {tool}",
+            )
 
     cscope_tool_rows = [row for row in tool_rows if row[0] == "cscope"]
     require(
@@ -7736,9 +8432,7 @@ def verify_capture(
         ],
         "kernel toolchain columns differ",
     )
-    lane_releases = {
-        lane["kernel_release"] for lane in manifest["preprocessor_lanes"]
-    }
+    lane_releases = {lane["kernel_release"] for lane in manifest["preprocessor_lanes"]}
     require(
         {row[0] for row in toolchain_rows} == lane_releases,
         "kernel toolchain release set differs from preprocessor lanes",
@@ -7749,9 +8443,7 @@ def verify_capture(
         "preprocessor lane release is absent from retained policy",
     )
     kernel_root_evidence = root / "metadata/kernel-build-roots"
-    expected_kernel_root_files = {
-        f"{release}.toml" for release in lane_releases
-    } | {
+    expected_kernel_root_files = {f"{release}.toml" for release in lane_releases} | {
         f"{release}.manifest.tsv" for release in lane_releases
     }
     observed_kernel_root_files = (
@@ -7773,13 +8465,11 @@ def verify_capture(
             f"retained kernel root evidence differs from producer proof: {release}",
         )
     closure_root = root / "metadata/kernel-toolchain-closures"
-    expected_closure_files = {
-        f"{release}.toml" for release in lane_releases
-    } | {
-        f"{release}.manifest.tsv" for release in lane_releases
-    } | {
-        f"{release}.prefix-tree.tsv" for release in lane_releases
-    }
+    expected_closure_files = (
+        {f"{release}.toml" for release in lane_releases}
+        | {f"{release}.manifest.tsv" for release in lane_releases}
+        | {f"{release}.prefix-tree.tsv" for release in lane_releases}
+    )
     observed_closure_files = (
         regular_tree_files(closure_root, "retained kernel toolchain closure")
         if closure_root.exists()
@@ -7846,8 +8536,7 @@ def verify_capture(
     )
     require(
         len(toolchain_rows) == len(lane_releases) * len(LLVM_KERNEL_TOOLS)
-        and len({(row[0], row[1]) for row in toolchain_rows})
-        == len(toolchain_rows),
+        and len({(row[0], row[1]) for row in toolchain_rows}) == len(toolchain_rows),
         "kernel toolchain rows do not close the executable denominator",
     )
     for release in lane_releases:
@@ -7866,10 +8555,8 @@ def verify_capture(
             and (
                 (
                     row[1] == "clang"
-                    and row[6]
-                    == "<kernel-toolchain-root>/lib/clang/22"
-                    and row[7]
-                    == "<kernel-toolchain-root>/lib/clang/22/include"
+                    and row[6] == "<kernel-toolchain-root>/lib/clang/22"
+                    and row[7] == "<kernel-toolchain-root>/lib/clang/22/include"
                 )
                 or (row[1] != "clang" and row[6:] == ["-", "-"])
             )
@@ -7905,10 +8592,16 @@ def verify_capture(
     for database_name in GLOBAL_DATABASE_NAMES:
         database = root / "indexes/global" / database_name
         dump = root / "indexes/global" / f"{database_name}.dump.tsv"
-        require(not database.exists(), f"capture retains nondeterministic GNU Global database: {database_name}")
+        require(
+            not database.exists(),
+            f"capture retains nondeterministic GNU Global database: {database_name}",
+        )
         require(dump.is_file(), f"capture omits GNU Global dump: {database_name}")
         dump_lines = dump.read_text(encoding="utf-8").splitlines()
-        require(dump_lines and all("\t" in line for line in dump_lines), f"GNU Global dump is invalid: {database_name}")
+        require(
+            dump_lines and all("\t" in line for line in dump_lines),
+            f"GNU Global dump is invalid: {database_name}",
+        )
     cscope_database = root / "indexes/cscope/cscope.out"
     require(cscope_database.is_file(), "portable cscope cross reference is absent")
     require(
@@ -8011,12 +8704,20 @@ def capture_source_map(
     kernel_toolchain_bins: dict[str, Path],
 ) -> dict[str, Any]:
     repository = resolve_repository(repository)
-    require(not repository_contains(repository, output), "capture output must remain outside the repository")
+    require(
+        not repository_contains(repository, output),
+        "capture output must remain outside the repository",
+    )
     require(not output.exists(), f"capture output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    policy_absolute = policy_path if policy_path.is_absolute() else repository / policy_path
+    policy_absolute = (
+        policy_path if policy_path.is_absolute() else repository / policy_path
+    )
     policy_absolute = policy_absolute.resolve()
-    require(repository_contains(repository, policy_absolute), "source-map policy is outside the repository")
+    require(
+        repository_contains(repository, policy_absolute),
+        "source-map policy is outside the repository",
+    )
     policy = load_policy(policy_absolute)
 
     git_object_format = str(
@@ -8025,11 +8726,31 @@ def capture_source_map(
     require(git_object_format == "sha1", "repository Git object format is not SHA-1")
     producer_commit = str(git_output(repository, "rev-parse", "HEAD^{commit}")).strip()
     producer_tree = str(git_output(repository, "rev-parse", "HEAD^{tree}")).strip()
-    source_commit = str(git_output(repository, "rev-parse", f"{treeish}^{{commit}}")).strip()
-    source_tree = str(git_output(repository, "rev-parse", f"{source_commit}^{{tree}}")).strip()
-    driver_tree = str(git_output(repository, "rev-parse", f"{source_commit}:{policy.source_root}")).strip()
-    require(all(HEX_40.fullmatch(value) for value in (producer_commit, producer_tree, source_commit, source_tree, driver_tree)), "Git identity is malformed")
-    tracked_status = str(git_output(repository, "status", "--porcelain", "--untracked-files=no"))
+    source_commit = str(
+        git_output(repository, "rev-parse", f"{treeish}^{{commit}}")
+    ).strip()
+    source_tree = str(
+        git_output(repository, "rev-parse", f"{source_commit}^{{tree}}")
+    ).strip()
+    driver_tree = str(
+        git_output(repository, "rev-parse", f"{source_commit}:{policy.source_root}")
+    ).strip()
+    require(
+        all(
+            HEX_40.fullmatch(value)
+            for value in (
+                producer_commit,
+                producer_tree,
+                source_commit,
+                source_tree,
+                driver_tree,
+            )
+        ),
+        "Git identity is malformed",
+    )
+    tracked_status = str(
+        git_output(repository, "status", "--porcelain", "--untracked-files=no")
+    )
     require(not tracked_status, "producer checkout has tracked changes")
     for path in producer_input_paths(policy):
         tracked = subprocess.run(
@@ -8047,12 +8768,20 @@ def capture_source_map(
         retained_producer_paths = retain_producer_inputs(stage, repository, policy)
         closure = load_source_closure(repository, source_commit, policy.source_root)
         write_bytes(stage / "source-closure.toml", closure)
-        feature_policy, _feature_data = parse_top_level_toml(repository, source_commit, "policy/build-features.toml")
+        feature_policy, _feature_data = parse_top_level_toml(
+            repository, source_commit, "policy/build-features.toml"
+        )
         write_bytes(stage / "policy/build-features.toml", feature_policy)
-        upstream_content, upstream_data = parse_top_level_toml(repository, source_commit, "UPSTREAM_BASE.toml")
+        upstream_content, upstream_data = parse_top_level_toml(
+            repository, source_commit, "UPSTREAM_BASE.toml"
+        )
         write_bytes(stage / "UPSTREAM_BASE.toml", upstream_content)
         upstream_base = upstream_data.get("commit")
-        require(isinstance(upstream_base, str) and HEX_40.fullmatch(upstream_base) is not None, "upstream base commit is invalid")
+        require(
+            isinstance(upstream_base, str)
+            and HEX_40.fullmatch(upstream_base) is not None,
+            "upstream base commit is invalid",
+        )
 
         write_git_file_proof(
             stage / "metadata/git-producer-proof",
@@ -8093,13 +8822,14 @@ def capture_source_map(
         source_list, c_list = write_source_inputs(stage, entries)
         capture_tool_versions(stage, policy)
         recorder = CommandRecorder(stage, repository, source_root)
-        symbols = sorted({root for partition in policy.partitions for root in partition.roots} | {item.symbol for item in policy.hazards})
-        lexical_rows = build_lexical_index(stage, source_root, source_list, entries, recorder)
-        global_definitions = {
-            row[1]
-            for row in lexical_rows
-            if row[0] == "definition"
-        }
+        symbols = sorted(
+            {root for partition in policy.partitions for root in partition.roots}
+            | {item.symbol for item in policy.hazards}
+        )
+        lexical_rows = build_lexical_index(
+            stage, source_root, source_list, entries, recorder
+        )
+        global_definitions = {row[1] for row in lexical_rows if row[0] == "definition"}
         missing_definitions = sorted(set(symbols) - global_definitions)
         require(
             not missing_definitions,
@@ -8115,18 +8845,32 @@ def capture_source_map(
             symbols,
             recorder,
         )
-        cflow_edges, _partition_edges = build_cflow_maps(stage, source_root, c_list, policy, recorder)
+        cflow_edges, _partition_edges = build_cflow_maps(
+            stage, source_root, c_list, policy, recorder
+        )
         entry_map = {entry.path: entry for entry in entries}
         declared_rows = verify_declared_bindings(stage, source_root, entry_map, policy)
-        _extracted_rows, generated_edges = extract_callback_candidates(stage, source_root, entries, policy)
-        call_rows = write_call_candidates(stage, cflow_edges, declared_rows, generated_edges)
+        _extracted_rows, generated_edges = extract_callback_candidates(
+            stage, source_root, entries, policy
+        )
+        call_rows = write_call_candidates(
+            stage, cflow_edges, declared_rows, generated_edges
+        )
         path_witness_rows, path_join_rows = build_contextual_path_witnesses(
             stage,
             policy,
             call_rows,
         )
         run_bounded_queries(stage, source_root, entries, policy)
-        build_complexity_and_coefficients(stage, source_root, source_list, policy, recorder, cflow_edges, declared_rows)
+        build_complexity_and_coefficients(
+            stage,
+            source_root,
+            source_list,
+            policy,
+            recorder,
+            cflow_edges,
+            declared_rows,
+        )
         preprocessor_lanes = capture_preprocessor_views(
             stage,
             repository,
@@ -8158,7 +8902,9 @@ def capture_source_map(
             "driver_tree": driver_tree,
             "producer_commit": producer_commit,
             "producer_tree": producer_tree,
-            "source_commit_timestamp_utc": commit_timestamp_utc(repository, source_commit),
+            "source_commit_timestamp_utc": commit_timestamp_utc(
+                repository, source_commit
+            ),
             "producer_commit_timestamp_utc": commit_timestamp_utc(
                 repository,
                 producer_commit,
@@ -8181,7 +8927,10 @@ def capture_source_map(
             "preprocessor_lanes": preprocessor_lanes,
             "semantic_limit": "candidate-research-graph-not-runtime-reachability",
         }
-        write_text(stage / "capture-manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        write_text(
+            stage / "capture-manifest.json",
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        )
         verify_no_host_path_leaks(
             stage,
             (
@@ -8234,11 +8983,19 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
     right_manifest = verify_capture(right)
     require(not output.exists(), f"comparison output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=".radeon-source-map-comparison-", dir=output.parent))
+    stage = Path(
+        tempfile.mkdtemp(prefix=".radeon-source-map-comparison-", dir=output.parent)
+    )
     try:
-        file_columns, left_files = row_set(left / "metadata/file-list.tsv", "radeon-driver-file-list-v1")
-        right_file_columns, right_files = row_set(right / "metadata/file-list.tsv", "radeon-driver-file-list-v1")
-        require(file_columns == right_file_columns, "file-list comparison schemas differ")
+        file_columns, left_files = row_set(
+            left / "metadata/file-list.tsv", "radeon-driver-file-list-v1"
+        )
+        right_file_columns, right_files = row_set(
+            right / "metadata/file-list.tsv", "radeon-driver-file-list-v1"
+        )
+        require(
+            file_columns == right_file_columns, "file-list comparison schemas differ"
+        )
         left_by_path = {row[0]: row for row in left_files}
         right_by_path = {row[0]: row for row in right_files}
         file_rows: list[tuple[Any, ...]] = []
@@ -8250,17 +9007,40 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             elif right_row is None:
                 file_rows.append(("removed", path, left_row[5], "", left_row[3], ""))
             elif left_row != right_row:
-                file_rows.append(("changed", path, left_row[5], right_row[5], left_row[3], right_row[3]))
+                file_rows.append(
+                    (
+                        "changed",
+                        path,
+                        left_row[5],
+                        right_row[5],
+                        left_row[3],
+                        right_row[3],
+                    )
+                )
         write_tsv(
             stage / "file-delta.tsv",
             "radeon-driver-file-delta-v1",
-            ("change", "source_path", "left_sha256", "right_sha256", "left_size", "right_size"),
+            (
+                "change",
+                "source_path",
+                "left_sha256",
+                "right_sha256",
+                "left_size",
+                "right_size",
+            ),
             file_rows,
         )
 
-        call_columns, left_calls = row_set(left / "analysis/call-candidates.tsv", "radeon-driver-call-candidates-v1")
-        right_call_columns, right_calls = row_set(right / "analysis/call-candidates.tsv", "radeon-driver-call-candidates-v1")
-        require(call_columns == right_call_columns, "call candidate comparison schemas differ")
+        call_columns, left_calls = row_set(
+            left / "analysis/call-candidates.tsv", "radeon-driver-call-candidates-v1"
+        )
+        right_call_columns, right_calls = row_set(
+            right / "analysis/call-candidates.tsv", "radeon-driver-call-candidates-v1"
+        )
+        require(
+            call_columns == right_call_columns,
+            "call candidate comparison schemas differ",
+        )
         call_rows = [("removed", *row) for row in sorted(left_calls - right_calls)]
         call_rows.extend(("added", *row) for row in sorted(right_calls - left_calls))
         write_tsv(
@@ -8270,11 +9050,22 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             call_rows,
         )
 
-        binding_columns, left_bindings = row_set(left / "radeon-driver-declared-bindings.tsv", DECLARED_BINDING_SCHEMA)
-        right_binding_columns, right_bindings = row_set(right / "radeon-driver-declared-bindings.tsv", DECLARED_BINDING_SCHEMA)
-        require(binding_columns == right_binding_columns, "binding comparison schemas differ")
-        binding_rows = [("removed", *row) for row in sorted(left_bindings - right_bindings)]
-        binding_rows.extend(("added", *row) for row in sorted(right_bindings - left_bindings))
+        binding_columns, left_bindings = row_set(
+            left / "radeon-driver-declared-bindings.tsv", DECLARED_BINDING_SCHEMA
+        )
+        right_binding_columns, right_bindings = row_set(
+            right / "radeon-driver-declared-bindings.tsv", DECLARED_BINDING_SCHEMA
+        )
+        require(
+            binding_columns == right_binding_columns,
+            "binding comparison schemas differ",
+        )
+        binding_rows = [
+            ("removed", *row) for row in sorted(left_bindings - right_bindings)
+        ]
+        binding_rows.extend(
+            ("added", *row) for row in sorted(right_bindings - left_bindings)
+        )
         write_tsv(
             stage / "declared-binding-delta.tsv",
             "radeon-driver-declared-binding-delta-v1",
@@ -8294,12 +9085,8 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             path_columns == right_path_columns,
             "contextual path witness comparison schemas differ",
         )
-        path_rows = [
-            ("removed", *row) for row in sorted(left_paths - right_paths)
-        ]
-        path_rows.extend(
-            ("added", *row) for row in sorted(right_paths - left_paths)
-        )
+        path_rows = [("removed", *row) for row in sorted(left_paths - right_paths)]
+        path_rows.extend(("added", *row) for row in sorted(right_paths - left_paths))
         write_tsv(
             stage / "contextual-path-witness-delta.tsv",
             "radeon-driver-contextual-path-witness-delta-v2",
@@ -8318,12 +9105,8 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             join_columns == right_join_columns,
             "contextual path join comparison schemas differ",
         )
-        join_rows = [
-            ("removed", *row) for row in sorted(left_joins - right_joins)
-        ]
-        join_rows.extend(
-            ("added", *row) for row in sorted(right_joins - left_joins)
-        )
+        join_rows = [("removed", *row) for row in sorted(left_joins - right_joins)]
+        join_rows.extend(("added", *row) for row in sorted(right_joins - left_joins))
         write_tsv(
             stage / "contextual-path-join-delta.tsv",
             "radeon-driver-contextual-path-join-delta-v1",
@@ -8384,11 +9167,24 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             symbol_member_rows,
         )
 
-        coefficient_columns, left_coefficients = row_set(left / "analysis/coefficient-vectors.tsv", "radeon-driver-coefficient-vectors-v2")
-        right_coefficient_columns, right_coefficients = row_set(right / "analysis/coefficient-vectors.tsv", "radeon-driver-coefficient-vectors-v2")
-        require(coefficient_columns == right_coefficient_columns, "coefficient comparison schemas differ")
-        coefficient_rows = [("removed", *row) for row in sorted(left_coefficients - right_coefficients)]
-        coefficient_rows.extend(("added", *row) for row in sorted(right_coefficients - left_coefficients))
+        coefficient_columns, left_coefficients = row_set(
+            left / "analysis/coefficient-vectors.tsv",
+            "radeon-driver-coefficient-vectors-v2",
+        )
+        right_coefficient_columns, right_coefficients = row_set(
+            right / "analysis/coefficient-vectors.tsv",
+            "radeon-driver-coefficient-vectors-v2",
+        )
+        require(
+            coefficient_columns == right_coefficient_columns,
+            "coefficient comparison schemas differ",
+        )
+        coefficient_rows = [
+            ("removed", *row) for row in sorted(left_coefficients - right_coefficients)
+        ]
+        coefficient_rows.extend(
+            ("added", *row) for row in sorted(right_coefficients - left_coefficients)
+        )
         write_tsv(
             stage / "coefficient-vector-delta.tsv",
             "radeon-driver-coefficient-vector-delta-v1",
@@ -8412,7 +9208,10 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
             "coefficient_vector_delta_count": len(coefficient_rows),
             "semantic_limit": "normalized-candidate-delta-not-runtime-behavior",
         }
-        write_text(stage / "comparison-manifest.json", json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        write_text(
+            stage / "comparison-manifest.json",
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        )
         write_hash_ledger(stage)
         verify_hash_ledger(stage)
         stage.rename(output)
@@ -8430,10 +9229,19 @@ def compare_captures(left: Path, right: Path, output: Path) -> dict[str, Any]:
 def self_test(repository: Path, policy_path: Path) -> int:
     failures = 0
     verdicts = 0
+    verdict_labels: set[str] = set()
 
     def check(label: str, condition: bool) -> None:
         nonlocal failures, verdicts
         verdicts += 1
+        if label in verdict_labels:
+            print(
+                f"  CALIBRATION FAIL: duplicate verdict label: {label}",
+                file=sys.stderr,
+            )
+            failures += 1
+            return
+        verdict_labels.add(label)
         if condition:
             print(f"  ok: {label}")
         else:
@@ -8445,6 +9253,14 @@ def self_test(repository: Path, policy_path: Path) -> int:
             function()
         except SourceMapError:
             check(label, True)
+        else:
+            check(label, False)
+
+    def rejects_with(label: str, expected_error: str, function: Any) -> None:
+        try:
+            function()
+        except SourceMapError as error:
+            check(label, expected_error in str(error))
         else:
             check(label, False)
 
@@ -8491,8 +9307,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         len(toolchain_closures) == len(policy.kernel_lanes)
         and all(
             declaration["manifest"] == lane.toolchain_manifest
-            and declaration["prefix_tree_manifest"]
-            == lane.toolchain_prefix_manifest
+            and declaration["prefix_tree_manifest"] == lane.toolchain_prefix_manifest
             and {entry.logical_name for entry in entries if entry.kind == "command"}
             == set(LLVM_KERNEL_TOOLS)
             and {entry.logical_name for entry in entries if entry.kind == "library"}
@@ -8645,16 +9460,13 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "ELF SONAME normalizes an absolute dynamic linker alias",
         normalize_runtime_library_soname(
             "/lib64/ld-linux-x86-64.so.2",
-            "0x000000000000000e (SONAME) Library soname: "
-            "[ld-linux-x86-64.so.2]\n",
+            "0x000000000000000e (SONAME) Library soname: [ld-linux-x86-64.so.2]\n",
         )
         == "ld-linux-x86-64.so.2",
     )
     check(
         "ldd parser accepts a direct absolute dynamic loader row",
-        parse_ldd_runtime_row(
-            "/usr/lib/ld-linux-x86-64.so.2 (0x00007f0000000000)"
-        )
+        parse_ldd_runtime_row("/usr/lib/ld-linux-x86-64.so.2 (0x00007f0000000000)")
         == (
             "/usr/lib/ld-linux-x86-64.so.2",
             "/usr/lib/ld-linux-x86-64.so.2",
@@ -8662,9 +9474,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     )
     rejects(
         "ldd parser rejects a relative direct dependency row",
-        lambda: parse_ldd_runtime_row(
-            "ld-linux-x86-64.so.2 (0x00007f0000000000)"
-        ),
+        lambda: parse_ldd_runtime_row("ld-linux-x86-64.so.2 (0x00007f0000000000)"),
     )
     rejects(
         "ldd parser rejects an unresolved dependency",
@@ -8674,8 +9484,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "ELF SONAME rejects a mismatched loader name",
         lambda: normalize_runtime_library_soname(
             "libforged.so.1",
-            "0x000000000000000e (SONAME) Library soname: "
-            "[libactual.so.1]\n",
+            "0x000000000000000e (SONAME) Library soname: [libactual.so.1]\n",
         ),
     )
     release_paths = parse_release_paths(
@@ -8684,8 +9493,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     check(
         "release path parser binds one exact kernel to one toolchain",
         set(release_paths) == {"6.18.38-2-cachyos-lts"}
-        and release_paths["6.18.38-2-cachyos-lts"]
-        == Path("/tmp/llvm-22.1.6/usr/bin"),
+        and release_paths["6.18.38-2-cachyos-lts"] == Path("/tmp/llvm-22.1.6/usr/bin"),
     )
     rejects(
         "release path parser rejects a duplicate kernel",
@@ -8807,8 +9615,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         and all(row[6] == 0 for row in synthetic_summary),
     )
     removed_symbol_maps = {
-        key: dict(symbol_map)
-        for key, symbol_map in synthetic_symbol_maps.items()
+        key: dict(symbol_map) for key, symbol_map in synthetic_symbol_maps.items()
     }
     del removed_symbol_maps[("kernel-b", "mutate-dev")]["base"]
     rejects(
@@ -8819,8 +9626,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         ),
     )
     foreign_symbol_maps = {
-        key: dict(symbol_map)
-        for key, symbol_map in synthetic_symbol_maps.items()
+        key: dict(symbol_map) for key, symbol_map in synthetic_symbol_maps.items()
     }
     foreign_symbol_maps[("kernel-a", "mutate-dev")]["foreign_symbol"] = (
         "foreign_symbol.llvm.1"
@@ -8949,20 +9755,32 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "    3 {   2}         external_call: <>\n"
         "    4 {   1}     child: 2\n"
     ).encode("ascii")
-    expected_edges = [("child", "external_call", "external"), ("root", "child", "driver")]
-    check("cflow depth parser emits stable unique edges", parse_cflow_edges(synthetic_cflow) == expected_edges)
-    rejects("cflow depth parser rejects a skipped parent", lambda: parse_cflow_edges(b"1 { 2} orphan: <>\n"))
-    rejects("cflow parser rejects a nonidentifier", lambda: parse_cflow_edges(b"1 { 0} bad-name: <>\n"))
+    expected_edges = [
+        ("child", "external_call", "external"),
+        ("root", "child", "driver"),
+    ]
+    check(
+        "cflow depth parser emits stable unique edges",
+        parse_cflow_edges(synthetic_cflow) == expected_edges,
+    )
+    rejects(
+        "cflow depth parser rejects a skipped parent",
+        lambda: parse_cflow_edges(b"1 { 2} orphan: <>\n"),
+    )
+    rejects(
+        "cflow parser rejects a nonidentifier",
+        lambda: parse_cflow_edges(b"1 { 0} bad-name: <>\n"),
+    )
 
     synthetic_source = (
-        'static const struct sample owner = {\n'
-        '    .member = &target,\n'
-        '};\n'
+        "static const struct sample owner = {\n"
+        "    .member = &target,\n"
+        "};\n"
         'const char *literal = "// .member = wrong,";\n'
-        '/* .member = wrong, */\n'
-        'DEFINE_SHOW_ATTRIBUTE(sample);\n'
-        'DRM_IOCTL_DEF_DRV(TEST, ioctl_target, FLAGS);\n'
-        'INIT_WORK(&work, work_target);\n'
+        "/* .member = wrong, */\n"
+        "DEFINE_SHOW_ATTRIBUTE(sample);\n"
+        "DRM_IOCTL_DEF_DRV(TEST, ioctl_target, FLAGS);\n"
+        "INIT_WORK(&work, work_target);\n"
     )
     binding = Binding(
         "synthetic-binding",
@@ -8976,9 +9794,17 @@ def self_test(repository: Path, policy_path: Path) -> int:
         1,
         False,
     )
-    check("binding lexer accepts one real target and ignores comment and string decoys", len(binding_matches(synthetic_source, binding)) == 1)
-    changed = Binding(**{**binding.__dict__, "pattern": binding.pattern.replace("target", "wrong")})
-    check("binding lexer rejects decoy-only targets", len(binding_matches(synthetic_source, changed)) == 0)
+    check(
+        "binding lexer accepts one real target and ignores comment and string decoys",
+        len(binding_matches(synthetic_source, binding)) == 1,
+    )
+    changed = Binding(
+        **{**binding.__dict__, "pattern": binding.pattern.replace("target", "wrong")}
+    )
+    check(
+        "binding lexer rejects decoy-only targets",
+        len(binding_matches(synthetic_source, changed)) == 0,
+    )
     crossed_initializer = (
         "static const struct sample owner = {\n"
         "    .member = NULL,\n"
@@ -9361,10 +10187,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         and "commented_guard" not in spliced_code
         and "next_statement" in spliced_code,
     )
-    spliced_binding_source = (
-        "REA\\\nD_ONCE(real_guard);\n"
-        ".member = target,\n"
-    )
+    spliced_binding_source = "REA\\\nD_ONCE(real_guard);\n.member = target,\n"
     spliced_binding_code = strip_comments_and_literals(spliced_binding_source)
     spliced_binding_match = FIELD_INITIALIZER.search(spliced_binding_code)
     check(
@@ -9389,7 +10212,15 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         == ["comment_guard", "literal_guard"],
     )
-    check("callback extractor sees field, show, ioctl, and work forms", bool(FIELD_INITIALIZER.search(strip_comments_and_literals(synthetic_source)) and DEFINE_SHOW.search(strip_comments_and_literals(synthetic_source)) and DRM_IOCTL.search(strip_comments_and_literals(synthetic_source)) and WORK_BINDING.search(strip_comments_and_literals(synthetic_source))))
+    check(
+        "callback extractor sees field, show, ioctl, and work forms",
+        bool(
+            FIELD_INITIALIZER.search(strip_comments_and_literals(synthetic_source))
+            and DEFINE_SHOW.search(strip_comments_and_literals(synthetic_source))
+            and DRM_IOCTL.search(strip_comments_and_literals(synthetic_source))
+            and WORK_BINDING.search(strip_comments_and_literals(synthetic_source))
+        ),
+    )
 
     object_id = "1" * 40
     raw_tree = (
@@ -9399,14 +10230,27 @@ def self_test(repository: Path, policy_path: Path) -> int:
         f"100644 blob {object_id} 5\tdrivers/gpu/drm/radeon/.gitignore\0"
     ).encode("ascii")
     parsed = parse_ls_tree(raw_tree, policy)
-    check("tracked denominator parser retains regular source and repository metadata", len(parsed) == 4)
+    check(
+        "tracked denominator parser retains regular source and repository metadata",
+        len(parsed) == 4,
+    )
     rejects(
         "tracked denominator rejects a symlink",
-        lambda: parse_ls_tree(f"120000 blob {object_id} 3\tdrivers/gpu/drm/radeon/link.c\0".encode("ascii"), policy),
+        lambda: parse_ls_tree(
+            f"120000 blob {object_id} 3\tdrivers/gpu/drm/radeon/link.c\0".encode(
+                "ascii"
+            ),
+            policy,
+        ),
     )
     rejects(
         "tracked denominator rejects traversal",
-        lambda: parse_ls_tree(f"100644 blob {object_id} 3\tdrivers/gpu/drm/radeon/../x.c\0".encode("ascii"), policy),
+        lambda: parse_ls_tree(
+            f"100644 blob {object_id} 3\tdrivers/gpu/drm/radeon/../x.c\0".encode(
+                "ascii"
+            ),
+            policy,
+        ),
     )
     rejects(
         "source classifier rejects an unknown tracked class",
@@ -9428,8 +10272,12 @@ def self_test(repository: Path, policy_path: Path) -> int:
         and git_object_id("blob", beta) == beta_id,
     )
     synthetic_entries = [
-        SourceEntry("root/a.txt", "100644", alpha_id, len(alpha), sha256_bytes(alpha), "test"),
-        SourceEntry("root/dir/b.txt", "100755", beta_id, len(beta), sha256_bytes(beta), "test"),
+        SourceEntry(
+            "root/a.txt", "100644", alpha_id, len(alpha), sha256_bytes(alpha), "test"
+        ),
+        SourceEntry(
+            "root/dir/b.txt", "100755", beta_id, len(beta), sha256_bytes(beta), "test"
+        ),
     ]
     check(
         "retained files reconstruct the canonical nested Git tree",
@@ -9437,7 +10285,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
         == "a067b33102fdbd9476046679567d3c9e736a1b0e",
     )
     forged_entries = [
-        SourceEntry("root/a.txt", "100644", beta_id, len(alpha), sha256_bytes(alpha), "test"),
+        SourceEntry(
+            "root/a.txt", "100644", beta_id, len(alpha), sha256_bytes(alpha), "test"
+        ),
         synthetic_entries[1],
     ]
     check(
@@ -9446,14 +10296,41 @@ def self_test(repository: Path, policy_path: Path) -> int:
         != "a067b33102fdbd9476046679567d3c9e736a1b0e",
     )
 
-    entry = SourceEntry(f"{policy.source_root}/a.c", "100644", object_id, 10, "2" * 64, "c")
-    good_global = f"address_taken 1 {entry.path} &address_taken\ndirect_call 1 {entry.path} direct_call()\n".encode("ascii")
+    entry = SourceEntry(
+        f"{policy.source_root}/a.c", "100644", object_id, 10, "2" * 64, "c"
+    )
+    good_global = f"address_taken 1 {entry.path} &address_taken\ndirect_call 1 {entry.path} direct_call()\n".encode(
+        "ascii"
+    )
     parsed_global = parse_global_rows(good_global, "reference", {entry.path: entry})
-    check("address-taken and direct-call uses remain lexical references", len(parsed_global) == 2 and all(row[0] == "reference" for row in parsed_global))
-    rejects("GNU Global parser rejects malformed output", lambda: parse_global_rows(b"short row\n", "definition", {entry.path: entry}))
-    rejects("GNU Global parser rejects a foreign path", lambda: parse_global_rows(b"symbol 1 foreign.c text\n", "definition", {entry.path: entry}))
-    rejects("GNU Global parser rejects an invalid identifier", lambda: parse_global_rows(f"bad-name 1 {entry.path} text\n".encode(), "definition", {entry.path: entry}))
-    rejects("GNU Global parser rejects a zero line", lambda: parse_global_rows(f"symbol 0 {entry.path} text\n".encode(), "definition", {entry.path: entry}))
+    check(
+        "address-taken and direct-call uses remain lexical references",
+        len(parsed_global) == 2 and all(row[0] == "reference" for row in parsed_global),
+    )
+    rejects(
+        "GNU Global parser rejects malformed output",
+        lambda: parse_global_rows(b"short row\n", "definition", {entry.path: entry}),
+    )
+    rejects(
+        "GNU Global parser rejects a foreign path",
+        lambda: parse_global_rows(
+            b"symbol 1 foreign.c text\n", "definition", {entry.path: entry}
+        ),
+    )
+    rejects(
+        "GNU Global parser rejects an invalid identifier",
+        lambda: parse_global_rows(
+            f"bad-name 1 {entry.path} text\n".encode(),
+            "definition",
+            {entry.path: entry},
+        ),
+    )
+    rejects(
+        "GNU Global parser rejects a zero line",
+        lambda: parse_global_rows(
+            f"symbol 0 {entry.path} text\n".encode(), "definition", {entry.path: entry}
+        ),
+    )
 
     command_columns = [
         "command_id",
@@ -9528,9 +10405,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     )
     prefix_path_row = list(canonical_make_row)
     prefix_path_environment = json.loads(prefix_path_row[7])
-    prefix_path_environment["PATH"] = (
-        "<kernel-toolchain-root>/bin:/usr/bin:/bin"
-    )
+    prefix_path_environment["PATH"] = "<kernel-toolchain-root>/bin:/usr/bin:/bin"
     prefix_path_row[7] = json.dumps(
         dict(sorted(prefix_path_environment.items())),
         separators=(",", ":"),
@@ -9784,14 +10659,16 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         fixture_tag_lines = [
             line
-            for line in (
-                temp / "capture/indexes/ctags/tags"
-            ).read_text(encoding="utf-8").splitlines()
+            for line in (temp / "capture/indexes/ctags/tags")
+            .read_text(encoding="utf-8")
+            .splitlines()
             if line and not line.startswith("!_TAG_")
         ]
         fixture_readtags_lines = (
-            temp / "capture/indexes/ctags/readtags-all.txt"
-        ).read_text(encoding="utf-8").splitlines()
+            (temp / "capture/indexes/ctags/readtags-all.txt")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
         check(
             "readtags field ordering preserves each Ctags record identity",
             {
@@ -9815,9 +10692,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "Ctags forced C language emits no warnings",
             not any(
                 line.startswith("ctags: Warning:")
-                for line in (
-                    temp / "capture/diagnostics/ctags-index.stderr"
-                ).read_text(encoding="utf-8").splitlines()
+                for line in (temp / "capture/diagnostics/ctags-index.stderr")
+                .read_text(encoding="utf-8")
+                .splitlines()
             ),
         )
         broad_ctags = subprocess.run(
@@ -10001,9 +10878,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "c",
         )
         cscope_entries = {cscope_path: cscope_entry}
-        good_cscope = (
-            f"{cscope_path} cscope_test 3 return 0;\n"
-        ).encode("ascii")
+        good_cscope = (f"{cscope_path} cscope_test 3 return 0;\n").encode("ascii")
         check(
             "cscope parser accepts one admitted full path and retained source line",
             len(
@@ -10138,10 +11013,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         replay_rows.sort(
             key=lambda row: (row[0], row[1], row[2], row[4], row[3], row[5])
         )
-        replay_table = [
-            [str(value) for value in row]
-            for row in replay_rows
-        ]
+        replay_table = [[str(value) for value in row] for row in replay_rows]
         accepts(
             "cscope replay accepts every exact raw query",
             lambda: replay_cscope_queries(
@@ -10154,8 +11026,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         definition_raw = (
-            cscope_replay_root
-            / "queries/cscope/definition-cscope_test.txt"
+            cscope_replay_root / "queries/cscope/definition-cscope_test.txt"
         )
         definition_bytes = definition_raw.read_bytes()
         write_bytes(definition_raw, b"")
@@ -10206,7 +11077,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "{\n"
             "\treal_target();\n"
             "\t/* real_target(); */\n"
-            "\tconst char *text = \"real_target()\";\n"
+            '\tconst char *text = "real_target()";\n'
             "}\n"
         )
         write_text(cscope_source_root / bounded_path, bounded_content)
@@ -10262,20 +11133,27 @@ def self_test(repository: Path, policy_path: Path) -> int:
         normalized_scc = json.loads(scc_report.read_text(encoding="utf-8"))
         check(
             "SCC normalization orders concurrent file rows",
-            [item["Location"] for item in normalized_scc[0]["Files"]]
-            == ["a.c", "z.c"],
+            [item["Location"] for item in normalized_scc[0]["Files"]] == ["a.c", "z.c"],
         )
         ledger_root = temp / "ledger"
         write_text(ledger_root / "a.txt", "alpha\n")
         write_text(ledger_root / "nested/b.txt", "beta\n")
         write_hash_ledger(ledger_root)
-        check("hash ledger covers every retained file and excludes itself", verify_hash_ledger(ledger_root) == 2)
+        check(
+            "hash ledger covers every retained file and excludes itself",
+            verify_hash_ledger(ledger_root) == 2,
+        )
         write_text(ledger_root / "a.txt", "mutated\n")
-        rejects("hash ledger rejects changed content", lambda: verify_hash_ledger(ledger_root))
+        rejects(
+            "hash ledger rejects changed content",
+            lambda: verify_hash_ledger(ledger_root),
+        )
 
         proof_root = temp / "source-proof"
         live_commit = str(git_output(repository, "rev-parse", "HEAD^{commit}")).strip()
-        live_tree = str(git_output(repository, "rev-parse", f"{live_commit}^{{tree}}")).strip()
+        live_tree = str(
+            git_output(repository, "rev-parse", f"{live_commit}^{{tree}}")
+        ).strip()
         live_driver_tree = str(
             git_output(repository, "rev-parse", f"{live_commit}:{policy.source_root}")
         ).strip()
@@ -10406,7 +11284,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         (producer_proof_root / "metadata/proof/extra.bin").unlink()
-        write_text(producer_proof_root / producer_fixture_paths["AGENTS.md"], "forged\n")
+        write_text(
+            producer_proof_root / producer_fixture_paths["AGENTS.md"], "forged\n"
+        )
         rejects(
             "producer Git proof rejects changed retained input bytes",
             lambda: verify_git_file_proof(
@@ -10420,9 +11300,172 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
 
         live_policy = policy_path.read_text(encoding="ascii")
+        missing_capacity_root = temp / "missing-capacity-root.toml"
+        capacity_root_row = '  "radeon_ttm_vram_read",\n'
+        require(
+            live_policy.count(capacity_root_row) == 1,
+            "capacity root mutation anchor differs",
+        )
+        write_text(
+            missing_capacity_root,
+            live_policy.replace(capacity_root_row, "", 1),
+        )
+        rejects_with(
+            "policy rejects a missing capacity root",
+            "root denominator count differs",
+            lambda: load_policy(missing_capacity_root),
+        )
+
+        moved_capacity_root = temp / "moved-capacity-root.toml"
+        reset_root_row = '  "radeon_gpu_reset",\n'
+        require(
+            live_policy.count(reset_root_row) == 1,
+            "reset root mutation anchor differs",
+        )
+        moved_root_policy = live_policy.replace(capacity_root_row, "", 1)
+        moved_root_policy = moved_root_policy.replace(
+            reset_root_row,
+            reset_root_row + capacity_root_row,
+            1,
+        )
+        write_text(moved_capacity_root, moved_root_policy)
+        rejects_with(
+            "policy rejects a capacity root moved to another partition",
+            "root denominator identity differs",
+            lambda: load_policy(moved_capacity_root),
+        )
+
+        def hazard_block(hazard_symbol: str) -> re.Match[str]:
+            pattern = re.compile(
+                rf'\n\[\[hazard\]\]\nsymbol = "{re.escape(hazard_symbol)}"\n'
+                r".*?(?=\n\[\[(?:hazard|binding)\]\])",
+                re.DOTALL,
+            )
+            matches = tuple(pattern.finditer(live_policy))
+            require(
+                len(matches) == 1,
+                f"hazard mutation anchor differs: {hazard_symbol}",
+            )
+            return matches[0]
+
+        capacity_hazard_match = hazard_block("radeon_ttm_vram_read")
+        missing_capacity_hazard = temp / "missing-capacity-hazard.toml"
+        write_text(
+            missing_capacity_hazard,
+            live_policy[: capacity_hazard_match.start()]
+            + live_policy[capacity_hazard_match.end() :],
+        )
+        rejects_with(
+            "policy rejects a missing capacity reader hazard",
+            "hazard denominator count differs",
+            lambda: load_policy(missing_capacity_hazard),
+        )
+
+        capacity_hazard_text = capacity_hazard_match.group(0)
+        changed_hazard_class = temp / "changed-capacity-hazard-class.toml"
+        write_text(
+            changed_hazard_class,
+            live_policy.replace(
+                capacity_hazard_text,
+                capacity_hazard_text.replace(
+                    'side_effect_class = "mmio-index-write-and-vram-read"',
+                    'side_effect_class = "software-state-write"',
+                    1,
+                ),
+                1,
+            ),
+        )
+        rejects_with(
+            "policy rejects a changed capacity reader side effect class",
+            "hazard denominator identity differs",
+            lambda: load_policy(changed_hazard_class),
+        )
+
+        changed_effect_identifier = temp / "changed-capacity-effect-identifier.toml"
+        write_text(
+            changed_effect_identifier,
+            live_policy.replace(
+                capacity_hazard_text,
+                capacity_hazard_text.replace(
+                    '"RADEON_MM_DATA"',
+                    '"RADEON_MM_INDEX_HI"',
+                    1,
+                ),
+                1,
+            ),
+        )
+        rejects_with(
+            "policy rejects a changed capacity reader effect identifier",
+            "hazard denominator identity differs",
+            lambda: load_policy(changed_effect_identifier),
+        )
+
+        def policy_without_binding(binding_name: str) -> str:
+            pattern = re.compile(
+                rf'\n\[\[binding\]\]\nname = "{re.escape(binding_name)}"\n'
+                r".*?(?=\n\[\[(?:binding|path_witness)\]\])",
+                re.DOTALL,
+            )
+            matches = tuple(pattern.finditer(live_policy))
+            require(
+                len(matches) == 1,
+                f"capacity binding mutation anchor differs: {binding_name}",
+            )
+            match = matches[0]
+            return live_policy[: match.start()] + live_policy[match.end() :]
+
+        for binding_name in (
+            "ioctl-gem-info-capacity",
+            "ttm-vram-fops-read",
+        ):
+            missing_capacity_binding = temp / f"missing-{binding_name}.toml"
+            write_text(
+                missing_capacity_binding,
+                policy_without_binding(binding_name),
+            )
+            rejects_with(
+                f"policy rejects missing capacity binding {binding_name}",
+                "binding denominator count differs",
+                lambda candidate=missing_capacity_binding: load_policy(candidate),
+            )
+
         wrong_schema = temp / "wrong-schema.toml"
-        write_text(wrong_schema, live_policy.replace("schema = 1", "schema = 2", 1))
+        write_text(wrong_schema, live_policy.replace("schema = 2", "schema = 3", 1))
         rejects("policy rejects a foreign schema", lambda: load_policy(wrong_schema))
+
+        legacy_policy = live_policy.replace("schema = 2", "schema = 1", 1)
+        for key in (
+            "root_denominator_count",
+            "root_denominator_sha256",
+            "hazard_denominator_count",
+            "hazard_denominator_sha256",
+            "binding_denominator_count",
+            "binding_denominator_sha256",
+        ):
+            legacy_policy = re.sub(rf"(?m)^{key} = .+\n", "", legacy_policy)
+        legacy_policy = legacy_policy.replace(
+            "guard_identifier_census = []\neffect_identifier_census = [",
+            "guard_identifier_census = [",
+        )
+        legacy_policy = legacy_policy.replace(
+            f'comparison_schema = "{COMPARISON_SCHEMA}"',
+            'comparison_schema = "gororoba-radeon-driver-source-map-comparison-v2"',
+            1,
+        )
+        legacy_policy_path = temp / "legacy-policy-schema-1.toml"
+        write_text(legacy_policy_path, legacy_policy)
+        accepts(
+            "retained policy schema 1 preserves the legacy product generation",
+            lambda: load_policy(
+                legacy_policy_path,
+                accepted_policy_schemas=RETAINED_POLICY_SCHEMAS,
+                accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+            ),
+        )
+        rejects(
+            "live production rejects retained policy schema 1",
+            lambda: load_policy(legacy_policy_path),
+        )
         legacy_comparison_policy = temp / "legacy-comparison-policy.toml"
         write_text(
             legacy_comparison_policy,
@@ -10468,9 +11511,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
 
         live_lane = policy.kernel_lanes[0]
         changed_toolchain_manifest = temp / "changed-toolchain-manifest.tsv"
-        toolchain_manifest_text = (
-            repository / live_lane.toolchain_manifest
-        ).read_text(encoding="ascii")
+        toolchain_manifest_text = (repository / live_lane.toolchain_manifest).read_text(
+            encoding="ascii"
+        )
         write_text(
             changed_toolchain_manifest,
             toolchain_manifest_text.replace(
@@ -10528,8 +11571,10 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         prefix_manifest_lines = (
-            repository / live_lane.toolchain_prefix_manifest
-        ).read_text(encoding="ascii").splitlines()
+            (repository / live_lane.toolchain_prefix_manifest)
+            .read_text(encoding="ascii")
+            .splitlines()
+        )
         unsorted_prefix_manifest = temp / "unsorted-prefix-tree.tsv"
         unsorted_lines = list(prefix_manifest_lines)
         unsorted_lines[2], unsorted_lines[3] = (
@@ -10544,8 +11589,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         duplicate_prefix_manifest = temp / "duplicate-prefix-tree.tsv"
         write_text(
             duplicate_prefix_manifest,
-            "\n".join([*prefix_manifest_lines, prefix_manifest_lines[-1]])
-            + "\n",
+            "\n".join([*prefix_manifest_lines, prefix_manifest_lines[-1]]) + "\n",
         )
         rejects(
             "toolchain prefix manifest rejects a duplicate row",
@@ -10619,15 +11663,10 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
         unicode_size_prefix_manifest = temp / "unicode-size-prefix-tree.tsv"
-        unicode_size = "".join(
-            chr(0xFF10 + int(digit)) for digit in "798216"
-        )
+        unicode_size = "".join(chr(0xFF10 + int(digit)) for digit in "798216")
         canonical_prefix_text = "\n".join(prefix_manifest_lines) + "\n"
         require(
-            canonical_prefix_text.count(
-                "bin/FileCheck\tregular\t0755\t798216\t"
-            )
-            == 1,
+            canonical_prefix_text.count("bin/FileCheck\tregular\t0755\t798216\t") == 1,
             "toolchain Unicode-size fixture anchor differs",
         )
         write_text(
@@ -10739,7 +11778,12 @@ def self_test(repository: Path, policy_path: Path) -> int:
             not side_effect.exists(),
         )
 
-    check("policy binding IDs and normalized edges are finite and unique", len({item.name for item in policy.bindings}) == len(policy.bindings) and len({(item.kind, item.caller, item.callee) for item in policy.bindings}) == len(policy.bindings))
+    check(
+        "policy binding IDs and normalized edges are finite and unique",
+        len({item.name for item in policy.bindings}) == len(policy.bindings)
+        and len({(item.kind, item.caller, item.callee) for item in policy.bindings})
+        == len(policy.bindings),
+    )
     check(
         "preprocessor prefix-map targets are absolute shell-safe paths",
         all(
@@ -10751,13 +11795,34 @@ def self_test(repository: Path, policy_path: Path) -> int:
             )
         ),
     )
-    check("product schemas do not claim runtime or hardware verdicts", all(term not in (LEXICAL_SCHEMA + DECLARED_BINDING_SCHEMA) for term in ("runtime", "reachable", "invoked", "hardware-pass")))
-    check("capture output is required outside the repository", repository_contains(repository, repository / "inside"))
+    check(
+        "product schemas do not claim runtime or hardware verdicts",
+        all(
+            term not in (LEXICAL_SCHEMA + DECLARED_BINDING_SCHEMA)
+            for term in ("runtime", "reachable", "invoked", "hardware-pass")
+        ),
+    )
+    check(
+        "capture output is required outside the repository",
+        repository_contains(repository, repository / "inside"),
+    )
+
+    if verdicts != EXPECTED_SELFTEST_VERDICT_COUNT:
+        print(
+            "  CALIBRATION FAIL: verdict denominator differs: "
+            f"expected {EXPECTED_SELFTEST_VERDICT_COUNT}, found {verdicts}",
+            file=sys.stderr,
+        )
+        failures += 1
 
     if failures:
-        print(f"Radeon driver source-map calibration: FAIL ({failures})", file=sys.stderr)
+        print(
+            f"Radeon driver source-map calibration: FAIL ({failures})", file=sys.stderr
+        )
         return 1
-    print(f"Radeon driver source-map calibration: {verdicts} adversarial verdicts passed")
+    print(
+        f"Radeon driver source-map calibration: {verdicts} adversarial verdicts passed"
+    )
     return 0
 
 
@@ -10810,11 +11875,11 @@ def main() -> int:
             or args.require_all_kernel_lanes
             or option_present("--treeish")
         ):
-            parser.error(
-                "--self-test accepts only --repository and --policy"
-            )
+            parser.error("--self-test accepts only --repository and --policy")
         repository = resolve_repository(args.repository)
-        policy_path = args.policy if args.policy.is_absolute() else repository / args.policy
+        policy_path = (
+            args.policy if args.policy.is_absolute() else repository / args.policy
+        )
         return self_test(repository, policy_path)
     if args.verify:
         if (
@@ -10844,9 +11909,7 @@ def main() -> int:
             or args.require_all_kernel_lanes
             or option_present("--repository", "--policy", "--treeish")
         ):
-            parser.error(
-                "--compare accepts only two capture paths and --output"
-            )
+            parser.error("--compare accepts only two capture paths and --output")
         compare_captures(args.compare[0], args.compare[1], args.output.resolve())
         return 0
     if args.inventory_toolchain_prefix:

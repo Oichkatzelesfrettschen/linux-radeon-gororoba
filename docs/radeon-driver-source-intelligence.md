@@ -72,7 +72,8 @@ kernel lanes. A manifest supplied file list cannot widen that denominator.
 | Indirect graph | `radeon-driver-declared-bindings.tsv`, `analysis/extracted-binding-candidates.tsv` | Brace bounded policy bindings and syntax extracted candidates preserve callback, macro, table, and file operation discontinuities. |
 | Unified graph | `analysis/call-candidates.tsv` | The exact union keeps edge kind, caller, callee, partition, provenance, and classification. |
 | Contextual paths | `analysis/contextual-path-witnesses.tsv`, `analysis/contextual-path-joins.tsv` | Ordered axes and typed joins preserve required family, profile, ring, token, and event context. |
-| Hazard census | `analysis/hazard-guard-identifier-census.tsv` | Policy named identifiers occur in bounded owner functions. The product is not a control flow proof. |
+| Guard census | `analysis/hazard-guard-identifier-census.tsv` | Policy named guard identifiers occur in bounded owner functions. The product is not a control flow proof. |
+| Effect census | `policy/radeon-driver-source-map.toml` | Policy named effect identifiers replay against bounded owner functions without entering the guard product. The census is not a side effect proof. |
 | Complexity | `analysis/lizard.csv`, `analysis/scc.json`, `analysis/coefficient-vectors.tsv` | Function NLOC, CCN, graph degree, indirect edges, side effect class, guard census, and evidence rank remain separately inspectable. |
 | Build lanes | `preprocessed/<release>/<profile>/` | Every declared lane retains 21 normalized translation units, one linked module, raw symbols, canonical symbols, and build metadata. |
 | Profile deltas | `analysis/profile-symbol-delta-summary.tsv`, `analysis/profile-symbol-delta-members.tsv` | Canonical symbols strip only a terminal `.llvm.<digits>` suffix, reject collisions, and preserve exact additions and removals. |
@@ -558,11 +559,30 @@ source delta.
 ## Live RS482 capacity-policy extension
 
 The sealed `8158297` reference remains an attestation of its original 43 roots
-and 45 declared bindings. The live policy extends the next capture to 73 unique
-roots and 55 exact declared bindings. It adds request normalization, RS400 ASIC
-initialization, selector adjustment, address fit, TTM managers, allocator
-movement, pin accounting, capacity ioctls, GEM observation, and the excluded
-raw VRAM and GTT reader boundary.
+and 45 declared bindings. The live policy extends the next capture to 73 roots,
+13 hazards, and 55 exact declared bindings. It adds request normalization,
+RS400 ASIC initialization, selector adjustment, address fit, TTM managers,
+allocator movement, pin accounting, capacity ioctls, GEM observation, and the
+excluded raw VRAM and GTT reader boundary.
+
+The producer pins every partition and root pair with SHA-256
+`a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814`,
+every hazard record with SHA-256
+`79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5`,
+and every normalized binding record with SHA-256
+`e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77`.
+Policy loading rejects a missing, added, moved, or changed member before
+capture.
+
+Policy schema 2 owns these exact live denominators and the separate effect
+identifier census. New capture production accepts schema 2 only. Retained
+capture verification also accepts schema 1 and replays its original product
+set without applying schema 2 counts or adding a new analysis file.
+The live topology carries six contextual witnesses. The two added witnesses
+separate TTM debugfs registration from later `radeon_vram` and `radeon_gtt`
+read dispatch. The VRAM reader carries an MMIO index write plus a data read;
+the GTT reader copies host backing-page content. Neither path is promoted to a
+runtime event or admitted capacity-trial input.
 
 The root expansion changes the producer-derived cscope denominator from 129 to
 219 raw queries. It changes the source-only command contract from 156 to 246
@@ -638,7 +658,8 @@ The source intelligence program advances through these concrete gates:
 7. The RS482 capacity source checker closes its four selectors, ten exclusions,
    ten coefficients, 36 source functions, module request, ioctl table, and
    register encodings before any target trial. A fresh source-only capture and
-   the required complete kernel-lane CI job close the 73-root graph.
+   the required complete kernel-lane CI job close the 73-root, 13-hazard,
+   55-binding, six-witness graph.
 8. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.
 9. `steinmarder-r300` records a read only Vostro production baseline with

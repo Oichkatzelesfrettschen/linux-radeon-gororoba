@@ -1,9 +1,15 @@
-schema = 1
+schema = 2
 capture_schema = "gororoba-radeon-driver-source-map-v2"
 comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
 max_source_bytes = 7000000
+root_denominator_count = 73
+root_denominator_sha256 = "a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814"
+hazard_denominator_count = 13
+hazard_denominator_sha256 = "79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5"
+binding_denominator_count = 55
+binding_denominator_sha256 = "e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77"
 
 required_tools = [
   "bwrap",
@@ -310,6 +316,24 @@ symbol = "evergreen_gpu_pci_config_reset_safe"
 side_effect_class = "pci-config-reset"
 guard_identifier_census = [
   { owner = "evergreen_gpu_pci_config_reset_safe", identifiers = ["CHIP_PALM", "lockdep_assert_held_write", "radeon_dev_hardware_available", "radeon_palm_dev_pci_reset_unsafe"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_ttm_vram_read"
+side_effect_class = "mmio-index-write-and-vram-read"
+guard_identifier_census = []
+effect_identifier_census = [
+  { owner = "radeon_ttm_vram_read", identifiers = ["mc_vram_size", "mmio_idx_lock", "RADEON_MM_INDEX", "EVERGREEN_MM_INDEX_HI", "RADEON_MM_DATA"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_ttm_gtt_read"
+side_effect_class = "host-page-content-read"
+guard_identifier_census = []
+effect_identifier_census = [
+  { owner = "radeon_ttm_gtt_read", identifiers = ["num_cpu_pages", "pages", "kmap_local_page", "copy_to_user"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -1017,6 +1041,47 @@ edge = [
 ]
 join = [
   { kind = "debugfs-write-event", from_axis = "debugfs-registration", from_symbol = "radeon_force_pci_reset_safe", to_axis = "debugfs-write-dispatch", to_symbol = "radeon_force_pci_reset_safe", evidence_ids = ["palm-reset-debugfs-node", "palm-reset-fops-write", "palm-reset-node-registration"] },
+]
+
+[[path_witness]]
+name = "radeon-vram-debugfs-payload-read"
+entry = "radeon_bo_init"
+terminal = "radeon_ttm_vram_read"
+context = [
+  "The path requires CONFIG_DEBUG_FS in the compiled source.",
+  "The path requires radeon_ttm_init to complete through debugfs registration.",
+  "The read requires size and file position to be 32-bit aligned.",
+  "The read writes the MMIO index selector before reading VRAM data.",
+  "The witness assumes a later debugfs read dispatch from the registered node.",
+]
+edge = [
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_bo_init", callee = "radeon_ttm_init", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_ttm_init", callee = "radeon_ttm_debugfs_init", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "declared-indirect", caller = "radeon_ttm_debugfs_init", callee = "radeon_ttm_vram_fops", partition = "gart-and-memory", provenance = "ttm-vram-debugfs-registration", classification = "debugfs-registration" },
+  { axis = "debugfs-read-dispatch", edge_kind = "declared-indirect", caller = "radeon_ttm_vram_fops", callee = "radeon_ttm_vram_read", partition = "gart-and-memory", provenance = "ttm-vram-fops-read", classification = "file-operations-table" },
+]
+join = [
+  { kind = "debugfs-read-event", from_axis = "debugfs-registration", from_symbol = "radeon_ttm_vram_fops", to_axis = "debugfs-read-dispatch", to_symbol = "radeon_ttm_vram_fops", evidence_ids = ["ttm-vram-debugfs-registration", "ttm-vram-fops-read"] },
+]
+
+[[path_witness]]
+name = "radeon-gtt-debugfs-payload-read"
+entry = "radeon_bo_init"
+terminal = "radeon_ttm_gtt_read"
+context = [
+  "The path requires CONFIG_DEBUG_FS in the compiled source.",
+  "The path requires radeon_ttm_init to complete through debugfs registration.",
+  "The read copies present GART backing pages and clears absent-page ranges.",
+  "The witness assumes a later debugfs read dispatch from the registered node.",
+]
+edge = [
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_bo_init", callee = "radeon_ttm_init", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "lexical", caller = "radeon_ttm_init", callee = "radeon_ttm_debugfs_init", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+  { axis = "debugfs-registration", edge_kind = "declared-indirect", caller = "radeon_ttm_debugfs_init", callee = "radeon_ttm_gtt_fops", partition = "gart-and-memory", provenance = "ttm-gtt-debugfs-registration", classification = "debugfs-registration" },
+  { axis = "debugfs-read-dispatch", edge_kind = "declared-indirect", caller = "radeon_ttm_gtt_fops", callee = "radeon_ttm_gtt_read", partition = "gart-and-memory", provenance = "ttm-gtt-fops-read", classification = "file-operations-table" },
+]
+join = [
+  { kind = "debugfs-read-event", from_axis = "debugfs-registration", from_symbol = "radeon_ttm_gtt_fops", to_axis = "debugfs-read-dispatch", to_symbol = "radeon_ttm_gtt_fops", evidence_ids = ["ttm-gtt-debugfs-registration", "ttm-gtt-fops-read"] },
 ]
 
 [[bounded_query]]

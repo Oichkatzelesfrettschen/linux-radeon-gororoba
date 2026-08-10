@@ -277,9 +277,11 @@ largest free extent across a concurrent mutation, or end-to-end performance.
 The raw `radeon_vram` and `radeon_gtt` files access mapped payload or backing
 pages. The VRAM reader writes the MMIO index selector before reading the data
 register. The GTT reader copies present host backing pages and clears ranges
-whose page pointer is absent. Their bounds do not establish the visible-VRAM,
-parked, suspended, and lifetime contract required by this allocator-only lane,
-so the exclusion ledger keeps them out.
+whose page pointer is absent. Two contextual source-map witnesses separate
+node registration from a later read event and classify each path by its
+maximum source-visible side effect. Their bounds do not establish the
+visible-VRAM, parked, suspended, and lifetime contract required by this
+allocator-only lane, so the exclusion ledger keeps them out.
 
 ## Research-quality selection method
 
@@ -321,9 +323,11 @@ The work proceeds through explicit gates:
    exclusion rows, ten coefficient rows, two lineage rows, 36 source
    functions, module request, two ioctl bindings, and eight register
    encodings.
-2. The source-map policy closes the request, selector, address fit, allocator,
-   GART, ioctl, debugfs, and raw reader structural boundaries. A fresh source
-   map remains a lexical candidate graph rather than runtime proof.
+2. The source-map policy closes exactly 73 partition bound roots, 13 hazards,
+   55 declared bindings, and six contextual witnesses across the request,
+   selector, address fit, allocator, GART, ioctl, debugfs, and raw reader
+   structural boundaries. A fresh source map remains a lexical candidate graph
+   rather than runtime proof.
 3. A read-only exact-target production baseline records the loaded request,
    effective GTT interval, GART state, allocator counters, device identity,
    module identity, boot identity, and logs before any pressure trial.

@@ -146,23 +146,27 @@ hardware behavior, or completeness of indirect bindings. Preprocessed views
 resolve named build lanes without changing that boundary. Contextual path
 witnesses preserve ordered source edges, required conditions, and typed
 callback or debugfs event joins without collapsing registration time into later
-dispatch. `analysis/hazard-guard-identifier-census.tsv` remains a lexical
-census. The mutation calibrated semantic checkers own their declared primary
-source contracts. The reset checkers pin exact lexical intervals, reject a
-finite opaque control set, and assume other intervening calls return. They do
-not prove a compiler control flow graph, included header macro state, or
-runtime execution.
+dispatch. `analysis/hazard-guard-identifier-census.tsv` records guard tokens.
+The retained source-map policy records separate effect token censuses, and the
+verifier replays them without relabeling them as guards. Both surfaces remain
+lexical censuses. The mutation calibrated semantic checkers own their declared
+primary source contracts. The reset checkers pin exact lexical intervals,
+reject a finite opaque control set, and assume other intervening calls return.
+They do not prove a compiler control flow graph, included header macro state,
+or runtime execution.
 
 The RS482 VRAM and GTT capacity policy expands the live source denominator to
-73 unique roots and 55 exact declared bindings. The added graph covers module
-request normalization, RS400 initialization, address fit, TTM capacity,
-allocator movement, capacity ioctls, GEM observations, and the excluded raw
-VRAM and GTT reader boundary. Previously sealed source-map bundles retain their
-historical denominators and do not acquire these rows retroactively.
+73 partition bound roots, 13 exact hazards, and 55 exact declared bindings.
+The added graph covers module request normalization, RS400 initialization,
+address fit, TTM capacity, allocator movement, capacity ioctls, GEM
+observations, and the excluded raw VRAM and GTT reader boundary. Previously
+sealed source-map bundles retain their historical denominators and do not
+acquire these rows retroactively.
 
 `docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
-the complete reference attestation, the four retained path witnesses, the
-coefficient derivations, the trust boundaries, and the next verification gates.
+the complete reference attestation, its four retained path witnesses, the two
+live capacity payload-reader witnesses, the coefficient derivations, the trust
+boundaries, and the next verification gates.
 
 Two captures compare through normalized tables rather than analyzer database
 bytes:
