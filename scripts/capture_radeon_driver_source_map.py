@@ -88,19 +88,19 @@ CANONICAL_CSCOPE_SOURCE_ROOT = (
 )
 MAX_SOURCE_FILES = 256
 MAX_SOURCE_BYTES = 7_100_000
-EXPECTED_ROOT_DENOMINATOR_COUNT = 125
+EXPECTED_ROOT_DENOMINATOR_COUNT = 129
 EXPECTED_ROOT_DENOMINATOR_SHA256 = (
-    "5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5"
+    "2a3c47dd45cfd6fdac67bb11350f9f1bb2df892ff4dc88c6d3e1268811eafbec"
 )
-EXPECTED_HAZARD_DENOMINATOR_COUNT = 31
+EXPECTED_HAZARD_DENOMINATOR_COUNT = 33
 EXPECTED_HAZARD_DENOMINATOR_SHA256 = (
-    "3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3"
+    "e64f5bc248a7022b115813b6fecf6478b7ca06ee3ff2cb41907ae56a48b36065"
 )
 EXPECTED_BINDING_DENOMINATOR_COUNT = 70
 EXPECTED_BINDING_DENOMINATOR_SHA256 = (
     "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 )
-EXPECTED_SELFTEST_VERDICT_COUNT = 252
+EXPECTED_SELFTEST_VERDICT_COUNT = 254
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -11489,7 +11489,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     expected_source_commands = expected_command_records(policy, [entry], set())
     check(
         "source command contract closes the analyzer command denominator",
-        len(expected_source_commands) == 404,
+        len(expected_source_commands) == 418,
     )
     expected_kernel_commands = expected_command_records(
         policy,
@@ -11501,7 +11501,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     ]
     check(
         "kernel command contract pins host make, shell, and LLVM prefix",
-        len(expected_kernel_commands) == 424
+        len(expected_kernel_commands) == 438
         and len(expected_make_commands) == 12
         and all(
             (arguments := json.loads(row[6]))[0] == "/usr/bin/make"
@@ -13046,6 +13046,22 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: load_policy(moved_capacity_root),
         )
 
+        missing_firmware_root = temp / "missing-firmware-root.toml"
+        firmware_root_row = '  "radeon_combios_asic_init",\n'
+        require(
+            live_policy.count(firmware_root_row) == 1,
+            "firmware root mutation anchor differs",
+        )
+        write_text(
+            missing_firmware_root,
+            live_policy.replace(firmware_root_row, "", 1),
+        )
+        rejects_with(
+            "policy rejects a missing COMBIOS execution root",
+            "root denominator count differs",
+            lambda: load_policy(missing_firmware_root),
+        )
+
         def hazard_block(hazard_symbol: str) -> re.Match[str]:
             pattern = re.compile(
                 rf'\n\[\[hazard\]\]\nsymbol = "{re.escape(hazard_symbol)}"\n'
@@ -13111,6 +13127,27 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: load_policy(changed_effect_identifier),
         )
 
+        combios_hazard_match = hazard_block("radeon_combios_asic_init")
+        combios_hazard_text = combios_hazard_match.group(0)
+        changed_combios_effect = temp / "changed-combios-effect-identifier.toml"
+        write_text(
+            changed_combios_effect,
+            live_policy.replace(
+                combios_hazard_text,
+                combios_hazard_text.replace(
+                    '"combios_parse_mmio_table"',
+                    '"combios_parse_unchecked_table"',
+                    1,
+                ),
+                1,
+            ),
+        )
+        rejects_with(
+            "policy rejects a changed COMBIOS execution effect",
+            "hazard denominator identity differs",
+            lambda: load_policy(changed_combios_effect),
+        )
+
         def policy_without_binding(binding_name: str) -> str:
             pattern = re.compile(
                 rf'\n\[\[binding\]\]\nname = "{re.escape(binding_name)}"\n'
@@ -13157,6 +13194,13 @@ def self_test(repository: Path, policy_path: Path) -> int:
         legacy_policy = legacy_policy.replace(
             "guard_identifier_census = []\neffect_identifier_census = [",
             "guard_identifier_census = [",
+        )
+        legacy_policy = re.sub(
+            r"(?m)^effect_identifier_census = \[\n"
+            r"(?:  \{ owner = .+\n)+"
+            r"\]\n",
+            "",
+            legacy_policy,
         )
         legacy_policy = legacy_policy.replace(
             f'comparison_schema = "{COMPARISON_SCHEMA}"',

@@ -132,9 +132,10 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 {
 	struct radeon_device *rdev = dev->dev_private;
 	int rev, size;
+	size_t scan_offset;
 	uint16_t offset = 0, check_offset;
 
-	if (!rdev->bios)
+	if (!rdev->bios || READ_ONCE(rdev->bios_parse_failed))
 		return 0;
 
 	switch (table) {
@@ -294,10 +295,16 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		check_offset =
 		    combios_get_table_offset(dev, COMBIOS_MEM_CONFIG_TABLE);
 		if (check_offset) {
-			while (RBIOS8(check_offset++));
-			check_offset += 2;
-			if (check_offset)
-				offset = check_offset;
+			scan_offset = check_offset;
+			while (radeon_bios_read_u8(rdev, scan_offset++)) {
+				if (READ_ONCE(rdev->bios_parse_failed))
+					return 0;
+			}
+			scan_offset += 2;
+			if (scan_offset <= U16_MAX)
+				offset = scan_offset;
+			else
+				WRITE_ONCE(rdev->bios_parse_failed, true);
 		}
 		break;
 	case COMBIOS_POWERPLAY_INFO_TABLE:	/* offset from mobile info */
@@ -363,24 +370,32 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 	/* check absolute offset tables */
 	if (table < COMBIOS_ASIC_INIT_3_TABLE && check_offset && check_offset < size)
 		offset = RBIOS16(rdev->bios_header_start + check_offset);
+	if (READ_ONCE(rdev->bios_parse_failed))
+		return 0;
 
 	return offset;
 }
 
 bool radeon_combios_check_hardcoded_edid(struct radeon_device *rdev)
 {
-	int edid_info, size;
+	int edid_info;
+	size_t size;
 	const struct drm_edid *edid;
 	unsigned char *raw;
+
 	edid_info = combios_get_table_offset(rdev_to_drm(rdev), COMBIOS_HARDCODED_EDID_TABLE);
 	if (!edid_info)
 		return false;
 
+	if (!radeon_bios_span_valid(rdev, edid_info, EDID_LENGTH))
+		return false;
 	raw = rdev->bios + edid_info;
-	size = EDID_LENGTH * (raw[0x7e] + 1);
+	size = EDID_LENGTH * ((size_t)raw[0x7e] + 1);
+	if (!radeon_bios_span_valid(rdev, edid_info, size))
+		return false;
 	edid = drm_edid_alloc(raw, size);
 
-	if (!drm_edid_valid(edid)) {
+	if (!edid || !drm_edid_valid(edid)) {
 		drm_edid_free(edid);
 		return false;
 	}
@@ -2865,6 +2880,85 @@ void radeon_external_tmds_setup(struct drm_encoder *encoder)
 
 }
 
+static bool combios_validate_external_tmds_table(struct radeon_device *rdev,
+						 uint16_t table_offset,
+						 bool igp)
+{
+	size_t index;
+	uint16_t entry;
+	uint8_t blocks;
+	size_t payload_size;
+
+	if (!table_offset)
+		return false;
+
+	if (igp) {
+		if (!radeon_bios_span_valid(rdev, table_offset, 4))
+			return false;
+		if (radeon_bios_read_u8(rdev, table_offset) <= 1)
+			return false;
+		blocks = radeon_bios_read_u8(rdev, table_offset + 3);
+		index = table_offset + 4;
+		while (blocks--) {
+			entry = radeon_bios_read_u16(rdev, index);
+			if (READ_ONCE(rdev->bios_parse_failed))
+				return false;
+			index += sizeof(entry);
+			switch (entry >> 13) {
+			case 0:
+				payload_size = sizeof(uint32_t);
+				break;
+			case 2:
+				payload_size = 2 * sizeof(uint32_t);
+				break;
+			case 3:
+			case 4:
+				payload_size = sizeof(uint16_t);
+				break;
+			case 6:
+				payload_size = 3;
+				break;
+			default:
+				return false;
+			}
+			if (!radeon_bios_span_valid(rdev, index, payload_size))
+				return false;
+			index += payload_size;
+		}
+		return true;
+	}
+
+	index = table_offset + 10;
+	for (;;) {
+		entry = radeon_bios_read_u16(rdev, index);
+		if (READ_ONCE(rdev->bios_parse_failed))
+			return false;
+		if (entry == 0xffff)
+			return true;
+		index += sizeof(entry);
+		switch (entry >> 13) {
+		case 0:
+			payload_size = sizeof(uint32_t);
+			break;
+		case 2:
+		case 5:
+			payload_size = 2 * sizeof(uint32_t);
+			break;
+		case 4:
+			payload_size = sizeof(uint16_t);
+			break;
+		case 6:
+			payload_size = sizeof(uint8_t);
+			break;
+		default:
+			return false;
+		}
+		if (!radeon_bios_span_valid(rdev, index, payload_size))
+			return false;
+		index += payload_size;
+	}
+}
+
 bool radeon_combios_external_tmds_setup(struct drm_encoder *encoder)
 {
 	struct drm_device *dev = encoder->dev;
@@ -2872,7 +2966,8 @@ bool radeon_combios_external_tmds_setup(struct drm_encoder *encoder)
 	struct radeon_encoder *radeon_encoder = to_radeon_encoder(encoder);
 	uint16_t offset;
 	uint8_t blocks, slave_addr, rev;
-	uint32_t index, id;
+	size_t index;
+	uint32_t id;
 	uint32_t reg, val, and_mask, or_mask;
 	struct radeon_encoder_ext_tmds *tmds = radeon_encoder->enc_priv;
 
@@ -2881,8 +2976,7 @@ bool radeon_combios_external_tmds_setup(struct drm_encoder *encoder)
 
 	if (rdev->flags & RADEON_IS_IGP) {
 		offset = combios_get_table_offset(dev, COMBIOS_TMDS_POWER_ON_TABLE);
-		rev = RBIOS8(offset);
-		if (offset) {
+		if (combios_validate_external_tmds_table(rdev, offset, true)) {
 			rev = RBIOS8(offset);
 			if (rev > 1) {
 				blocks = RBIOS8(offset + 3);
@@ -2940,7 +3034,7 @@ bool radeon_combios_external_tmds_setup(struct drm_encoder *encoder)
 		}
 	} else {
 		offset = combios_get_table_offset(dev, COMBIOS_EXT_TMDS_INFO_TABLE);
-		if (offset) {
+		if (combios_validate_external_tmds_table(rdev, offset, false)) {
 			index = offset + 10;
 			id = RBIOS16(index);
 			while (id != 0xffff) {
@@ -2949,6 +3043,7 @@ bool radeon_combios_external_tmds_setup(struct drm_encoder *encoder)
 				case 0:
 					reg = (id & 0x1fff) * 4;
 					val = RBIOS32(index);
+					index += 4;
 					WREG32(reg, val);
 					break;
 				case 2:
@@ -2996,11 +3091,104 @@ bool radeon_combios_external_tmds_setup(struct drm_encoder *encoder)
 	return false;
 }
 
-static void combios_parse_mmio_table(struct drm_device *dev, uint16_t offset)
+static bool combios_validate_mmio_table(struct radeon_device *rdev,
+					uint16_t table_offset)
+{
+	size_t offset = table_offset;
+	uint16_t entry;
+	size_t payload_size;
+
+	if (!table_offset)
+		return true;
+
+	for (;;) {
+		entry = radeon_bios_read_u16(rdev, offset);
+		if (READ_ONCE(rdev->bios_parse_failed))
+			return false;
+		if (!entry)
+			return true;
+		offset += sizeof(entry);
+
+		switch ((entry & 0xe000) >> 13) {
+		case 0:
+		case 1:
+			payload_size = sizeof(uint32_t);
+			break;
+		case 2:
+		case 3:
+			payload_size = 2 * sizeof(uint32_t);
+			break;
+		case 4:
+		case 5:
+			payload_size = sizeof(uint16_t);
+			break;
+		default:
+			payload_size = 0;
+			break;
+		}
+		if (!radeon_bios_span_valid(rdev, offset, payload_size))
+			return false;
+		offset += payload_size;
+	}
+}
+
+static bool combios_validate_pll_table(struct radeon_device *rdev,
+				       uint16_t table_offset)
+{
+	size_t offset = table_offset;
+	uint8_t entry;
+	size_t payload_size;
+
+	if (!table_offset)
+		return true;
+
+	for (;;) {
+		entry = radeon_bios_read_u8(rdev, offset);
+		if (READ_ONCE(rdev->bios_parse_failed))
+			return false;
+		if (!entry)
+			return true;
+		offset += sizeof(entry);
+		payload_size = ((entry & 0xc0) >> 6) == 0 ? sizeof(uint32_t) :
+			       ((entry & 0xc0) >> 6) == 1 ? 3 : 0;
+		if (!radeon_bios_span_valid(rdev, offset, payload_size))
+			return false;
+		offset += payload_size;
+	}
+}
+
+static bool combios_validate_ram_reset_table(struct radeon_device *rdev,
+					     uint16_t table_offset)
+{
+	size_t offset = table_offset;
+	uint8_t entry;
+
+	if (!table_offset)
+		return true;
+
+	for (;;) {
+		entry = radeon_bios_read_u8(rdev, offset);
+		if (READ_ONCE(rdev->bios_parse_failed))
+			return false;
+		if (entry == 0xff)
+			return true;
+		offset++;
+		if (entry != 0x0f) {
+			if (!radeon_bios_span_valid(rdev, offset,
+						    sizeof(uint16_t)))
+				return false;
+			offset += sizeof(uint16_t);
+		}
+	}
+}
+
+static void combios_parse_mmio_table(struct drm_device *dev,
+				     uint16_t table_offset)
 {
 	struct radeon_device *rdev = dev->dev_private;
+	size_t offset = table_offset;
 
-	if (offset) {
+	if (table_offset) {
 		while (RBIOS16(offset)) {
 			uint16_t cmd = ((RBIOS16(offset) & 0xe000) >> 13);
 			uint32_t addr = (RBIOS16(offset) & 0x1fff);
@@ -3075,11 +3263,13 @@ static void combios_parse_mmio_table(struct drm_device *dev, uint16_t offset)
 	}
 }
 
-static void combios_parse_pll_table(struct drm_device *dev, uint16_t offset)
+static void combios_parse_pll_table(struct drm_device *dev,
+				    uint16_t table_offset)
 {
 	struct radeon_device *rdev = dev->dev_private;
+	size_t offset = table_offset;
 
-	if (offset) {
+	if (table_offset) {
 		while (RBIOS8(offset)) {
 			uint8_t cmd = ((RBIOS8(offset) & 0xc0) >> 6);
 			uint8_t addr = (RBIOS8(offset) & 0x3f);
@@ -3166,12 +3356,13 @@ static void combios_parse_pll_table(struct drm_device *dev, uint16_t offset)
 }
 
 static void combios_parse_ram_reset_table(struct drm_device *dev,
-					  uint16_t offset)
+					  uint16_t table_offset)
 {
 	struct radeon_device *rdev = dev->dev_private;
 	uint32_t tmp;
+	size_t offset = table_offset;
 
-	if (offset) {
+	if (table_offset) {
 		uint8_t val = RBIOS8(offset);
 		while (val != 0xff) {
 			offset++;
@@ -3244,11 +3435,48 @@ static uint32_t combios_detect_ram(struct drm_device *dev, int ram,
 	return mem_size;
 }
 
-static void combios_write_ram_size(struct drm_device *dev)
+static bool combios_validate_ram_size_tables(struct radeon_device *rdev,
+					     uint16_t detected_offset,
+					     uint16_t config_offset)
+{
+	size_t offset;
+	uint8_t revision;
+
+	if (detected_offset) {
+		if (!radeon_bios_span_valid(rdev, detected_offset, 1))
+			return false;
+		if (radeon_bios_read_u8(rdev, detected_offset) < 3 &&
+		    !radeon_bios_span_valid(rdev, detected_offset, 7))
+			return false;
+	}
+	if (!config_offset)
+		return true;
+	if (!radeon_bios_span_valid(rdev, config_offset - 1, 2))
+		return false;
+
+	revision = radeon_bios_read_u8(rdev, config_offset - 1);
+	if (revision >= 1 || rdev->family >= CHIP_R200 || ASIC_IS_RN50(rdev))
+		return true;
+
+	offset = config_offset;
+	for (;;) {
+		if (!radeon_bios_span_valid(rdev, offset, 1))
+			return false;
+		if (!radeon_bios_read_u8(rdev, offset))
+			return true;
+		if (!radeon_bios_span_valid(rdev, offset, 2))
+			return false;
+		offset += 2;
+	}
+}
+
+static void combios_write_ram_size(struct drm_device *dev,
+				   uint16_t detected_offset,
+				   uint16_t config_offset)
 {
 	struct radeon_device *rdev = dev->dev_private;
 	uint8_t rev;
-	uint16_t offset;
+	size_t offset;
 	uint32_t mem_size = 0;
 	uint32_t mem_cntl = 0;
 
@@ -3257,7 +3485,7 @@ static void combios_write_ram_size(struct drm_device *dev)
 		return;
 
 	/* first check detected mem table */
-	offset = combios_get_table_offset(dev, COMBIOS_DETECTED_MEM_TABLE);
+	offset = detected_offset;
 	if (offset) {
 		rev = RBIOS8(offset);
 		if (rev < 3) {
@@ -3270,8 +3498,7 @@ static void combios_write_ram_size(struct drm_device *dev)
 	}
 
 	if (!mem_size) {
-		offset =
-		    combios_get_table_offset(dev, COMBIOS_MEM_CONFIG_TABLE);
+		offset = config_offset;
 		if (offset) {
 			rev = RBIOS8(offset - 1);
 			if (rev < 1) {
@@ -3306,50 +3533,75 @@ static void combios_write_ram_size(struct drm_device *dev)
 	WREG32(RADEON_CONFIG_MEMSIZE, mem_size);
 }
 
-void radeon_combios_asic_init(struct drm_device *dev)
+int radeon_combios_asic_init(struct drm_device *dev)
 {
 	struct radeon_device *rdev = dev->dev_private;
-	uint16_t table;
+	uint16_t asic_init_1;
+	uint16_t asic_init_2;
+	uint16_t asic_init_3 = 0;
+	uint16_t asic_init_4 = 0;
+	uint16_t detected_mem = 0;
+	uint16_t dyn_clk_1;
+	uint16_t mem_config = 0;
+	uint16_t pll_init;
+	uint16_t ram_reset = 0;
+	bool skip_dyn_clk_1;
 
 	/* port hardcoded mac stuff from radeonfb */
 	if (rdev->bios == NULL)
-		return;
+		return -EINVAL;
+	skip_dyn_clk_1 =
+		(rdev->family == CHIP_RS480 &&
+		 rdev->pdev->subsystem_vendor == 0x103c &&
+		 (rdev->pdev->subsystem_device == 0x308b ||
+		  rdev->pdev->subsystem_device == 0x30a4 ||
+		  rdev->pdev->subsystem_device == 0x30ae ||
+		  rdev->pdev->subsystem_device == 0x280a)) ||
+		(rdev->family == CHIP_RS400 &&
+		 rdev->pdev->subsystem_vendor == 0x1179 &&
+		 rdev->pdev->subsystem_device == 0xff31);
 
-	/* ASIC INIT 1 */
-	table = combios_get_table_offset(dev, COMBIOS_ASIC_INIT_1_TABLE);
-	if (table)
-		combios_parse_mmio_table(dev, table);
-
-	/* PLL INIT */
-	table = combios_get_table_offset(dev, COMBIOS_PLL_INIT_TABLE);
-	if (table)
-		combios_parse_pll_table(dev, table);
-
-	/* ASIC INIT 2 */
-	table = combios_get_table_offset(dev, COMBIOS_ASIC_INIT_2_TABLE);
-	if (table)
-		combios_parse_mmio_table(dev, table);
+	asic_init_1 = combios_get_table_offset(dev, COMBIOS_ASIC_INIT_1_TABLE);
+	pll_init = combios_get_table_offset(dev, COMBIOS_PLL_INIT_TABLE);
+	asic_init_2 = combios_get_table_offset(dev, COMBIOS_ASIC_INIT_2_TABLE);
+	dyn_clk_1 = skip_dyn_clk_1 ? 0 :
+		combios_get_table_offset(dev, COMBIOS_DYN_CLK_1_TABLE);
 
 	if (!(rdev->flags & RADEON_IS_IGP)) {
-		/* ASIC INIT 4 */
-		table =
-		    combios_get_table_offset(dev, COMBIOS_ASIC_INIT_4_TABLE);
-		if (table)
-			combios_parse_mmio_table(dev, table);
+		asic_init_4 = combios_get_table_offset(dev,
+						       COMBIOS_ASIC_INIT_4_TABLE);
+		ram_reset = combios_get_table_offset(dev,
+						     COMBIOS_RAM_RESET_TABLE);
+		asic_init_3 = combios_get_table_offset(dev,
+						       COMBIOS_ASIC_INIT_3_TABLE);
+		detected_mem = combios_get_table_offset(dev,
+							COMBIOS_DETECTED_MEM_TABLE);
+		mem_config = combios_get_table_offset(dev,
+						      COMBIOS_MEM_CONFIG_TABLE);
+	}
 
-		/* RAM RESET */
-		table = combios_get_table_offset(dev, COMBIOS_RAM_RESET_TABLE);
-		if (table)
-			combios_parse_ram_reset_table(dev, table);
+	if (READ_ONCE(rdev->bios_parse_failed) ||
+	    !combios_validate_mmio_table(rdev, asic_init_1) ||
+	    !combios_validate_pll_table(rdev, pll_init) ||
+	    !combios_validate_mmio_table(rdev, asic_init_2) ||
+	    !combios_validate_mmio_table(rdev, asic_init_4) ||
+	    !combios_validate_ram_reset_table(rdev, ram_reset) ||
+	    !combios_validate_mmio_table(rdev, asic_init_3) ||
+	    !combios_validate_ram_size_tables(rdev, detected_mem, mem_config) ||
+	    !combios_validate_pll_table(rdev, dyn_clk_1)) {
+		DRM_ERROR("COMBIOS ASIC initialization tables are invalid\n");
+		return -EINVAL;
+	}
 
-		/* ASIC INIT 3 */
-		table =
-		    combios_get_table_offset(dev, COMBIOS_ASIC_INIT_3_TABLE);
-		if (table)
-			combios_parse_mmio_table(dev, table);
+	combios_parse_mmio_table(dev, asic_init_1);
+	combios_parse_pll_table(dev, pll_init);
+	combios_parse_mmio_table(dev, asic_init_2);
 
-		/* write CONFIG_MEMSIZE */
-		combios_write_ram_size(dev);
+	if (!(rdev->flags & RADEON_IS_IGP)) {
+		combios_parse_mmio_table(dev, asic_init_4);
+		combios_parse_ram_reset_table(dev, ram_reset);
+		combios_parse_mmio_table(dev, asic_init_3);
+		combios_write_ram_size(dev, detected_mem, mem_config);
 	}
 
 	/* quirk for rs4xx HP nx6125 laptop to make it resume
@@ -3358,7 +3610,7 @@ void radeon_combios_asic_init(struct drm_device *dev)
 	if (rdev->family == CHIP_RS480 &&
 	    rdev->pdev->subsystem_vendor == 0x103c &&
 	    rdev->pdev->subsystem_device == 0x308b)
-		return;
+		return 0;
 
 	/* quirk for rs4xx HP dv5000 laptop to make it resume
 	 * - it hangs on resume inside the dynclk 1 table.
@@ -3366,7 +3618,7 @@ void radeon_combios_asic_init(struct drm_device *dev)
 	if (rdev->family == CHIP_RS480 &&
 	    rdev->pdev->subsystem_vendor == 0x103c &&
 	    rdev->pdev->subsystem_device == 0x30a4)
-		return;
+		return 0;
 
 	/* quirk for rs4xx Compaq Presario V5245EU laptop to make it resume
 	 * - it hangs on resume inside the dynclk 1 table.
@@ -3374,7 +3626,7 @@ void radeon_combios_asic_init(struct drm_device *dev)
 	if (rdev->family == CHIP_RS480 &&
 	    rdev->pdev->subsystem_vendor == 0x103c &&
 	    rdev->pdev->subsystem_device == 0x30ae)
-		return;
+		return 0;
 
 	/* quirk for rs4xx HP Compaq dc5750 Small Form Factor to make it resume
 	 * - it hangs on resume inside the dynclk 1 table.
@@ -3382,20 +3634,19 @@ void radeon_combios_asic_init(struct drm_device *dev)
 	if (rdev->family == CHIP_RS480 &&
 	    rdev->pdev->subsystem_vendor == 0x103c &&
 	    rdev->pdev->subsystem_device == 0x280a)
-		return;
+		return 0;
 	/* quirk for rs4xx Toshiba Sattellite L20-183 latop to make it resume
 	 * - it hangs on resume inside the dynclk 1 table.
 	 */
 	if (rdev->family == CHIP_RS400 &&
 	    rdev->pdev->subsystem_vendor == 0x1179 &&
 	    rdev->pdev->subsystem_device == 0xff31)
-	        return;
+		return 0;
 
 	/* DYN CLK 1 */
-	table = combios_get_table_offset(dev, COMBIOS_DYN_CLK_1_TABLE);
-	if (table)
-		combios_parse_pll_table(dev, table);
+	combios_parse_pll_table(dev, dyn_clk_1);
 
+	return 0;
 }
 
 void radeon_combios_initialize_bios_scratch_regs(struct drm_device *dev)

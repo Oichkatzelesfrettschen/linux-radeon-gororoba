@@ -4,10 +4,10 @@ comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
 max_source_bytes = 7100000
-root_denominator_count = 125
-root_denominator_sha256 = "5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5"
-hazard_denominator_count = 31
-hazard_denominator_sha256 = "3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3"
+root_denominator_count = 129
+root_denominator_sha256 = "2a3c47dd45cfd6fdac67bb11350f9f1bb2df892ff4dc88c6d3e1268811eafbec"
+hazard_denominator_count = 33
+hazard_denominator_sha256 = "e64f5bc248a7022b115813b6fecf6478b7ca06ee3ff2cb41907ae56a48b36065"
 binding_denominator_count = 70
 binding_denominator_sha256 = "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 
@@ -90,6 +90,8 @@ translation_units = [
   "drivers/gpu/drm/radeon/radeon_fbdev.c",
   "drivers/gpu/drm/radeon/radeon_fence.c",
   "drivers/gpu/drm/radeon/radeon_ib.c",
+  "drivers/gpu/drm/radeon/radeon_bios.c",
+  "drivers/gpu/drm/radeon/radeon_combios.c",
   "drivers/gpu/drm/radeon/r100.c",
   "drivers/gpu/drm/radeon/r300.c",
   "drivers/gpu/drm/radeon/rs400.c",
@@ -493,6 +495,16 @@ roots = [
 ]
 falsifier = "A generated register bitmap that does not derive from the admitted reg_srcs input invalidates the source graph."
 
+[[partition]]
+name = "firmware-parsing"
+roots = [
+  "radeon_get_bios",
+  "radeon_bios_span_valid",
+  "radeon_combios_asic_init",
+  "radeon_combios_external_tmds_setup",
+]
+falsifier = "A BIOS acquisition without an exact copied extent, a PCI image accepted outside that extent, or a COMBIOS hardware command executed before complete table preflight invalidates the firmware boundary."
+
 [[hazard]]
 symbol = "radeon_dev_hardware_available"
 side_effect_class = "state-read"
@@ -746,6 +758,28 @@ side_effect_class = "host-page-content-read"
 guard_identifier_census = []
 effect_identifier_census = [
   { owner = "radeon_ttm_gtt_read", identifiers = ["num_cpu_pages", "pages", "kmap_local_page", "copy_to_user"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_combios_asic_init"
+side_effect_class = "firmware-directed-mmio-pll-delay"
+guard_identifier_census = [
+  { owner = "radeon_combios_asic_init", identifiers = ["bios", "bios_parse_failed", "combios_validate_mmio_table", "combios_validate_pll_table", "combios_validate_ram_reset_table", "combios_validate_ram_size_tables"] },
+]
+effect_identifier_census = [
+  { owner = "radeon_combios_asic_init", identifiers = ["combios_parse_mmio_table", "combios_parse_pll_table", "combios_parse_ram_reset_table", "combios_write_ram_size"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_combios_external_tmds_setup"
+side_effect_class = "firmware-directed-mmio-pll-i2c-delay"
+guard_identifier_census = [
+  { owner = "radeon_combios_external_tmds_setup", identifiers = ["combios_validate_external_tmds_table"] },
+]
+effect_identifier_census = [
+  { owner = "radeon_combios_external_tmds_setup", identifiers = ["WREG32", "WREG32_PLL", "radeon_i2c_put_byte", "udelay", "mdelay"] },
 ]
 evidence_rank = "kernel-source"
 

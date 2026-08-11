@@ -8734,8 +8734,7 @@ void cik_fini(struct radeon_device *rdev)
 	radeon_fence_driver_fini(rdev);
 	radeon_bo_fini(rdev);
 	radeon_atombios_fini(rdev);
-	kfree(rdev->bios);
-	rdev->bios = NULL;
+	radeon_bios_fini(rdev);
 }
 
 void dce8_program_fmt(struct drm_encoder *encoder)

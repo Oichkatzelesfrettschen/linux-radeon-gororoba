@@ -528,7 +528,9 @@ int rs400_resume(struct radeon_device *rdev)
 		return r;
 	}
 	/* post */
-	radeon_combios_asic_init(rdev_to_drm(rdev));
+	r = radeon_combios_asic_init(rdev_to_drm(rdev));
+	if (r)
+		return r;
 	/* Resume clock after posting */
 	r300_clock_startup(rdev);
 	/* Initialize surface registers */
@@ -577,8 +579,7 @@ void rs400_fini(struct radeon_device *rdev)
 	if (r)
 		return;
 	radeon_atombios_fini(rdev);
-	kfree(rdev->bios);
-	rdev->bios = NULL;
+	radeon_bios_fini(rdev);
 }
 
 static void rs480_set_reg_safe(struct radeon_device *rdev)

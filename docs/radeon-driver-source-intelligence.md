@@ -113,7 +113,7 @@ directory in `src/build.c` and reads database-backed source lines through
 database-alignment hypothesis;
 they do not prove a general upstream root cause. The self-test rebuilds the
 database in the canonical sandbox, executes every definition, calls, and
-callers query for all 125 roots, compares every nonempty row against exported
+callers query for all 129 roots, compares every nonempty row against exported
 source, and requires the exact eight-call `radeon_mode_dumb_create` control.
 Offline replay binds the retained source to the same canonical cscope working
 directory. A nested C or header path, a repeated basename, a mixed raw path
@@ -675,8 +675,8 @@ joins. The added rows cover terminal state publication, hardware-access
 admission, retained GART and TTM ownership, PCI runtime and system resume
 rollback, system power callbacks, switcheroo state, deferred debugfs
 registration, and PCI remove retention. The source-only command contract
-contains 404 rows, including 375 cscope queries. A complete capture with both
-kernel lanes contains 424 command rows. The built-in calibration rejects 252
+contains 418 rows, including 387 cscope queries. A complete capture with both
+kernel lanes contains 438 command rows. The built-in calibration rejects 254
 adversarial mutations.
 
 The producer pins every current partition and root pair with SHA-256
@@ -718,8 +718,8 @@ The source intelligence program advances through these concrete gates:
 7. The RS482 capacity source checker closes its four selectors, ten exclusions,
    ten coefficients, 36 source functions, module request, ioctl table, and
    register encodings before any target trial. A fresh source-only capture and
-   the required complete kernel-lane CI job close the integrated 125-root,
-   31-hazard, 70-binding, eight-witness graph. The retained capacity subset
+   the required complete kernel-lane CI job close the integrated 129-root,
+   33-hazard, 70-binding, eight-witness graph. The retained capacity subset
    remains 73 roots, 13 hazards, 55 bindings, and six witnesses.
 8. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.
@@ -731,5 +731,10 @@ The source intelligence program advances through these concrete gates:
     not advance that pin. Deployment identity remains separate from source and
     hardware acceptance.
 11. A completion claim requires a clean full verifier, all semantic checkers,
-   both exact kernel roots, the required CI status, merged pull request, synced
-   main checkout, and an explicit ledger of runtime checks that remain not run.
+    both exact kernel roots, the required CI status, merged pull request, synced
+    main checkout, and an explicit ledger of runtime checks that remain not run.
+12. The COMBIOS source contract preserves every acquisition extent, admits one
+    declared PCI image, preflights every RS400 and RS480 hardware driving table,
+    and propagates a parser failure through post and resume owners. The exact
+    Vostro ROM replay remains offline structure evidence. ATOM interpreter
+    bounds remain a separate unresolved parser surface.

@@ -2356,6 +2356,8 @@ struct radeon_device {
 	int				disp_priority;
 	/* BIOS */
 	uint8_t				*bios;
+	size_t				bios_size;
+	bool				bios_parse_failed;
 	bool				is_atom_bios;
 	uint16_t			bios_header_start;
 	struct radeon_bo		*stolen_vga_memory;
@@ -2984,9 +2986,16 @@ void r100_pll_errata_after_index(struct radeon_device *rdev);
 /*
  * BIOS helpers.
  */
-#define RBIOS8(i) (rdev->bios[i])
-#define RBIOS16(i) (RBIOS8(i) | (RBIOS8((i)+1) << 8))
-#define RBIOS32(i) ((RBIOS16(i)) | (RBIOS16((i)+2) << 16))
+bool radeon_bios_span_valid(struct radeon_device *rdev, size_t offset,
+			    size_t length);
+uint8_t radeon_bios_read_u8(struct radeon_device *rdev, size_t offset);
+uint16_t radeon_bios_read_u16(struct radeon_device *rdev, size_t offset);
+uint32_t radeon_bios_read_u32(struct radeon_device *rdev, size_t offset);
+void radeon_bios_fini(struct radeon_device *rdev);
+
+#define RBIOS8(i) radeon_bios_read_u8(rdev, (size_t)(i))
+#define RBIOS16(i) radeon_bios_read_u16(rdev, (size_t)(i))
+#define RBIOS32(i) radeon_bios_read_u32(rdev, (size_t)(i))
 
 int radeon_combios_init(struct radeon_device *rdev);
 void radeon_combios_fini(struct radeon_device *rdev);

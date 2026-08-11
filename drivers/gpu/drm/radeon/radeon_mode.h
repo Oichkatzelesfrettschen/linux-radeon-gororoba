@@ -916,7 +916,7 @@ extern bool radeon_get_atom_connector_info_from_supported_devices_table(struct d
 
 void radeon_enc_destroy(struct drm_encoder *encoder);
 void radeon_copy_fb(struct drm_device *dev, struct drm_gem_object *dst_obj);
-void radeon_combios_asic_init(struct drm_device *dev);
+int radeon_combios_asic_init(struct drm_device *dev);
 bool radeon_crtc_scaling_mode_fixup(struct drm_crtc *crtc,
 					const struct drm_display_mode *mode,
 					struct drm_display_mode *adjusted_mode);

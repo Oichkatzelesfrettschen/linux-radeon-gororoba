@@ -1654,7 +1654,9 @@ int r300_resume(struct radeon_device *rdev)
 			RREG32(R_0007C0_CP_STAT));
 	}
 	/* post */
-	radeon_combios_asic_init(rdev_to_drm(rdev));
+	r = radeon_combios_asic_init(rdev_to_drm(rdev));
+	if (r)
+		return r;
 	/* Resume clock after posting */
 	r300_clock_startup(rdev);
 	/* Initialize surface registers */
@@ -1697,8 +1699,7 @@ void r300_fini(struct radeon_device *rdev)
 	radeon_fence_driver_fini(rdev);
 	radeon_bo_fini(rdev);
 	radeon_atombios_fini(rdev);
-	kfree(rdev->bios);
-	rdev->bios = NULL;
+	radeon_bios_fini(rdev);
 }
 
 int r300_init(struct radeon_device *rdev)
