@@ -1,0 +1,103 @@
+schema = 1
+repository = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+
+[contract]
+unpopulate_callback_return = "void"
+unpopulate_core_successor = [
+  "subtract nonexternal pages from the global TTM allocation counters",
+  "clear TTM_TT_FLAG_PRIV_POPULATED",
+]
+bo_cleanup_successor = [
+  "destroy the translation table",
+  "free the resource-manager range",
+]
+bo_release_successor = "invoke the driver destroy callback after generic cleanup"
+gem_release_successor = "invoke the GEM free callback after the final GEM reference"
+resource_free_successor = "release the manager range and clear the BO resource pointer"
+prime_destroy_successor = "unmap and detach the imported SG attachment"
+external_pages = "exclude pages from global TTM allocation accounting"
+agp_translation_storage = "struct page pointer array"
+radeon_gart_translation_storage = "DMA address array"
+agp_imported_sg = "reject before TTM construction because the AGP backend consumes a struct page pointer array rather than the Radeon GART DMA-address array"
+terminal_transfer = "retain the complete Radeon BO and TTM table before the void callback returns, then count pages that leave global TTM accounting"
+terminal_resource_range = "generic TTM frees the range after retention, so closed hardware admission forbids every later allocation and move"
+
+[[authority]]
+kernel = "6.18"
+commit = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_tt.c"
+sha256 = "fad2c3d2412a36a18096b74f5792559d4240524c83c7fea2ad59ec7296f34337"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_agp_backend.c"
+sha256 = "1ba6090a59c5a7feae2bb8170f0df9ea2208104adcdbe3283f3e5119816f9e39"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_bo.c"
+sha256 = "584e3227c2530229ac3a797e478af42f16cb6b2c071c4956e54aa6158df7c1c8"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_resource.c"
+sha256 = "3c6a51adc58d0f268e6a974a7bbc5e2e8cddb1bc0db5a82e4ca7f465a835b6c1"
+
+[[authority.file]]
+path = "drivers/gpu/drm/drm_gem.c"
+sha256 = "461aaa8a3c4caf433f26abbfa28260232c3c7de48d027f8dfb39a922def0fbae"
+
+[[authority.file]]
+path = "drivers/gpu/drm/drm_prime.c"
+sha256 = "29ddb71feea2055d2dcec46635a2265c62fe3fc621625a67f6875f931b2f9a68"
+
+[[authority.file]]
+path = "include/drm/ttm/ttm_device.h"
+sha256 = "116666244fc37b04448b145732b2328666fd0fad8f8aef796de377c180667b8a"
+
+[[authority.file]]
+path = "include/drm/ttm/ttm_tt.h"
+sha256 = "864935c6b7adf5b2ef93d8b2fe2d0d94251b11c3b6bc11a0b7ae37006f3e9ec7"
+
+[[authority.file]]
+path = "include/drm/drm_prime.h"
+sha256 = "4b3362896d4752b57c5d9ffffd905080193292c15443e01e173b23c77a869c5f"
+
+[[authority]]
+kernel = "7.1"
+commit = "8cd9520d35a6c38db6567e97dd93b1f11f185dc6"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_tt.c"
+sha256 = "247230c03e9e0c7478cc9c95bafe97a537b182f35963b50e693a70c7aa14791f"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_agp_backend.c"
+sha256 = "9669a71f6de780ee704a4195e784065b56d4742ccfd2b04fe944bba4796b54ab"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_bo.c"
+sha256 = "7dcd5c06f1fb699d583c8318830965b701313fc701ba737ce17ff1bec49026b6"
+
+[[authority.file]]
+path = "drivers/gpu/drm/ttm/ttm_resource.c"
+sha256 = "8d2a303845ff5d1fb750f2550c915bbc40d0db810b850d2e071c506ff66a91e5"
+
+[[authority.file]]
+path = "drivers/gpu/drm/drm_gem.c"
+sha256 = "8fed8cbf088cf9c185528f7287f6764e73de1156ae373e74ced09859c5486293"
+
+[[authority.file]]
+path = "drivers/gpu/drm/drm_prime.c"
+sha256 = "740c746439a9a94e5bff6dbbcd14cfa07447cdf63749bb23886cffe706236bd0"
+
+[[authority.file]]
+path = "include/drm/ttm/ttm_device.h"
+sha256 = "75ac0f0d64ae0d13b05ee227cc47af337c9fe0591bcb73da7fc5b1b915a21e35"
+
+[[authority.file]]
+path = "include/drm/ttm/ttm_tt.h"
+sha256 = "864935c6b7adf5b2ef93d8b2fe2d0d94251b11c3b6bc11a0b7ae37006f3e9ec7"
+
+[[authority.file]]
+path = "include/drm/drm_prime.h"
+sha256 = "4b3362896d4752b57c5d9ffffd905080193292c15443e01e173b23c77a869c5f"

@@ -31,6 +31,7 @@
 
 #include <linux/aperture.h>
 #include <linux/compat.h>
+#include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/path.h>
@@ -149,6 +150,36 @@ int radeon_backlight = -1;
 int radeon_auxch = -1;
 int radeon_uvd = 1;
 int radeon_vce = 1;
+
+static DEFINE_MUTEX(radeon_rs4xx_terminal_devices_lock);
+static LIST_HEAD(radeon_rs4xx_terminal_devices);
+
+static bool radeon_rs4xx_terminal_device_is_retained(struct pci_dev *pdev)
+{
+	struct radeon_device *retained_rdev;
+	bool retained = false;
+
+	mutex_lock(&radeon_rs4xx_terminal_devices_lock);
+	list_for_each_entry(retained_rdev, &radeon_rs4xx_terminal_devices,
+			    rs4xx_terminal_device_node) {
+		if (retained_rdev->pdev == pdev) {
+			retained = true;
+			break;
+		}
+	}
+	mutex_unlock(&radeon_rs4xx_terminal_devices_lock);
+	return retained;
+}
+
+static void radeon_rs4xx_retain_terminal_device_identity(
+	struct radeon_device *rdev)
+{
+	mutex_lock(&radeon_rs4xx_terminal_devices_lock);
+	if (list_empty(&rdev->rs4xx_terminal_device_node))
+		list_add_tail(&rdev->rs4xx_terminal_device_node,
+			      &radeon_rs4xx_terminal_devices);
+	mutex_unlock(&radeon_rs4xx_terminal_devices_lock);
+}
 
 MODULE_PARM_DESC(no_wb, "Disable AGP writeback for scratch registers");
 module_param_named(no_wb, radeon_no_wb, int, 0444);
@@ -287,12 +318,20 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 	struct drm_device *ddev;
 	struct radeon_device *rdev;
 	const struct drm_format_info *format;
+	bool rs4xx_device;
 	int ret;
 
 	if (!ent)
 		return -ENODEV; /* Avoid NULL-ptr deref in drm_get_pci_dev */
 
 	flags = ent->driver_data;
+	rs4xx_device = (flags & RADEON_FAMILY_MASK) == CHIP_RS400 ||
+		       (flags & RADEON_FAMILY_MASK) == CHIP_RS480;
+	if (rs4xx_device && radeon_rs4xx_terminal_device_is_retained(pdev)) {
+		dev_err(&pdev->dev,
+			"RS4xx terminal device ownership persists until reboot\n");
+		return -ENODEV;
+	}
 
 	if (!radeon_si_support) {
 		switch (flags & RADEON_FAMILY_MASK) {
@@ -339,6 +378,7 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 
 	rdev->dev = &pdev->dev;
 	rdev->pdev = pdev;
+	INIT_LIST_HEAD(&rdev->rs4xx_terminal_device_node);
 	radeon_dev_context_init(rdev);
 	ddev = rdev_to_drm(rdev);
 	ddev->dev_private = rdev;
@@ -348,14 +388,31 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 		return ret;
 
 	pci_set_drvdata(pdev, ddev);
+	if (rs4xx_device) {
+		if (!try_module_get(THIS_MODULE)) {
+			ret = -ENODEV;
+			goto err_disable;
+		}
+		rdev->rs4xx_bound_module_ref_held = !!THIS_MODULE;
+	}
 
 	ret = radeon_driver_load_kms(ddev, flags);
-	if (ret)
-		goto err;
+	if (ret) {
+		if (rs4xx_device && rdev->rs4xx_terminal_retained)
+			goto terminal_bound;
+		goto err_module;
+	}
 
 	ret = drm_dev_register(ddev, flags);
-	if (ret)
-		goto err;
+	if (ret) {
+		if (ddev->registered)
+			drm_dev_unregister(ddev);
+		else
+			radeon_driver_unload_kms(ddev);
+		if (rs4xx_device && rdev->rs4xx_terminal_retained)
+			goto terminal_bound;
+		goto err_module;
+	}
 
 	if (rdev->mc.real_vram_size <= (8 * 1024 * 1024))
 		format = drm_format_info(DRM_FORMAT_C8);
@@ -368,9 +425,61 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 
 	return 0;
 
-err:
+terminal_bound:
+	dev_err(&pdev->dev,
+		"RS4xx initialization retains PCI ownership without a DRM userspace node until reboot: %d\n",
+		ret);
+	return 0;
+
+err_module:
+	if (rdev->rs4xx_bound_module_ref_held) {
+		rdev->rs4xx_bound_module_ref_held = false;
+		module_put(THIS_MODULE);
+	}
+err_disable:
 	pci_disable_device(pdev);
 	return ret;
+}
+
+static void radeon_pci_remove(struct pci_dev *pdev)
+{
+	struct drm_device *ddev = pci_get_drvdata(pdev);
+	struct radeon_device *rdev;
+	bool rs4xx_device;
+
+	if (!ddev)
+		return;
+	rdev = ddev->dev_private;
+	rs4xx_device = radeon_rs4xx_hardware_target(rdev);
+	if (rs4xx_device) {
+		drm_dev_get(ddev);
+		rdev->rs4xx_terminal_drm_ref_held = true;
+	}
+
+	if (ddev->registered)
+		drm_dev_unplug(ddev);
+	else if (rs4xx_device)
+		radeon_driver_unload_kms(ddev);
+	pci_set_drvdata(pdev, NULL);
+	if (rs4xx_device && rdev->rs4xx_terminal_retained) {
+		radeon_rs4xx_retain_terminal_device_identity(rdev);
+		pci_clear_master(pdev);
+		dev_err(&pdev->dev,
+			"RS4xx removal retains the module, DRM device, parent device, BAR mappings, and memory manager until reboot\n");
+		return;
+	}
+
+	pci_disable_device(pdev);
+	if (!rs4xx_device)
+		return;
+	if (rdev->rs4xx_terminal_drm_ref_held) {
+		rdev->rs4xx_terminal_drm_ref_held = false;
+		drm_dev_put(ddev);
+	}
+	if (rdev->rs4xx_bound_module_ref_held) {
+		rdev->rs4xx_bound_module_ref_held = false;
+		module_put(THIS_MODULE);
+	}
 }
 
 static void
@@ -445,10 +554,53 @@ static int radeon_pmops_thaw(struct device *dev)
 	return radeon_resume_kms(drm_dev, false, true);
 }
 
+static void radeon_runtime_pm_restore_suspend_failure(
+	struct drm_device *drm_dev)
+{
+	struct radeon_device *rdev = drm_dev->dev_private;
+
+	if (radeon_rs4xx_terminal_ownership_retained(rdev)) {
+		drm_dev->switch_power_state = DRM_SWITCH_POWER_OFF;
+		return;
+	}
+	if (!drm_dev->mode_config.poll_enabled)
+		drm_kms_helper_poll_enable(drm_dev);
+	drm_dev->switch_power_state = DRM_SWITCH_POWER_ON;
+}
+
+static void radeon_runtime_pm_restore_low_power_state(struct pci_dev *pdev)
+{
+	if (radeon_is_atpx_hybrid())
+		pci_set_power_state(pdev, PCI_D3cold);
+	else if (!radeon_has_atpx_dgpu_power_cntl())
+		pci_set_power_state(pdev, PCI_D3hot);
+}
+
+static void radeon_runtime_pm_restore_resume_failure(
+	struct drm_device *drm_dev, struct pci_dev *pdev,
+	bool device_enabled)
+{
+	struct radeon_device *rdev = drm_dev->dev_private;
+
+	if (drm_dev->mode_config.poll_enabled)
+		drm_kms_helper_poll_disable(drm_dev);
+	if (radeon_rs4xx_terminal_ownership_retained(rdev)) {
+		drm_dev->switch_power_state = DRM_SWITCH_POWER_OFF;
+		return;
+	}
+	pci_clear_master(pdev);
+	if (device_enabled)
+		pci_disable_device(pdev);
+	pci_save_state(pdev);
+	radeon_runtime_pm_restore_low_power_state(pdev);
+	drm_dev->switch_power_state = DRM_SWITCH_POWER_DYNAMIC_OFF;
+}
+
 static int radeon_pmops_runtime_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct drm_device *drm_dev = pci_get_drvdata(pdev);
+	int ret;
 
 	if (!radeon_is_px(drm_dev)) {
 		pm_runtime_forbid(dev);
@@ -458,14 +610,15 @@ static int radeon_pmops_runtime_suspend(struct device *dev)
 	drm_dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
 	drm_kms_helper_poll_disable(drm_dev);
 
-	radeon_suspend_kms(drm_dev, false, false, false);
+	ret = radeon_suspend_kms(drm_dev, false, false, false);
+	if (ret) {
+		radeon_runtime_pm_restore_suspend_failure(drm_dev);
+		return ret;
+	}
 	pci_save_state(pdev);
 	pci_disable_device(pdev);
 	pci_ignore_hotplug(pdev);
-	if (radeon_is_atpx_hybrid())
-		pci_set_power_state(pdev, PCI_D3cold);
-	else if (!radeon_has_atpx_dgpu_power_cntl())
-		pci_set_power_state(pdev, PCI_D3hot);
+	radeon_runtime_pm_restore_low_power_state(pdev);
 	drm_dev->switch_power_state = DRM_SWITCH_POWER_DYNAMIC_OFF;
 
 	return 0;
@@ -475,10 +628,17 @@ static int radeon_pmops_runtime_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct drm_device *drm_dev = pci_get_drvdata(pdev);
+	struct radeon_device *rdev = drm_dev->dev_private;
 	int ret;
 
 	if (!radeon_is_px(drm_dev))
 		return -EINVAL;
+	if (radeon_rs4xx_terminal_ownership_retained(rdev)) {
+		if (drm_dev->mode_config.poll_enabled)
+			drm_kms_helper_poll_disable(drm_dev);
+		drm_dev->switch_power_state = DRM_SWITCH_POWER_OFF;
+		return -EIO;
+	}
 
 	drm_dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
 
@@ -487,11 +647,17 @@ static int radeon_pmops_runtime_resume(struct device *dev)
 		pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);
 	ret = pci_enable_device(pdev);
-	if (ret)
+	if (ret) {
+		radeon_runtime_pm_restore_resume_failure(drm_dev, pdev, false);
 		return ret;
+	}
 	pci_set_master(pdev);
 
 	ret = radeon_resume_kms(drm_dev, false, false);
+	if (ret) {
+		radeon_runtime_pm_restore_resume_failure(drm_dev, pdev, true);
+		return ret;
+	}
 	drm_kms_helper_poll_enable(drm_dev);
 	drm_dev->switch_power_state = DRM_SWITCH_POWER_ON;
 	return 0;
@@ -623,20 +789,82 @@ static const struct drm_ioctl_desc radeon_ioctls_kms[] = {
 	DRM_IOCTL_DEF_DRV(RADEON_GEM_USERPTR, radeon_gem_userptr_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 };
 
-#if RADEON_OBSERVE_DEV
+void radeon_debugfs_add_component(struct radeon_device *rdev,
+				  const char *name, umode_t mode, void *data,
+				  const struct file_operations *fops)
+{
+	struct radeon_debugfs_component *component;
+	unsigned int component_index;
+
+	mutex_lock(&rdev->debugfs_component_lock);
+	for (component_index = 0;
+	     component_index < rdev->debugfs_component_count;
+	     ++component_index) {
+		component = &rdev->debugfs_components[component_index];
+		if (strcmp(component->name, name))
+			continue;
+		WARN_ON_ONCE(component->mode != mode || component->data != data ||
+			     component->fops != fops);
+		mutex_unlock(&rdev->debugfs_component_lock);
+		return;
+	}
+	if (WARN_ON_ONCE(rdev->debugfs_registration_complete ||
+			 rdev->debugfs_component_count >=
+				RADEON_DEBUGFS_MAX_COMPONENTS)) {
+		mutex_unlock(&rdev->debugfs_component_lock);
+		return;
+	}
+	component = &rdev->debugfs_components[rdev->debugfs_component_count++];
+	component->name = name;
+	component->mode = mode;
+	component->data = data;
+	component->fops = fops;
+	mutex_unlock(&rdev->debugfs_component_lock);
+}
+
 static void radeon_dev_debugfs_register(struct drm_minor *minor)
 {
+	struct radeon_debugfs_component *component;
+	struct radeon_device *rdev;
+	unsigned int component_index;
+
+	if (!minor || minor->type != DRM_MINOR_PRIMARY || !minor->dev ||
+	    !minor->debugfs_root)
+		return;
+	rdev = minor->dev->dev_private;
+	if (!rdev)
+		return;
+
+	/* drm_debugfs_register assigns minor->debugfs_root before this callback.
+	 * The fixed component set therefore inherits primary minor teardown.
+	 */
+	mutex_lock(&rdev->debugfs_component_lock);
+	if (WARN_ON_ONCE(rdev->debugfs_registration_complete)) {
+		mutex_unlock(&rdev->debugfs_component_lock);
+		return;
+	}
+	for (component_index = 0;
+	     component_index < rdev->debugfs_component_count;
+	     ++component_index) {
+		component = &rdev->debugfs_components[component_index];
+		debugfs_create_file(component->name, component->mode,
+				    minor->debugfs_root, component->data,
+				    component->fops);
+	}
+	rdev->debugfs_registration_complete = true;
+	mutex_unlock(&rdev->debugfs_component_lock);
+	radeon_ttm_debugfs_register_managers(rdev, minor->debugfs_root);
+
+#if RADEON_OBSERVE_DEV
 	radeon_rs480_re_debugfs_register(minor);
 	radeon_evergreen_dev_debugfs_register(minor);
-}
 #endif
+}
 
 static const struct drm_driver kms_driver = {
 	.driver_features =
 	    DRIVER_GEM | DRIVER_RENDER | DRIVER_MODESET,
-#if RADEON_OBSERVE_DEV
 	.debugfs_init = radeon_dev_debugfs_register,
-#endif
 	.open = radeon_driver_open_kms,
 	.postclose = radeon_driver_postclose_kms,
 	.unload = radeon_driver_unload_kms,
@@ -661,6 +889,7 @@ static struct pci_driver radeon_kms_pci_driver = {
 	.name = DRIVER_NAME,
 	.id_table = pciidlist,
 	.probe = radeon_pci_probe,
+	.remove = radeon_pci_remove,
 	.shutdown = radeon_pci_shutdown,
 	.driver.pm = &radeon_pm_ops,
 };

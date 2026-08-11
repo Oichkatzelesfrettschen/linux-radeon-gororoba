@@ -1,0 +1,36 @@
+schema = 1
+repository = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+
+[contract]
+enable_failure_counter = "pci_enable_device_flags decrements enable_cnt when do_pci_enable_device fails"
+disable_precondition = "pci_disable_device consumes one successful enable reference"
+restored_bus_master = "pci_restore_state can restore PCI_COMMAND_MASTER before pci_enable_device returns"
+retry_state = "pci_save_state records the cleared command register before a later runtime-resume retry"
+runtime_retry = "runtime PM returns a failed resume callback to suspended state and permits a later callback"
+d3cold_policy = "an ATPX hybrid enters PCI_D3cold"
+d3hot_policy = "a device without ATPX discrete-GPU power control enters PCI_D3hot"
+terminal_ownership = "terminal RS4xx retention preserves PCI configuration and power state until reboot"
+
+[[authority]]
+kernel = "6.18"
+commit = "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+
+[[authority.file]]
+path = "drivers/pci/pci.c"
+sha256 = "2792977af5ec32a2d975fe92c16bf9f5df222c90249ce6e9f1c6a97df58c7391"
+
+[[authority.file]]
+path = "drivers/base/power/runtime.c"
+sha256 = "c647cef3af00ff33293831915487e50a067624788f8bf201f38c42b45e723f38"
+
+[[authority]]
+kernel = "7.1"
+commit = "8cd9520d35a6c38db6567e97dd93b1f11f185dc6"
+
+[[authority.file]]
+path = "drivers/pci/pci.c"
+sha256 = "ff1adc3872f643ee66fca2fdb5a47ff60e2ff79864079fcd31741d72a4afbc9b"
+
+[[authority.file]]
+path = "drivers/base/power/runtime.c"
+sha256 = "86a4ab8982d610b0ff1a1eb998adaf99a5f914833a56e70fb62efda2764af566"

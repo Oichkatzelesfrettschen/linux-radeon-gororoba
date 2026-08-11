@@ -41,9 +41,18 @@
 static void radeon_fbdev_destroy_pinned_object(struct drm_gem_object *gobj)
 {
 	struct radeon_bo *rbo = gem_to_radeon_bo(gobj);
+	struct radeon_device *rdev = rbo->rdev;
 	int ret;
 
-	radeon_bo_kunmap(rbo);
+radeon_bo_kunmap(rbo);
+	ret = radeon_rs4xx_hardware_transaction_begin(rdev);
+	if (ret) {
+		/* Keep teardown progress when hardware admission is refused. */
+		if (rbo->tbo.pin_count > 0)
+			radeon_bo_unpin(rbo);
+		drm_gem_object_put(gobj);
+		return;
+	}
 	ret = radeon_bo_reserve(rbo, false);
 	if (likely(ret == 0)) {
 		if (rbo->tbo.pin_count > 0)
@@ -54,6 +63,7 @@ static void radeon_fbdev_destroy_pinned_object(struct drm_gem_object *gobj)
 		if (rbo->tbo.pin_count > 0)
 			radeon_bo_unpin(rbo);
 	}
+	radeon_rs4xx_hardware_transaction_end(rdev);
 	drm_gem_object_put(gobj);
 }
 
@@ -72,6 +82,10 @@ static int radeon_fbdev_create_pinned_object(struct drm_fb_helper *fb_helper,
 	int height = mode_cmd->height;
 	u32 cpp;
 
+	ret = radeon_device_lock_hardware(rdev);
+	if (ret)
+		return ret;
+
 	cpp = info->cpp[0];
 
 	/* need to align pitch with crtc limits */
@@ -87,6 +101,7 @@ static int radeon_fbdev_create_pinned_object(struct drm_fb_helper *fb_helper,
 				       0, true, &gobj);
 	if (ret) {
 		pr_err("failed to allocate framebuffer (%d)\n", aligned_size);
+		radeon_device_unlock_hardware(rdev);
 		return -ENOMEM;
 	}
 	rbo = gem_to_radeon_bo(gobj);
@@ -132,11 +147,14 @@ static int radeon_fbdev_create_pinned_object(struct drm_fb_helper *fb_helper,
 	radeon_bo_unreserve(rbo);
 	if (ret)
 		goto err_radeon_fbdev_destroy_pinned_object;
+	memset_io((__force void __iomem *)rbo->kptr, 0, radeon_bo_size(rbo));
 
 	*gobj_p = gobj;
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 
 err_radeon_fbdev_destroy_pinned_object:
+	radeon_device_unlock_hardware(rdev);
 	radeon_fbdev_destroy_pinned_object(gobj);
 	*gobj_p = NULL;
 	return ret;
@@ -175,41 +193,44 @@ static int radeon_fbdev_fb_release(struct fb_info *info, int user)
 	return 0;
 }
 
-/* fbcon takes the console over the moment the last DRM client dies and
- * redraws through this framebuffer, whose backing store is the VRAM
- * aperture. A parked RS480 holds MC display and host-aperture requests
- * parked, so a CPU read of that aperture (fb_read, copyarea scroll) is a
- * non-posted HyperTransport read that hard-locks the machine. Reads fail
- * with -ENODEV; writes and drawing ops are swallowed as success so fbcon
- * proceeds blind. The console stays dark until reboot; the host stays
- * alive. Userspace mmap of the aperture stays ungated (fbcon does not
- * mmap; a mapped page touch is accepted residual risk).
- */
-static bool radeon_fbdev_gpu_parked(struct fb_info *info)
+static int radeon_fbdev_hardware_access_begin(struct fb_info *info)
 {
 	struct drm_fb_helper *fb_helper = info->par;
 	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
 
-	if (!rdev->gpu_parked)
-		return false;
-	dev_err_once(rdev->dev,
-		     "parked: dropping fbdev aperture access (VRAM unreadable)\n");
-	return true;
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		dev_err_once(rdev->dev,
+			     "RS4xx hardware unavailable: dropping fbdev aperture access\n");
+	return ret;
 }
 
 static ssize_t radeon_fbdev_fb_read(struct fb_info *info, char __user *buf,
 				    size_t count, loff_t *ppos)
 {
-	if (radeon_fbdev_gpu_parked(info))
-		return -ENODEV;
-	return fb_io_read(info, buf, count, ppos);
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	ssize_t ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = fb_io_read(info, buf, count, ppos);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
 }
 
 static ssize_t radeon_fbdev_fb_write(struct fb_info *info,
 				     const char __user *buf, size_t count,
 				     loff_t *ppos)
 {
-	if (radeon_fbdev_gpu_parked(info)) {
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	ssize_t ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret) {
 		/* VFS advances file position from *ppos; a success return
 		 * without advancing it makes the next write retry the same
 		 * offset forever. Advance as if the swallowed write landed.
@@ -217,31 +238,174 @@ static ssize_t radeon_fbdev_fb_write(struct fb_info *info,
 		*ppos += count;
 		return count;
 	}
-	return fb_io_write(info, buf, count, ppos);
+	ret = fb_io_write(info, buf, count, ppos);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
 }
 
 static void radeon_fbdev_fb_fillrect(struct fb_info *info,
 				     const struct fb_fillrect *rect)
 {
-	if (radeon_fbdev_gpu_parked(info))
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+
+	if (radeon_fbdev_hardware_access_begin(info))
 		return;
 	cfb_fillrect(info, rect);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 static void radeon_fbdev_fb_copyarea(struct fb_info *info,
 				     const struct fb_copyarea *area)
 {
-	if (radeon_fbdev_gpu_parked(info))
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+
+	if (radeon_fbdev_hardware_access_begin(info))
 		return;
 	cfb_copyarea(info, area);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 static void radeon_fbdev_fb_imageblit(struct fb_info *info,
 				      const struct fb_image *image)
 {
-	if (radeon_fbdev_gpu_parked(info))
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+
+	if (radeon_fbdev_hardware_access_begin(info))
 		return;
 	cfb_imageblit(info, image);
+	radeon_rs4xx_hardware_access_end(rdev);
+}
+
+static int radeon_fbdev_fb_check_var(struct fb_var_screeninfo *var,
+				     struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_check_var(var, info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_fbdev_fb_set_par(struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_set_par(info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_fbdev_fb_setcmap(struct fb_cmap *cmap,
+				   struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_setcmap(cmap, info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_fbdev_fb_blank(int blank, struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_blank(blank, info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_fbdev_fb_pan_display(struct fb_var_screeninfo *var,
+				       struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_pan_display(var, info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_fbdev_fb_ioctl(struct fb_info *info, unsigned int cmd,
+				 unsigned long arg)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_ioctl(info, cmd, arg);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+#if defined(RADEON_FBDEV_DEBUG_OPS_PRESENT)
+static int radeon_fbdev_fb_debug_enter(struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_debug_enter(info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_fbdev_fb_debug_leave(struct fb_info *info)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+	int ret;
+
+	ret = radeon_fbdev_hardware_access_begin(info);
+	if (ret)
+		return ret;
+	ret = drm_fb_helper_debug_leave(info);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+#endif
+
+static int radeon_fbdev_fb_mmap(struct fb_info *info,
+				struct vm_area_struct *vma)
+{
+	struct drm_fb_helper *fb_helper = info->par;
+	struct radeon_device *rdev = fb_helper->dev->dev_private;
+
+	if (radeon_rs4xx_hardware_target(rdev))
+		return -ENODEV;
+	return fb_io_mmap(info, vma);
 }
 
 static void radeon_fbdev_fb_destroy(struct fb_info *info)
@@ -271,8 +435,17 @@ static const struct fb_ops radeon_fbdev_fb_ops = {
 	.fb_fillrect = radeon_fbdev_fb_fillrect,
 	.fb_copyarea = radeon_fbdev_fb_copyarea,
 	.fb_imageblit = radeon_fbdev_fb_imageblit,
-	.fb_mmap = fb_io_mmap,
-	DRM_FB_HELPER_DEFAULT_OPS,
+	.fb_check_var = radeon_fbdev_fb_check_var,
+	.fb_set_par = radeon_fbdev_fb_set_par,
+	.fb_setcmap = radeon_fbdev_fb_setcmap,
+	.fb_blank = radeon_fbdev_fb_blank,
+	.fb_pan_display = radeon_fbdev_fb_pan_display,
+	.fb_ioctl = radeon_fbdev_fb_ioctl,
+#if defined(RADEON_FBDEV_DEBUG_OPS_PRESENT)
+	.fb_debug_enter = radeon_fbdev_fb_debug_enter,
+	.fb_debug_leave = radeon_fbdev_fb_debug_leave,
+#endif
+	.fb_mmap = radeon_fbdev_fb_mmap,
 	.fb_destroy = radeon_fbdev_fb_destroy,
 };
 
@@ -351,8 +524,6 @@ int radeon_fbdev_driver_fbdev_probe(struct drm_fb_helper *fb_helper,
 	info->fix.smem_len = radeon_bo_size(rbo);
 	info->screen_base = (__force void __iomem *)rbo->kptr;
 	info->screen_size = radeon_bo_size(rbo);
-
-	memset_io(info->screen_base, 0, info->screen_size);
 
 	/* Use default scratch pixmap (info->pixmap.flags = FB_PIXMAP_SYSTEM) */
 

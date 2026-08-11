@@ -261,19 +261,28 @@ static int radeon_cursor_move_locked(struct drm_crtc *crtc, int x, int y)
 	return 0;
 }
 
-int radeon_crtc_cursor_move(struct drm_crtc *crtc,
-			    int x, int y)
+static int radeon_crtc_cursor_move_hardware(struct drm_crtc *crtc,
+					    int x, int y)
 {
-	struct radeon_device *rdev = crtc->dev->dev_private;
 	int ret;
-
-	if (rdev->gpu_parked)
-		return -ENODEV;
 
 	radeon_lock_cursor(crtc, true);
 	ret = radeon_cursor_move_locked(crtc, x, y);
 	radeon_lock_cursor(crtc, false);
 
+	return ret;
+}
+
+int radeon_crtc_cursor_move(struct drm_crtc *crtc, int x, int y)
+{
+	struct radeon_device *rdev = crtc->dev->dev_private;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	ret = radeon_crtc_cursor_move_hardware(crtc, x, y);
+	radeon_rs4xx_hardware_access_end(rdev);
 	return ret;
 }
 
@@ -287,49 +296,82 @@ int radeon_crtc_cursor_set2(struct drm_crtc *crtc,
 {
 	struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
 	struct radeon_device *rdev = crtc->dev->dev_private;
-	struct drm_gem_object *obj;
-	struct radeon_bo *robj;
+	struct drm_gem_object *old_obj = radeon_crtc->cursor_bo;
+	struct drm_gem_object *obj = NULL;
+	struct radeon_bo *new_rbo = NULL;
+	struct radeon_bo *old_rbo = NULL;
+	struct drm_exec exec;
+	bool hardware_transaction = false;
+	bool new_pinned = false;
+	u64 old_cursor_addr = radeon_crtc->cursor_addr;
 	int ret;
 
-	if (rdev->gpu_parked)
-		return -ENODEV;
+	if (handle) {
+		if (width > radeon_crtc->max_cursor_width ||
+		    height > radeon_crtc->max_cursor_height) {
+			DRM_ERROR("bad cursor width or height %d x %d\n",
+				  width, height);
+			return -EINVAL;
+		}
+		obj = drm_gem_object_lookup(file_priv, handle);
+		if (!obj) {
+			DRM_ERROR("Cannot find cursor object %x for crtc %d\n",
+				  handle, radeon_crtc->crtc_id);
+			return -ENOENT;
+		}
+		new_rbo = gem_to_radeon_bo(obj);
+	}
+	if (old_obj)
+		old_rbo = gem_to_radeon_bo(old_obj);
 
+	/* Both BO reservations precede hardware admission. A reset closes the
+	 * admission epoch without waiting on a cursor path blocked on either BO.
+	 */
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+			      DRM_EXEC_IGNORE_DUPLICATES, 0);
+	drm_exec_until_all_locked(&exec) {
+		if (old_obj) {
+			ret = drm_exec_prepare_obj(&exec, old_obj, 0);
+			drm_exec_retry_on_contention(&exec);
+			if (ret && ret != -EALREADY)
+				goto out_exec;
+		}
+		if (obj) {
+			ret = drm_exec_prepare_obj(&exec, obj, 0);
+			drm_exec_retry_on_contention(&exec);
+			if (ret && ret != -EALREADY)
+				goto out_exec;
+		}
+	}
+
+	ret = radeon_rs4xx_hardware_transaction_begin(rdev);
+	if (ret)
+		goto out_exec;
+	hardware_transaction = true;
+
+	if (new_rbo) {
+		/* Only 27 bit offset for legacy cursor */
+		ret = radeon_bo_pin_restricted(new_rbo,
+					       RADEON_GEM_DOMAIN_VRAM,
+					       ASIC_IS_AVIVO(rdev) ?
+					       0 : 1 << 27,
+					       &radeon_crtc->cursor_addr);
+		if (ret) {
+			DRM_ERROR("Failed to pin new cursor BO (%d)\n", ret);
+			goto out_unpin_new;
+		}
+		new_pinned = true;
+	}
+
+	if (radeon_crtc->cursor_bo != old_obj) {
+		ret = -EAGAIN;
+		goto out_unpin_new;
+	}
 	if (!handle) {
 		/* turn off cursor */
 		radeon_hide_cursor(crtc);
-		obj = NULL;
-		goto unpin;
+		goto unpin_old;
 	}
-
-	if ((width > radeon_crtc->max_cursor_width) ||
-	    (height > radeon_crtc->max_cursor_height)) {
-		DRM_ERROR("bad cursor width or height %d x %d\n", width, height);
-		return -EINVAL;
-	}
-
-	obj = drm_gem_object_lookup(file_priv, handle);
-	if (!obj) {
-		DRM_ERROR("Cannot find cursor object %x for crtc %d\n", handle, radeon_crtc->crtc_id);
-		return -ENOENT;
-	}
-
-	robj = gem_to_radeon_bo(obj);
-	ret = radeon_bo_reserve(robj, false);
-	if (ret != 0) {
-		drm_gem_object_put(obj);
-		return ret;
-	}
-	/* Only 27 bit offset for legacy cursor */
-	ret = radeon_bo_pin_restricted(robj, RADEON_GEM_DOMAIN_VRAM,
-				       ASIC_IS_AVIVO(rdev) ? 0 : 1 << 27,
-				       &radeon_crtc->cursor_addr);
-	radeon_bo_unreserve(robj);
-	if (ret) {
-		DRM_ERROR("Failed to pin new cursor BO (%d)\n", ret);
-		drm_gem_object_put(obj);
-		return ret;
-	}
-
 	radeon_lock_cursor(crtc, true);
 
 	if (width != radeon_crtc->cursor_width ||
@@ -353,19 +395,30 @@ int radeon_crtc_cursor_set2(struct drm_crtc *crtc,
 
 	radeon_lock_cursor(crtc, false);
 
-unpin:
-	if (radeon_crtc->cursor_bo) {
-		struct radeon_bo *robj = gem_to_radeon_bo(radeon_crtc->cursor_bo);
-		ret = radeon_bo_reserve(robj, false);
-		if (likely(ret == 0)) {
-			radeon_bo_unpin(robj);
-			radeon_bo_unreserve(robj);
-		}
-		drm_gem_object_put(radeon_crtc->cursor_bo);
-	}
-
+unpin_old:
+	if (old_rbo)
+		radeon_bo_unpin(old_rbo);
 	radeon_crtc->cursor_bo = obj;
+	obj = NULL;
+	ret = 0;
+	radeon_rs4xx_hardware_transaction_end(rdev);
+	hardware_transaction = false;
+	drm_exec_fini(&exec);
+	if (old_obj)
+		drm_gem_object_put(old_obj);
 	return 0;
+
+out_unpin_new:
+	if (new_pinned)
+		radeon_bo_unpin(new_rbo);
+	radeon_crtc->cursor_addr = old_cursor_addr;
+out_exec:
+	if (hardware_transaction)
+		radeon_rs4xx_hardware_transaction_end(rdev);
+	drm_exec_fini(&exec);
+	if (obj)
+		drm_gem_object_put(obj);
+	return ret;
 }
 
 /**

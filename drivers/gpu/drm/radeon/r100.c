@@ -2911,12 +2911,15 @@ uint32_t r100_pll_rreg(struct radeon_device *rdev, uint32_t reg)
 	unsigned long flags;
 	uint32_t data;
 
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
 	spin_lock_irqsave(&rdev->pll_idx_lock, flags);
 	WREG8(RADEON_CLOCK_CNTL_INDEX, reg & 0x3f);
 	r100_pll_errata_after_index(rdev);
 	data = RREG32(RADEON_CLOCK_CNTL_DATA);
 	r100_pll_errata_after_data(rdev);
 	spin_unlock_irqrestore(&rdev->pll_idx_lock, flags);
+	radeon_rs4xx_hardware_access_end(rdev);
 	return data;
 }
 
@@ -2924,12 +2927,15 @@ void r100_pll_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 {
 	unsigned long flags;
 
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
 	spin_lock_irqsave(&rdev->pll_idx_lock, flags);
 	WREG8(RADEON_CLOCK_CNTL_INDEX, ((reg & 0x3f) | RADEON_PLL_WR_EN));
 	r100_pll_errata_after_index(rdev);
 	WREG32(RADEON_CLOCK_CNTL_DATA, v);
 	r100_pll_errata_after_data(rdev);
 	spin_unlock_irqrestore(&rdev->pll_idx_lock, flags);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 static void r100_set_safe_registers(struct radeon_device *rdev)
@@ -2954,6 +2960,11 @@ static int r100_debugfs_rbbm_info_show(struct seq_file *m, void *unused)
 	struct radeon_device *rdev = m->private;
 	uint32_t reg, value;
 	unsigned i;
+	int r;
+
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	seq_printf(m, "RBBM_STATUS 0x%08x\n", RREG32(RADEON_RBBM_STATUS));
 	seq_printf(m, "RBBM_CMDFIFO_STAT 0x%08x\n", RREG32(0xE7C));
@@ -2965,6 +2976,7 @@ static int r100_debugfs_rbbm_info_show(struct seq_file *m, void *unused)
 		value = RREG32(RADEON_RBBM_CMDFIFO_DATA);
 		seq_printf(m, "[0x%03X] 0x%04X=0x%08X\n", i, reg, value);
 	}
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 }
 
@@ -2974,6 +2986,11 @@ static int r100_debugfs_cp_ring_info_show(struct seq_file *m, void *unused)
 	struct radeon_ring *ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 	uint32_t rdp, wdp;
 	unsigned count, i, j;
+	int r;
+
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	radeon_ring_free_size(rdev, ring);
 	rdp = RREG32(RADEON_CP_RB_RPTR);
@@ -2990,6 +3007,7 @@ static int r100_debugfs_cp_ring_info_show(struct seq_file *m, void *unused)
 			seq_printf(m, "r[%04d]=0x%08x\n", i, ring->ring[i]);
 		}
 	}
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 }
 
@@ -3000,6 +3018,11 @@ static int r100_debugfs_cp_csq_fifo_show(struct seq_file *m, void *unused)
 	uint32_t csq_stat, csq2_stat, tmp;
 	unsigned r_rptr, r_wptr, ib1_rptr, ib1_wptr, ib2_rptr, ib2_wptr;
 	unsigned i;
+	int r;
+
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	seq_printf(m, "CP_STAT 0x%08x\n", RREG32(RADEON_CP_STAT));
 	seq_printf(m, "CP_CSQ_MODE 0x%08x\n", RREG32(RADEON_CP_CSQ_MODE));
@@ -3039,6 +3062,7 @@ static int r100_debugfs_cp_csq_fifo_show(struct seq_file *m, void *unused)
 		tmp = RREG32(RADEON_CP_CSQ_DATA);
 		seq_printf(m, "ib2fifo[%04d]=0x%08X\n", i, tmp);
 	}
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 }
 
@@ -3046,6 +3070,11 @@ static int r100_debugfs_mc_info_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
 	uint32_t tmp;
+	int r;
+
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	tmp = RREG32(RADEON_CONFIG_MEMSIZE);
 	seq_printf(m, "CONFIG_MEMSIZE 0x%08x\n", tmp);
@@ -3067,6 +3096,7 @@ static int r100_debugfs_mc_info_show(struct seq_file *m, void *unused)
 	seq_printf(m, "AIC_HI_ADDR 0x%08x\n", tmp);
 	tmp = RREG32(0x01E4);
 	seq_printf(m, "AIC_TLB_ADDR 0x%08x\n", tmp);
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 }
 
@@ -3080,32 +3110,26 @@ DEFINE_SHOW_ATTRIBUTE(r100_debugfs_mc_info);
 void  r100_debugfs_rbbm_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("r100_rbbm_info", 0444, root, rdev,
-			    &r100_debugfs_rbbm_info_fops);
+	radeon_debugfs_add_component(rdev, "r100_rbbm_info", 0444, rdev,
+				     &r100_debugfs_rbbm_info_fops);
 #endif
 }
 
 void r100_debugfs_cp_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("r100_cp_ring_info", 0444, root, rdev,
-			    &r100_debugfs_cp_ring_info_fops);
-	debugfs_create_file("r100_cp_csq_fifo", 0444, root, rdev,
-			    &r100_debugfs_cp_csq_fifo_fops);
+	radeon_debugfs_add_component(rdev, "r100_cp_ring_info", 0444, rdev,
+				     &r100_debugfs_cp_ring_info_fops);
+	radeon_debugfs_add_component(rdev, "r100_cp_csq_fifo", 0444, rdev,
+				     &r100_debugfs_cp_csq_fifo_fops);
 #endif
 }
 
 void  r100_debugfs_mc_info_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("r100_mc_info", 0444, root, rdev,
-			    &r100_debugfs_mc_info_fops);
+	radeon_debugfs_add_component(rdev, "r100_mc_info", 0444, rdev,
+				     &r100_debugfs_mc_info_fops);
 #endif
 }
 
@@ -4143,20 +4167,36 @@ void r100_mm_wreg_slow(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 
 u32 r100_io_rreg(struct radeon_device *rdev, u32 reg)
 {
-	if (reg < rdev->rio_mem_size)
-		return ioread32(rdev->rio_mem + reg);
-	else {
+	unsigned long flags;
+	u32 value;
+
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
+	if (reg < rdev->rio_mem_size) {
+		value = ioread32(rdev->rio_mem + reg);
+	} else {
+		spin_lock_irqsave(&rdev->mmio_idx_lock, flags);
 		iowrite32(reg, rdev->rio_mem + RADEON_MM_INDEX);
-		return ioread32(rdev->rio_mem + RADEON_MM_DATA);
+		value = ioread32(rdev->rio_mem + RADEON_MM_DATA);
+		spin_unlock_irqrestore(&rdev->mmio_idx_lock, flags);
 	}
+	radeon_rs4xx_hardware_access_end(rdev);
+	return value;
 }
 
 void r100_io_wreg(struct radeon_device *rdev, u32 reg, u32 v)
 {
+	unsigned long flags;
+
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
 	if (reg < rdev->rio_mem_size)
 		iowrite32(v, rdev->rio_mem + reg);
 	else {
+		spin_lock_irqsave(&rdev->mmio_idx_lock, flags);
 		iowrite32(reg, rdev->rio_mem + RADEON_MM_INDEX);
 		iowrite32(v, rdev->rio_mem + RADEON_MM_DATA);
+		spin_unlock_irqrestore(&rdev->mmio_idx_lock, flags);
 	}
+	radeon_rs4xx_hardware_access_end(rdev);
 }

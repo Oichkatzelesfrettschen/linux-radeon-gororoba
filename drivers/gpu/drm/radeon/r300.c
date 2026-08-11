@@ -65,10 +65,13 @@ uint32_t rv370_pcie_rreg(struct radeon_device *rdev, uint32_t reg)
 	unsigned long flags;
 	uint32_t r;
 
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
 	spin_lock_irqsave(&rdev->pcie_idx_lock, flags);
 	WREG32(RADEON_PCIE_INDEX, ((reg) & rdev->pcie_reg_mask));
 	r = RREG32(RADEON_PCIE_DATA);
 	spin_unlock_irqrestore(&rdev->pcie_idx_lock, flags);
+	radeon_rs4xx_hardware_access_end(rdev);
 	return r;
 }
 
@@ -76,10 +79,13 @@ void rv370_pcie_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 {
 	unsigned long flags;
 
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
 	spin_lock_irqsave(&rdev->pcie_idx_lock, flags);
 	WREG32(RADEON_PCIE_INDEX, ((reg) & rdev->pcie_reg_mask));
 	WREG32(RADEON_PCIE_DATA, (v));
 	spin_unlock_irqrestore(&rdev->pcie_idx_lock, flags);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 /*
@@ -718,10 +724,8 @@ DEFINE_SHOW_ATTRIBUTE(rv370_debugfs_pcie_gart_info);
 static void rv370_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("rv370_pcie_gart_info", 0444, root, rdev,
-			    &rv370_debugfs_pcie_gart_info_fops);
+	radeon_debugfs_add_component(rdev, "rv370_pcie_gart_info", 0444, rdev,
+				     &rv370_debugfs_pcie_gart_info_fops);
 #endif
 }
 

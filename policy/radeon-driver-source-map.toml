@@ -3,13 +3,13 @@ capture_schema = "gororoba-radeon-driver-source-map-v2"
 comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
-max_source_bytes = 7000000
-root_denominator_count = 73
-root_denominator_sha256 = "a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814"
-hazard_denominator_count = 13
-hazard_denominator_sha256 = "79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5"
-binding_denominator_count = 55
-binding_denominator_sha256 = "e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77"
+max_source_bytes = 7100000
+root_denominator_count = 125
+root_denominator_sha256 = "5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5"
+hazard_denominator_count = 31
+hazard_denominator_sha256 = "3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3"
+binding_denominator_count = 70
+binding_denominator_sha256 = "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 
 required_tools = [
   "bwrap",
@@ -116,6 +116,210 @@ toolchain_manifest = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-closure.tsv"
 toolchain_prefix_manifest = "ci/kernel-toolchains/llvm-22.1.8-kernel-build-prefix-tree.tsv"
 profiles = ["prod", "observe-dev", "probe-dev", "mutate-dev"]
 
+[admission_contract]
+operational_callers = [
+  "drivers/gpu/drm/radeon/radeon_gem.c:radeon_gem_fault",
+  "drivers/gpu/drm/radeon/radeon_gem.c:radeon_gem_vm_access",
+  "drivers/gpu/drm/radeon/radeon_gem.c:radeon_gem_object_free",
+  "drivers/gpu/drm/radeon/radeon_prime.c:radeon_gem_prime_pin",
+  "drivers/gpu/drm/radeon/radeon_prime.c:radeon_gem_prime_unpin",
+  "drivers/gpu/drm/radeon/radeon_cursor.c:radeon_crtc_cursor_set2",
+  "drivers/gpu/drm/radeon/radeon_display.c:radeon_crtc_set_config",
+  "drivers/gpu/drm/radeon/radeon_fbdev.c:radeon_fbdev_destroy_pinned_object",
+  "drivers/gpu/drm/radeon/radeon_ttm.c:radeon_bo_move",
+  "drivers/gpu/drm/radeon/radeon_ttm.c:radeon_ttm_tt_unpopulate",
+  "drivers/gpu/drm/radeon/radeon_object.c:radeon_bo_create",
+  "drivers/gpu/drm/radeon/radeon_object.c:radeon_ttm_bo_destroy",
+]
+call_site_shape_count = 31
+call_occurrence_count = 34
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon.h"
+function = "radeon_device_lock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon.h"
+function = "radeon_device_lock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon.h"
+function = "radeon_device_trylock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 2
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon.h"
+function = "radeon_device_trylock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_try_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon.h"
+function = "radeon_device_unlock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_cursor.c"
+function = "radeon_crtc_cursor_set2"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_cursor.c"
+function = "radeon_crtc_cursor_set2"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 2
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_device.c"
+function = "radeon_rs4xx_hardware_transaction_try_begin"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_device.c"
+function = "radeon_rs4xx_hardware_transaction_wait_begin"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_display.c"
+function = "radeon_crtc_set_config"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_display.c"
+function = "radeon_crtc_set_config"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 2
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_fbdev.c"
+function = "radeon_fbdev_destroy_pinned_object"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_fbdev.c"
+function = "radeon_fbdev_destroy_pinned_object"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+function = "radeon_gem_fault"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+function = "radeon_gem_fault"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+function = "radeon_gem_object_free"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+function = "radeon_gem_object_free"
+callee = "radeon_rs4xx_hardware_transaction_wait_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+function = "radeon_gem_vm_access"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_gem.c"
+function = "radeon_gem_vm_access"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_object.c"
+function = "radeon_bo_create"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_object.c"
+function = "radeon_bo_create"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_object.c"
+function = "radeon_ttm_bo_destroy"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_object.c"
+function = "radeon_ttm_bo_destroy"
+callee = "radeon_rs4xx_hardware_transaction_wait_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_prime.c"
+function = "radeon_gem_prime_pin"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_prime.c"
+function = "radeon_gem_prime_pin"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_prime.c"
+function = "radeon_gem_prime_unpin"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_prime.c"
+function = "radeon_gem_prime_unpin"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+function = "radeon_bo_move"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+function = "radeon_bo_move"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+function = "radeon_ttm_tt_unpopulate"
+callee = "radeon_rs4xx_hardware_transaction_end"
+expected_calls = 1
+
+[[admission_contract.call_site]]
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+function = "radeon_ttm_tt_unpopulate"
+callee = "radeon_rs4xx_hardware_transaction_wait_begin"
+expected_calls = 1
+
 [[partition]]
 name = "module-lifecycle"
 roots = [
@@ -123,6 +327,15 @@ roots = [
   "radeon_pci_probe",
   "radeon_driver_load_kms",
   "radeon_device_init",
+  "radeon_switcheroo_set_state",
+  "radeon_pmops_suspend",
+  "radeon_pmops_resume",
+  "radeon_pmops_freeze",
+  "radeon_pmops_thaw",
+  "radeon_rs4xx_system_resume_rollback",
+  "radeon_runtime_pm_restore_resume_failure",
+  "radeon_pmops_runtime_suspend",
+  "radeon_pmops_runtime_resume",
   "radeon_driver_unload_kms",
   "radeon_module_exit",
 ]
@@ -133,6 +346,7 @@ name = "profile-and-admission"
 roots = [
   "radeon_dev_profile_set",
   "radeon_dev_hardware_available",
+  "radeon_fbdev_fb_mmap",
   "radeon_gem_object_create",
   "radeon_gem_prime_import_sg_table",
   "radeon_mode_dumb_create",
@@ -187,9 +401,21 @@ roots = [
   "radeon_bo_list_validate",
   "radeon_bo_pin_restricted",
   "radeon_bo_unpin",
+  "radeon_ttm_fini",
+  "radeon_rs4xx_retain_ttm",
+  "radeon_ttm_backend_unbind",
+  "radeon_ttm_tt_populate",
+  "radeon_ttm_tt_unpopulate",
+  "radeon_ttm_tt_destroy",
+  "radeon_rs4xx_retain_bo",
+  "radeon_debugfs_gem_info_show",
   "radeon_gart_init",
   "radeon_gart_table_ram_alloc",
   "radeon_gart_table_ram_free",
+  "radeon_gart_unbind",
+  "radeon_gart_fini",
+  "radeon_rs4xx_gart_teardown_wait",
+  "radeon_device_fini",
   "rs400_gart_init",
   "rs400_gart_enable",
   "rs400_gart_fini",
@@ -198,10 +424,10 @@ roots = [
   "r100_vram_init_sizes",
   "radeon_gem_info_ioctl",
   "radeon_gem_debugfs_init",
-  "radeon_debugfs_gem_info_show",
   "radeon_info_ioctl",
+  "rs400_fini",
 ]
-falsifier = "A changed request latch, RS400 selector, address-fit relation, allocator edge, observation binding, or GART callback invalidates the partition."
+falsifier = "A changed request latch, RS400 selector, address-fit relation, allocator edge, observation binding, GART callback, TTM teardown callback, or retained ownership edge invalidates the partition."
 
 [[partition]]
 name = "reset-and-park"
@@ -213,11 +439,47 @@ roots = [
   "rs400_resume",
   "radeon_fence_check_lockup",
   "radeon_flip_work_func",
+  "radeon_ib_ring_tests",
   "rs480_reset_hang_probe_show",
   "rs480_wedged_3d_reset",
   "evergreen_gpu_pci_config_reset_safe",
 ]
 falsifier = "A changed detected or forced reset wrapper, writer-lock owner, post-reset status lock, ASIC reset target, work callback, or Palm file operation invalidates the reset path."
+
+[[partition]]
+name = "rs4xx-hardware-admission"
+roots = [
+  "radeon_rs4xx_hardware_reader_begin",
+  "radeon_rs4xx_hardware_access_wait_begin",
+  "radeon_rs4xx_hardware_transaction_begin",
+  "radeon_rs4xx_hardware_transaction_wait_begin",
+  "radeon_rs4xx_hardware_transaction_try_begin",
+  "radeon_rs4xx_hardware_transaction_end",
+  "radeon_rs4xx_hardware_transition_begin",
+  "radeon_rs4xx_hardware_shutdown_begin",
+  "radeon_rs4xx_hardware_transition_end",
+  "radeon_rs4xx_queue_parked_publish",
+  "radeon_rs4xx_latch_parked_state",
+  "radeon_rs4xx_latch_teardown_refusal",
+  "radeon_rs4xx_parked_publish_work",
+  "radeon_rs4xx_publish_parked_state",
+  "radeon_rs4xx_terminal_quiesce",
+  "radeon_device_lock_hardware",
+  "radeon_device_trylock_hardware",
+  "radeon_pci_remove",
+  "radeon_gem_fault",
+  "radeon_gem_vm_access",
+  "radeon_gem_object_free",
+  "radeon_gem_prime_pin",
+  "radeon_gem_prime_unpin",
+  "radeon_crtc_cursor_set2",
+  "radeon_crtc_set_config",
+  "radeon_fbdev_destroy_pinned_object",
+  "radeon_bo_move",
+  "radeon_bo_create",
+  "radeon_ttm_bo_destroy",
+]
+falsifier = "A hardware-bearing RS4xx callback without reader or transaction admission, a transition that publishes hardware availability before its prior admissions drain, or a refusal publisher that omits the pending queue and complete reader and transaction drain invalidates the containment boundary."
 
 [[partition]]
 name = "register-policy-generation"
@@ -244,7 +506,7 @@ evidence_rank = "kernel-source"
 symbol = "radeon_gem_object_create"
 side_effect_class = "software-state-write"
 guard_identifier_census = [
-  { owner = "radeon_gem_object_create", identifiers = ["gpu_parked"] },
+  { owner = "radeon_gem_object_create", identifiers = ["radeon_rs4xx_hardware_access_begin", "radeon_rs4xx_hardware_access_end"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -260,7 +522,8 @@ evidence_rank = "kernel-source"
 symbol = "radeon_cs_ioctl"
 side_effect_class = "command-submit"
 guard_identifier_census = [
-  { owner = "radeon_cs_ioctl", identifiers = ["exclusive_lock", "gpu_parked", "accel_working", "in_reset"] },
+  { owner = "radeon_cs_ioctl", identifiers = ["radeon_device_lock_hardware", "radeon_device_unlock_hardware", "gpu_parked", "accel_working", "in_reset", "radeon_cs_parser_release_reservations", "radeon_cs_parser_release_storage"] },
+  { owner = "radeon_cs_parser_release_reservations", identifiers = ["dma_resv_add_fence", "drm_exec_fini"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -274,7 +537,7 @@ evidence_rank = "kernel-source"
 symbol = "radeon_gpu_reset_internal"
 side_effect_class = "engine-reset"
 guard_identifier_census = [
-  { owner = "radeon_gpu_reset_internal", identifiers = ["exclusive_lock", "force_reset", "needs_reset", "gpu_parked"] },
+  { owner = "radeon_gpu_reset_internal", identifiers = ["radeon_rs4xx_hardware_transition_begin", "exclusive_lock", "force_reset", "needs_reset", "gpu_parked", "radeon_rs4xx_publish_parked_state", "radeon_rs4xx_hardware_transition_end"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -282,7 +545,7 @@ evidence_rank = "kernel-source"
 symbol = "radeon_gpu_reset"
 side_effect_class = "engine-reset"
 guard_identifier_census = [
-  { owner = "radeon_gpu_reset_internal", identifiers = ["exclusive_lock", "force_reset", "needs_reset", "gpu_parked"] },
+  { owner = "radeon_gpu_reset_internal", identifiers = ["radeon_rs4xx_hardware_transition_begin", "exclusive_lock", "force_reset", "needs_reset", "gpu_parked", "radeon_rs4xx_publish_parked_state", "radeon_rs4xx_hardware_transition_end"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -290,7 +553,7 @@ evidence_rank = "kernel-source"
 symbol = "radeon_gpu_reset_forced"
 side_effect_class = "engine-reset"
 guard_identifier_census = [
-  { owner = "radeon_gpu_reset_internal", identifiers = ["exclusive_lock", "force_reset", "needs_reset", "gpu_parked"] },
+  { owner = "radeon_gpu_reset_internal", identifiers = ["radeon_rs4xx_hardware_transition_begin", "exclusive_lock", "force_reset", "needs_reset", "gpu_parked", "radeon_rs4xx_publish_parked_state", "radeon_rs4xx_hardware_transition_end"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -298,8 +561,157 @@ evidence_rank = "kernel-source"
 symbol = "rs480_wedged_3d_reset"
 side_effect_class = "engine-reset"
 guard_identifier_census = [
-  { owner = "rs480_reset_hang_probe_show", identifiers = ["rs480_debugfs_refuse_if_parked", "radeon_rs480_reset_hang_probe", "RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN", "RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN", "accel_working", "ready", "rs480_wedged_3d_reset"] },
-  { owner = "rs480_wedged_3d_reset", identifiers = ["rs480_frontend_wedged", "rs480_frontend_busy", "radeon_gpu_reset_forced", "exclusive_lock", "gpu_parked"] },
+  { owner = "rs480_reset_hang_probe_show", identifiers = ["rs480_debugfs_lock_hardware", "radeon_device_unlock_hardware", "radeon_rs480_reset_hang_probe", "RS480_RESET_HANG_PROBE_WEDGED_3D_DRAINABLE_TOKEN", "RS480_RESET_HANG_PROBE_WEDGED_3D_HUNG_TOKEN", "accel_working", "ready", "rs480_wedged_3d_reset"] },
+  { owner = "rs480_wedged_3d_reset", identifiers = ["radeon_device_lock_hardware", "radeon_device_unlock_hardware", "rs480_frontend_wedged", "rs480_frontend_busy", "radeon_gpu_reset_forced", "post_reset_status"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_rs4xx_hardware_transaction_begin"
+side_effect_class = "hardware-admission"
+guard_identifier_census = [
+  { owner = "radeon_rs4xx_hardware_transaction_begin", identifiers = ["gpu_parked", "rs4xx_hardware_state", "rs4xx_hardware_closing", "rs4xx_hardware_transactions", "smp_mb__after_atomic", "radeon_rs4xx_hardware_transition_owner_admitted"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_rs4xx_hardware_transition_begin"
+side_effect_class = "hardware-lifecycle-write"
+guard_identifier_census = [
+  { owner = "radeon_rs4xx_hardware_transition_start_locked", identifiers = ["rs4xx_hardware_closing", "rs4xx_hardware_transactions", "rs4xx_hardware_owner", "rs4xx_hardware_state", "rs4xx_hardware_readers", "smp_mb", "smp_wmb", "atomic_set_release"] },
+  { owner = "radeon_rs4xx_hardware_transition_begin", identifiers = ["rs4xx_hardware_transition_lock", "rs4xx_hardware_state", "radeon_rs4xx_hardware_state_errno", "radeon_rs4xx_hardware_transition_start_locked"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_rs4xx_publish_parked_state"
+side_effect_class = "terminal-containment-write"
+guard_identifier_census = [
+  { owner = "radeon_rs4xx_latch_parked_state", identifiers = ["gpu_parked", "accel_working", "needs_reset", "ready"] },
+  { owner = "radeon_rs4xx_publish_parked_state", identifiers = ["radeon_rs4xx_latch_parked_state", "radeon_page_flip_quiesce", "radeon_irq_kms_fini_hardwareless", "cancel_delayed_work_sync", "radeon_fence_driver_force_completion_parked", "radeon_page_flip_finalize_retained"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_driver_unload_kms"
+side_effect_class = "device-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_driver_unload_kms", identifiers = ["rs4xx_unload_lock", "rs4xx_unload_completed", "radeon_rs4xx_hardware_shutdown_begin", "radeon_rs4xx_finish_terminal_shutdown", "radeon_rs4xx_publish_parked_state", "radeon_device_fini", "rs4xx_terminal_retained"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_device_fini"
+side_effect_class = "device-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_device_fini", identifiers = ["radeon_rs4xx_terminal_ownership_error", "shutdown", "radeon_rs480_panic_unregister", "radeon_bo_evict_vram", "radeon_audio_component_fini", "radeon_fini", "radeon_device_fini_external_interfaces", "rio_mem", "pci_iounmap", "iounmap", "rmmio", "radeon_doorbell_fini"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_gem_object_free"
+side_effect_class = "gem-object-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_gem_object_free", identifiers = ["radeon_rs4xx_hardware_transaction_wait_begin", "radeon_rs4xx_gart_teardown_wait", "radeon_rs4xx_retain_bo", "radeon_rs4xx_latch_teardown_refusal", "radeon_mn_unregister", "ttm_bo_fini", "ttm_bo_put", "radeon_rs4xx_hardware_transaction_end"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_ttm_backend_unbind"
+side_effect_class = "gart-unbind-write"
+guard_identifier_census = [
+  { owner = "radeon_ttm_backend_unbind", identifiers = ["bound", "radeon_rs4xx_hardware_target", "radeon_rs4xx_gart_teardown_is_complete", "radeon_ttm_tt_unpin_userptr", "radeon_gart_unbind", "radeon_rs4xx_gart_teardown_wait", "radeon_rs4xx_latch_teardown_refusal"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_gart_unbind"
+side_effect_class = "gart-unbind-write"
+guard_identifier_census = [
+  { owner = "radeon_gart_unbind", identifiers = ["radeon_rs4xx_hardware_access_wait_begin", "mutex_lock", "radeon_gart_unbind_locked", "mutex_unlock", "radeon_rs4xx_hardware_access_end"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_rs4xx_gart_teardown_wait"
+side_effect_class = "gart-teardown-wait"
+guard_identifier_census = [
+  { owner = "radeon_rs4xx_gart_teardown_wait", identifiers = ["radeon_rs4xx_hardware_target", "wait_event", "radeon_rs4xx_gart_teardown_is_complete", "rs4xx_gart_fini_error", "rs4xx_terminal_retained", "gpu_parked", "rs4xx_hardware_state", "RADEON_RS4XX_HARDWARE_SHUTDOWN"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_bo_create"
+side_effect_class = "buffer-object-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_bo_create", identifiers = ["radeon_rs4xx_hardware_transaction_begin", "rs4xx_lifetime_counted", "rs4xx_live_bos", "ttm_bo_init_validate", "radeon_ttm_bo_destroy", "radeon_rs4xx_hardware_transaction_end"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_ttm_bo_destroy"
+side_effect_class = "buffer-object-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_ttm_bo_destroy", identifiers = ["rs4xx_terminally_retained", "radeon_rs4xx_hardware_transaction_wait_begin", "radeon_rs4xx_retain_bo", "drm_prime_gem_destroy", "kfree", "atomic_dec_and_test", "rs4xx_live_bos", "wake_up_all", "radeon_rs4xx_hardware_transaction_end"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_bo_move"
+side_effect_class = "translation-table-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_bo_move", identifiers = ["radeon_rs4xx_hardware_transaction_begin", "ttm_bo_wait_ctx", "radeon_ttm_tt_is_bound", "radeon_ttm_tt_bind", "newly_bound", "radeon_ttm_tt_unbind_status", "radeon_rs4xx_hardware_transaction_end"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_ttm_fini"
+side_effect_class = "memory-manager-lifetime-write"
+guard_identifier_census = [
+  { owner = "radeon_ttm_fini", identifiers = ["atomic_read_acquire", "rs4xx_live_bos", "rs4xx_retained_gem_objects", "rs4xx_retained_ttm_tables", "rs4xx_hardware_transactions", "rs4xx_hardware_readers", "rs4xx_ttm_fini_error", "ttm_device_fini"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "rs400_gart_fini"
+side_effect_class = "gart-lifetime-write"
+guard_identifier_census = [
+  { owner = "rs400_gart_fini", identifiers = ["radeon_gart_fini", "rs4xx_gart_fini_error", "rs400_gart_disable", "radeon_gart_table_ram_free", "smp_store_release", "rs4xx_gart_teardown_complete", "wake_up_all"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_rs4xx_latch_teardown_refusal"
+side_effect_class = "terminal-admission-latch-write"
+guard_identifier_census = [
+  { owner = "radeon_rs4xx_latch_parked_state", identifiers = ["gpu_parked", "accel_working", "needs_reset", "ready", "wake_up_all"] },
+  { owner = "radeon_rs4xx_latch_teardown_refusal", identifiers = ["radeon_rs4xx_latch_parked_state", "rs4xx_parked_publish_pending", "radeon_rs4xx_queue_parked_publish"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_rs4xx_system_resume_rollback"
+side_effect_class = "pci-command-and-power-write"
+guard_identifier_census = []
+effect_identifier_census = [
+  { owner = "radeon_rs4xx_system_resume_rollback", identifiers = ["pci_clear_master", "pci_save_state", "pci_set_power_state", "PCI_D3hot"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_ttm_tt_destroy"
+side_effect_class = "terminal-memory-ownership-write"
+guard_identifier_census = [
+  { owner = "radeon_ttm_tt_destroy", identifiers = ["bound", "radeon_rs4xx_hardware_target", "radeon_rs4xx_retain_ttm", "radeon_ttm_backend_destroy"] },
+  { owner = "radeon_rs4xx_retain_ttm", identifiers = ["radeon_rs4xx_retain_bo", "rs4xx_retained_ttm_lock", "rs4xx_retained_ttm_tables_list", "rs4xx_retained_ttm_tables", "rs4xx_retained_ttm_accounted_pages"] },
+]
+evidence_rank = "kernel-source"
+
+[[hazard]]
+symbol = "radeon_fbdev_fb_mmap"
+side_effect_class = "framebuffer-or-mmio-mapping"
+guard_identifier_census = [
+  { owner = "radeon_fbdev_fb_mmap", identifiers = ["info", "par", "fb_helper", "dev", "dev_private", "radeon_rs4xx_hardware_target", "ENODEV", "fb_io_mmap"] },
 ]
 evidence_rank = "kernel-source"
 
@@ -360,25 +772,113 @@ pattern = 'module_exit\(radeon_module_exit\);'
 expected_matches = 1
 
 [[binding]]
-name = "pci-core-probe"
+name = "pci-device-probe"
 partition = "module-lifecycle"
 kind = "callback-table"
 scope = "brace"
-caller = "pci_core_probe"
+caller = "pci_device_probe"
 callee = "radeon_pci_probe"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
-pattern = '(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.probe = radeon_pci_probe'
+pattern = '(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.probe = radeon_pci_probe\s*,'
 expected_matches = 1
 
 [[binding]]
-name = "pci-core-shutdown"
+name = "pci-device-shutdown"
 partition = "module-lifecycle"
 kind = "callback-table"
 scope = "brace"
-caller = "pci_core_shutdown"
+caller = "pci_device_shutdown"
 callee = "radeon_pci_shutdown"
 path = "drivers/gpu/drm/radeon/radeon_drv.c"
-pattern = '(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.shutdown = radeon_pci_shutdown'
+pattern = '(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.shutdown = radeon_pci_shutdown\s*,'
+expected_matches = 1
+
+[[binding]]
+name = "pci-device-remove"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "pci_device_remove"
+callee = "radeon_pci_remove"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static struct pci_driver radeon_kms_pci_driver = \{.*?\.remove = radeon_pci_remove\s*,'
+expected_matches = 1
+
+[[binding]]
+name = "vga-switcheroo-state"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "vga_switcheroo_client_ops.set_gpu_state"
+callee = "radeon_switcheroo_set_state"
+path = "drivers/gpu/drm/radeon/radeon_device.c"
+pattern = '(?s)static const struct vga_switcheroo_client_ops radeon_switcheroo_ops = \{.*?\.set_gpu_state = radeon_switcheroo_set_state'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-suspend"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_suspend"
+callee = "radeon_pmops_suspend"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.suspend = radeon_pmops_suspend'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-resume"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_resume"
+callee = "radeon_pmops_resume"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.resume = radeon_pmops_resume'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-freeze"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_freeze"
+callee = "radeon_pmops_freeze"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.freeze = radeon_pmops_freeze'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-thaw"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_thaw"
+callee = "radeon_pmops_thaw"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.thaw = radeon_pmops_thaw'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-poweroff"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_poweroff"
+callee = "radeon_pmops_freeze"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.poweroff = radeon_pmops_freeze'
+expected_matches = 1
+
+[[binding]]
+name = "device-pm-restore"
+partition = "module-lifecycle"
+kind = "callback-table"
+scope = "brace"
+caller = "device_pm_restore"
+callee = "radeon_pmops_resume"
+path = "drivers/gpu/drm/radeon/radeon_drv.c"
+pattern = '(?s)static const struct dev_pm_ops radeon_pm_ops = \{.*?\.restore = radeon_pmops_resume'
 expected_matches = 1
 
 [[binding]]
@@ -554,7 +1054,7 @@ scope = "brace"
 caller = "radeon_gem_debugfs_init"
 callee = "radeon_debugfs_gem_info_fops"
 path = "drivers/gpu/drm/radeon/radeon_gem.c"
-pattern = '(?s)void radeon_gem_debugfs_init\([^;]+\)\s*\{.*?debugfs_create_file\("radeon_gem_info", 0444,\s*root, rdev,\s*&radeon_debugfs_gem_info_fops\)'
+pattern = '(?s)void radeon_gem_debugfs_init\([^;]+\)\s*\{.*?radeon_debugfs_add_component\(rdev, "radeon_gem_info", 0444, rdev,\s*&radeon_debugfs_gem_info_fops\)'
 expected_matches = 1
 match_literals = true
 
@@ -566,7 +1066,7 @@ scope = "brace"
 caller = "radeon_ttm_debugfs_init"
 callee = "radeon_ttm_vram_fops"
 path = "drivers/gpu/drm/radeon/radeon_ttm.c"
-pattern = '(?s)static void radeon_ttm_debugfs_init\([^;]+\)\s*\{.*?debugfs_create_file\("radeon_vram", 0444,\s*root, rdev,\s*&radeon_ttm_vram_fops\)'
+pattern = '(?s)static void radeon_ttm_debugfs_init\([^;]+\)\s*\{.*?radeon_debugfs_add_component\(rdev, "radeon_vram", 0444, rdev,\s*&radeon_ttm_vram_fops\)'
 expected_matches = 1
 match_literals = true
 
@@ -578,7 +1078,7 @@ scope = "brace"
 caller = "radeon_ttm_debugfs_init"
 callee = "radeon_ttm_gtt_fops"
 path = "drivers/gpu/drm/radeon/radeon_ttm.c"
-pattern = '(?s)static void radeon_ttm_debugfs_init\([^;]+\)\s*\{.*?debugfs_create_file\("radeon_gtt", 0444,\s*root, rdev,\s*&radeon_ttm_gtt_fops\)'
+pattern = '(?s)static void radeon_ttm_debugfs_init\([^;]+\)\s*\{.*?radeon_debugfs_add_component\(rdev, "radeon_gtt", 0444, rdev,\s*&radeon_ttm_gtt_fops\)'
 expected_matches = 1
 match_literals = true
 
@@ -720,13 +1220,35 @@ expected_matches = 1
 
 [[binding]]
 name = "rs480-post-reset-observation-lock"
-partition = "reset-and-park"
-kind = "locked-post-reset-read"
+partition = "rs4xx-hardware-admission"
+kind = "transactional-post-reset-read"
 scope = "brace"
 caller = "rs480_wedged_3d_reset"
 callee = "RREG32"
 path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
-pattern = '(?s)static int rs480_wedged_3d_reset\([^;]+\)\s*\{.*?reset_result\s*=\s*radeon_gpu_reset_forced\(rdev\);\s*down_read\(&rdev->exclusive_lock\);\s*if \(rdev->gpu_parked\) \{.*?post_reset_status\s*=\s*0x5041524B;\s*\} else \{\s*post_reset_status\s*=\s*RREG32\(R_000E40_RBBM_STATUS\);\s*\}\s*up_read\(&rdev->exclusive_lock\);'
+pattern = '(?s)static int rs480_wedged_3d_reset\([^;]+\)\s*\{.*?reset_result\s*=\s*radeon_gpu_reset_forced\(rdev\);.*?hardware_result\s*=\s*radeon_device_lock_hardware\(rdev\);\s*if \(hardware_result == -EIO\) \{.*?post_reset_status\s*=\s*0x5041524B;.*?\} else if \(hardware_result\) \{\s*post_reset_status\s*=\s*0x554E4156;.*?\} else \{\s*post_reset_status\s*=\s*RREG32\(R_000E40_RBBM_STATUS\);\s*radeon_device_unlock_hardware\(rdev\);\s*\}'
+expected_matches = 1
+
+[[binding]]
+name = "rs4xx-device-lock-transaction-root"
+partition = "rs4xx-hardware-admission"
+kind = "transaction-root"
+scope = "brace"
+caller = "radeon_device_lock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_begin"
+path = "drivers/gpu/drm/radeon/radeon.h"
+pattern = '(?s)static inline int radeon_device_lock_hardware\([^;]+\)\s*\{.*?r\s*=\s*radeon_rs4xx_hardware_transaction_begin\(rdev\);.*?down_read\(&rdev->exclusive_lock\);.*?radeon_rs4xx_hardware_transaction_end\(rdev\);'
+expected_matches = 1
+
+[[binding]]
+name = "rs4xx-device-trylock-transaction-root"
+partition = "rs4xx-hardware-admission"
+kind = "transaction-root"
+scope = "brace"
+caller = "radeon_device_trylock_hardware"
+callee = "radeon_rs4xx_hardware_transaction_try_begin"
+path = "drivers/gpu/drm/radeon/radeon.h"
+pattern = '(?s)static inline int radeon_device_trylock_hardware\([^;]+\)\s*\{.*?r\s*=\s*radeon_rs4xx_hardware_transaction_try_begin\(rdev\);.*?down_read_trylock\(&rdev->exclusive_lock\).*?radeon_rs4xx_hardware_transaction_end\(rdev\);'
 expected_matches = 1
 
 [[binding]]
@@ -862,6 +1384,50 @@ pattern = '#define radeon_gart_get_page_entry\(a, f\) \(rdev\)->asic->gart.get_p
 expected_matches = 1
 
 [[binding]]
+name = "radeon-finalization-wrapper"
+partition = "gart-and-memory"
+kind = "wrapper-macro"
+scope = "match"
+caller = "radeon_fini"
+callee = "rdev->asic->fini"
+path = "drivers/gpu/drm/radeon/radeon.h"
+pattern = '#define radeon_fini\(rdev\) \(rdev\)->asic->fini\(\(rdev\)\)'
+expected_matches = 1
+
+[[binding]]
+name = "rs400-finalization-callback"
+partition = "gart-and-memory"
+kind = "callback-table"
+scope = "brace"
+caller = "rs400_asic"
+callee = "rs400_fini"
+path = "drivers/gpu/drm/radeon/radeon_asic.c"
+pattern = '(?s)static struct radeon_asic rs400_asic = \{.*?\.fini = &rs400_fini'
+expected_matches = 1
+
+[[binding]]
+name = "ttm-translation-table-destroy"
+partition = "gart-and-memory"
+kind = "callback-table"
+scope = "brace"
+caller = "radeon_bo_driver"
+callee = "radeon_ttm_tt_destroy"
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+pattern = '(?s)static struct ttm_device_funcs radeon_bo_driver = \{.*?\.ttm_tt_destroy = &radeon_ttm_tt_destroy'
+expected_matches = 1
+
+[[binding]]
+name = "ttm-translation-table-unpopulate"
+partition = "gart-and-memory"
+kind = "callback-table"
+scope = "brace"
+caller = "radeon_bo_driver"
+callee = "radeon_ttm_tt_unpopulate"
+path = "drivers/gpu/drm/radeon/radeon_ttm.c"
+pattern = '(?s)static struct ttm_device_funcs radeon_bo_driver = \{.*?\.ttm_tt_unpopulate = &radeon_ttm_tt_unpopulate'
+expected_matches = 1
+
+[[binding]]
 name = "flip-reset-work"
 partition = "reset-and-park"
 kind = "workqueue-callback"
@@ -906,14 +1472,25 @@ pattern = '(?s)static const struct vm_operations_struct radeon_gem_vm_ops = \{.*
 expected_matches = 1
 
 [[binding]]
-name = "fbdev-mmap-external"
+name = "fbdev-mmap-callback"
 partition = "profile-and-admission"
 kind = "callback-table"
 scope = "brace"
-caller = "fbdev_mmap"
+caller = "fb_mmap"
+callee = "radeon_fbdev_fb_mmap"
+path = "drivers/gpu/drm/radeon/radeon_fbdev.c"
+pattern = '(?s)static const struct fb_ops radeon_fbdev_fb_ops = \{.*?\.fb_mmap = radeon_fbdev_fb_mmap\s*,'
+expected_matches = 1
+
+[[binding]]
+name = "fbdev-mmap-rs4xx-refusal"
+partition = "profile-and-admission"
+kind = "guarded-call"
+scope = "brace"
+caller = "radeon_fbdev_fb_mmap"
 callee = "fb_io_mmap"
 path = "drivers/gpu/drm/radeon/radeon_fbdev.c"
-pattern = '(?s)static const struct fb_ops radeon_fbdev_fb_ops = \{.*?\.fb_mmap = fb_io_mmap'
+pattern = '(?s)^static int radeon_fbdev_fb_mmap\(struct fb_info \*info,\s*struct vm_area_struct \*vma\)\s*\{\s*struct drm_fb_helper \*fb_helper = info->par;\s*struct radeon_device \*rdev = fb_helper->dev->dev_private;\s*if \(radeon_rs4xx_hardware_target\(rdev\)\)\s*return -ENODEV;\s*return fb_io_mmap\(info, vma\);\s*\}'
 expected_matches = 1
 
 [[binding]]
@@ -948,6 +1525,39 @@ callee = "radeon_dynpm_idle_work_handler"
 path = "drivers/gpu/drm/radeon/radeon_pm.c"
 pattern = 'INIT_DELAYED_WORK\(&rdev->pm.dynpm_idle_work,\s*radeon_dynpm_idle_work_handler\)'
 expected_matches = 1
+
+[[path_witness]]
+name = "rs4xx-pci-remove-terminal-retention"
+entry = "pci_device_remove"
+terminal = "radeon_rs4xx_retain_terminal_device_identity"
+context = [
+  "The path requires radeon_rs4xx_hardware_target to classify the device as RS400 or RS480.",
+  "The path requires rdev->rs4xx_terminal_retained to be true after unload.",
+  "The witness records ordered source evidence and does not prove runtime PCI removal.",
+]
+edge = [
+  { axis = "pci-remove-retention", edge_kind = "declared-indirect", caller = "pci_device_remove", callee = "radeon_pci_remove", partition = "module-lifecycle", provenance = "pci-device-remove", classification = "callback-table" },
+  { axis = "pci-remove-retention", edge_kind = "lexical", caller = "radeon_pci_remove", callee = "radeon_rs4xx_retain_terminal_device_identity", partition = "full-tree", provenance = "gnu-cflow", classification = "driver" },
+]
+join = []
+
+[[path_witness]]
+name = "rs4xx-fbdev-mmap-aperture-refusal"
+entry = "fb_mmap"
+terminal = "fb_io_mmap"
+context = [
+  "The bounded queries fbdev-fbops-assignment and fbdev-fbops-probe-scope prove one table assignment inside radeon_fbdev_driver_fbdev_probe.",
+  "The callback table selects radeon_fbdev_fb_mmap for fb_mmap.",
+  "The guarded function returns -ENODEV for RS400 and RS480 before fb_io_mmap.",
+  "The witness records ordered source evidence and does not prove runtime framework dispatch.",
+]
+edge = [
+  { axis = "fbdev-mmap-dispatch", edge_kind = "declared-indirect", caller = "fb_mmap", callee = "radeon_fbdev_fb_mmap", partition = "profile-and-admission", provenance = "fbdev-mmap-callback", classification = "callback-table" },
+  { axis = "fbdev-mmap-terminal", edge_kind = "declared-indirect", caller = "radeon_fbdev_fb_mmap", callee = "fb_io_mmap", partition = "profile-and-admission", provenance = "fbdev-mmap-rs4xx-refusal", classification = "guarded-call" },
+]
+join = [
+  { kind = "callback-selection", from_axis = "fbdev-mmap-dispatch", from_symbol = "radeon_fbdev_fb_mmap", to_axis = "fbdev-mmap-terminal", to_symbol = "radeon_fbdev_fb_mmap", evidence_ids = ["fbdev-mmap-callback", "fbdev-mmap-rs4xx-refusal"] },
+]
 
 [[path_witness]]
 name = "rs480-command-submission-packet-validation"
@@ -1085,18 +1695,26 @@ join = [
 ]
 
 [[bounded_query]]
+name = "fbdev-fbops-assignment"
+paths = ["drivers/gpu/drm/radeon/radeon_fbdev.c"]
+pattern = '\binfo\s*->\s*fbops\s*=\s*&\s*radeon_fbdev_fb_ops\s*;'
+expected_matches = 1
+rationale = "The retained Radeon fbdev source assigns radeon_fbdev_fb_ops to fb_info exactly once."
+
+[[bounded_query]]
+name = "fbdev-fbops-probe-scope"
+paths = ["drivers/gpu/drm/radeon/radeon_fbdev.c"]
+function = "radeon_fbdev_driver_fbdev_probe"
+pattern = '\binfo\s*->\s*fbops\s*=\s*&\s*radeon_fbdev_fb_ops\s*;'
+expected_matches = 1
+rationale = "The brace-scoped fbdev probe body assigns the Radeon callback table exactly once."
+
+[[bounded_query]]
 name = "legacy-palm-debugfs-init-symbol"
 paths = ["drivers/gpu/drm/radeon/*.c", "drivers/gpu/drm/radeon/*.h"]
 pattern = '\bradeon_evergreen_dev_debugfs_init\b'
 expected_matches = 0
 rationale = "The pre-merge global debugfs registration symbol disappears from the corrected source."
-
-[[bounded_query]]
-name = "pci-remove-callback"
-paths = ["drivers/gpu/drm/radeon/radeon_drv.c"]
-pattern = '\.remove\s*='
-expected_matches = 0
-rationale = "The admitted PCI driver table carries no explicit remove callback."
 
 [[bounded_query]]
 name = "global-debugfs-parent"

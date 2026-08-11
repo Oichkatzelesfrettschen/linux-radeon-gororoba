@@ -248,7 +248,7 @@ source_mechanisms = ["B13", "M08"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = ["candidate-registers", "hazard-readers"]
 runtime_profile = "observe-dev"
-operation_gate = "compiled observe profile, runtime observe profile, supported family, and unparked device"
+operation_gate = "compiled observe profile, runtime observe profile, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "available"
@@ -262,12 +262,12 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "direct-mmio-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "immutable register list with bounded rows and bytes"
-locking = "device lifetime and parked-state refusal"
-error_contract = "unsupported or parked devices return before MMIO"
+locking = "device hardware transaction across the bounded register snapshot"
+error_contract = "unsupported family or closed hardware admission returns before MMIO"
 tests = [
   "normal: every approved register emits one bounded row",
   "boundary: final register ends output at the declared limit",
-  "failure: parked device returns before the first MMIO read",
+  "failure: closed hardware admission returns before the first MMIO read",
   "adversarial: unlisted register cannot enter generated output",
 ]
 production_promotion_condition = "each register has target-silicon read-safety evidence"
@@ -331,7 +331,7 @@ source_mechanisms = ["M01"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, root write, ring ready, and unparked device"
+operation_gate = "compiled mutate profile, runtime mutate profile, root write, ring ready, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -345,12 +345,12 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "command-submission"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one bounded cache-control and idle packet sequence per write"
-locking = "ring lock and device lifecycle"
-error_contract = "unready, parked, or malformed requests return before command submission"
+locking = "device hardware transaction and ring lock across command submission"
+error_contract = "unready ring, closed hardware admission, or malformed request returns before command submission"
 tests = [
   "normal: exact write submits one bounded packet sequence",
   "boundary: ring-space limit rejects oversized submission",
-  "failure: parked device returns before ring access",
+  "failure: closed hardware admission returns before ring access",
   "adversarial: a read-like filename cannot lower the mutation tier",
 ]
 production_promotion_condition = "no production promotion for a raw command trigger"
@@ -443,6 +443,7 @@ setting = "prod"
 tier = "prod"
 source_objects = [
   "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_device.c",
   "drivers/gpu/drm/radeon/radeon_drv.c",
   "drivers/gpu/drm/radeon/radeon_fence.c",
   "drivers/gpu/drm/radeon/radeon_kms.c",
@@ -452,11 +453,11 @@ source_mechanisms = ["M18"]
 dependencies = ["reset-clock-control", "bounded-reset-readback"]
 evidence_dependencies = []
 runtime_profile = "prod"
-operation_gate = "gpu_parked initialized false and checked before every guarded hardware entry"
+operation_gate = "RUNNING with open admission admits counted hardware readers and transactions; every other RS4xx state returns its declared refusal"
 availability_default = "present-in-prod"
 runtime_profile_default = "active"
-operation_arm_default = "latent-until-parked"
-arming_model = "automatic-containment-guard"
+operation_arm_default = "running-state-admits"
+arming_model = "automatic-hardware-admission"
 privilege = "kernel-internal"
 execution_scope = "scope_refs"
 evidence_scope = "scope_refs"
@@ -465,43 +466,52 @@ scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "software-state"
 interface_class = "kernel-path"
-resource_bounds = "one Boolean refusal before each guarded entry"
-locking = "device lifetime with false initialization proven by radeon_device allocation"
-error_contract = "parked device returns before MMIO, ring, GART, fence, or teardown access"
-state_initialization = "radeon_pci_probe uses devm_drm_dev_alloc; Linux v6.18 and v7.1 __devm_drm_dev_alloc use kzalloc for the containing radeon_device"
-initialization_source = "drivers/gpu/drm/radeon/radeon_drv.c:radeon_pci_probe;linux-v6.18:drivers/gpu/drm/drm_drv.c:__devm_drm_dev_alloc;linux-v7.1:drivers/gpu/drm/drm_drv.c:__devm_drm_dev_alloc"
+resource_bounds = "eight states, two counted admission classes, and one transition owner"
+locking = "rs4xx_hardware_transition_lock, release and acquire state publication, counter drain wait queue, and exclusive_lock projection"
+error_contract = "RESETTING, SUSPENDING, and RESUMING return EBUSY; SUSPENDED returns EHOSTDOWN; shutdown returns ESHUTDOWN; PARKED returns EIO"
+state_initialization = "radeon_pci_probe uses devm_drm_dev_alloc and Linux v6.18 and v7.1 __devm_drm_dev_alloc use kzalloc; radeon_device_init explicitly publishes RADEON_RS4XX_HARDWARE_RUNNING with rs4xx_hardware_closing, rs4xx_hardware_transactions, and rs4xx_hardware_readers set to zero"
+initialization_source = "drivers/gpu/drm/radeon/radeon_drv.c:radeon_pci_probe;drivers/gpu/drm/radeon/radeon_device.c:radeon_device_init;linux-v6.18:drivers/gpu/drm/drm_drv.c:__devm_drm_dev_alloc;linux-v7.1:drivers/gpu/drm/drm_drv.c:__devm_drm_dev_alloc"
 tests = [
-  "normal: initialized false state preserves ordinary entry",
-  "boundary: first parked transition rejects the next guarded entry",
-  "failure: parked debugfs and teardown paths return before hardware access",
-  "adversarial: a development interface cannot bypass the production guard",
+  "normal: initialized RUNNING state admits and balances one hardware epoch",
+  "boundary: transition closure drains admitted transactions and readers before hardware ownership changes",
+  "failure: each nonrunning state returns its exact refusal before hardware access",
+  "adversarial: a callback-bearing root cannot bypass the transaction denominator",
 ]
 production_promotion_condition = "already production containment"
 profile_exception = "none"
 exception_basis = "none"
 package_projection = "production"
-rollback = "retain an equivalent pre-hardware parked refusal"
+rollback = "retain an equivalent counted pre-hardware admission and transition boundary"
 
 [[feature]]
 id = "parked-display-containment"
 setting = "prod"
 tier = "prod"
 source_objects = [
+  "drivers/gpu/drm/radeon/atombios_crtc.c",
+  "drivers/gpu/drm/radeon/atombios_encoders.c",
+  "drivers/gpu/drm/radeon/r100.c",
+  "drivers/gpu/drm/radeon/radeon_acpi.c",
   "drivers/gpu/drm/radeon/radeon_connectors.c",
   "drivers/gpu/drm/radeon/radeon_cursor.c",
   "drivers/gpu/drm/radeon/radeon_display.c",
+  "drivers/gpu/drm/radeon/radeon_i2c.c",
   "drivers/gpu/drm/radeon/radeon_irq_kms.c",
   "drivers/gpu/drm/radeon/radeon_kms.c",
+  "drivers/gpu/drm/radeon/radeon_legacy_crtc.c",
+  "drivers/gpu/drm/radeon/radeon_legacy_encoders.c",
+  "drivers/gpu/drm/radeon/radeon_mode.h",
+  "drivers/gpu/drm/radeon/radeon_pm.c",
 ]
 source_mechanisms = ["M19"]
 dependencies = ["parked-entry-containment"]
 evidence_dependencies = []
 runtime_profile = "prod"
-operation_gate = "gpu_parked checked before display, IRQ, cursor, connector, and polling work"
+operation_gate = "hardware transaction admission covers callback-bearing display work, reader admission covers hardware leaves, and PARKED publication quiesces IRQ and retained flip ownership"
 availability_default = "present-in-prod"
 runtime_profile_default = "active"
-operation_arm_default = "latent-until-parked"
-arming_model = "automatic-containment-guard"
+operation_arm_default = "running-state-admits"
+arming_model = "automatic-hardware-admission"
 privilege = "kernel-internal"
 execution_scope = "scope_refs"
 evidence_scope = "scope_refs"
@@ -510,14 +520,14 @@ scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "software-state"
 interface_class = "kernel-path"
-resource_bounds = "finite refusal and quiescence at each asynchronous entry"
-locking = "existing display, IRQ, and workqueue lifetimes"
-error_contract = "parked display work returns a stable refusal or inert state"
+resource_bounds = "finite reader or transaction lifetime at each display entry plus bounded terminal flip retention"
+locking = "hardware admission, display ownership locks, IRQ synchronization, workqueue drain, and retained flip lock"
+error_contract = "closed admission returns a state-specific refusal; terminal modeset paths preserve their explicit no-op contract"
 tests = [
-  "normal: unparked display work retains baseline behavior",
-  "boundary: parking between scheduling and execution produces refusal",
-  "failure: parked IRQ and connector paths perform no hardware access",
-  "adversarial: queued work cannot outlive the parked transition",
+  "normal: RUNNING display work enters and leaves one balanced hardware epoch",
+  "boundary: transition closure drains admitted display work before state publication",
+  "failure: PARKED IRQ and connector paths perform no hardware access",
+  "adversarial: queued work and page flips cannot outlive terminal quiescence without retained ownership",
 ]
 production_promotion_condition = "already production containment"
 profile_exception = "none"
@@ -530,19 +540,25 @@ id = "parked-memory-containment"
 setting = "prod"
 tier = "prod"
 source_objects = [
+  "drivers/gpu/drm/radeon/radeon_device.c",
   "drivers/gpu/drm/radeon/radeon_fbdev.c",
+  "drivers/gpu/drm/radeon/radeon_gart.c",
   "drivers/gpu/drm/radeon/radeon_gem.c",
+  "drivers/gpu/drm/radeon/radeon_kms.c",
+  "drivers/gpu/drm/radeon/radeon_object.c",
+  "drivers/gpu/drm/radeon/radeon_prime.c",
   "drivers/gpu/drm/radeon/radeon_ttm.c",
+  "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M20"]
 dependencies = ["parked-entry-containment"]
 evidence_dependencies = []
 runtime_profile = "prod"
-operation_gate = "gpu_parked checked before GEM, TTM, fbdev, mmap, fault, and placement work"
+operation_gate = "the source-admitted RS400 and RS480 fbdev callback refuses before fb_io_mmap mapping selection; hardware transaction admission spans fault, placement, move, creation, and callback-bearing destruction; wait-capable teardown owns a transaction only after successful admission; refusal-only retention closes later admission without draining earlier work"
 availability_default = "present-in-prod"
 runtime_profile_default = "active"
-operation_arm_default = "latent-until-parked"
-arming_model = "automatic-containment-guard"
+operation_arm_default = "running-state-admits"
+arming_model = "automatic-hardware-admission"
 privilege = "kernel-internal"
 execution_scope = "scope_refs"
 evidence_scope = "scope_refs"
@@ -551,14 +567,14 @@ scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "software-state"
 interface_class = "kernel-path"
-resource_bounds = "finite refusal or system-memory placement per memory entry"
-locking = "existing GEM, TTM, reservation, and fault lifetimes"
-error_contract = "parked memory paths reject GPU placement and hardware-backed faults"
+resource_bounds = "the RS4xx branch returns -ENODEV before fb_io_mmap; finite transaction and reservation lifetimes; TTM destruction requires zero live BOs, retained BOs, retained tables, transactions, and readers"
+locking = "hardware transaction, GEM reservation, memory clock reader, GART table lock, GART completion publication, BO lifetime count, and retained table list"
+error_contract = "radeon_fbdev_fb_mmap returns -ENODEV on RS4xx before fb_io_mmap; RUNNING invalid GART unbind returns -EINVAL and retains binding, page, DMA, and SG ownership; a nonzero TTM denominator returns -EBUSY before ttm_device_fini; refusal-only terminal cleanup retains device and module ownership until reboot"
 tests = [
-  "normal: unparked memory paths retain baseline placement",
-  "boundary: parking during a fault selects the contained result",
-  "failure: parked GEM and TTM paths avoid GPU access",
-  "adversarial: mmap cannot reintroduce GPU placement after parking",
+  "normal: RUNNING move waits for reservation fences before bind and rolls back a newly installed binding after a later failure",
+  "boundary: RS4xx fbdev mmap returns -ENODEV before fb_io_mmap while lifecycle transition closure drains admitted work",
+  "failure: invalid RUNNING unbind returns -EINVAL and a nonzero TTM denominator returns -EBUSY before destruction",
+  "adversarial: conditional guard, broken device provenance, and displaced callback assignment mutations fail; delayed BO deletion keeps rs4xx_live_bos nonzero until final destruction",
 ]
 production_promotion_condition = "already production containment"
 profile_exception = "none"
@@ -573,7 +589,12 @@ tier = "prod"
 source_objects = [
   "drivers/gpu/drm/radeon/r300.c",
   "drivers/gpu/drm/radeon/radeon_device.c",
+  "drivers/gpu/drm/radeon/radeon_fence.c",
+  "drivers/gpu/drm/radeon/radeon_ib.c",
+  "drivers/gpu/drm/radeon/radeon_irq_kms.c",
   "drivers/gpu/drm/radeon/radeon_kms.c",
+  "drivers/gpu/drm/radeon/radeon_ring.c",
+  "drivers/gpu/drm/radeon/rs400.c",
 ]
 source_mechanisms = ["M21"]
 dependencies = [
@@ -585,7 +606,7 @@ dependencies = [
 ]
 evidence_dependencies = []
 runtime_profile = "prod"
-operation_gate = "failed RS4xx reset activates parking after latent containment is installed"
+operation_gate = "reset closes admission, drains prior work, owns RESETTING, and publishes PARKED before failed-reset cleanup"
 availability_default = "present-in-prod"
 runtime_profile_default = "active"
 operation_arm_default = "error-path-only"
@@ -598,14 +619,14 @@ scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "hardware-control-write"
 interface_class = "kernel-path"
-resource_bounds = "one parking transition followed by bounded quiescence"
-locking = "reset serialization, device lifetime, IRQ teardown, and workqueue drain"
-error_contract = "failed reset parks once and prevents subsequent hardware entry"
+resource_bounds = "one RESETTING transition followed by RUNNING recovery or terminal PARKED quiescence"
+locking = "hardware transition lock, transaction and reader drains, exclusive reset writer, IRQ synchronization, and workqueue drain"
+error_contract = "failed reset publishes PARKED before BIOS scratch, fence, ring, display, and power cleanup"
 tests = [
-  "normal: successful reset leaves gpu_parked false",
-  "boundary: first failed reset transitions gpu_parked once",
-  "failure: activation clears readiness and quiesces hardware work",
-  "adversarial: repeated failure cannot reactivate drained hardware paths",
+  "normal: successful reset returns RESETTING to RUNNING after restoration",
+  "boundary: failed reset publishes gpu_parked and PARKED before failed-reset cleanup",
+  "failure: terminal publication clears readiness and quiesces hardware work without MMIO",
+  "adversarial: repeated failure cannot reopen admission or reactivate drained hardware paths",
 ]
 production_promotion_condition = "already production containment"
 profile_exception = "containment"
@@ -634,7 +655,7 @@ dependencies = [
 ]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, exact token, ready engine, supported family, and unparked device"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact token, ready engine, supported family, hardware transaction admission for samples, and production RESETTING owner"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -648,13 +669,13 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "reset-execution"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one production-path reset per exact request"
-locking = "forced request and reset under the production writer lock, post-reset parked check and RBBM sample under the reset read lock, device lifecycle, and parked-state refusal"
-error_contract = "failed admission returns before reset; ASIC reset failure parks the device; ring-test failure with saved commands preserves a pending reset; ring-test failure without saved commands returns the underlying error and clears the pending reset"
+locking = "device hardware transaction for each sample, production transition ownership for reset, and one admitted post-reset sample when hardware remains available"
+error_contract = "failed admission returns before reset; ASIC reset failure publishes PARKED; post-reset hardware refusal emits the terminal status without MMIO"
 tests = [
   "normal: WD3A or WD3B executes one production-path reset",
   "boundary: exact tokens select distinct predicates and -EAGAIN reports an unparked partial reset",
-  "failure: parked device returns before reset access",
-  "adversarial: malformed token cannot reach reset execution",
+  "failure: closed hardware admission returns before reset access",
+  "adversarial: malformed token and post-reset PARKED state cannot reach MMIO",
 ]
 production_promotion_condition = "no production promotion for reset experiment interfaces"
 profile_exception = "none"
@@ -711,7 +732,7 @@ source_mechanisms = ["M24"]
 dependencies = ["rs4xx-debugfs", "parked-entry-containment", "failed-reset-parking"]
 evidence_dependencies = []
 runtime_profile = "observe-dev"
-operation_gate = "compiled observe profile, runtime observe profile, supported family, and unparked device"
+operation_gate = "compiled observe profile, runtime observe profile, supported family, hardware transaction admission, and gart.lock"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "available"
@@ -725,13 +746,13 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "cpu-memory-read"
 interface_class = "cpu-memory-reader"
 resource_bounds = "bounded GART table span with fixed row and byte schema"
-locking = "GART CPU mapping lifetime and parked-state refusal"
-error_contract = "unmapped, unsupported, or parked devices return before table access"
+locking = "device hardware transaction and gart.lock across metadata and PTE reads"
+error_contract = "unsupported family, closed hardware admission, or absent table emits metadata before any PTE access"
 tests = [
   "normal: mapped GART table emits the bounded schema",
   "boundary: final declared entry produces the final row",
-  "failure: parked device returns before CPU-memory access",
-  "adversarial: malformed table size cannot exceed the declared output bound",
+  "failure: closed admission and absent table return before CPU-memory access",
+  "adversarial: malformed table size and concurrent writers cannot escape the declared bound or table lock",
 ]
 production_promotion_condition = "production need and stable bounded schema are demonstrated"
 profile_exception = "none"
@@ -790,7 +811,7 @@ source_mechanisms = ["M03.passive"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = []
 runtime_profile = "observe-dev"
-operation_gate = "compiled observe profile, runtime observe profile, candidate gate, supported family, and unparked device"
+operation_gate = "compiled observe profile, runtime observe profile, candidate gate, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -804,12 +825,12 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "direct-mmio-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "finite passive cohort with bounded rows and bytes"
-locking = "device lifetime and parked-state refusal"
-error_contract = "closed cohort gate or parked state returns before MMIO"
+locking = "device hardware transaction across the bounded candidate snapshot"
+error_contract = "closed cohort gate or closed hardware admission returns before MMIO"
 tests = [
   "normal: passive cohort emits one row per declared register",
   "boundary: skipped register ends without a replacement read",
-  "failure: parked device returns before MMIO",
+  "failure: closed hardware admission returns before MMIO",
   "adversarial: hazardous cohort cannot enter observe-dev",
 ]
 production_promotion_condition = "each candidate register is promoted through retained evidence"
@@ -832,7 +853,7 @@ source_mechanisms = ["M03.hazard"]
 dependencies = ["rs4xx-debugfs", "candidate-registers"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, exact Boolean arm, supported family, and unparked device"
+operation_gate = "compiled probe profile, runtime probe profile, exact Boolean arm, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -846,7 +867,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "indirect-selector-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "finite hazardous cohort with one selected transaction at a time"
-locking = "device lifetime, selector serialization, and parked-state refusal"
+locking = "device hardware transaction and selector serialization"
 error_contract = "every failed gate returns before selector or MMIO access"
 tests = [
   "normal: exact arm reads one selected hazard entry",
@@ -874,7 +895,7 @@ source_mechanisms = ["M05"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, supported family, and unparked device"
+operation_gate = "compiled probe profile, runtime probe profile, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "available"
@@ -888,12 +909,12 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "indirect-selector-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "finite CP-ME RAM range with one bounded row per address"
-locking = "selector serialization, device lifetime, and parked-state refusal"
-error_contract = "unsupported or parked devices return before selector writes"
+locking = "device hardware transaction and selector serialization"
+error_contract = "unsupported family or closed hardware admission returns before selector writes"
 tests = [
   "normal: dump emits the complete bounded CP-ME RAM range",
   "boundary: final address produces the final row",
-  "failure: parked device returns before the selector write",
+  "failure: closed hardware admission returns before the selector write",
   "adversarial: selector restoration does not classify the dump as observe-dev",
 ]
 production_promotion_condition = "no production promotion for a raw microcode reader"
@@ -916,7 +937,7 @@ source_mechanisms = ["M06"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = ["cp-me-dump"]
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, exact token, idle engine, supported family, and unparked device"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact token, idle engine, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -930,7 +951,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "microcode-write"
 interface_class = "raw-hardware-writer"
 resource_bounds = "finite write set with write, verify, and restore for each word"
-locking = "per-device mutation lock, engine-idle gate, and parked-state refusal"
+locking = "device hardware transaction, per-device mutation lock, and engine-idle gate"
 error_contract = "any gate, verify, or restore failure aborts and reports the exact stage"
 tests = [
   "normal: exact token performs bounded write, verify, and restore",
@@ -1000,7 +1021,7 @@ source_mechanisms = ["M10.pll"]
 dependencies = ["rs4xx-debugfs", "hazard-readers"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and unparked device"
+operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -1014,7 +1035,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "indirect-selector-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "one selected PLL transaction from a finite table"
-locking = "PLL selector serialization, device lifetime, and parked-state refusal"
+locking = "device hardware transaction and PLL selector serialization"
 error_contract = "invalid index or failed lifecycle gate returns before selector access"
 tests = [
   "normal: selected PLL index emits one bounded row",
@@ -1042,7 +1063,7 @@ source_mechanisms = ["M10.first-read"]
 dependencies = ["rs4xx-debugfs", "hazard-readers"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and unparked device"
+operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -1056,7 +1077,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "direct-mmio-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "one selected first read from a finite table"
-locking = "device lifetime and parked-state refusal"
+locking = "device hardware transaction across the selected MMIO read"
 error_contract = "invalid index or failed lifecycle gate returns before MMIO"
 tests = [
   "normal: selected index performs one first read",
@@ -1084,7 +1105,7 @@ source_mechanisms = ["M09"]
 dependencies = ["rs4xx-debugfs", "hazard-readers"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and unparked device"
+operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -1098,7 +1119,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "direct-mmio-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "one selected direct read from each finite probe table"
-locking = "device lifetime and parked-state refusal"
+locking = "device hardware transaction across the selected MMIO read"
 error_contract = "invalid index or failed lifecycle gate returns before MMIO"
 tests = [
   "normal: selected probe emits one bounded row",
@@ -1126,7 +1147,7 @@ source_mechanisms = ["M11"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, selected index, supported family, and unparked device"
+operation_gate = "compiled mutate profile, runtime mutate profile, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -1140,12 +1161,12 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "hardware-control-write"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one selected read bracketed by bounded SCLK save, force, and restore"
-locking = "per-device clock-control lock, lifecycle, and parked-state refusal"
+locking = "device hardware transaction and per-device clock-control lock"
 error_contract = "failed gate returns before control writes and every entered path restores SCLK"
 tests = [
   "normal: selected index saves, forces, reads, and restores once",
   "boundary: final index stays within the finite table",
-  "failure: parked device returns before SCLK control",
+  "failure: closed hardware admission returns before SCLK control",
   "adversarial: self-restoring writes remain mutation",
 ]
 production_promotion_condition = "no production promotion for force-clock register probes"
@@ -1287,7 +1308,7 @@ source_mechanisms = ["M15"]
 dependencies = ["rs4xx-debugfs"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, exact token, acceleration ready, ring ready, supported family, and unparked device"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact token, acceleration ready, ring ready, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -1301,7 +1322,7 @@ scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "command-submission"
 interface_class = "diagnostic-oracle"
 resource_bounds = "one bounded IB self-test and one scratch sentinel"
-locking = "ring lock, device lifecycle, and parked-state refusal"
+locking = "device hardware transaction and ring lock across the IB self-test"
 error_contract = "failed readiness or token gate returns before command submission"
 tests = [
   "normal: exact token submits one scratch-write IB test",

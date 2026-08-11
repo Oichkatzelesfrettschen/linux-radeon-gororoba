@@ -374,8 +374,8 @@ int radeon_crtc_set_base_atomic(struct drm_crtc *crtc,
 #endif
 
 int radeon_crtc_do_set_base(struct drm_crtc *crtc,
-			 struct drm_framebuffer *fb,
-			 int x, int y, int atomic)
+				 struct drm_framebuffer *fb,
+				 int x, int y, int atomic)
 {
 	struct drm_device *dev = crtc->dev;
 	struct radeon_device *rdev = dev->dev_private;
@@ -387,6 +387,7 @@ int radeon_crtc_do_set_base(struct drm_crtc *crtc,
 	uint32_t crtc_offset, crtc_offset_cntl, crtc_tile_x0_y0 = 0;
 	uint32_t crtc_pitch, pitch_pixels;
 	uint32_t tiling_flags;
+	bool reset_reprogramming;
 	int format;
 	uint32_t gen_cntl_reg, gen_cntl_val;
 	int r;
@@ -426,13 +427,29 @@ int radeon_crtc_do_set_base(struct drm_crtc *crtc,
 	/* Pin framebuffer & get tilling informations */
 	obj = target_fb->obj[0];
 	rbo = gem_to_radeon_bo(obj);
+	reset_reprogramming = radeon_rs4xx_hardware_target(rdev) &&
+		READ_ONCE(rdev->rs4xx_reset_reprogramming);
 retry:
 	r = radeon_bo_reserve(rbo, false);
 	if (unlikely(r != 0))
 		return r;
 	/* Only 27 bit offset for legacy CRTC */
-	r = radeon_bo_pin_restricted(rbo, RADEON_GEM_DOMAIN_VRAM, 1 << 27,
-				     &base);
+	if (reset_reprogramming) {
+		/* drm_helper_resume_force_mode reprograms the accepted primary BO.
+		 * Page-flip admission already owns its scanout pin, so reset reuses
+		 * that pin and validates the legacy address without incrementing it.
+		 */
+		base = radeon_bo_gpu_offset(rbo);
+		if (!rbo->tbo.pin_count || base < rdev->mc.vram_start ||
+		    base - rdev->mc.vram_start >= (1ULL << 27)) {
+			radeon_bo_unreserve(rbo);
+			return -EINVAL;
+		}
+		r = 0;
+	} else {
+		r = radeon_bo_pin_restricted(rbo, RADEON_GEM_DOMAIN_VRAM,
+					     1 << 27, &base);
+	}
 	if (unlikely(r != 0)) {
 		radeon_bo_unreserve(rbo);
 
@@ -1040,10 +1057,18 @@ static int radeon_crtc_mode_set(struct drm_crtc *crtc,
 				 struct drm_display_mode *adjusted_mode,
 				 int x, int y, struct drm_framebuffer *old_fb)
 {
+	struct radeon_device *rdev = crtc->dev->dev_private;
 	struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
+	int r;
 
 	/* TODO TV */
-	radeon_crtc_set_base(crtc, x, y, old_fb);
+	r = radeon_crtc_set_base(crtc, x, y, old_fb);
+	if (r) {
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->rs4xx_reset_reprogramming))
+			WRITE_ONCE(rdev->rs4xx_reset_reprogram_failed, true);
+		return r;
+	}
 	radeon_set_crtc_timing(crtc, adjusted_mode);
 	radeon_set_pll(crtc, adjusted_mode);
 	radeon_overscan_setup(crtc, adjusted_mode);
@@ -1058,6 +1083,10 @@ static int radeon_crtc_mode_set(struct drm_crtc *crtc,
 		}
 	}
 	radeon_cursor_reset(crtc);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->rs4xx_reset_reprogramming))
+		WRITE_ONCE(rdev->rs4xx_reset_reprogram_completed,
+			   READ_ONCE(rdev->rs4xx_reset_reprogram_completed) + 1);
 	return 0;
 }
 
@@ -1097,9 +1126,14 @@ static void radeon_crtc_disable(struct drm_crtc *crtc)
 
 		rbo = gem_to_radeon_bo(crtc->primary->fb->obj[0]);
 		r = radeon_bo_reserve(rbo, false);
-		if (unlikely(r))
+		if (unlikely(r)) {
 			DRM_ERROR("failed to reserve rbo before unpin\n");
-		else {
+			if (radeon_rs4xx_hardware_target(rbo->rdev) &&
+			    READ_ONCE(rbo->rdev->rs4xx_scanout_release_tracking))
+				WRITE_ONCE(
+					rbo->rdev->rs4xx_scanout_release_failed,
+					true);
+		} else {
 			radeon_bo_unpin(rbo);
 			radeon_bo_unreserve(rbo);
 		}

@@ -324,11 +324,12 @@ The work proceeds through explicit gates:
    exclusion rows, ten coefficient rows, two lineage rows, 36 source
    functions, module request, two ioctl bindings, and eight register
    encodings.
-2. The source-map policy closes exactly 73 partition bound roots, 13 hazards,
-   55 declared bindings, and six contextual witnesses across the request,
-   selector, address fit, allocator, GART, ioctl, debugfs, and raw reader
-   structural boundaries. A fresh source map remains a lexical candidate graph
-   rather than runtime proof.
+2. The capacity contract contributes exactly 73 partition bound roots, 13
+   hazards, 55 declared bindings, and six contextual witnesses across the
+   request, selector, address fit, allocator, GART, ioctl, debugfs, and raw
+   reader structural boundaries. The integrated live policy closes 125 roots,
+   31 hazards, 70 bindings, and eight witnesses. A fresh source map remains a
+   lexical candidate graph rather than runtime proof.
 3. A read-only exact-target production baseline records the loaded request,
    effective GTT interval, GART state, allocator counters, device identity,
    module identity, boot identity, and logs before any pressure trial.

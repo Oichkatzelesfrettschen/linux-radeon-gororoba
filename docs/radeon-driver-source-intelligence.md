@@ -83,6 +83,42 @@ kernel lanes. A manifest supplied file list cannot widen that denominator.
 
 <!-- markdownlint-enable MD013 -->
 
+### Cscope source-line identity calibration
+
+GNU cscope 15.9 in the analyzer environment produces deterministic file and
+source-text mismatches when it indexes repository-relative paths from the
+export root. The `/tmp/source` calls query for `radeon_mode_dumb_create` labels
+one row as `drivers/gpu/drm/radeon/radeon_gem.c:321` while it emits source text
+from `radeon_i2c.c`. Moving the same input to the 44-character analyzer root
+repairs that spot query, but a sweep over all 357 declared root queries still
+finds seven mismatched rows. The `radeon_gpu_reset_forced` calls query labels
+`radeon_display.c` call text as `radeon_device.c:229` through line 236.
+
+Every admitted C and header file is a direct child of
+`drivers/gpu/drm/radeon`, and all 207 basenames are unique. Indexing those
+basenames from that exact source directory produces 2,024 rows with zero file,
+line, or source-text mismatches. An absolute-path build also has zero
+mismatches but produces 1,938 rows, so path spelling changes the cscope
+candidate denominator. The producer selects the flat source directory,
+requires the parent and basename invariants, records the complete sorted
+basename vector in command metadata, and records its SHA-256 digest in
+`metadata/tool-inputs.tsv`. Raw cscope output retains the basename. The
+normalizer rejoins the canonical source prefix before it checks retained file,
+line, and source-text identity.
+
+The [official cscope repository](https://git.code.sf.net/p/cscope/cscope) at
+commit `978e2c3818778127b8255992f30632124f0661f1` records the build current
+directory in `src/build.c` and reads database-backed source lines through
+`src/main.c` and `src/find.c`. Those source paths support a
+database-alignment hypothesis;
+they do not prove a general upstream root cause. The self-test rebuilds the
+database in the canonical sandbox, executes every definition, calls, and
+callers query for all 125 roots, compares every nonempty row against exported
+source, and requires the exact eight-call `radeon_mode_dumb_create` control.
+Offline replay binds the retained source to the same canonical cscope working
+directory. A nested C or header path, a repeated basename, a mixed raw path
+form, or one source mismatch falsifies the flat-denominator contract.
+
 ## Reference capture attestation
 
 The complete reference capture identifies source and producer commit
@@ -556,33 +592,29 @@ source delta.
 - The capture contains no RS482 or Palm hardware verdict. Those verdicts
   require exact target bundles in the owning evidence repository.
 
-## Live RS482 capacity-policy extension
+## Live policy extensions
 
 The sealed `8158297` reference remains an attestation of its original 43 roots
-and 45 declared bindings. The live policy extends the next capture to 73 roots,
-13 hazards, and 55 exact declared bindings. It adds request normalization,
-RS400 ASIC initialization, selector adjustment, address fit, TTM managers,
-allocator movement, pin accounting, capacity ioctls, GEM observation, and the
-excluded raw VRAM and GTT reader boundary.
+and 45 declared bindings. The retained `c4f4177` capacity attestation extends
+that graph to 73 roots, 13 hazards, 55 exact declared bindings, and six
+contextual witnesses. It adds request normalization, RS400 ASIC
+initialization, selector adjustment, address fit, TTM managers, allocator
+movement, pin accounting, capacity ioctls, GEM observation, and the excluded
+raw VRAM and GTT reader boundary.
 
-The producer pins every partition and root pair with SHA-256
+The `c4f4177` producer pins every partition and root pair with SHA-256
 `a680ddd050ac81de5cbc82263d87e158498e267091a3a6d5eb93b087bbb97814`,
 every hazard record with SHA-256
 `79221ccd7fd2d9e8070d9ca957f8645b927ccfe79191c2b86e65059df0f62be5`,
 and every normalized binding record with SHA-256
 `e6c66efadb75917286117ed984ec52a90d108ae347d8cee603bbafff17c9df77`.
-Policy loading rejects a missing, added, moved, or changed member before
-capture.
+The retained verifier rejects a missing, added, moved, or changed member.
 
-Policy schema 2 owns these exact live denominators and the separate effect
-identifier census. New capture production accepts schema 2 only. Retained
-capture verification also accepts schema 1 and replays its original product
-set without applying schema 2 counts or adding a new analysis file.
-The live topology carries six contextual witnesses. The two added witnesses
-separate TTM debugfs registration from later `radeon_vram` and `radeon_gtt`
-read dispatch. The VRAM reader carries an MMIO index write plus a data read;
-the GTT reader copies host backing-page content. Neither path is promoted to a
-runtime event or admitted capacity-trial input.
+The retained capacity topology carries six contextual witnesses. Its two
+added witnesses separate TTM debugfs registration from later `radeon_vram`
+and `radeon_gtt` read dispatch. The VRAM reader carries an MMIO index write
+plus a data read; the GTT reader copies host backing-page content. Neither path
+is promoted to a runtime event or admitted capacity-trial input.
 
 The root expansion changes the producer-derived cscope denominator from 129 to
 219 raw queries. It changes the source-only command contract from 156 to 246
@@ -634,6 +666,31 @@ capture carries no kernel lane, linked module, profile delta, runtime event, or
 hardware verdict. Required CI still runs the complete two-kernel, six-profile
 producer after publication.
 
+### RS4xx failed-reset ownership union
+
+The current policy closes 125 partition bound roots, 31 exact hazards, 70
+declared bindings, and eight contextual witnesses across 222 source files and
+7,022,537 bytes. Its eight witnesses contain 41 ordered edges and seven typed
+joins. The added rows cover terminal state publication, hardware-access
+admission, retained GART and TTM ownership, PCI runtime and system resume
+rollback, system power callbacks, switcheroo state, deferred debugfs
+registration, and PCI remove retention. The source-only command contract
+contains 404 rows, including 375 cscope queries. A complete capture with both
+kernel lanes contains 424 command rows. The built-in calibration rejects 252
+adversarial mutations.
+
+The producer pins every current partition and root pair with SHA-256
+`5164c2f9c8f1ca03d01a8e13873bd4676486a1cf3f40ed141049f823a153ead5`,
+every current hazard record with SHA-256
+`3afa42718091193e806ce3da2d873bf8968b61c6d951bcf68ca00b5c8ffef3a3`,
+and every current normalized binding with SHA-256
+`4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c`.
+Policy loading rejects a missing, added, moved, or changed member before
+capture. Policy schema 2 owns the current denominators and the separate effect
+identifier census. New capture production accepts schema 2. Retained capture
+verification also accepts schema 1 and replays its original product set
+without applying the current counts or adding a new analysis file.
+
 ## Roadmap and completion gates
 
 The source intelligence program advances through these concrete gates:
@@ -661,8 +718,9 @@ The source intelligence program advances through these concrete gates:
 7. The RS482 capacity source checker closes its four selectors, ten exclusions,
    ten coefficients, 36 source functions, module request, ioctl table, and
    register encodings before any target trial. A fresh source-only capture and
-   the required complete kernel-lane CI job close the 73-root, 13-hazard,
-   55-binding, six-witness graph.
+   the required complete kernel-lane CI job close the integrated 125-root,
+   31-hazard, 70-binding, eight-witness graph. The retained capacity subset
+   remains 73 roots, 13 hazards, 55 bindings, and six witnesses.
 8. Any new hazardous path gains an exact contextual witness, maximum side
    effect class, semantic checker owner, and explicit runtime nonclaim.
 9. `steinmarder-r300` records a read only Vostro production baseline with

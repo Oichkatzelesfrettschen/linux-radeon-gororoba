@@ -242,8 +242,8 @@ static bool radeon_gart_range_valid(struct radeon_device *rdev,
 	return start <= rdev->gart.num_cpu_pages - pages;
 }
 
-/**
- * radeon_gart_unbind - unbind pages from the gart page table
+/*
+ * radeon_gart_unbind_locked - unbind pages while holding gart.lock
  *
  * @rdev: radeon_device pointer
  * @offset: offset into the GPU's gart aperture
@@ -252,20 +252,23 @@ static bool radeon_gart_range_valid(struct radeon_device *rdev,
  * Unbinds the requested pages from the gart page table and
  * replaces them with the dummy page (all asics).
  */
-void radeon_gart_unbind(struct radeon_device *rdev, unsigned int offset,
-			int pages)
+static int radeon_gart_unbind_locked(struct radeon_device *rdev,
+				     unsigned int offset, int pages)
 {
 	unsigned int t, p;
 	int i, j;
 
 	if (!rdev->gart.ready) {
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    radeon_rs4xx_gart_teardown_is_complete(rdev))
+			return 0;
 		WARN(1, "trying to unbind memory from uninitialized GART !\n");
-		return;
+		return -EINVAL;
 	}
 	if (!radeon_gart_range_valid(rdev, offset, pages)) {
 		WARN(1, "invalid GART unbind range offset %u pages %d\n",
 		     offset, pages);
-		return;
+		return -EINVAL;
 	}
 	t = offset / RADEON_GPU_PAGE_SIZE;
 	p = t / (PAGE_SIZE / RADEON_GPU_PAGE_SIZE);
@@ -286,10 +289,26 @@ void radeon_gart_unbind(struct radeon_device *rdev, unsigned int offset,
 		mb();
 		radeon_gart_tlb_flush(rdev);
 	}
+	return 0;
 }
 
-/**
- * radeon_gart_bind - bind pages into the gart page table
+int radeon_gart_unbind(struct radeon_device *rdev, unsigned int offset,
+		       int pages)
+{
+	int r;
+
+	r = radeon_rs4xx_hardware_access_wait_begin(rdev);
+	if (r)
+		return r;
+	mutex_lock(&rdev->gart.lock);
+	r = radeon_gart_unbind_locked(rdev, offset, pages);
+	mutex_unlock(&rdev->gart.lock);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
+}
+
+/*
+ * radeon_gart_bind_locked - bind pages while holding gart.lock
  *
  * @rdev: radeon_device pointer
  * @offset: offset into the GPU's gart aperture
@@ -302,9 +321,10 @@ void radeon_gart_unbind(struct radeon_device *rdev, unsigned int offset,
  * (all asics).
  * Returns 0 for success, -EINVAL for failure.
  */
-int radeon_gart_bind(struct radeon_device *rdev, unsigned int offset,
-		     int pages, struct page **pagelist, dma_addr_t *dma_addr,
-		     uint32_t flags)
+static int radeon_gart_bind_locked(struct radeon_device *rdev,
+				   unsigned int offset, int pages,
+				   struct page **pagelist,
+				   dma_addr_t *dma_addr, uint32_t flags)
 {
 	unsigned int t, p;
 	uint64_t page_base, page_entry;
@@ -342,6 +362,23 @@ int radeon_gart_bind(struct radeon_device *rdev, unsigned int offset,
 	return 0;
 }
 
+int radeon_gart_bind(struct radeon_device *rdev, unsigned int offset,
+		     int pages, struct page **pagelist, dma_addr_t *dma_addr,
+		     uint32_t flags)
+{
+	int r;
+
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return r;
+	mutex_lock(&rdev->gart.lock);
+	r = radeon_gart_bind_locked(rdev, offset, pages, pagelist, dma_addr,
+				   flags);
+	mutex_unlock(&rdev->gart.lock);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
+}
+
 /**
  * radeon_gart_init - init the driver info for managing the gart
  *
@@ -356,6 +393,10 @@ int radeon_gart_init(struct radeon_device *rdev)
 
 	if (rdev->gart.pages)
 		return 0;
+	if (radeon_rs4xx_hardware_target(rdev)) {
+		/* Initialization revokes the prior completed teardown epoch. */
+		smp_store_release(&rdev->rs4xx_gart_teardown_complete, false);
+	}
 
 	/* We need PAGE_SIZE >= RADEON_GPU_PAGE_SIZE */
 	if (PAGE_SIZE < RADEON_GPU_PAGE_SIZE) {
@@ -395,12 +436,22 @@ int radeon_gart_init(struct radeon_device *rdev)
  * @rdev: radeon_device pointer
  *
  * Tear down the gart driver info and free the dummy page (all asics).
+ * Returns 0 for success or the GART unbind error while retaining storage.
  */
-void radeon_gart_fini(struct radeon_device *rdev)
+int radeon_gart_fini(struct radeon_device *rdev)
 {
+	int r;
+
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return r;
+	mutex_lock(&rdev->gart.lock);
 	if (rdev->gart.ready) {
 		/* unbind pages */
-		radeon_gart_unbind(rdev, 0, rdev->gart.num_cpu_pages);
+		r = radeon_gart_unbind_locked(rdev, 0,
+					      rdev->gart.num_cpu_pages);
+		if (r)
+			goto out_unlock;
 	}
 	rdev->gart.ready = false;
 	vfree(rdev->gart.pages);
@@ -409,4 +460,33 @@ void radeon_gart_fini(struct radeon_device *rdev)
 	rdev->gart.pages_entry = NULL;
 
 	radeon_dummy_page_fini(rdev);
+	r = 0;
+out_unlock:
+	mutex_unlock(&rdev->gart.lock);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
+}
+
+int radeon_rs4xx_gart_teardown_wait(struct radeon_device *rdev)
+{
+	int r;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+
+	wait_event(rdev->rs4xx_hardware_wait,
+		   radeon_rs4xx_gart_teardown_is_complete(rdev) ||
+		   READ_ONCE(rdev->rs4xx_gart_fini_error) ||
+		   READ_ONCE(rdev->rs4xx_terminal_retained) ||
+		   READ_ONCE(rdev->gpu_parked) ||
+		   atomic_read_acquire(&rdev->rs4xx_hardware_state) ==
+			RADEON_RS4XX_HARDWARE_SHUTDOWN);
+	if (radeon_rs4xx_gart_teardown_is_complete(rdev))
+		return 0;
+	r = READ_ONCE(rdev->rs4xx_gart_fini_error);
+	if (r)
+		return r;
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+	return -ESHUTDOWN;
 }

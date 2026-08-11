@@ -29,8 +29,11 @@
 #define __RADEON_TTM_H__
 
 struct radeon_device;
+struct dentry;
 
 int radeon_ttm_init(struct radeon_device *rdev);
-void radeon_ttm_fini(struct radeon_device *rdev);
+int radeon_ttm_fini(struct radeon_device *rdev);
+void radeon_ttm_debugfs_register_managers(struct radeon_device *rdev,
+					  struct dentry *root);
 
 #endif				/* __RADEON_TTM_H__ */

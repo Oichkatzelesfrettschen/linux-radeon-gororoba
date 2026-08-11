@@ -208,6 +208,7 @@ struct radeon_i2c_chan {
 	struct drm_dp_aux aux;
 	bool has_aux;
 	struct mutex mutex;
+	bool rs4xx_hardware_access_held;
 };
 
 /* mostly for macs, but really any system without connector tables */
@@ -805,6 +806,7 @@ extern void radeon_crtc_load_lut(struct drm_crtc *crtc);
 extern int atombios_crtc_set_base(struct drm_crtc *crtc, int x, int y,
 				   struct drm_framebuffer *old_fb);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+#define RADEON_FBDEV_DEBUG_OPS_PRESENT
 extern int atombios_crtc_set_base_atomic(struct drm_crtc *crtc,
 					 struct drm_framebuffer *fb,
 					 int x, int y,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import re
 import sys
 import tomllib
@@ -52,6 +53,125 @@ SCOPE_RELATIONS = {
     "infrastructure-only",
     "matches-exclusion-evidence",
 }
+CANONICAL_PLAN_MECHANISMS = {
+    "B01": "external-module-source-root",
+    "B02": "clock-info-bounds-backport",
+    "B03": "drm-print-include-backport",
+    "B04": "set-base-api-bridge",
+    "B05": "drm-client-lifecycle-bridge",
+    "B06": "fbdev-allocation-bridge",
+    "B07": "ttm-bo-finalization-bridge",
+    "B08": "pci-msi-mask-bridge",
+    "B09": "ttm-device-init-bridge",
+    "B10": "firmware-presence-gate",
+    "B11": "bounded-palm-reset",
+    "B12": "palm-reset-trigger",
+    "B13": "rs48x-safe-register-snapshot",
+    "B14": "smx-dc-ctl0-command-policy",
+    "M01": "cp-cache-drain",
+    "M02": "cs-parser-failure-telemetry",
+    "M03": "candidate-register-snapshots",
+    "M04": "rs4xx-debugfs-registration",
+    "M05": "cp-me-ram-dump",
+    "M06": "cp-me-ram-injection",
+    "M07": "cp-me-oracle",
+    "M08": "safe-register-promotion",
+    "M09": "indexed-diagnostic-probes",
+    "M10": "pll-and-first-read-probes",
+    "M11": "force-clock-register-probes",
+    "M12": "r400-us-command-allowlist",
+    "M13": "panic-breadcrumb",
+    "M14": "igp-mc-idle-wait",
+    "M15": "cp-scratch-oracle",
+    "M16": "rs4xx-reset-clock-control",
+    "M17": "bounded-reset-state-readback",
+    "M18": "parked-hardware-entry-guards",
+    "M19": "parked-display-guards",
+    "M20": "parked-memory-containment",
+    "M21": "parked-state-activation",
+    "M22": "reset-recovery-probes",
+    "M23": "one-shot-reset-mask-selection",
+    "M24": "bounded-gart-table-reader",
+}
+CANONICAL_PLAN_IDS = set(CANONICAL_PLAN_MECHANISMS)
+CANONICAL_GUARD_IDS = {"B13"} | {f"M{number:02d}" for number in range(1, 25)}
+CANONICAL_GUARD_SOURCE_DIGESTS = {
+    "B13": "92361c118d8b0019f432981312d6560d6f7002978ee59743a91994fb739acf31",
+    "M01": "4c317f62859f556123f91e89e26576e0a30dc411b79ed5952cd7e53dbcf845f1",
+    "M02": "0fdd9ada88a336511d78b4ce0fd474a11ff52ac37bb7b3e5e1300390f6fbe09f",
+    "M03": "05f1fe531d7c5dac789724758f11c0f3d9f4af1ca63a667074b81e2faa3619b1",
+    "M04": "66c75e2b0f924e9cc34f5bb36ba2c8e8c875fe7c90de7e328a4af99e01fbc065",
+    "M05": "37a2c5b864419ea08870f95a1ad1808cf6f84ae54b068b5e57fc0f4fa479cfad",
+    "M06": "536c389149f908638ef8eaeb6a7fcde7616e27c793dc0f98fab0975c479a3b8a",
+    "M07": "7c78d020883a891cbd47efc7709f1d2e05eb0584966fa5e300bbe7dcc87cf5ac",
+    "M08": "1b13b602167edf4b55a2c6fd8e2d731e5c25a9757202c855ee9c0f1936cdfd7b",
+    "M09": "797344b12bbbb2f9db281b9fc84cfcbe92c7ac83c576c31f3dede1ad33f84e65",
+    "M10": "875b767bbea4e83e1727e83a1c9229c23ec24084b686de7edb871c9cd01ef9fb",
+    "M11": "0653c8483807fd2cb78d456a22a60ebd41e89aaa31666ae04eb979fd02cd5faf",
+    "M12": "17d97eee18664f01fb5d024edff75915323042e1edadd5443917d00cd769cb5c",
+    "M13": "470b6491cb7b2459daa36fa3197d54b8f0cc7541d6e8c4b3b9a65ed64022f199",
+    "M14": "5f450d0b66bcee6cefab7d30c7d3aa9e24fb378ce467f4080b5940c0db1706a2",
+    "M15": "58ff3aba794b9fa1c062c6a3610c787a962dedd2a7391c3fbead8be0fc051884",
+    "M16": "5f450d0b66bcee6cefab7d30c7d3aa9e24fb378ce467f4080b5940c0db1706a2",
+    "M17": "862211a74128f8c0d68fe3b51535a69f072ff640325faa0c71e64fd0ad1b757a",
+    "M18": "ee2d7d1c2d39b971badef4b5d2141cd429a1015383f6082111a7d4de49991afe",
+    "M19": "5e9e2d4266f0d2ed33a450513f8ea6f8203002fcfbd060095a619fc1e97067f4",
+    "M20": "0b852d5322f6b924a5fa01518970d364615db02d0e68e3b56bb5a5961dcc79df",
+    "M21": "79f5fc980ada7c73d2352adc10b0ee9e548181e56788af520691fac4687209e9",
+    "M22": "f782b5d8150a4009e736262c52c1aab9fc8332a69afc94b293ab484b9766af08",
+    "M23": "5f450d0b66bcee6cefab7d30c7d3aa9e24fb378ce467f4080b5940c0db1706a2",
+    "M24": "491e37e8def3b99858fb66b021339b1c3a02a8ffee6b903b79936547f4612268",
+}
+RS4XX_HARDWARE_ADMISSION_CONSUMERS = {
+    "safe-registers",
+    "cache-drain",
+    "parked-display-containment",
+    "parked-memory-containment",
+    "wedged-3d-reset-probes",
+    "gart-table-reader",
+    "candidate-registers",
+    "hazard-readers",
+    "cp-me-dump",
+    "cp-me-write",
+    "pll-probes",
+    "first-read",
+    "indexed-probes",
+    "force-clock",
+    "scratch-oracle",
+}
+STALE_PARKED_ADMISSION_PHRASES = (
+    "unparked device",
+    "parked-state refusal",
+    "gpu_parked checked before",
+    "latent-until-parked",
+)
+PARKED_MEMORY_OPERATION_GATE = (
+    "the source-admitted RS400 and RS480 fbdev callback refuses before "
+    "fb_io_mmap mapping selection; hardware transaction admission spans fault, "
+    "placement, move, creation, and callback-bearing destruction; wait-capable "
+    "teardown owns a transaction only after successful admission; refusal-only "
+    "retention closes later admission without draining earlier work"
+)
+PARKED_MEMORY_RESOURCE_BOUNDS = (
+    "the RS4xx branch returns -ENODEV before fb_io_mmap; finite transaction and "
+    "reservation lifetimes; TTM destruction requires zero live BOs, retained "
+    "BOs, retained tables, transactions, and readers"
+)
+PARKED_MEMORY_ADVERSARIAL_TEST = (
+    "adversarial: conditional guard, broken device provenance, and displaced "
+    "callback assignment mutations fail; delayed BO deletion keeps "
+    "rs4xx_live_bos nonzero until final destruction"
+)
+FAILED_RESET_SOURCE_OBJECTS = (
+    "drivers/gpu/drm/radeon/r300.c",
+    "drivers/gpu/drm/radeon/radeon_device.c",
+    "drivers/gpu/drm/radeon/radeon_fence.c",
+    "drivers/gpu/drm/radeon/radeon_ib.c",
+    "drivers/gpu/drm/radeon/radeon_irq_kms.c",
+    "drivers/gpu/drm/radeon/radeon_kms.c",
+    "drivers/gpu/drm/radeon/radeon_ring.c",
+    "drivers/gpu/drm/radeon/rs400.c",
+)
 SPLIT_MECHANISMS = {
     "B11": {"production", "unsafe"},
     "M03": {"passive", "hazard"},
@@ -121,16 +241,124 @@ def load_policy(root: Path) -> dict[str, object]:
     )
 
 
-def load_plans(root: Path) -> dict[str, dict[str, str]]:
-    rows = read_tsv(root / "docs/base-reconstruction-commit-plan.tsv")
-    rows += read_tsv(root / "docs/reconstruction-commit-plan.tsv")
+def index_plan_rows(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    require(
+        all(row.get("commit_id") for row in rows),
+        "reconstruction plan carries an empty identifier",
+    )
+    require(
+        len({row["commit_id"] for row in rows}) == len(rows),
+        "reconstruction plan repeats an identifier",
+    )
+    require(
+        {row["commit_id"] for row in rows} == CANONICAL_PLAN_IDS,
+        "reconstruction plan identifier denominator differs",
+    )
     return {row["commit_id"]: row for row in rows}
 
 
+def load_plans(root: Path) -> dict[str, dict[str, str]]:
+    rows = read_tsv(root / "docs/base-reconstruction-commit-plan.tsv")
+    rows += read_tsv(root / "docs/reconstruction-commit-plan.tsv")
+    return index_plan_rows(rows)
+
+
 def load_guard_scope(root: Path) -> dict[str, dict[str, str]]:
-    return {
-        row["guard_id"]: row for row in read_tsv(root / "policy/rs4xx-guard-scope.tsv")
-    }
+    rows = read_tsv(root / "policy/rs4xx-guard-scope.tsv")
+    require(
+        all(row.get("guard_id") for row in rows),
+        "guard scope carries an empty identifier",
+    )
+    require(
+        len({row["guard_id"] for row in rows}) == len(rows),
+        "guard scope repeats an identifier",
+    )
+    require(
+        {row["guard_id"] for row in rows} == CANONICAL_GUARD_IDS,
+        "guard scope identifier denominator differs",
+    )
+    return {row["guard_id"]: row for row in rows}
+
+
+def validate_guard_scope_sources(
+    root: Path, guard_scope: dict[str, dict[str, str]]
+) -> None:
+    for guard_id, row in guard_scope.items():
+        references: set[str] = set()
+        raw_references = row.get("source_symbols", "").split(";")
+        require(
+            raw_references and all(raw_references),
+            f"{guard_id}: source symbol set is empty",
+        )
+        for reference in raw_references:
+            path_text, separator, symbol = reference.rpartition(":")
+            require(
+                separator == ":" and path_text and symbol,
+                f"{guard_id}: malformed source symbol {reference}",
+            )
+            path = Path(path_text)
+            require(
+                not path.is_absolute()
+                and ".." not in path.parts
+                and path.parts[:4] == ("drivers", "gpu", "drm", "radeon"),
+                f"{guard_id}: source symbol leaves the Radeon tree {reference}",
+            )
+            require(
+                reference not in references,
+                f"duplicate guard source symbol {reference}",
+            )
+            references.add(reference)
+            source_path = root / path
+            require(
+                source_path.is_file(), f"{guard_id}: source file is absent {path_text}"
+            )
+            source = source_path.read_text(encoding="utf-8")
+            require(
+                re.search(
+                    rf"(?m)^(?=[A-Za-z_])[^;\n]*\b{re.escape(symbol)}\s*\(",
+                    source,
+                )
+                is not None,
+                f"{guard_id}: source function is absent {reference}",
+            )
+
+
+def validate_guard_scope_mechanisms(
+    guard_scope: dict[str, dict[str, str]],
+    plans: dict[str, dict[str, str]],
+) -> None:
+    """Bind every reconstruction-backed guard row to its canonical mechanism."""
+
+    require(
+        set(plans) == CANONICAL_PLAN_IDS,
+        "reconstruction plan identifier denominator differs",
+    )
+    require(
+        set(guard_scope) == CANONICAL_GUARD_IDS,
+        "guard scope identifier denominator differs",
+    )
+    for commit_id, mechanism in CANONICAL_PLAN_MECHANISMS.items():
+        require(
+            plans[commit_id]["mechanism"] == mechanism,
+            f"{commit_id}: reconstruction plan mechanism differs",
+        )
+    for guard_id, row in guard_scope.items():
+        plan = plans.get(guard_id)
+        require(
+            plan is not None, f"{guard_id}: guard is absent from reconstruction plan"
+        )
+        source_digest = hashlib.sha256(
+            row["source_symbols"].encode("ascii")
+        ).hexdigest()
+        require(
+            source_digest == CANONICAL_GUARD_SOURCE_DIGESTS[guard_id],
+            f"{guard_id}: guard source-symbol identity differs",
+        )
+        require(
+            row["mechanism"] == plan["mechanism"],
+            f"{guard_id}: guard mechanism {row['mechanism']} differs from "
+            f"plan mechanism {plan['mechanism']}",
+        )
 
 
 def string_list(feature: dict[str, object], field: str) -> list[str]:
@@ -247,6 +475,27 @@ def validate_feature_shape(
             isinstance(feature[field], str) and bool(feature[field]),
             f"{feature_id}: missing {field}",
         )
+    descriptive_contract = "\n".join(
+        str(feature[field])
+        for field in (
+            "operation_gate",
+            "operation_arm_default",
+            "arming_model",
+            "locking",
+            "error_contract",
+            "tests",
+        )
+    )
+    for stale_phrase in STALE_PARKED_ADMISSION_PHRASES:
+        require(
+            stale_phrase not in descriptive_contract,
+            f"{feature_id}: stale Boolean-only admission phrase {stale_phrase}",
+        )
+    if feature_id in RS4XX_HARDWARE_ADMISSION_CONSUMERS:
+        require(
+            "hardware transaction" in str(feature["operation_gate"]),
+            f"{feature_id}: operation gate omits hardware transaction admission",
+        )
     require(
         feature["scope_relation"] in SCOPE_RELATIONS,
         f"{feature_id}: unknown scope relation",
@@ -304,9 +553,43 @@ def validate_feature_shape(
         len(tests) == 4 and classes == TEST_CLASSES,
         f"{feature_id}: tests must cover normal, boundary, failure, and adversarial",
     )
+    if feature_id == "parked-memory-containment":
+        require(
+            feature["operation_gate"] == PARKED_MEMORY_OPERATION_GATE,
+            "parked-memory-containment: fbdev operation boundary differs",
+        )
+        require(
+            feature["resource_bounds"] == PARKED_MEMORY_RESOURCE_BOUNDS,
+            "parked-memory-containment: fbdev or TTM resource boundary differs",
+        )
+        require(
+            PARKED_MEMORY_ADVERSARIAL_TEST in tests,
+            "parked-memory-containment: adversarial lifetime witness differs",
+        )
+    if feature_id == "failed-reset-parking":
+        require(
+            source_objects == list(FAILED_RESET_SOURCE_OBJECTS),
+            "failed-reset-parking: source object denominator differs",
+        )
 
     scope_refs = string_list(feature, "scope_refs")
+    require(
+        (feature["execution_scope"] == "scope_refs") == bool(scope_refs)
+        and (feature["evidence_scope"] == "scope_refs") == bool(scope_refs),
+        f"{feature_id}: scope_refs and scope fields disagree",
+    )
     if scope_refs:
+        require(
+            len(set(scope_refs)) == len(scope_refs),
+            f"{feature_id}: scope_refs repeats an identifier",
+        )
+        source_mechanism_ids = {
+            mechanism_parts(token)[0] for token in source_mechanisms
+        }
+        require(
+            set(scope_refs) <= source_mechanism_ids,
+            f"{feature_id}: scope_refs leave the feature source mechanisms",
+        )
         require(
             feature["execution_scope"] == "scope_refs"
             and feature["evidence_scope"] == "scope_refs",
@@ -348,8 +631,17 @@ def validate_feature_shape(
             "parked-entry-containment: gpu_parked false initialization is unproven",
         )
         require(
+            "radeon_device_init" in initialization
+            and "RADEON_RS4XX_HARDWARE_RUNNING" in initialization
+            and "rs4xx_hardware_closing" in initialization
+            and "rs4xx_hardware_transactions" in initialization
+            and "rs4xx_hardware_readers" in initialization,
+            "parked-entry-containment: admission state initialization is incomplete",
+        )
+        require(
             isinstance(source, str)
             and "radeon_drv.c:radeon_pci_probe" in source
+            and "radeon_device.c:radeon_device_init" in source
             and "drm_drv.c:__devm_drm_dev_alloc" in source,
             "parked-entry-containment: initialization sources are incomplete",
         )
@@ -470,6 +762,9 @@ def validate(
     files: bool = True,
 ) -> dict[str, dict[str, object]]:
     validate_profile_model(policy)
+    validate_guard_scope_mechanisms(guard_scope, plans)
+    if files:
+        validate_guard_scope_sources(root, guard_scope)
     feature_rows = policy.get("feature")
     require(isinstance(feature_rows, list) and feature_rows, "feature table is empty")
     features: dict[str, dict[str, object]] = {}
@@ -603,6 +898,126 @@ def self_test(root: Path) -> int:
         "missing parked initialization",
         lambda value: value["feature"][10].update(state_initialization=""),
     )
+    add(
+        "stale Boolean-only hardware admission",
+        lambda value: next(
+            feature for feature in value["feature"] if feature["id"] == "safe-registers"
+        ).update(
+            operation_gate=(
+                "compiled observe profile, supported family, and unparked device"
+            )
+        ),
+    )
+    add(
+        "parked entry scope points at memory containment",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "parked-entry-containment"
+        ).update(scope_refs=["M20"]),
+    )
+    add(
+        "parked memory scope points at entry containment",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "parked-memory-containment"
+        ).update(scope_refs=["M18"]),
+    )
+    add(
+        "parked memory restores the zero VMA operation claim",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "parked-memory-containment"
+        ).update(
+            operation_gate=(
+                "RS400 and RS480 refuse fbdev framebuffer or MMIO VMA creation "
+                "before fb_io_mmap; hardware transaction admission spans fault, "
+                "placement, move, creation, and callback-bearing destruction; "
+                "wait-capable teardown owns a transaction only after successful "
+                "admission; refusal-only retention closes later admission without "
+                "draining earlier work"
+            )
+        ),
+    )
+    add(
+        "parked memory restores the zero VMA resource claim",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "parked-memory-containment"
+        ).update(
+            resource_bounds=(
+                "RS4xx admits zero persistent fbdev mapping VMAs; finite "
+                "transaction and reservation lifetimes; TTM destruction "
+                "requires zero live BOs, retained BOs, retained tables, "
+                "transactions, and readers"
+            )
+        ),
+    )
+    add(
+        "parked memory drops the delayed BO lifetime witness",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "parked-memory-containment"
+        ).update(
+            tests=[
+                test
+                if not test.startswith("adversarial:")
+                else (
+                    "adversarial: conditional guard, broken device provenance, "
+                    "and displaced callback assignment mutations fail"
+                )
+                for test in next(
+                    feature
+                    for feature in value["feature"]
+                    if feature["id"] == "parked-memory-containment"
+                )["tests"]
+            ]
+        ),
+    )
+    add(
+        "failed reset drops the IB failure publisher",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "failed-reset-parking"
+        ).update(
+            source_objects=[
+                source
+                for source in FAILED_RESET_SOURCE_OBJECTS
+                if source != "drivers/gpu/drm/radeon/radeon_ib.c"
+            ]
+        ),
+    )
+    add(
+        "safe registers scope points at unrelated mechanisms",
+        lambda value: next(
+            feature for feature in value["feature"] if feature["id"] == "safe-registers"
+        ).update(scope_refs=["M01", "M02"]),
+    )
+    add(
+        "GART table scope points outside the plan",
+        lambda value: next(
+            feature
+            for feature in value["feature"]
+            if feature["id"] == "gart-table-reader"
+        ).update(scope_refs=["M25"]),
+    )
+    add(
+        "duplicate scope reference",
+        lambda value: next(
+            feature for feature in value["feature"] if feature["id"] == "rs4xx-debugfs"
+        ).update(scope_refs=["M04", "M04"]),
+    )
+    add(
+        "scope reference deletion retains ledger scope",
+        lambda value: next(
+            feature for feature in value["feature"] if feature["id"] == "safe-registers"
+        ).update(scope_refs=[]),
+    )
 
     for label, mutation in cases:
         candidate = copy.deepcopy(policy)
@@ -622,7 +1037,133 @@ def self_test(root: Path) -> int:
     else:
         raise PolicyError("self-test accepted missing source object")
 
-    print(f"build-feature policy self-test: {len(cases) + 1} rejection cases")
+    missing_guard_symbol = copy.deepcopy(guard_scope)
+    first_guard = next(iter(missing_guard_symbol.values()))
+    first_guard["source_symbols"] = (
+        "drivers/gpu/drm/radeon/radeon_device.c:missing_guard_symbol"
+    )
+    try:
+        validate_guard_scope_sources(root, missing_guard_symbol)
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a missing guard source symbol")
+
+    mismatched_guard = copy.deepcopy(guard_scope)
+    guarded_plan_id = next(
+        guard_id for guard_id in mismatched_guard if guard_id in plans
+    )
+    mismatched_guard[guarded_plan_id]["mechanism"] = "wrong-mechanism"
+    try:
+        validate(policy, root, plans, mismatched_guard, files=False)
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a mismatched guard mechanism")
+
+    swapped_guard_sources = copy.deepcopy(guard_scope)
+    (
+        swapped_guard_sources["M18"]["source_symbols"],
+        swapped_guard_sources["M20"]["source_symbols"],
+    ) = (
+        swapped_guard_sources["M20"]["source_symbols"],
+        swapped_guard_sources["M18"]["source_symbols"],
+    )
+    try:
+        validate(policy, root, plans, swapped_guard_sources, files=False)
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted swapped guard source symbols")
+
+    unplanned_guard = copy.deepcopy(guard_scope)
+    unplanned_guard["M25"] = copy.deepcopy(next(iter(unplanned_guard.values())))
+    unplanned_guard["M25"]["guard_id"] = "M25"
+    try:
+        validate(policy, root, plans, unplanned_guard, files=False)
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a guard outside the plan")
+
+    duplicate_plan_rows = [copy.deepcopy(row) for row in plans.values()]
+    duplicate_plan_rows.append(copy.deepcopy(duplicate_plan_rows[-1]))
+    try:
+        index_plan_rows(duplicate_plan_rows)
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a duplicate plan identifier")
+
+    renamed_base_policy = copy.deepcopy(policy)
+    renamed_base_plans = copy.deepcopy(plans)
+    renamed_base_row = renamed_base_plans.pop("B14")
+    renamed_base_row["commit_id"] = "B15"
+    renamed_base_plans["B15"] = renamed_base_row
+    base_feature = next(
+        feature
+        for feature in renamed_base_policy["feature"]
+        if feature["id"] == "smx-dc-ctl0-policy"
+    )
+    base_feature["source_mechanisms"] = ["B15"]
+    try:
+        validate(
+            renamed_base_policy,
+            root,
+            renamed_base_plans,
+            guard_scope,
+            files=False,
+        )
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a coordinated base plan rename")
+
+    renamed_guard_policy = copy.deepcopy(policy)
+    renamed_guard_plans = copy.deepcopy(plans)
+    renamed_guard_scope = copy.deepcopy(guard_scope)
+    renamed_guard_plan = renamed_guard_plans.pop("M24")
+    renamed_guard_plan["commit_id"] = "M25"
+    renamed_guard_plans["M25"] = renamed_guard_plan
+    renamed_guard_row = renamed_guard_scope.pop("M24")
+    renamed_guard_row["guard_id"] = "M25"
+    renamed_guard_scope["M25"] = renamed_guard_row
+    guard_feature = next(
+        feature
+        for feature in renamed_guard_policy["feature"]
+        if feature["id"] == "gart-table-reader"
+    )
+    guard_feature["source_mechanisms"] = ["M25"]
+    guard_feature["scope_refs"] = ["M25"]
+    try:
+        validate(
+            renamed_guard_policy,
+            root,
+            renamed_guard_plans,
+            renamed_guard_scope,
+            files=False,
+        )
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a coordinated guard plan rename")
+
+    renamed_mechanism_plans = copy.deepcopy(plans)
+    renamed_mechanism_plans["B14"]["mechanism"] = "changed-mechanism"
+    try:
+        validate(
+            policy,
+            root,
+            renamed_mechanism_plans,
+            guard_scope,
+            files=False,
+        )
+    except PolicyError:
+        pass
+    else:
+        raise PolicyError("self-test accepted a changed plan mechanism")
+
+    print(f"build-feature policy self-test: {len(cases) + 9} rejection cases")
     return 0
 
 

@@ -60,28 +60,91 @@ static inline bool radeon_has_atpx(void) { return false; }
  * Returns 0 on success.
  */
 
+static void radeon_rs4xx_finish_terminal_shutdown(
+	struct radeon_device *rdev, const char *reason, int error)
+{
+	rdev->rs4xx_terminal_retained = true;
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_SHUTDOWN);
+	radeon_rs4xx_terminal_quiesce(rdev);
+	rdev->rs4xx_unload_completed = true;
+	if (error)
+		dev_err(rdev->dev,
+			"RS4xx terminal shutdown retains device ownership: %s (%d)\n",
+			reason, error);
+	else
+		dev_err(rdev->dev,
+			"RS4xx terminal shutdown retains device ownership: %s\n",
+			reason);
+}
+
+static void radeon_driver_release_agp(struct radeon_device *rdev)
+{
+	if (!rdev->agp)
+		return;
+
+	arch_phys_wc_del(rdev->agp->agp_mtrr);
+	kfree(rdev->agp);
+	rdev->agp = NULL;
+}
+
 void radeon_driver_unload_kms(struct drm_device *dev)
 {
 	struct radeon_device *rdev = dev->dev_private;
+	bool rs4xx_transition;
+	enum radeon_rs4xx_hardware_state prior_state =
+		RADEON_RS4XX_HARDWARE_RUNNING;
+	int r;
 
 	if (rdev == NULL)
 		return;
 
-	if (rdev->rmmio == NULL)
+	rs4xx_transition = radeon_rs4xx_hardware_target(rdev);
+	if (rs4xx_transition) {
+		mutex_lock(&rdev->rs4xx_unload_lock);
+		if (rdev->rs4xx_unload_completed) {
+			mutex_unlock(&rdev->rs4xx_unload_lock);
+			return;
+		}
+	}
+
+	if (!rs4xx_transition && rdev->rmmio == NULL)
 		goto done_free;
 
-	/* A parked RS400/RS480 holds a wedged, GA-routed register bus that never
-	 * grants a non-posted read; the normal unload teardown
-	 * (radeon_modeset_fini / radeon_device_fini, plus the PM-runtime and ACPI
-	 * paths) issues GPU MMIO that black-holes the K8 northbridge and
-	 * sync-floods the box.  Leave the hardware parked and drop straight to the
-	 * software free -- reboot reclaims the GPU.  This mirrors the parked
-	 * leak-by-design teardown and the rmmio == NULL early-out above; the
-	 * module is part of the parked containment boundary, not a recovery path. */
-	if (rdev->gpu_parked &&
-	    (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)) {
-		dev_err(rdev->dev,
-			"parked: bypassing hardware teardown on unload, leaking to reboot\n");
+	if (rs4xx_transition) {
+		radeon_rs4xx_hardware_shutdown_begin(rdev, &prior_state);
+		WRITE_ONCE(rdev->shutdown, true);
+		if (prior_state == RADEON_RS4XX_HARDWARE_PARKED ||
+		    READ_ONCE(rdev->gpu_parked)) {
+			radeon_rs4xx_finish_terminal_shutdown(
+				rdev, "GPU reset recovery remains parked", 0);
+			mutex_unlock(&rdev->rs4xx_unload_lock);
+			return;
+		}
+		if (prior_state == RADEON_RS4XX_HARDWARE_SUSPENDED) {
+			radeon_rs4xx_finish_terminal_shutdown(
+				rdev, "ASIC remains suspended", 0);
+			mutex_unlock(&rdev->rs4xx_unload_lock);
+			return;
+		}
+		if (prior_state != RADEON_RS4XX_HARDWARE_RUNNING) {
+			dev_err(rdev->dev,
+				"RS4xx hardware state %d requires terminal retention\n",
+				prior_state);
+			radeon_rs4xx_finish_terminal_shutdown(
+				rdev, "hardware state requires terminal retention",
+				-EIO);
+			mutex_unlock(&rdev->rs4xx_unload_lock);
+			return;
+		}
+	}
+
+	if (rdev->rmmio == NULL) {
+		if (rs4xx_transition) {
+			radeon_rs4xx_hardware_transition_end(
+				rdev, RADEON_RS4XX_HARDWARE_SHUTDOWN);
+			radeon_rs4xx_terminal_quiesce(rdev);
+		}
 		goto done_free;
 	}
 
@@ -92,16 +155,42 @@ void radeon_driver_unload_kms(struct drm_device *dev)
 
 	radeon_acpi_fini(rdev);
 
-	radeon_modeset_fini(rdev);
-	radeon_device_fini(rdev);
+	r = radeon_modeset_fini(rdev);
+	if (r && rs4xx_transition) {
+		radeon_rs4xx_publish_parked_state(rdev);
+		radeon_rs4xx_finish_terminal_shutdown(
+			rdev, "display teardown does not release every scanout owner", r);
+		mutex_unlock(&rdev->rs4xx_unload_lock);
+		return;
+	}
+	if (rs4xx_transition && atomic_read(&dev->open_count) != 0) {
+		radeon_rs4xx_finish_terminal_shutdown(
+			rdev, "open DRM files retain GEM ownership", 0);
+		mutex_unlock(&rdev->rs4xx_unload_lock);
+		return;
+	}
+	r = radeon_device_fini(rdev);
+	if (r && rs4xx_transition) {
+		radeon_rs4xx_finish_terminal_shutdown(
+			rdev, "memory teardown retains device ownership", r);
+		mutex_unlock(&rdev->rs4xx_unload_lock);
+		return;
+	}
 
-	if (rdev->agp)
-		arch_phys_wc_del(rdev->agp->agp_mtrr);
-	kfree(rdev->agp);
-	rdev->agp = NULL;
+	if (rs4xx_transition)
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_SHUTDOWN);
+	rdev->rs4xx_terminal_retained = false;
 
 done_free:
-	dev->dev_private = NULL;
+	radeon_driver_release_agp(rdev);
+	if (rs4xx_transition) {
+		rdev->rs4xx_unload_completed = true;
+		dev->dev_private = NULL;
+		mutex_unlock(&rdev->rs4xx_unload_lock);
+	} else {
+		dev->dev_private = NULL;
+	}
 }
 
 /**
@@ -253,7 +342,7 @@ int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	struct ttm_resource_manager *man;
 	uint64_t value64;
 	struct drm_crtc *crtc;
-	int i, found;
+	int i, found, hardware_result;
 
 	value_ptr = (uint32_t *)((unsigned long)info->value);
 	value = &value_tmp;
@@ -357,11 +446,15 @@ int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		radeon_set_filp_rights(dev, &rdev->cmask_filp, filp, value);
 		break;
 	case RADEON_INFO_CLOCK_CRYSTAL_FREQ:
+		hardware_result = radeon_rs4xx_hardware_access_begin(rdev);
+		if (hardware_result)
+			return hardware_result;
 		/* return clock value in KHz */
 		if (rdev->asic->get_xclk)
 			*value = radeon_get_xclk(rdev) * 10;
 		else
 			*value = rdev->clock.spll.reference_freq * 10;
+		radeon_rs4xx_hardware_access_end(rdev);
 		break;
 	case RADEON_INFO_NUM_BACKENDS:
 		if (rdev->family >= CHIP_BONAIRE)
@@ -586,33 +679,51 @@ int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			*value = 1;
 		break;
 	case RADEON_INFO_CURRENT_GPU_TEMP:
+		hardware_result = radeon_rs4xx_hardware_access_begin(rdev);
+		if (hardware_result)
+			return hardware_result;
 		/* get temperature in millidegrees C */
 		if (rdev->asic->pm.get_temperature)
 			*value = radeon_get_temperature(rdev);
 		else
 			*value = 0;
+		radeon_rs4xx_hardware_access_end(rdev);
 		break;
 	case RADEON_INFO_CURRENT_GPU_SCLK:
+		hardware_result = radeon_rs4xx_hardware_access_begin(rdev);
+		if (hardware_result)
+			return hardware_result;
 		/* get sclk in Mhz */
 		if (rdev->pm.dpm_enabled)
 			*value = radeon_dpm_get_current_sclk(rdev) / 100;
 		else
 			*value = rdev->pm.current_sclk / 100;
+		radeon_rs4xx_hardware_access_end(rdev);
 		break;
 	case RADEON_INFO_CURRENT_GPU_MCLK:
+		hardware_result = radeon_rs4xx_hardware_access_begin(rdev);
+		if (hardware_result)
+			return hardware_result;
 		/* get mclk in Mhz */
 		if (rdev->pm.dpm_enabled)
 			*value = radeon_dpm_get_current_mclk(rdev) / 100;
 		else
 			*value = rdev->pm.current_mclk / 100;
+		radeon_rs4xx_hardware_access_end(rdev);
 		break;
 	case RADEON_INFO_READ_REG:
 		if (copy_from_user(value, value_ptr, sizeof(uint32_t))) {
 			DRM_ERROR("copy_from_user %s:%u\n", __func__, __LINE__);
 			return -EFAULT;
 		}
-		if (radeon_get_allowed_info_register(rdev, *value, value))
+		hardware_result = radeon_rs4xx_hardware_access_begin(rdev);
+		if (hardware_result)
+			return hardware_result;
+		if (radeon_get_allowed_info_register(rdev, *value, value)) {
+			radeon_rs4xx_hardware_access_end(rdev);
 			return -EINVAL;
+		}
+		radeon_rs4xx_hardware_access_end(rdev);
 		break;
 	case RADEON_INFO_VA_UNMAP_WORKING:
 		*value = true;
@@ -720,17 +831,29 @@ err_suspend:
 void radeon_driver_postclose_kms(struct drm_device *dev,
 				 struct drm_file *file_priv)
 {
-	{
-		struct radeon_device *bc_rdev = dev->dev_private;
-
-		if (bc_rdev && !bc_rdev->accel_working) {
-			msleep(1);
-			dev_err(bc_rdev->dev, "postclose on parked GPU: begin teardown\n");
-			msleep(1);
-		}
-	}
-
 	struct radeon_device *rdev = dev->dev_private;
+	int hardware_state;
+
+	if (!rdev)
+		return;
+	hardware_state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    hardware_state != RADEON_RS4XX_HARDWARE_RUNNING) {
+		int retained_count = atomic_read(
+			&rdev->rs4xx_retained_gem_objects);
+
+		mutex_lock(&rdev->gem.mutex);
+		if (rdev->hyperz_filp == file_priv)
+			rdev->hyperz_filp = NULL;
+		if (rdev->cmask_filp == file_priv)
+			rdev->cmask_filp = NULL;
+		mutex_unlock(&rdev->gem.mutex);
+		if (retained_count)
+			dev_err(rdev->dev,
+				"RS4xx terminal DRM close retained GEM objects=%d\n",
+				retained_count);
+		return;
+	}
 
 	pm_runtime_get_sync(dev->dev);
 
@@ -765,21 +888,27 @@ void radeon_driver_postclose_kms(struct drm_device *dev,
 	}
 	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
-	{
-		struct radeon_device *bc_rdev = dev->dev_private;
-
-		if (bc_rdev && !bc_rdev->accel_working) {
-			msleep(1);
-			dev_err(bc_rdev->dev, "postclose on parked GPU: teardown complete\n");
-			msleep(1);
-		}
-	}
-
 }
 
 /*
  * VBlank related functions.
  */
+static u32 radeon_get_vblank_counter_serialized(struct radeon_device *rdev,
+						unsigned int pipe)
+{
+	u32 count;
+	int r;
+
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		count = 0;
+	else
+		count = radeon_get_vblank_counter(rdev, pipe);
+	if (!r)
+		radeon_rs4xx_hardware_access_end(rdev);
+	return count;
+}
+
 /**
  * radeon_get_vblank_counter_kms - get frame count
  *
@@ -795,14 +924,15 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
 	int vpos, hpos, stat;
 	u32 count;
 	struct radeon_device *rdev = dev->dev_private;
-
-	if (rdev->gpu_parked)
-		return 0;
+	int r;
 
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %u\n", pipe);
 		return -EINVAL;
 	}
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return 0;
 
 	/* The hw increments its frame counter at start of vsync, not at start
 	 * of vblank, as is required by DRM core vblank counter handling.
@@ -817,7 +947,7 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
 		 * we cross start of vsync during the queries.
 		 */
 		do {
-			count = radeon_get_vblank_counter(rdev, pipe);
+			count = radeon_get_vblank_counter_serialized(rdev, pipe);
 			/* Ask radeon_get_crtc_scanoutpos to return vpos as
 			 * distance to start of vblank, instead of regular
 			 * vertical scanout pos.
@@ -826,7 +956,7 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
 				dev, pipe, GET_DISTANCE_TO_VBLANKSTART,
 				&vpos, &hpos, NULL, NULL,
 				&rdev->mode_info.crtcs[pipe]->base.hwmode);
-		} while (count != radeon_get_vblank_counter(rdev, pipe));
+		} while (count != radeon_get_vblank_counter_serialized(rdev, pipe));
 
 		if (((stat & (DRM_SCANOUTPOS_VALID | DRM_SCANOUTPOS_ACCURATE)) !=
 		    (DRM_SCANOUTPOS_VALID | DRM_SCANOUTPOS_ACCURATE))) {
@@ -843,13 +973,13 @@ u32 radeon_get_vblank_counter_kms(struct drm_crtc *crtc)
 			if (vpos >= 0)
 				count++;
 		}
-	}
-	else {
-	    /* Fallback to use value as is. */
-	    count = radeon_get_vblank_counter(rdev, pipe);
-	    DRM_DEBUG_VBL("NULL mode info! Returned count may be wrong.\n");
+	} else {
+		/* Fallback to use value as is. */
+		count = radeon_get_vblank_counter_serialized(rdev, pipe);
+		DRM_DEBUG_VBL("NULL mode info! Returned count may be wrong.\n");
 	}
 
+	radeon_rs4xx_hardware_access_end(rdev);
 	return count;
 }
 
@@ -869,18 +999,23 @@ int radeon_enable_vblank_kms(struct drm_crtc *crtc)
 	unsigned long irqflags;
 	int r;
 
-	if (rdev->gpu_parked)
-		return -ENODEV;
-
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %d\n", pipe);
 		return -EINVAL;
 	}
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return r;
 
 	spin_lock_irqsave(&rdev->irq.lock, irqflags);
 	rdev->irq.crtc_vblank_int[pipe] = true;
-	r = radeon_irq_set(rdev);
+	if (!READ_ONCE(rdev->in_reset) && !READ_ONCE(rdev->gpu_parked) &&
+	    READ_ONCE(rdev->irq.installed))
+		r = radeon_irq_set(rdev);
+	else
+		r = 0;
 	spin_unlock_irqrestore(&rdev->irq.lock, irqflags);
+	radeon_rs4xx_hardware_access_end(rdev);
 	return r;
 }
 
@@ -897,14 +1032,21 @@ void radeon_disable_vblank_kms(struct drm_crtc *crtc)
 	unsigned int pipe = crtc->index;
 	struct radeon_device *rdev = dev->dev_private;
 	unsigned long irqflags;
+	int r;
 
 	if (pipe >= rdev->num_crtc) {
 		DRM_ERROR("Invalid crtc %d\n", pipe);
 		return;
 	}
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return;
 
 	spin_lock_irqsave(&rdev->irq.lock, irqflags);
 	rdev->irq.crtc_vblank_int[pipe] = false;
-	radeon_irq_set(rdev);
+	if (!READ_ONCE(rdev->in_reset) && !READ_ONCE(rdev->gpu_parked) &&
+	    READ_ONCE(rdev->irq.installed))
+		radeon_irq_set(rdev);
 	spin_unlock_irqrestore(&rdev->irq.lock, irqflags);
+	radeon_rs4xx_hardware_access_end(rdev);
 }

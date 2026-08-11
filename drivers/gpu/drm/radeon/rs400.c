@@ -67,16 +67,8 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
 	uint32_t tmp;
 	unsigned int timeout = rdev->usec_timeout;
 
-	/* The GART cache serves the 3D engine's fetch path, and the MC
-	 * indirect data read polls a block held by the wedged GA client: on a
-	 * parked GPU the RREG32_MC below is a non-posted black hole. Teardown
-	 * still rewrites the PTEs in system RAM; nothing fetches through
-	 * these TLBs again before a reboot, so the flush is skippable.
-	 */
-	if (rdev->gpu_parked) {
-		dev_err_once(rdev->dev, "parked: skipping GART tlb flush (MC indirect unreadable)\n");
+	if (radeon_rs4xx_hardware_access_begin(rdev))
 		return;
-	}
 
 	WREG32_MC(RS480_GART_CACHE_CNTRL, RS480_GART_CACHE_INVALIDATE);
 	do {
@@ -87,6 +79,7 @@ void rs400_gart_tlb_flush(struct radeon_device *rdev)
 		timeout--;
 	} while (timeout > 0);
 	WREG32_MC(RS480_GART_CACHE_CNTRL, 0);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 int rs400_gart_init(struct radeon_device *rdev)
@@ -216,13 +209,26 @@ void rs400_gart_disable(struct radeon_device *rdev)
 	WREG32_MC(RS480_AGP_ADDRESS_SPACE_SIZE, 0);
 }
 
-void rs400_gart_fini(struct radeon_device *rdev)
+int rs400_gart_fini(struct radeon_device *rdev)
 {
-	radeon_rs4xx_dev_gart_lock();
-	radeon_gart_fini(rdev);
+	int r;
+
+	r = radeon_gart_fini(rdev);
+	if (r && radeon_rs4xx_hardware_target(rdev)) {
+		WRITE_ONCE(rdev->rs4xx_gart_fini_error, r);
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+	}
+	if (r)
+		return r;
 	rs400_gart_disable(rdev);
 	radeon_gart_table_ram_free(rdev);
-	radeon_rs4xx_dev_gart_unlock();
+	if (radeon_rs4xx_hardware_target(rdev)) {
+		WRITE_ONCE(rdev->rs4xx_gart_fini_error, 0);
+		/* The release publishes aperture disable and table storage removal. */
+		smp_store_release(&rdev->rs4xx_gart_teardown_complete, true);
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+	}
+	return 0;
 }
 
 #define RS400_PTE_UNSNOOPED (1 << 0)
@@ -313,11 +319,14 @@ uint32_t rs400_mc_rreg(struct radeon_device *rdev, uint32_t reg)
 	unsigned long flags;
 	uint32_t r;
 
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return 0;
 	spin_lock_irqsave(&rdev->mc_idx_lock, flags);
 	WREG32(RS480_NB_MC_INDEX, reg & 0xff);
 	r = RREG32(RS480_NB_MC_DATA);
 	WREG32(RS480_NB_MC_INDEX, 0xff);
 	spin_unlock_irqrestore(&rdev->mc_idx_lock, flags);
+	radeon_rs4xx_hardware_access_end(rdev);
 	return r;
 }
 
@@ -325,37 +334,26 @@ void rs400_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 {
 	unsigned long flags;
 
+	if (unlikely(radeon_rs4xx_hardware_access_begin(rdev)))
+		return;
 	spin_lock_irqsave(&rdev->mc_idx_lock, flags);
 	WREG32(RS480_NB_MC_INDEX, ((reg) & 0xff) | RS480_NB_MC_IND_WR_EN);
 	WREG32(RS480_NB_MC_DATA, (v));
 	WREG32(RS480_NB_MC_INDEX, 0xff);
 	spin_unlock_irqrestore(&rdev->mc_idx_lock, flags);
+	radeon_rs4xx_hardware_access_end(rdev);
 }
 
 #if defined(CONFIG_DEBUG_FS)
-/* rs480_debugfs_refuse_if_parked -- after a failed RS480 reset the GA-routed
- * register bus never grants a non-posted read, so a debugfs register read
- * black-holes the K8 northbridge and sync-floods the box (cold cycle only).
- * Every RS480 RE debugfs reader refuses hardware access once gpu_parked is
- * set; the node reports the parked state instead of touching MMIO. */
-static bool rs480_debugfs_refuse_if_parked(struct seq_file *m,
-					   struct radeon_device *rdev)
-{
-	if (!rdev->gpu_parked)
-		return false;
-	/* seq_file iterators call .show per position; emit once per open. */
-	if (m->count == 0)
-		seq_puts(m,
-			 "gpu parked: RS480 register read disabled to avoid non-posted MMIO black hole\n");
-	return true;
-}
-
 static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
 {
 	struct radeon_device *rdev = m->private;
-	if (rs480_debugfs_refuse_if_parked(m, rdev))
-		return 0;
 	uint32_t tmp;
+	int r;
+
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
 
 	tmp = RREG32(RADEON_HOST_PATH_CNTL);
 	seq_printf(m, "HOST_PATH_CNTL 0x%08x\n", tmp);
@@ -416,6 +414,7 @@ static int rs400_debugfs_gart_info_show(struct seq_file *m, void *unused)
 	seq_printf(m, "GART_ERROR_6 0x%08x\n", tmp);
 	tmp = RREG32_MC(0x37);
 	seq_printf(m, "GART_ERROR_7 0x%08x\n", tmp);
+	radeon_device_unlock_hardware(rdev);
 	return 0;
 }
 
@@ -427,10 +426,8 @@ DEFINE_SHOW_ATTRIBUTE(rs400_debugfs_gart_info);
 static void rs400_debugfs_pcie_gart_info_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
-
-	debugfs_create_file("rs400_gart_info", 0444, root, rdev,
-			    &rs400_debugfs_gart_info_fops);
+	radeon_debugfs_add_component(rdev, "rs400_gart_info", 0444, rdev,
+				     &rs400_debugfs_gart_info_fops);
 #endif
 }
 
@@ -455,6 +452,10 @@ static int rs400_startup(struct radeon_device *rdev)
 {
 	int r;
 
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return r;
+
 	r100_set_common_regs(rdev);
 
 	rs400_mc_program(rdev);
@@ -467,42 +468,46 @@ static int rs400_startup(struct radeon_device *rdev)
 	 * memory through TTM but finalize after TTM) */
 	r = rs400_gart_enable(rdev);
 	if (r)
-		return r;
+		goto out_hardware;
 
 	/* allocate wb buffer */
 	r = radeon_wb_init(rdev);
 	if (r)
-		return r;
+		goto out_hardware;
 
 	r = radeon_fence_driver_start_ring(rdev, RADEON_RING_TYPE_GFX_INDEX);
 	if (r) {
 		dev_err(rdev->dev, "failed initializing CP fences (%d).\n", r);
-		return r;
+		goto out_hardware;
 	}
 
 	/* Enable IRQ */
 	if (!rdev->irq.installed) {
 		r = radeon_irq_kms_init(rdev);
 		if (r)
-			return r;
+			goto out_hardware;
 	}
 
-	r100_irq_set(rdev);
+	r = r100_irq_set(rdev);
+	if (r)
+		goto out_hardware;
 	rdev->config.r300.hdp_cntl = RREG32(RADEON_HOST_PATH_CNTL);
 	/* 1M ring buffer */
 	r = r100_cp_init(rdev, 1024 * 1024);
 	if (r) {
 		dev_err(rdev->dev, "failed initializing CP (%d).\n", r);
-		return r;
+		goto out_hardware;
 	}
 
 	r = radeon_ib_pool_init(rdev);
 	if (r) {
 		dev_err(rdev->dev, "IB initialization failed (%d).\n", r);
-		return r;
+		goto out_hardware;
 	}
 
-	return 0;
+out_hardware:
+	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
 }
 
 int rs400_resume(struct radeon_device *rdev)
@@ -516,10 +521,11 @@ int rs400_resume(struct radeon_device *rdev)
 	/* setup MC before calling post tables */
 	rs400_mc_program(rdev);
 	/* Reset gpu before posting otherwise ATOM will enter infinite loop */
-	if (radeon_asic_reset(rdev)) {
-		dev_warn(rdev->dev, "GPU reset failed ! (0xE40=0x%08X, 0x7C0=0x%08X)\n",
-			RREG32(R_000E40_RBBM_STATUS),
-			RREG32(R_0007C0_CP_STAT));
+	r = radeon_asic_reset(rdev);
+	if (r) {
+		dev_err(rdev->dev,
+			"RS400 resume reset failed: %d\n", r);
+		return r;
 	}
 	/* post */
 	radeon_combios_asic_init(rdev_to_drm(rdev));
@@ -548,15 +554,28 @@ int rs400_suspend(struct radeon_device *rdev)
 
 void rs400_fini(struct radeon_device *rdev)
 {
+	int r;
+
+	if (radeon_rs4xx_terminal_ownership_retained(rdev))
+		return;
+
 	radeon_pm_fini(rdev);
 	r100_cp_fini(rdev);
 	radeon_wb_fini(rdev);
 	radeon_ib_pool_fini(rdev);
+	r = rs400_gart_fini(rdev);
+	if (r)
+		return;
+	if (radeon_rs4xx_terminal_ownership_retained(rdev))
+		return;
 	radeon_gem_fini(rdev);
-	rs400_gart_fini(rdev);
+	if (radeon_rs4xx_terminal_ownership_retained(rdev))
+		return;
 	radeon_irq_kms_fini(rdev);
 	radeon_fence_driver_fini(rdev);
-	radeon_bo_fini(rdev);
+	r = radeon_bo_fini(rdev);
+	if (r)
+		return;
 	radeon_atombios_fini(rdev);
 	kfree(rdev->bios);
 	rdev->bios = NULL;
@@ -594,13 +613,23 @@ int rs400_init(struct radeon_device *rdev)
 		if (r)
 			return r;
 	}
+	r = radeon_rs4xx_hardware_transition_begin(
+		rdev, RADEON_RS4XX_HARDWARE_RUNNING,
+		RADEON_RS4XX_HARDWARE_RESETTING);
+	if (r)
+		return r;
 	/* Reset gpu before posting otherwise ATOM will enter infinite loop */
-	if (radeon_asic_reset(rdev)) {
-		dev_warn(rdev->dev,
-			"GPU reset failed ! (0xE40=0x%08X, 0x7C0=0x%08X)\n",
-			RREG32(R_000E40_RBBM_STATUS),
-			RREG32(R_0007C0_CP_STAT));
+	r = radeon_asic_reset(rdev);
+	if (r) {
+		radeon_rs4xx_latch_parked_state(rdev);
+		dev_err(rdev->dev,
+			"RS400 initialization reset failed: %d\n", r);
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_PARKED);
+		return r;
 	}
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_RUNNING);
 	/* check if cards are posted or not */
 	if (radeon_boot_test_post_card(rdev) == false)
 		return -EINVAL;
@@ -626,14 +655,21 @@ int rs400_init(struct radeon_device *rdev)
 	rdev->accel_working = true;
 	r = rs400_startup(rdev);
 	if (r) {
-		/* Somethings want wront with the accel init stop accel */
-		dev_err(rdev->dev, "Disabling GPU acceleration\n");
+		int fini_r;
+
+		dev_err(rdev->dev,
+			"RS400 acceleration startup failed: %d\n", r);
 		r100_cp_fini(rdev);
 		radeon_wb_fini(rdev);
 		radeon_ib_pool_fini(rdev);
-		rs400_gart_fini(rdev);
+		fini_r = rs400_gart_fini(rdev);
+		if (fini_r) {
+			rdev->accel_working = false;
+			return fini_r;
+		}
 		radeon_irq_kms_fini(rdev);
 		rdev->accel_working = false;
+		return r;
 	}
 	return 0;
 }

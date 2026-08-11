@@ -360,7 +360,7 @@ static int radeon_atif_handler(struct radeon_device *rdev,
 	struct radeon_atif *atif = &rdev->atif;
 	struct atif_sbios_requests req;
 	acpi_handle handle;
-	int count;
+	int count, ret;
 
 	DRM_DEBUG_DRIVER("event, device_class = %s, type = %#x\n",
 			event->device_class, event->type);
@@ -372,13 +372,18 @@ static int radeon_atif_handler(struct radeon_device *rdev,
 			event->type != atif->notification_cfg.command_code)
 		/* Not our event */
 		return NOTIFY_DONE;
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return NOTIFY_DONE;
 
 	/* Check pending SBIOS requests */
 	handle = ACPI_HANDLE(&rdev->pdev->dev);
 	count = radeon_atif_get_sbios_requests(handle, &req);
 
-	if (count <= 0)
+	if (count <= 0) {
+		radeon_rs4xx_hardware_access_end(rdev);
 		return NOTIFY_DONE;
+	}
 
 	DRM_DEBUG_DRIVER("ATIF: %d pending SBIOS requests\n", count);
 
@@ -419,6 +424,7 @@ static int radeon_atif_handler(struct radeon_device *rdev,
 	 * userspace if the event was generated only to signal a SBIOS
 	 * request.
 	 */
+	radeon_rs4xx_hardware_access_end(rdev);
 	return NOTIFY_BAD;
 }
 
@@ -680,6 +686,12 @@ static int radeon_acpi_event(struct notifier_block *nb,
 {
 	struct radeon_device *rdev = container_of(nb, struct radeon_device, acpi_nb);
 	struct acpi_bus_event *entry = (struct acpi_bus_event *)data;
+	int hardware_result;
+	int notifier_result;
+
+	hardware_result = radeon_rs4xx_hardware_access_begin(rdev);
+	if (hardware_result)
+		return NOTIFY_DONE;
 
 	if (strcmp(entry->device_class, ACPI_AC_CLASS) == 0) {
 		if (power_supply_is_system_supplied() > 0)
@@ -691,7 +703,9 @@ static int radeon_acpi_event(struct notifier_block *nb,
 	}
 
 	/* Check for pending SBIOS requests */
-	return radeon_atif_handler(rdev, entry);
+	notifier_result = radeon_atif_handler(rdev, entry);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return notifier_result;
 }
 
 /* Call all ACPI methods here */
@@ -782,7 +796,8 @@ int radeon_acpi_init(struct radeon_device *rdev)
 
 out:
 	rdev->acpi_nb.notifier_call = radeon_acpi_event;
-	register_acpi_notifier(&rdev->acpi_nb);
+	if (!register_acpi_notifier(&rdev->acpi_nb))
+		rdev->acpi_registered = true;
 
 	return ret;
 }
@@ -796,5 +811,8 @@ out:
  */
 void radeon_acpi_fini(struct radeon_device *rdev)
 {
+	if (!rdev->acpi_registered)
+		return;
 	unregister_acpi_notifier(&rdev->acpi_nb);
+	rdev->acpi_registered = false;
 }

@@ -317,6 +317,8 @@ python3 "$repo_root/scripts/check_all_dev_interfaces.py" \
   --module "$WORK/$subtree/radeon.ko" \
   --profile "$resolved_profile" \
   --driver-root "$WORK/$subtree" || exit 4
+python3 "$repo_root/scripts/check_radeon_debugfs_registration.py" \
+  --root "$WORK" || exit 4
 python3 "$repo_root/scripts/check_parked_admission_guards.py" \
   --root "$WORK" || exit 4
 if [ -n "$(git -C "$repo_root" status --porcelain "$subtree")" ]; then

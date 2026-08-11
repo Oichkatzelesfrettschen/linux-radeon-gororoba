@@ -127,6 +127,35 @@ RS4XX_CP_ME_HARDWARE_ACCESS = re.compile(
     r"|\b(?:read[blqw]|write[blqw]|ioread[0-9]+|iowrite[0-9]+)\s*\("
     r"|->(?:rreg|wreg)\s*\("
 )
+RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
+    "radeon_debugfs_rs480_mc_flush_set": (0, 1, 2),
+    "rs400_debugfs_gart_page_table_show": (0, 1, 2),
+    "rs480_candidate_config_regs_show": (1, 0, 1),
+    "rs480_candidate_gart_mc_regs_show": (1, 0, 1),
+    "rs480_candidate_regs_emit": (1, 0, 1),
+    "rs480_cp_ib_scratch_oracle_show": (1, 0, 1),
+    "rs480_cp_me_oracle_show": (1, 0, 1),
+    "rs480_cp_me_ram_inject_write": (0, 1, 2),
+    "rs480_cp_me_ram_seq_show": (1, 0, 1),
+    "rs480_debugfs_lock_hardware": (0, 1, 0),
+    "rs480_force_clock_3d_read_show": (1, 0, 1),
+    "rs480_force_clock_read_show": (1, 0, 1),
+    "rs480_frontier_probe_show": (1, 0, 1),
+    "rs480_gated_read_show": (1, 0, 1),
+    "rs480_hazard_read_show": (1, 0, 1),
+    "rs480_pll_regs_show": (1, 0, 1),
+    "rs480_reset_hang_probe_show": (1, 0, 3),
+    "rs480_safe_regs_show": (1, 0, 1),
+    "rs480_sclk_cntl_show": (1, 0, 1),
+    "rs480_uma_status_show": (1, 0, 1),
+    "rs480_vertex_probe_show": (1, 0, 1),
+    "rs480_wedged_3d_reset": (0, 2, 3),
+}
+RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
+    "rs480_debugfs_lock_hardware": 18,
+    "radeon_device_lock_hardware": 6,
+    "radeon_device_unlock_hardware": 28,
+}
 PROFILE_RANK = {
     "prod": 0,
     "observe-dev": 1,
@@ -140,6 +169,7 @@ RUNTIME_RANK = {
     "mutate-dev": 3,
 }
 RUNTIME_SOURCE_PATTERNS = {
+    "drivers/gpu/drm/radeon/radeon.h": (),
     "drivers/gpu/drm/radeon/radeon_device.c": (),
     "drivers/gpu/drm/radeon/radeon_dev.c": (
         r'\{ "off", RADEON_DEV_PROFILE_OFF \}',
@@ -154,7 +184,7 @@ RUNTIME_SOURCE_PATTERNS = {
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c": (
         r"static void rs480_debugfs_emit_schema\(.*?\)\n\{.*?"
         r"RADEON_DEV_OUTPUT_SCHEMA_LINE",
-        r"static bool rs480_debugfs_refuse_if_parked\(.*?\)\n\{.*?"
+        r"static int rs480_debugfs_lock_hardware\(.*?\)\n\{.*?"
         r"rs480_debugfs_emit_schema",
         r"void radeon_rs480_re_debugfs_register\(.*?\)\n\{.*?"
         r"RADEON_DEV_PROFILE_OBSERVE",
@@ -172,7 +202,10 @@ RUNTIME_SOURCE_PATTERNS = {
         r"RADEON_DEV_PROFILE_MUTATE",
     ),
     "drivers/gpu/drm/radeon/radeon_drv.c": (
+        r"void radeon_debugfs_add_component\(.*?"
+        r"RADEON_DEBUGFS_MAX_COMPONENTS",
         r"static void radeon_dev_debugfs_register\(.*?\)\n\{.*?"
+        r"radeon_ttm_debugfs_register_managers\(rdev, minor->debugfs_root\);.*?"
         r"radeon_rs480_re_debugfs_register\(minor\);.*?"
         r"radeon_evergreen_dev_debugfs_register\(minor\);.*?\}",
         r"\.debugfs_init = radeon_dev_debugfs_register",
@@ -536,6 +569,7 @@ def require_control_flow_census(
     expected_counts: tuple[int, ...],
     expected_returns: tuple[tuple[str, int], ...],
     label: str,
+    expected_labels: tuple[str, ...] = (),
 ) -> None:
     """Require lexical control under the stated returning-call assumption."""
     code = strip_comments_and_literals(body)
@@ -551,11 +585,14 @@ def require_control_flow_census(
         for match in re.finditer(r"\breturn\b[^;{}]*;", code)
     )
     require(returns == expected_returns, f"{label} return set differs")
-    labels = re.findall(
-        r"(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*:",
-        code,
+    labels = tuple(
+        normalized_code(match.group(0))
+        for match in re.finditer(
+            r"(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*:",
+            code,
+        )
     )
-    require(not labels, f"{label} carries a source label")
+    require(labels == expected_labels, f"{label} source-label set differs")
 
 
 def require_exact_code_interval(
@@ -1137,9 +1174,9 @@ def validate_rs4xx_output_schema_paths(
     )
     output_call = re.compile(r"\bseq_[A-Za-z0-9_]+\s*\(")
     schema_output_route = re.compile(
-        r"\b(?:rs480_debugfs_emit_schema|"
-        r"rs480_debugfs_refuse_(?:hardware_access|if_parked))\s*\("
+        r"\b(?:rs480_debugfs_emit_schema|rs480_debugfs_lock_hardware)\s*\("
     )
+    schema_emitter_call = re.compile(r"\brs480_debugfs_emit_schema\s*\(")
     control_exit = re.compile(r"\b(?:goto|return)\b")
 
     emitter_body = function_body(source, "rs480_debugfs_emit_schema")
@@ -1151,60 +1188,63 @@ def validate_rs4xx_output_schema_paths(
         "RS4xx schema emitter",
     )
 
-    hardware_refusal_body = function_body(
-        source,
-        "rs480_debugfs_refuse_hardware_access",
-    )
-    require(
-        "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in hardware_refusal_body
-        and "rs480_debugfs_emit_schema" not in hardware_refusal_body,
-        "RS4xx hardware-refusal gate emits an output schema",
-    )
-    refusal_body = function_body(source, "rs480_debugfs_refuse_if_parked")
-    refusal_schema = require_one_match(
-        refusal_body,
+    hardware_lock_body = function_body(source, "rs480_debugfs_lock_hardware")
+    hardware_schema = require_one_match(
+        hardware_lock_body,
         r"\brs480_debugfs_emit_schema\(m\);",
-        "RS4xx parked-state schema route",
+        "RS4xx hardware transaction schema route",
     )
-    require_outer_function_match(
-        refusal_body,
-        refusal_schema,
-        "RS4xx parked-state schema route",
-    )
-    refusal_prefix = strip_comments_and_literals(refusal_body[: refusal_schema.start()])
-    require(
-        output_call.search(refusal_prefix) is None
-        and control_exit.search(refusal_prefix) is None,
-        "RS4xx parked-state helper bypasses its schema route",
-    )
-    refusal_delegate = require_one_match(
-        refusal_body,
-        r"\breturn rs480_debugfs_refuse_hardware_access\(m, rdev\);",
-        "RS4xx parked-state hardware-refusal route",
-    )
-    require_outer_function_match(
-        refusal_body,
-        refusal_delegate,
-        "RS4xx parked-state hardware-refusal route",
+    hardware_root = require_one_match(
+        hardware_lock_body,
+        r"\bradeon_device_lock_hardware\(rdev\);",
+        "RS4xx hardware transaction root",
     )
     require(
-        refusal_schema.start() < refusal_delegate.start(),
-        "RS4xx parked-state route checks hardware before emitting its schema",
+        "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in hardware_lock_body
+        and hardware_schema.start() < hardware_root.start(),
+        "RS4xx debugfs lock bypasses its centralized transaction root",
+    )
+    hardware_prefix = strip_comments_and_literals(
+        hardware_lock_body[: hardware_schema.start()]
+    )
+    require_outer_function_match(
+        hardware_lock_body,
+        hardware_schema,
+        "RS4xx hardware transaction schema route",
+    )
+    require(
+        output_call.search(hardware_prefix) is None
+        and control_exit.search(hardware_prefix) is None,
+        "RS4xx debugfs lock emits or exits before its schema route",
+    )
+    require_one_match(
+        hardware_lock_body,
+        r"if \(!r\)\s*return 0;",
+        "RS4xx hardware transaction success route",
+    )
+    require_one_match(
+        hardware_lock_body,
+        r"if \(r == -EIO\)",
+        "RS4xx parked-state transaction refusal",
+    )
+    require(
+        hardware_lock_body.count("if (first)") == 3,
+        "RS4xx debugfs lock refusal output is not first-record gated",
     )
 
     candidate_body = function_body(source, "rs480_candidate_regs_emit")
-    candidate_refusal = require_one_match(
+    candidate_lock = require_one_match(
         candidate_body,
-        r"\bif \(rs480_debugfs_refuse_if_parked\(m, rdev\)\)",
-        "RS4xx candidate-register schema route",
+        r"\bif \(rs480_debugfs_lock_hardware\(m, rdev\)\)",
+        "RS4xx candidate-register transaction route",
     )
     require_outer_function_match(
         candidate_body,
-        candidate_refusal,
-        "RS4xx candidate-register schema route",
+        candidate_lock,
+        "RS4xx candidate-register transaction route",
     )
     candidate_prefix = strip_comments_and_literals(
-        candidate_body[: candidate_refusal.start()]
+        candidate_body[: candidate_lock.start()]
     )
     require(
         output_call.search(candidate_prefix) is None
@@ -1218,9 +1258,9 @@ def validate_rs4xx_output_schema_paths(
             re.compile(r"^\trs480_debugfs_emit_schema\(m\);", re.MULTILINE),
         ),
         (
-            "parked-state schema route",
+            "hardware transaction/schema route",
             re.compile(
-                r"^\tif\s*\(\s*rs480_debugfs_refuse_if_parked\(\s*m\s*,"
+                r"^\tif\s*\(\s*rs480_debugfs_lock_hardware\(\s*m\s*,"
                 r"[^)]*\)\s*\)",
                 re.MULTILINE,
             ),
@@ -1573,6 +1613,8 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
 {
     struct radeon_device *rdev = m->private;
     loff_t terminal_position;
+    unsigned int addr;
+    u32 datah, datal;
 
     if (v == SEQ_START_TOKEN) {
         rs480_debugfs_emit_schema(m);
@@ -1588,13 +1630,15 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
         rs480_cp_me_ram_seq_emit_terminal(m, terminal_position);
         return 0;
     }
-    unsigned int addr = (unsigned int)m->index - 1;
-    u32 datah, datal;
+    if (rs480_debugfs_lock_hardware(m, rdev))
+        return 0;
+    addr = (unsigned int)m->index - 1;
 
     WREG32(RADEON_CP_ME_RAM_RADDR, addr);
     datah = RREG32(RADEON_CP_ME_RAM_DATAH);
     datal = RREG32(RADEON_CP_ME_RAM_DATAL);
     seq_printf(m, "%04x %08x %08x\\n", addr, datah, datal);
+    radeon_device_unlock_hardware(rdev);
     return 0;
 }
 """,
@@ -1627,10 +1671,12 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
             "rs480_cp_me_ram_seq_emit_terminal",
             "rs480_cp_me_ram_seq_terminal_position",
             "rs480_cp_me_ram_seq_emit_terminal",
+            "rs480_debugfs_lock_hardware",
             "WREG32",
             "RREG32",
             "RREG32",
             "seq_printf",
+            "radeon_device_unlock_hardware",
         ),
     }
     direct_call_bodies = {
@@ -1716,7 +1762,7 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
             f"{function_name} direct-call topology differs",
         )
     require(
-        "rs480_debugfs_refuse_if_parked" not in dump_show_body
+        "rs480_debugfs_lock_hardware" in dump_show_body
         and "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in dump_show_body,
         "RS4xx CP-ME dump data route can re-emit its schema",
     )
@@ -1736,7 +1782,7 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
         "RS4xx CP-ME dump retry-stable header return",
     )
     require(
-        "rs480_debugfs_refuse_hardware_access" not in dump_header.group(0),
+        "rs480_debugfs_lock_hardware" not in dump_header.group(0),
         "RS4xx CP-ME dump header performs a second hardware-state read",
     )
     dump_header_prefix = strip_comments_and_literals(
@@ -1780,7 +1826,7 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
     )
     dump_address = require_one_match(
         dump_data_body,
-        r"unsigned int addr = \(unsigned int\)m->index - 1;",
+        r"addr = \(unsigned int\)m->index - 1;",
         "RS4xx CP-ME dump address bound",
     )
     dump_mmio = require_one_match(
@@ -1800,9 +1846,7 @@ static int rs480_cp_me_ram_seq_show(struct seq_file *m, void *v)
             call.start() >= dump_header.end() + dump_mmio.start()
             for call in dump_hardware_calls
         )
-        and "rs480_debugfs_refuse_hardware_access" not in dump_data_body
-        and "rs480_debugfs_refuse_if_parked" not in dump_data_body
-        and "rs480_debugfs_emit_schema" not in dump_data_body
+        and schema_emitter_call.search(dump_data_body) is None
         and "RADEON_DEV_OUTPUT_SCHEMA_LINE" not in dump_data_body,
         "RS4xx CP-ME dump data terminal topology differs",
     )
@@ -1890,6 +1934,173 @@ def validate_runtime_sources(texts: dict[str, str]) -> None:
             )
 
 
+def validate_rs4xx_hardware_transaction_paths(texts: dict[str, str]) -> None:
+    """Prove the centralized RS4xx admission root and debugfs lock ordering."""
+    header_path = "drivers/gpu/drm/radeon/radeon.h"
+    device_path = "drivers/gpu/drm/radeon/radeon_device.c"
+    debugfs_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    for path in (header_path, device_path, debugfs_path):
+        require(path in texts, f"RS4xx transaction source is absent: {path}")
+
+    lock_body = function_body(texts[header_path], "radeon_device_lock_hardware")
+    require_one_match(
+        lock_body,
+        r"r\s*=\s*radeon_rs4xx_hardware_transaction_begin\(rdev\);\s*"
+        r"if \(r\)\s*return r;\s*"
+        r"if \(radeon_rs4xx_hardware_transition_owned\(rdev\)\)\s*"
+        r"return 0;\s*down_read\(&rdev->exclusive_lock\);",
+        "RS4xx device-lock transaction root",
+    )
+    require_one_match(
+        lock_body,
+        r"if \(radeon_rs4xx_hardware_target\(rdev\)\)\s*"
+        r"r\s*=\s*0;\s*else\s*"
+        r"r\s*=\s*radeon_dev_hardware_available\(rdev\);",
+        "RS4xx device-lock availability split",
+    )
+    require_one_match(
+        lock_body,
+        r"if \(r\)\s*up_read\(&rdev->exclusive_lock\);\s*"
+        r"if \(r\)\s*radeon_rs4xx_hardware_transaction_end\(rdev\);",
+        "RS4xx device-lock failure release",
+    )
+
+    unlock_body = function_body(texts[header_path], "radeon_device_unlock_hardware")
+    require_one_match(
+        unlock_body,
+        r"if \(!radeon_rs4xx_hardware_transition_owned\(rdev\)\)\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"radeon_rs4xx_hardware_transaction_end\(rdev\);",
+        "RS4xx device-unlock transaction release",
+    )
+
+    trylock_body = function_body(texts[header_path], "radeon_device_trylock_hardware")
+    require_one_match(
+        trylock_body,
+        r"r\s*=\s*radeon_rs4xx_hardware_transaction_try_begin\(rdev\);\s*"
+        r"if \(r\)\s*return r;\s*"
+        r"if \(radeon_rs4xx_hardware_transition_owned\(rdev\)\)\s*"
+        r"return 0;",
+        "RS4xx device-trylock transaction root",
+    )
+
+    transaction_body = function_body(
+        texts[device_path], "radeon_rs4xx_hardware_transaction_begin"
+    )
+    require_one_match(
+        transaction_body,
+        r"if \(!radeon_rs4xx_hardware_target\(rdev\)\)\s*return 0;\s*"
+        r"if \(READ_ONCE\(rdev->gpu_parked\)\)\s*return -EIO;\s*"
+        r"state\s*=\s*atomic_read_acquire\(&rdev->rs4xx_hardware_state\);",
+        "RS4xx transaction admission state gate",
+    )
+    require_one_match(
+        transaction_body,
+        r"atomic_inc\(&rdev->rs4xx_hardware_transactions\);\s*"
+        r"smp_mb__after_atomic\(\);\s*"
+        r"state\s*=\s*atomic_read\(&rdev->rs4xx_hardware_state\);.*?"
+        r"state == RADEON_RS4XX_HARDWARE_RUNNING\s*&&\s*"
+        r"!READ_ONCE\(rdev->gpu_parked\)\s*&&.*?return 0;",
+        "RS4xx transaction admission revalidation",
+    )
+    require_one_match(
+        transaction_body,
+        r"if \(atomic_dec_and_test\(&rdev->rs4xx_hardware_transactions\)\)\s*"
+        r"\{\s*"
+        r"wake_up_all\(&rdev->rs4xx_hardware_wait\);\s*"
+        r"radeon_rs4xx_queue_parked_publish\(rdev\);\s*"
+        r"\}\s*"
+        r"if \(state == RADEON_RS4XX_HARDWARE_RUNNING\)\s*"
+        r"return -EBUSY;",
+        "RS4xx transaction admission rollback",
+    )
+
+    debugfs_lock_body = function_body(
+        texts[debugfs_path], "rs480_debugfs_lock_hardware"
+    )
+    schema = require_one_match(
+        debugfs_lock_body,
+        r"rs480_debugfs_emit_schema\(m\);",
+        "RS4xx debugfs lock schema route",
+    )
+    root = require_one_match(
+        debugfs_lock_body,
+        r"r\s*=\s*radeon_device_lock_hardware\(rdev\);",
+        "RS4xx debugfs lock transaction root",
+    )
+    require(schema.start() < root.start(), "RS4xx debugfs lock schema order differs")
+    require_one_match(
+        debugfs_lock_body,
+        r"if \(!r\)\s*return 0;",
+        "RS4xx debugfs lock success route",
+    )
+    require_one_match(
+        debugfs_lock_body,
+        r"if \(r == -EIO\)",
+        "RS4xx debugfs lock parked-state route",
+    )
+
+    debugfs_source = texts[debugfs_path]
+    debugfs_code = strip_comments_and_literals(debugfs_source)
+    require_no_local_macro_overrides(
+        debugfs_source,
+        tuple(RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS),
+        "RS4xx debugfs hardware transaction calls",
+    )
+    for call_name, expected_count in RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS.items():
+        observed_count = len(
+            re.findall(rf"\b{re.escape(call_name)}\s*\(", debugfs_code)
+        )
+        require(
+            observed_count == expected_count,
+            f"RS4xx debugfs {call_name} denominator is {observed_count}, "
+            f"expected {expected_count}",
+        )
+
+    call_names = tuple(RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS)
+    for (
+        function_name,
+        expected_counts,
+    ) in RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR.items():
+        body = function_body(debugfs_source, function_name)
+        body_code = strip_comments_and_literals(body)
+        opening_brace = body_code.find("{")
+        require(opening_brace >= 0, f"function {function_name} has no body")
+        inner_body = body_code[opening_brace + 1 :]
+        observed_counts = tuple(
+            len(re.findall(rf"\b{re.escape(call_name)}\s*\(", inner_body))
+            for call_name in call_names
+        )
+        require(
+            observed_counts == expected_counts,
+            f"{function_name} hardware transaction calls are {observed_counts}, "
+            f"expected {expected_counts}",
+        )
+        unlock_matches = list(
+            re.finditer(r"\bradeon_device_unlock_hardware\s*\(", inner_body)
+        )
+        if not unlock_matches:
+            continue
+        lock_matches = [
+            *re.finditer(r"\brs480_debugfs_lock_hardware\s*\(", inner_body),
+            *re.finditer(r"\bradeon_device_lock_hardware\s*\(", inner_body),
+        ]
+        require(bool(lock_matches), f"{function_name} unlocks without admission")
+        first_lock = min(match.start() for match in lock_matches)
+        last_unlock = max(match.start() for match in unlock_matches)
+        require(
+            first_lock < last_unlock,
+            f"{function_name} releases hardware admission before acquiring it",
+        )
+        hardware_matches = list(RS4XX_CP_ME_HARDWARE_ACCESS.finditer(inner_body))
+        if hardware_matches:
+            require(
+                first_lock < min(match.start() for match in hardware_matches)
+                and max(match.start() for match in hardware_matches) < last_unlock,
+                f"{function_name} hardware access escapes its transaction",
+            )
+
+
 def validate_palm_reset_registration(
     rows: list[dict[str, str]],
     texts: dict[str, str],
@@ -1912,46 +2123,60 @@ def validate_palm_reset_registration(
     dispatcher_body = function_body(
         driver_source,
         "radeon_dev_debugfs_register",
-        expected_enclosing_condition="RADEON_OBSERVE_DEV",
+        require_unconditional=True,
         protect_identifiers=True,
     )
-    require_one_match(
+    rs4xx_registration = require_one_match(
         dispatcher_body,
-        r"^static void radeon_dev_debugfs_register\(struct drm_minor \*minor\)"
-        r"\n\{\s*radeon_rs480_re_debugfs_register\(minor\);\s*"
-        r"radeon_evergreen_dev_debugfs_register\(minor\);\s*\}$",
-        "development debugfs dispatcher",
+        r"radeon_rs480_re_debugfs_register\(minor\);",
+        "RS4xx development debugfs dispatcher",
+    )
+    palm_registration = require_one_match(
+        dispatcher_body,
+        r"radeon_evergreen_dev_debugfs_register\(minor\);",
+        "Palm development debugfs dispatcher",
+    )
+    require(
+        conditional_stack_at(
+            dispatcher_body,
+            rs4xx_registration.start(),
+            "RS4xx development debugfs dispatcher",
+        )
+        == [("if", "RADEON_OBSERVE_DEV", "initial")],
+        "RS4xx development debugfs callback branch differs",
+    )
+    require(
+        conditional_stack_at(
+            dispatcher_body,
+            palm_registration.start(),
+            "Palm development debugfs dispatcher",
+        )
+        == [("if", "RADEON_OBSERVE_DEV", "initial")],
+        "Palm development debugfs callback branch differs",
     )
     kms_driver_body = initializer_body(driver_source, "kms_driver")
-    kms_directives = list(C_CONDITIONAL_DIRECTIVE.finditer(kms_driver_body))
-    require(
-        [
-            (directive.group("kind"), directive.group("tail").strip())
-            for directive in kms_directives
-        ]
-        == [("if", "RADEON_OBSERVE_DEV"), ("endif", "")],
-        "DRM development debugfs callback conditional region differs",
-    )
     kms_debugfs_match = require_one_match(
         kms_driver_body,
         r"\.debugfs_init = radeon_dev_debugfs_register",
-        "DRM development debugfs callback",
+        "DRM debugfs callback",
     )
     require(
         conditional_stack_at(
             kms_driver_body,
             kms_debugfs_match.start(),
-            "DRM development debugfs callback",
+            "DRM debugfs callback",
         )
-        == [("if", "RADEON_OBSERVE_DEV", "initial")],
-        "DRM development debugfs callback branch differs",
+        == [],
+        "DRM debugfs callback branch differs",
     )
-    callback_region = kms_driver_body[
-        kms_directives[0].start() : kms_directives[-1].end()
-    ]
     require_no_local_macro_overrides(
         driver_source,
-        tuple(sorted(set(C_IDENTIFIER.findall(callback_region)))),
+        (
+            "RADEON_OBSERVE_DEV",
+            "radeon_dev_debugfs_register",
+            "radeon_evergreen_dev_debugfs_register",
+            "radeon_rs480_re_debugfs_register",
+        ),
         "DRM development debugfs callback",
     )
     require(
@@ -2367,108 +2592,146 @@ def validate_wedged_reset_probe_post_state(texts: dict[str, str]) -> None:
         "wedged reset-probe function",
     )
     reset_call = "reset_result = radeon_gpu_reset_forced(rdev);"
-    read_lock = "down_read(&rdev->exclusive_lock);"
-    parked_branch = "if (rdev->gpu_parked) {"
+    mutation_marker = 'radeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");'
+    hardware_lock = "hardware_result = radeon_device_lock_hardware(rdev);"
+    pre_status = "pre_reset_status = RREG32(R_000E40_RBBM_STATUS);"
+    pre_signature = (
+        "if (require_backend_idle ? !rs480_frontend_wedged(pre_reset_status)"
+    )
+    pre_unlock = "radeon_device_unlock_hardware(rdev);"
     parked_sentinel = "post_reset_status = 0x5041524B;"
-    else_branch = "} else {"
+    unavailable_sentinel = "post_reset_status = 0x554E4156;"
     status_read = "post_reset_status = RREG32(R_000E40_RBBM_STATUS);"
-    branch_close = "}\n\tup_read(&rdev->exclusive_lock);"
-    read_unlock = "up_read(&rdev->exclusive_lock);"
     for marker in (
         reset_call,
-        read_lock,
-        parked_branch,
+        mutation_marker,
+        pre_status,
+        pre_signature,
         parked_sentinel,
-        else_branch,
+        unavailable_sentinel,
         status_read,
-        branch_close,
-        read_unlock,
     ):
         require(
             wedged_body.count(marker) == 1,
             f"wedged reset-probe carries an invalid marker count: {marker}",
         )
 
-    reset_call_end = wedged_body.find(reset_call) + len(reset_call)
-    wedged_prefix = normalized_code(wedged_body[:reset_call_end])
-    expected_wedged_prefix = (
-        "static int rs480_wedged_3d_reset(struct radeon_device *rdev, "
-        "struct seq_file *m, bool require_backend_idle) { const char "
-        "*state_name = require_backend_idle ? : ; const char *verdict; "
-        "u32 pre_reset_status, post_reset_status; int reset_result; "
-        "pre_reset_status = RREG32(R_000E40_RBBM_STATUS); if "
-        "(require_backend_idle ? !rs480_frontend_wedged(pre_reset_status) "
-        ": !rs480_frontend_busy(pre_reset_status)) { seq_printf(m, , "
-        "state_name, pre_reset_status, require_backend_idle ? : ); "
-        "return 0; } radeon_dev_mark_mutation(rdev, ); reset_result = "
-        "radeon_gpu_reset_forced(rdev);"
+    lock_positions = [
+        match.start() for match in re.finditer(re.escape(hardware_lock), wedged_body)
+    ]
+    unlock_positions = [
+        match.start() for match in re.finditer(re.escape(pre_unlock), wedged_body)
+    ]
+    require(
+        len(lock_positions) == 2 and len(unlock_positions) == 3,
+        "wedged reset-probe transaction lock denominator differs",
+    )
+    first_lock_at, second_lock_at = lock_positions
+    first_unlock_at, second_unlock_at, third_unlock_at = unlock_positions
+    pre_status_at = wedged_body.find(pre_status)
+    pre_signature_at = wedged_body.find(pre_signature)
+    mutation_marker_at = wedged_body.find(mutation_marker)
+    reset_call_at = wedged_body.find(reset_call)
+    parked_sentinel_at = wedged_body.find(parked_sentinel)
+    unavailable_sentinel_at = wedged_body.find(unavailable_sentinel)
+    status_read_at = wedged_body.find(status_read)
+    require(
+        first_lock_at
+        < pre_status_at
+        < pre_signature_at
+        < first_unlock_at
+        < mutation_marker_at
+        < reset_call_at
+        < second_lock_at
+        < parked_sentinel_at
+        < unavailable_sentinel_at
+        < status_read_at
+        < third_unlock_at,
+        "wedged reset-probe transaction order differs",
     )
     require(
-        wedged_prefix == expected_wedged_prefix,
-        "wedged reset-probe pre-reset transaction differs",
+        brace_depth_at(wedged_body, first_lock_at) == 1
+        and brace_depth_at(wedged_body, second_lock_at) == 1
+        and brace_depth_at(wedged_body, reset_call_at) == 1
+        and brace_depth_at(wedged_body, parked_sentinel_at) == 2
+        and brace_depth_at(wedged_body, unavailable_sentinel_at) == 2
+        and brace_depth_at(wedged_body, status_read_at) == 2,
+        "wedged reset-probe transaction markers are not at their expected depth",
+    )
+    require(
+        "RREG" not in wedged_body[:first_lock_at]
+        and "radeon_gpu_reset_forced" not in wedged_body[:first_lock_at],
+        "wedged reset-probe reaches hardware before its transaction root",
+    )
+    require(
+        not strip_comments_and_literals(
+            wedged_body[reset_call_at + len(reset_call) : second_lock_at]
+        ).strip(),
+        "wedged reset-probe executes code before post-reset transaction admission",
+    )
+    require(
+        not strip_comments_and_literals(
+            wedged_body[mutation_marker_at + len(mutation_marker) : reset_call_at]
+        ).strip(),
+        "wedged reset-probe mutates outside its reset call boundary",
+    )
+    first_failure = require_one_match(
+        wedged_body,
+        r"(?m)^\tif \(hardware_result\)\s*\{.*?return 0;\s*\}",
+        "wedged reset-probe pre-reset lock refusal",
+    )
+    require_outer_function_match(
+        wedged_body,
+        first_failure,
+        "wedged reset-probe pre-reset lock refusal",
+    )
+    post_parked = require_one_match(
+        wedged_body,
+        r"if \(hardware_result == -EIO\)\s*\{.*?"
+        r"post_reset_status = 0x5041524B;\s*\}",
+        "wedged reset-probe parked post-state",
+    )
+    post_unavailable = require_one_match(
+        wedged_body,
+        r"\} else if \(hardware_result\)\s*\{.*?"
+        r"post_reset_status = 0x554E4156;\s*\}",
+        "wedged reset-probe unavailable post-state",
+    )
+    post_success = require_one_match(
+        wedged_body,
+        r"\} else \{\s*"
+        r"post_reset_status = RREG32\(R_000E40_RBBM_STATUS\);\s*"
+        r"radeon_device_unlock_hardware\(rdev\);\s*\}",
+        "wedged reset-probe successful post-state",
+    )
+    require_outer_function_match(
+        wedged_body, post_parked, "wedged reset-probe parked post-state"
+    )
+    require_outer_function_match(
+        wedged_body,
+        post_unavailable,
+        "wedged reset-probe unavailable post-state",
+        expected_depth=2,
+    )
+    require_outer_function_match(
+        wedged_body,
+        post_success,
+        "wedged reset-probe successful post-state",
+        expected_depth=2,
+    )
+    require(
+        "RREG" not in post_parked.group(0)
+        and "RREG" not in post_unavailable.group(0)
+        and post_success.group(0).count("RREG") == 1,
+        "wedged reset-probe post-state branches reach the wrong hardware path",
     )
     require_control_flow_census(
         wedged_body,
-        (4, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
-        (("return 0;", 2), ("return 0;", 1)),
+        (6, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+        (("return 0;", 2), ("return 0;", 2), ("return 0;", 1)),
         "wedged reset-probe function",
     )
     require_no_opaque_control(wedged_body, "wedged reset-probe function")
-
-    post_reset = wedged_body.split(reset_call, 1)[1]
-    read_lock_at = post_reset.find(read_lock)
-    parked_branch_at = post_reset.find(parked_branch)
-    parked_sentinel_at = post_reset.find(parked_sentinel)
-    else_branch_at = post_reset.find(else_branch)
-    status_read_at = post_reset.find(status_read)
-    branch_close_at = post_reset.find(branch_close)
-    read_unlock_at = post_reset.find(read_unlock)
-    require(
-        read_lock_at
-        < parked_branch_at
-        < parked_sentinel_at
-        < else_branch_at
-        < status_read_at
-        < branch_close_at
-        < read_unlock_at,
-        "wedged reset-probe post-state transaction order differs",
-    )
-    marker_depths = (
-        (reset_call, 1),
-        (read_lock, 1),
-        (parked_branch, 1),
-        (parked_sentinel, 2),
-        (else_branch, 2),
-        (status_read, 2),
-        (read_unlock, 1),
-    )
-    for marker, expected_depth in marker_depths:
-        require(
-            brace_depth_at(wedged_body, wedged_body.find(marker)) == expected_depth,
-            f"wedged reset-probe marker is not at depth {expected_depth}: {marker}",
-        )
-
-    before_read_lock = C_LINE_COMMENT.sub(
-        "", C_BLOCK_COMMENT.sub("", post_reset[:read_lock_at])
-    )
-    between_lock_and_branch = C_LINE_COMMENT.sub(
-        "",
-        C_BLOCK_COMMENT.sub(
-            "", post_reset[read_lock_at + len(read_lock) : parked_branch_at]
-        ),
-    )
-    require(
-        not before_read_lock.strip() and not between_lock_and_branch.strip(),
-        "wedged reset-probe executes code before the locked parked-state branch",
-    )
-    require(
-        "RREG" not in post_reset[parked_branch_at:else_branch_at],
-        "wedged reset-probe parked branch reads a register",
-    )
-    require(
-        post_reset[else_branch_at:branch_close_at].count("RREG") == 1,
-        "wedged reset-probe status read differs from the unparked branch",
-    )
 
 
 def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
@@ -2496,17 +2759,35 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         "forced GPU-reset wrapper",
     )
     transaction_pattern = (
+        r"rs4xx_reset\s*=\s*radeon_rs4xx_hardware_target\(rdev\);\s*"
+        r"if \(rs4xx_reset\)\s*\{\s*"
+        r"r\s*=\s*radeon_rs4xx_hardware_transition_begin\(\s*"
+        r"rdev,\s*RADEON_RS4XX_HARDWARE_RUNNING,\s*"
+        r"RADEON_RS4XX_HARDWARE_RESETTING\);\s*"
+        r"if \(r\)\s*return r;\s*\}\s*"
         r"down_write\(&rdev->exclusive_lock\);\s*"
-        r"if \(!force_reset && !rdev->needs_reset\) \{\s*"
-        r"up_write\(&rdev->exclusive_lock\);\s*return 0;\s*\}\s*"
-        r"if \(rdev->gpu_parked\) \{\s*"
-        r"rdev->needs_reset = false;\s*"
+        r"if \(READ_ONCE\(rdev->gpu_parked\)\) \{\s*"
+        r"WRITE_ONCE\(rdev->needs_reset, false\);\s*"
         r"up_write\(&rdev->exclusive_lock\);\s*"
         r"dev_err_once\(rdev->dev,\s*"
-        r'"parked: refusing radeon_gpu_reset re-entry\\n"\);\s*'
-        r"return -EIO;\s*\}\s*"
-        r"if \(force_reset\)\s*rdev->needs_reset = true;\s*"
-        r"atomic_inc\(&rdev->gpu_reset_counter\)"
+        r'"RS4xx reset re-entry refused after terminal park\\n"\);\s*'
+        r"if \(rs4xx_reset\)\s*"
+        r"radeon_rs4xx_hardware_transition_end\(\s*rdev,\s*"
+        r"RADEON_RS4XX_HARDWARE_PARKED\);\s*return -EIO;\s*\}\s*"
+        r"if \(!force_reset && !READ_ONCE\(rdev->needs_reset\)\) \{\s*"
+        r"if \(READ_ONCE\(rdev->gpu_parked\)\) \{\s*"
+        r"WRITE_ONCE\(rdev->needs_reset, false\);\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*"
+        r"if \(rs4xx_reset\)\s*"
+        r"radeon_rs4xx_hardware_transition_end\(\s*rdev,\s*"
+        r"RADEON_RS4XX_HARDWARE_PARKED\);\s*return -EIO;\s*\}\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*"
+        r"if \(rs4xx_reset\)\s*"
+        r"radeon_rs4xx_hardware_transition_end\(\s*rdev,\s*"
+        r"RADEON_RS4XX_HARDWARE_RUNNING\);\s*return 0;\s*\}\s*"
+        r"if \(force_reset\)\s*"
+        r"WRITE_ONCE\(rdev->needs_reset, true\);\s*"
+        r".*?atomic_inc\(&rdev->gpu_reset_counter\)"
     )
     wrapper_pattern = (
         r"int radeon_gpu_reset_forced\(struct radeon_device \*rdev\)\s*"
@@ -2528,33 +2809,37 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         reset_counter_at >= 0,
         "forced GPU-reset counter transition is absent",
     )
-    expected_reset_prefix = (
-        "static int radeon_gpu_reset_internal(struct radeon_device *rdev, "
-        "bool force_reset) { unsigned ring_sizes[RADEON_NUM_RINGS]; "
-        "uint32_t *ring_data[RADEON_NUM_RINGS]; bool saved = false; "
-        "bool gpu_parked; int i, r; down_write(&rdev->exclusive_lock); "
-        "if (!force_reset && !rdev->needs_reset) { "
-        "up_write(&rdev->exclusive_lock); return 0; } if "
-        "(rdev->gpu_parked) { rdev->needs_reset = false; "
-        "up_write(&rdev->exclusive_lock); dev_err_once(rdev->dev, ); "
-        "return -EIO; } if (force_reset) rdev->needs_reset = true; "
-        "atomic_inc(&rdev->gpu_reset_counter);"
-    )
     require(
-        normalized_code(reset_function_body[: reset_counter_at + len(reset_counter)])
-        == expected_reset_prefix,
-        "forced GPU-reset declaration and writer transaction prefix differs",
+        reset_function_body.find("radeon_rs4xx_hardware_transition_begin(")
+        < reset_function_body.find("down_write(&rdev->exclusive_lock);")
+        < reset_function_body.find("if (READ_ONCE(rdev->gpu_parked))")
+        < reset_function_body.find("if (!force_reset && !READ_ONCE(rdev->needs_reset))")
+        < reset_function_body.find("WRITE_ONCE(rdev->needs_reset, true);")
+        < reset_counter_at,
+        "forced GPU-reset transaction prefix differs",
     )
     require_control_flow_census(
         reset_function_body,
-        (19, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        (57, 6, 2, 0, 0, 0, 0, 0, 0, 0, 5, 12),
         (
+            ("return r;", 2),
+            ("return -EIO;", 2),
+            ("return -EIO;", 3),
             ("return 0;", 2),
+            ("return -EIO;", 3),
             ("return -EIO;", 2),
             ("return r;", 2),
+            ("return -EIO;", 2),
+            ("return -EIO;", 2),
+            ("return -EIO;", 3),
+            ("return r;", 1),
             ("return r;", 1),
         ),
         "forced GPU-reset implementation",
+        (
+            "rs4xx_reset_release_ring_copies:",
+            "rs4xx_reset_parked_after_downgrade:",
+        ),
     )
     require_no_opaque_control(
         reset_function_body,
@@ -2565,55 +2850,77 @@ def validate_forced_gpu_reset_transaction(texts: dict[str, str]) -> None:
         "forced GPU-reset counter transition is not an outer function statement",
     )
     reset_body = reset_function_body[reset_counter_at + len(reset_counter) :]
+    terminal_writer_exit_pattern = re.compile(
+        r"if \(rs4xx_reset && READ_ONCE\(rdev->gpu_parked\)\) \{\s*"
+        r"radeon_rs4xx_publish_parked_state\(rdev\);\s*"
+        r"WRITE_ONCE\(rdev->in_reset, false\);\s*"
+        r"up_write\(&rdev->exclusive_lock\);\s*"
+        r"radeon_rs4xx_hardware_transition_end\(\s*rdev,\s*"
+        r"RADEON_RS4XX_HARDWARE_PARKED\);\s*"
+        r"return -EIO;\s*\}"
+    )
+    terminal_writer_exits = list(
+        terminal_writer_exit_pattern.finditer(reset_function_body)
+    )
     require(
-        "up_write(&rdev->exclusive_lock);" not in reset_body,
-        "forced GPU-reset writer lock ends before a legitimate downgrade",
+        len(terminal_writer_exits) == 3,
+        "forced GPU-reset terminal writer-exit denominator differs",
+    )
+    for exit_index, terminal_writer_exit in enumerate(terminal_writer_exits):
+        require_outer_function_match(
+            reset_function_body,
+            terminal_writer_exit,
+            f"forced GPU-reset terminal writer exit {exit_index}",
+        )
+    require(
+        reset_body.count("up_write(&rdev->exclusive_lock);")
+        == len(terminal_writer_exits),
+        "forced GPU-reset writer lock has an unclassified post-counter exit",
     )
     require(
         reset_body.count("downgrade_write(&rdev->exclusive_lock);") == 2,
         "forced GPU-reset writer-to-reader downgrade paths differ",
     )
     require(
-        reset_body.count("up_read(&rdev->exclusive_lock);") == 2,
+        reset_body.count("up_read(&rdev->exclusive_lock);") == 3,
         "forced GPU-reset read-lock release paths differ",
     )
-    parked_exit_start = (
-        'dev_err(rdev->dev, "parked: async agents quiesced, entering quiet epoch\\n");'
-    )
-    expected_parked_exit = (
-        "dev_err(rdev->dev, ); rdev->in_reset = true; "
-        "rdev->needs_reset = false; msleep(1); dev_err(rdev->dev, ); "
-        "downgrade_write(&rdev->exclusive_lock); msleep(1); "
-        "dev_info(rdev->dev, ); rdev->in_reset = false; "
-        "up_read(&rdev->exclusive_lock); msleep(1); "
-        "dev_err(rdev->dev, , r); return r;"
-    )
-    require_exact_code_interval(
+    parked_exit = require_one_match(
         reset_function_body,
-        parked_exit_start,
-        "return r;",
-        expected_parked_exit,
-        2,
+        r"if \(gpu_parked\)\s*\{\s*"
+        r"radeon_rs4xx_publish_parked_state\(rdev\);\s*"
+        r"downgrade_write\(&rdev->exclusive_lock\);\s*"
+        r"WRITE_ONCE\(rdev->in_reset, false\);\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"radeon_rs4xx_hardware_transition_end\(\s*rdev,\s*"
+        r"RADEON_RS4XX_HARDWARE_PARKED\);.*?return r;",
         "forced GPU-reset parked exit",
     )
-    expected_ordinary_exit = (
-        "radeon_hpd_init(rdev); rdev->in_reset = true; "
-        "rdev->needs_reset = false; "
-        "downgrade_write(&rdev->exclusive_lock); "
-        "drm_helper_resume_force_mode(rdev_to_drm(rdev)); if "
-        "((rdev->pm.pm_method == PM_METHOD_DPM) && rdev->pm.dpm_enabled) "
-        "radeon_pm_compute_clocks(rdev); if (!r) { "
-        "r = radeon_ib_ring_tests(rdev); if (r && saved) r = -EAGAIN; "
-        "} else { dev_info(rdev->dev, ); } "
-        "rdev->needs_reset = r == -EAGAIN; rdev->in_reset = false; "
-        "up_read(&rdev->exclusive_lock); return r;"
-    )
-    require_exact_code_interval(
+    require_outer_function_match(
         reset_function_body,
-        "radeon_hpd_init(rdev);",
-        "return r;",
-        expected_ordinary_exit,
-        1,
+        parked_exit,
+        "forced GPU-reset parked exit",
+        expected_depth=1,
+    )
+    ordinary_exit = require_one_match(
+        reset_function_body,
+        r"radeon_hpd_init\(rdev\);.*?"
+        r"downgrade_write\(&rdev->exclusive_lock\);.*?"
+        r"drm_helper_resume_force_mode\(rdev_to_drm\(rdev\)\);.*?"
+        r"WRITE_ONCE\(rdev->in_reset, false\);\s*"
+        r"up_read\(&rdev->exclusive_lock\);\s*"
+        r"if \(rs4xx_reset\)\s*\{\s*"
+        r"radeon_rs4xx_hardware_transition_end\(\s*rdev,\s*"
+        r"RADEON_RS4XX_HARDWARE_RUNNING\);\s*"
+        r"if \(READ_ONCE\(rdev->gpu_parked\)\) \{\s*"
+        r"radeon_rs4xx_publish_parked_state\(rdev\);\s*"
+        r"return -EIO;\s*\}\s*"
+        r"drm_kms_helper_poll_enable\(rdev_to_drm\(rdev\)\);\s*\}\s*return r;",
+        "forced GPU-reset ordinary exit",
+    )
+    require_outer_function_match(
+        reset_function_body,
+        ordinary_exit,
         "forced GPU-reset ordinary exit",
     )
     require(
@@ -2900,6 +3207,7 @@ def validate(
             rows,
             source_texts["drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"],
         )
+        validate_rs4xx_hardware_transaction_paths(source_texts)
         validate_runtime_sources(source_texts)
         validate_palm_reset_registration(registration_rows, source_texts)
         validate_mutation_audit(source_texts, features)
@@ -3079,7 +3387,154 @@ def self_test(root: Path) -> int:
     )
     rs4xx_source_path = "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     validate_rs4xx_output_schema_paths(rows, source_texts[rs4xx_source_path])
+    validate_rs4xx_hardware_transaction_paths(source_texts)
     rs4xx_source = source_texts[rs4xx_source_path]
+    transaction_rejection_count = 0
+
+    def reject_transaction_mutant(label: str, candidate_texts: dict[str, str]) -> None:
+        nonlocal transaction_rejection_count
+        try:
+            validate_rs4xx_hardware_transaction_paths(candidate_texts)
+        except InterfaceError:
+            transaction_rejection_count += 1
+            return
+        raise InterfaceError(f"self-test accepted {label}")
+
+    header_path = "drivers/gpu/drm/radeon/radeon.h"
+    wrong_transaction_root = copy.deepcopy(source_texts)
+    wrong_transaction_root[header_path] = wrong_transaction_root[header_path].replace(
+        "r = radeon_rs4xx_hardware_transaction_begin(rdev);",
+        "r = radeon_rs4xx_hardware_transaction_try_begin(rdev);",
+        1,
+    )
+    require(
+        wrong_transaction_root[header_path] != source_texts[header_path],
+        "self-test transaction-root fixture differs from the source",
+    )
+    reject_transaction_mutant(
+        "a debugfs transaction root that uses try-begin",
+        wrong_transaction_root,
+    )
+
+    missing_transaction_release = copy.deepcopy(source_texts)
+    missing_transaction_release[header_path] = missing_transaction_release[
+        header_path
+    ].replace(
+        "\tradeon_rs4xx_hardware_transaction_end(rdev);\n}\n\nstatic inline int "
+        "radeon_device_trylock_hardware",
+        "}\n\nstatic inline int radeon_device_trylock_hardware",
+        1,
+    )
+    require(
+        missing_transaction_release[header_path] != source_texts[header_path],
+        "self-test transaction-release fixture differs from the source",
+    )
+    reject_transaction_mutant(
+        "a device unlock without transaction release",
+        missing_transaction_release,
+    )
+
+    missing_debugfs_root = copy.deepcopy(source_texts)
+    missing_debugfs_root[rs4xx_source_path] = missing_debugfs_root[
+        rs4xx_source_path
+    ].replace(
+        "\tr = radeon_device_lock_hardware(rdev);",
+        "\tr = 0;",
+        1,
+    )
+    require(
+        missing_debugfs_root[rs4xx_source_path] != source_texts[rs4xx_source_path],
+        "self-test debugfs transaction-root fixture differs from the source",
+    )
+    reject_transaction_mutant(
+        "a debugfs lock without the centralized transaction root",
+        missing_debugfs_root,
+    )
+
+    missing_safe_register_unlock = copy.deepcopy(source_texts)
+    missing_safe_register_unlock[rs4xx_source_path] = missing_safe_register_unlock[
+        rs4xx_source_path
+    ].replace(
+        "\t}\n\tradeon_device_unlock_hardware(rdev);\n\treturn 0;\n}"
+        "\n\nDEFINE_SHOW_ATTRIBUTE(rs480_safe_regs);",
+        "\t}\n\treturn 0;\n}\n\nDEFINE_SHOW_ATTRIBUTE(rs480_safe_regs);",
+        1,
+    )
+    require(
+        missing_safe_register_unlock[rs4xx_source_path]
+        != source_texts[rs4xx_source_path],
+        "self-test safe-register unlock fixture differs from the source",
+    )
+    reject_transaction_mutant(
+        "a safe-register reader without successful transaction release",
+        missing_safe_register_unlock,
+    )
+
+    missing_post_increment_parked_check = copy.deepcopy(source_texts)
+    device_path = "drivers/gpu/drm/radeon/radeon_device.c"
+    missing_post_increment_parked_check[device_path] = (
+        missing_post_increment_parked_check[device_path].replace(
+            "\t    (state == RADEON_RS4XX_HARDWARE_RUNNING &&\n"
+            "\t     !READ_ONCE(rdev->gpu_parked) &&\n"
+            "\t     !atomic_read(&rdev->rs4xx_hardware_closing)))",
+            "\t    (state == RADEON_RS4XX_HARDWARE_RUNNING &&\n"
+            "\t     !atomic_read(&rdev->rs4xx_hardware_closing)))",
+            1,
+        )
+    )
+    require(
+        missing_post_increment_parked_check[device_path] != source_texts[device_path],
+        "self-test post-increment parked fixture differs from the source",
+    )
+    reject_transaction_mutant(
+        "transaction admission without post-increment parked revalidation",
+        missing_post_increment_parked_check,
+    )
+
+    missing_rollback_publisher = copy.deepcopy(source_texts)
+    missing_rollback_publisher[device_path] = missing_rollback_publisher[
+        device_path
+    ].replace(
+        "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+        "\t\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+        "\t}\n"
+        "\tif (state == RADEON_RS4XX_HARDWARE_RUNNING)\n",
+        "\t\twake_up_all(&rdev->rs4xx_hardware_wait);\n"
+        "\t}\n"
+        "\tif (state == RADEON_RS4XX_HARDWARE_RUNNING)\n",
+        1,
+    )
+    require(
+        missing_rollback_publisher[device_path] != source_texts[device_path],
+        "self-test rollback-publisher fixture differs from the source",
+    )
+    reject_transaction_mutant(
+        "transaction rollback without pending parked publication",
+        missing_rollback_publisher,
+    )
+
+    missing_debugfs_route = copy.deepcopy(source_texts)
+    missing_debugfs_route[rs4xx_source_path] = missing_debugfs_route[
+        rs4xx_source_path
+    ].replace(
+        "\tif (rs480_debugfs_lock_hardware(m, rdev))\n\t\treturn 0;\n",
+        "",
+        1,
+    )
+    require(
+        missing_debugfs_route[rs4xx_source_path] != source_texts[rs4xx_source_path],
+        "self-test debugfs route fixture differs from the source",
+    )
+    try:
+        validate_rs4xx_output_schema_paths(
+            rows, missing_debugfs_route[rs4xx_source_path]
+        )
+    except InterfaceError:
+        transaction_rejection_count += 1
+    else:
+        raise InterfaceError(
+            "self-test accepted a readable RS4xx node without transaction admission"
+        )
     schema_rejection_count = 0
 
     def reject_schema_mutant(
@@ -3150,8 +3605,8 @@ def self_test(root: Path) -> int:
     )
     reject_schema_mutant("an early schema-emitter return", early_emitter_return)
 
-    refusal_helper_output, replacement_count = re.subn(
-        r"(static bool rs480_debugfs_refuse_if_parked\(.*?\n\{\n)"
+    hardware_lock_output, replacement_count = re.subn(
+        r"(static int rs480_debugfs_lock_hardware\(.*?\n\{\n)"
         r"(\trs480_debugfs_emit_schema\(m\);)",
         r'\1\tseq_puts(m, "bad\\n");\n\2',
         rs4xx_source,
@@ -3160,11 +3615,11 @@ def self_test(root: Path) -> int:
     )
     require(
         replacement_count == 1,
-        "self-test refusal-helper output fixture differs from the source",
+        "self-test hardware-lock output fixture differs from the source",
     )
     reject_schema_mutant(
-        "refusal-helper output before its schema route",
-        refusal_helper_output,
+        "hardware-lock output before its schema route",
+        hardware_lock_output,
     )
 
     alternate_seq_output = rs4xx_source.replace(
@@ -3182,7 +3637,7 @@ def self_test(root: Path) -> int:
 
     candidate_helper_output, replacement_count = re.subn(
         r"(static int rs480_candidate_regs_emit\(.*?\n\{\n)"
-        r"(\tif \(rs480_debugfs_refuse_if_parked\(m, rdev\)\))",
+        r"(\tif \(rs480_debugfs_lock_hardware\(m, rdev\)\))",
         r'\1\tseq_puts(m, "bad\\n");\n\2',
         rs4xx_source,
         count=1,
@@ -3402,7 +3857,7 @@ def self_test(root: Path) -> int:
     dump_next_refusal = rs4xx_source.replace(
         "\t++*pos;\n\tif (was_terminal)\n\t\treturn NULL;",
         "\t++*pos;\n"
-        "\trs480_debugfs_refuse_if_parked(m, rdev);\n"
+        "\trs480_debugfs_lock_hardware(m, rdev);\n"
         "\tif (was_terminal)\n"
         "\t\treturn NULL;",
         1,
@@ -3412,7 +3867,7 @@ def self_test(root: Path) -> int:
         "self-test CP-ME next-refusal fixture differs from the source",
     )
     reject_schema_mutant(
-        "refusal output from CP-ME dump next",
+        "hardware-lock output from CP-ME dump next",
         dump_next_refusal,
     )
 
@@ -3741,28 +4196,18 @@ def self_test(root: Path) -> int:
     )
 
     late_show_terminal_route = rs4xx_source.replace(
-        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
-        "\tif (terminal_position) {\n"
-        "\t\tm->index = terminal_position;\n"
-        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
+        "\tif (rs480_debugfs_lock_hardware(m, rdev))\n"
         "\t\treturn 0;\n"
-        "\t}\n"
-        "\tunsigned int addr = (unsigned int)m->index - 1;\n"
-        "\tu32 datah, datal;\n\n"
+        "\taddr = (unsigned int)m->index - 1;\n\n"
         "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
         "\tdatah = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
-        "\tdatal = RREG32(RADEON_CP_ME_RAM_DATAL);",
-        "\tunsigned int addr = (unsigned int)m->index - 1;\n"
-        "\tu32 datah, datal;\n\n"
+        "\tdatal = RREG32(RADEON_CP_ME_RAM_DATAL);\n",
+        "\taddr = (unsigned int)m->index - 1;\n\n"
         "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
         "\tdatah = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
         "\tdatal = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
-        "\tterminal_position = rs480_cp_me_ram_seq_terminal_position(rdev);\n"
-        "\tif (terminal_position) {\n"
-        "\t\tm->index = terminal_position;\n"
-        "\t\trs480_cp_me_ram_seq_emit_terminal(m, terminal_position);\n"
-        "\t\treturn 0;\n"
-        "\t}",
+        "\tif (rs480_debugfs_lock_hardware(m, rdev))\n"
+        "\t\treturn 0;\n",
         1,
     )
     require(
@@ -3798,8 +4243,8 @@ def self_test(root: Path) -> int:
     )
 
     offset_dump_address = rs4xx_source.replace(
-        "\tunsigned int addr = (unsigned int)m->index - 1;",
-        "\tunsigned int addr = (unsigned int)m->index - 1 + 0x100;",
+        "\taddr = (unsigned int)m->index - 1;",
+        "\taddr = (unsigned int)m->index - 1 + 0x100;",
         1,
     )
     require(
@@ -4014,7 +4459,7 @@ def self_test(root: Path) -> int:
     header_second_state_read = rs4xx_source.replace(
         "\t\trs480_debugfs_emit_schema(m);\n\t\treturn 0;",
         "\t\trs480_debugfs_emit_schema(m);\n"
-        "\t\tif (rs480_debugfs_refuse_hardware_access(m, rdev))\n"
+        "\t\tif (rs480_debugfs_lock_hardware(m, rdev))\n"
         "\t\t\treturn 0;\n"
         "\t\treturn 0;",
         1,
@@ -4073,24 +4518,10 @@ def self_test(root: Path) -> int:
     validate_mutation_audit(source_texts, features)
     registration_source_mutations = (
         (
-            "conditional dispatcher selects an active empty definition",
+            "development dispatcher selects an inactive branch",
             "drivers/gpu/drm/radeon/radeon_drv.c",
-            "static void radeon_dev_debugfs_register(struct drm_minor *minor)\n"
-            "{\n"
-            "\tradeon_rs480_re_debugfs_register(minor);\n"
-            "\tradeon_evergreen_dev_debugfs_register(minor);\n"
-            "}",
-            "#if 0\n"
-            "static void radeon_dev_debugfs_register(struct drm_minor *minor)\n"
-            "{\n"
-            "\tradeon_rs480_re_debugfs_register(minor);\n"
-            "\tradeon_evergreen_dev_debugfs_register(minor);\n"
-            "}\n"
-            "#else\n"
-            "static void radeon_dev_debugfs_register(struct drm_minor *minor)\n"
-            "{\n"
-            "}\n"
-            "#endif",
+            "#if RADEON_OBSERVE_DEV\n\tradeon_rs480_re_debugfs_register(minor);",
+            "#if 0\n\tradeon_rs480_re_debugfs_register(minor);",
         ),
         (
             "conditional DRM callback selects a null field",
@@ -4805,8 +5236,8 @@ def self_test(root: Path) -> int:
             1,
         )
         .replace(
-            "\tup_read(&rdev->exclusive_lock);",
-            "\tup_read(&rdev->exclusive_lock);\nbypass_wd3:\n\t;",
+            "\tradeon_device_unlock_hardware(rdev);",
+            "\tradeon_device_unlock_hardware(rdev);\nbypass_wd3:\n\t;",
             1,
         )
     )
@@ -4867,8 +5298,8 @@ def self_test(root: Path) -> int:
     unreachable_wedged_body = reset_source[
         wedged_function_start:wedged_function_end
     ].replace(
-        "\tup_read(&rdev->exclusive_lock);",
-        "\tunreachable();\n\tup_read(&rdev->exclusive_lock);",
+        "\tradeon_device_unlock_hardware(rdev);",
+        "\tunreachable();\n\tradeon_device_unlock_hardware(rdev);",
         1,
     )
     unreachable_wedged_exit = copy.deepcopy(source_texts)
@@ -4885,13 +5316,10 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted unreachable before the wedged unlock")
 
     wrong_post_state = copy.deepcopy(source_texts)
-    wrong_post_state[reset_source_path] = re.sub(
-        r"(reset_result = radeon_gpu_reset_forced\(rdev\);.*?)"
-        r"if \(rdev->gpu_parked\)",
-        r"\1if (reset_result)",
-        wrong_post_state[reset_source_path],
-        count=1,
-        flags=re.DOTALL,
+    wrong_post_state[reset_source_path] = wrong_post_state[reset_source_path].replace(
+        "\tif (hardware_result == -EIO)",
+        "\tif (hardware_result == -EHOSTDOWN)",
+        1,
     )
     try:
         validate_wedged_reset_probe_post_state(wrong_post_state)
@@ -4906,10 +5334,10 @@ def self_test(root: Path) -> int:
         '\tradeon_dev_mark_mutation(rdev, "RS4xx reset hang probe");'
     )
     unreachable_unlock = unreachable_source.find(
-        "\tup_read(&rdev->exclusive_lock);",
+        "\tradeon_device_unlock_hardware(rdev);",
         unreachable_start,
     )
-    unreachable_end = unreachable_unlock + len("\tup_read(&rdev->exclusive_lock);")
+    unreachable_end = unreachable_unlock + len("\tradeon_device_unlock_hardware(rdev);")
     require(
         unreachable_start >= 0 and unreachable_unlock > unreachable_start,
         "self-test wedged reset transaction boundary differs from the source",
@@ -4963,9 +5391,26 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted MMIO inside the parked branch")
 
     missing_post_reset_read_lock = copy.deepcopy(source_texts)
-    missing_post_reset_read_lock[reset_source_path] = missing_post_reset_read_lock[
-        reset_source_path
-    ].replace("\tdown_read(&rdev->exclusive_lock);\n", "", 1)
+    missing_lock_source = missing_post_reset_read_lock[reset_source_path]
+    post_lock_marker = "\thardware_result = radeon_device_lock_hardware(rdev);"
+    first_post_lock = missing_lock_source.find(
+        post_lock_marker,
+        wedged_function_start,
+        wedged_function_end,
+    )
+    second_post_lock = missing_lock_source.find(
+        post_lock_marker,
+        first_post_lock + len(post_lock_marker),
+        wedged_function_end,
+    )
+    require(
+        first_post_lock >= 0 and second_post_lock > first_post_lock,
+        "self-test post-reset lock fixture differs from the source",
+    )
+    missing_post_reset_read_lock[reset_source_path] = (
+        missing_lock_source[:second_post_lock]
+        + missing_lock_source[second_post_lock + len(post_lock_marker) :]
+    )
     try:
         validate_wedged_reset_probe_post_state(missing_post_reset_read_lock)
     except InterfaceError:
@@ -4974,9 +5419,25 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted an unlocked parked-state check")
 
     missing_post_reset_read_unlock = copy.deepcopy(source_texts)
-    missing_post_reset_read_unlock[reset_source_path] = missing_post_reset_read_unlock[
-        reset_source_path
-    ].replace("\tup_read(&rdev->exclusive_lock);\n", "", 1)
+    missing_unlock_source = missing_post_reset_read_unlock[reset_source_path]
+    post_unlock_marker = "\tradeon_device_unlock_hardware(rdev);"
+    third_post_unlock = missing_unlock_source.rfind(
+        post_unlock_marker,
+        wedged_function_start,
+        wedged_function_end,
+    )
+    require(
+        third_post_unlock >= 0
+        and missing_unlock_source[wedged_function_start:wedged_function_end].count(
+            post_unlock_marker
+        )
+        == 3,
+        "self-test post-reset unlock fixture differs from the source",
+    )
+    missing_post_reset_read_unlock[reset_source_path] = (
+        missing_unlock_source[:third_post_unlock]
+        + missing_unlock_source[third_post_unlock + len(post_unlock_marker) :]
+    )
     try:
         validate_wedged_reset_probe_post_state(missing_post_reset_read_unlock)
     except InterfaceError:
@@ -5130,7 +5591,10 @@ def self_test(root: Path) -> int:
             "self-test accepted inline assembly after the reset counter"
         )
 
-    parked_transition = "\t\trdev->in_reset = true;"
+    parked_transition = (
+        "\t\tdowngrade_write(&rdev->exclusive_lock);\n"
+        "\t\tWRITE_ONCE(rdev->in_reset, false);"
+    )
     early_parked_return = copy.deepcopy(source_texts)
     early_parked_return[reset_implementation_path] = (
         reset_implementation_source.replace(
@@ -5176,12 +5640,16 @@ def self_test(root: Path) -> int:
     else:
         raise InterfaceError("self-test accepted a looping parked reset exit")
 
-    ordinary_transition = "\tradeon_hpd_init(rdev);\n\n\trdev->in_reset = true;"
+    ordinary_transition = (
+        "\tWRITE_ONCE(rdev->needs_reset, false);\n"
+        "\tif (rs4xx_reset) {\n"
+        "\t\tspin_lock_irqsave(&rdev->irq.lock, irqflags);"
+    )
     early_ordinary_return = copy.deepcopy(source_texts)
     early_ordinary_return[reset_implementation_path] = (
         reset_implementation_source.replace(
             ordinary_transition,
-            "\tradeon_hpd_init(rdev);\n\n\treturn r;\n\trdev->in_reset = true;",
+            "\treturn r;\n" + ordinary_transition,
             1,
         )
     )
@@ -5196,7 +5664,10 @@ def self_test(root: Path) -> int:
     conditional_ordinary_exit[reset_implementation_path] = (
         reset_implementation_source.replace(
             ordinary_transition,
-            "\tradeon_hpd_init(rdev);\n\n\tif (false)\n\t\trdev->in_reset = true;",
+            "\tif (false)\n"
+            "\t\tWRITE_ONCE(rdev->needs_reset, false);\n"
+            "\tif (rs4xx_reset) {\n"
+            "\t\tspin_lock_irqsave(&rdev->irq.lock, irqflags);",
             1,
         )
     )
@@ -5210,8 +5681,9 @@ def self_test(root: Path) -> int:
         )
 
     parked_exit_start = reset_implementation_source.find(
-        '\t\tdev_err(rdev->dev, "parked: async agents quiesced, '
-        'entering quiet epoch\\n");'
+        "\tif (gpu_parked) {\n"
+        "\t\tradeon_rs4xx_publish_parked_state(rdev);\n"
+        "\t\tdowngrade_write(&rdev->exclusive_lock);"
     )
     parked_exit_return = reset_implementation_source.find(
         "\t\treturn r;",
@@ -5329,15 +5801,29 @@ def self_test(root: Path) -> int:
     reset_counter_line = "\tatomic_inc(&rdev->gpu_reset_counter);\n"
     early_downgrade_line = "\tdowngrade_write(&rdev->exclusive_lock);\n"
     ordinary_downgrade_context = (
-        "\trdev->in_reset = true;\n"
-        "\trdev->needs_reset = false;\n\n"
-        "\tdowngrade_write(&rdev->exclusive_lock);\n\n"
-        "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
+        "\tWRITE_ONCE(rdev->needs_reset, false);\n"
+        "\tif (rs4xx_reset) {\n"
+        "\t\tspin_lock_irqsave(&rdev->irq.lock, irqflags);\n"
+        "\t\tif (READ_ONCE(rdev->irq.installed) &&\n"
+        "\t\t    !READ_ONCE(rdev->gpu_parked))\n"
+        "\t\t\tradeon_irq_set(rdev);\n"
+        "\t\tspin_unlock_irqrestore(&rdev->irq.lock, irqflags);\n"
+        "\t} else {\n"
+        "\t\trdev->in_reset = true;\n"
+        "\t}\n\n"
+        "\tdowngrade_write(&rdev->exclusive_lock);"
     )
     ordinary_without_downgrade = (
-        "\trdev->in_reset = true;\n"
-        "\trdev->needs_reset = false;\n\n"
-        "\tdrm_helper_resume_force_mode(rdev_to_drm(rdev));"
+        "\tWRITE_ONCE(rdev->needs_reset, false);\n"
+        "\tif (rs4xx_reset) {\n"
+        "\t\tspin_lock_irqsave(&rdev->irq.lock, irqflags);\n"
+        "\t\tif (READ_ONCE(rdev->irq.installed) &&\n"
+        "\t\t    !READ_ONCE(rdev->gpu_parked))\n"
+        "\t\t\tradeon_irq_set(rdev);\n"
+        "\t\tspin_unlock_irqrestore(&rdev->irq.lock, irqflags);\n"
+        "\t} else {\n"
+        "\t\trdev->in_reset = true;\n"
+        "\t}"
     )
     require(
         reset_implementation_source.count(reset_counter_line) == 1
@@ -5367,13 +5853,15 @@ def self_test(root: Path) -> int:
         raise InterfaceError("self-test accepted a moved ordinary reset downgrade")
 
     parked_downgrade_context = (
-        '\t\tdev_err(rdev->dev, "parked: downgrading exclusive lock\\n");\n'
+        "\tif (gpu_parked) {\n"
+        "\t\tradeon_rs4xx_publish_parked_state(rdev);\n"
         "\t\tdowngrade_write(&rdev->exclusive_lock);\n"
-        "\t\tmsleep(1);"
+        "\t\tWRITE_ONCE(rdev->in_reset, false);"
     )
     parked_without_downgrade = (
-        '\t\tdev_err(rdev->dev, "parked: downgrading exclusive lock\\n");\n'
-        "\t\tmsleep(1);"
+        "\tif (gpu_parked) {\n"
+        "\t\tradeon_rs4xx_publish_parked_state(rdev);\n"
+        "\t\tWRITE_ONCE(rdev->in_reset, false);"
     )
     require(
         reset_implementation_source.count(parked_downgrade_context) == 1,
@@ -5434,6 +5922,7 @@ def self_test(root: Path) -> int:
         f"{len(registration_source_mutations) + 11} Palm registration source, "
         "4 registration contract, "
         f"{schema_rejection_count} output-schema, "
+        f"{transaction_rejection_count} transaction-root, "
         f"{summary_rejection_count} summary-total, "
         "15 reset-post-state, 18 forced-reset, 1 retired-denominator, "
         f"{retired_rejection_count} retired-probe, and 3 compiler-symbol cases"

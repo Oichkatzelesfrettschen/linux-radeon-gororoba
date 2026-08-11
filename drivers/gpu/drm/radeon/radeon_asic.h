@@ -219,7 +219,7 @@ int rs400_gart_init(struct radeon_device *rdev);
 int rs400_gart_enable(struct radeon_device *rdev);
 void rs400_gart_adjust_size(struct radeon_device *rdev);
 void rs400_gart_disable(struct radeon_device *rdev);
-void rs400_gart_fini(struct radeon_device *rdev);
+int rs400_gart_fini(struct radeon_device *rdev);
 extern int rs400_mc_wait_for_idle(struct radeon_device *rdev);
 
 /*

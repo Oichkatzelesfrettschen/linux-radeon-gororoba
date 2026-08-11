@@ -37,6 +37,29 @@
 #include <linux/pm_runtime.h>
 #include <linux/vga_switcheroo.h>
 
+static int radeon_lvds_get_modes_admitted(struct drm_connector *connector);
+static int radeon_vga_get_modes_admitted(struct drm_connector *connector);
+static int radeon_tv_get_modes_admitted(struct drm_connector *connector);
+static int radeon_dp_get_modes_admitted(struct drm_connector *connector);
+static enum drm_connector_status radeon_lvds_detect_admitted(
+	struct drm_connector *connector, bool force);
+static enum drm_connector_status radeon_vga_detect_admitted(
+	struct drm_connector *connector, bool force);
+static enum drm_connector_status radeon_tv_detect_admitted(
+	struct drm_connector *connector, bool force);
+static enum drm_connector_status radeon_dvi_detect_admitted(
+	struct drm_connector *connector, bool force);
+static enum drm_connector_status radeon_dp_detect_admitted(
+	struct drm_connector *connector, bool force);
+static int radeon_connector_dpms_admitted(struct drm_connector *connector,
+					  int mode);
+static int radeon_connector_set_property_admitted(
+	struct drm_connector *connector, struct drm_property *property,
+	u64 value);
+static int radeon_lvds_set_property_admitted(
+	struct drm_connector *connector, struct drm_property *property,
+	u64 value);
+
 void radeon_connector_hotplug(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
@@ -950,18 +973,18 @@ static int radeon_lvds_set_property(struct drm_connector *connector,
 
 
 static const struct drm_connector_helper_funcs radeon_lvds_connector_helper_funcs = {
-	.get_modes = radeon_lvds_get_modes,
+	.get_modes = radeon_lvds_get_modes_admitted,
 	.mode_valid = radeon_lvds_mode_valid,
 	.best_encoder = radeon_best_single_encoder,
 };
 
 static const struct drm_connector_funcs radeon_lvds_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_lvds_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_lvds_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
-	.set_property = radeon_lvds_set_property,
+	.set_property = radeon_lvds_set_property_admitted,
 };
 
 static int radeon_vga_get_modes(struct drm_connector *connector)
@@ -1093,18 +1116,18 @@ out:
 }
 
 static const struct drm_connector_helper_funcs radeon_vga_connector_helper_funcs = {
-	.get_modes = radeon_vga_get_modes,
+	.get_modes = radeon_vga_get_modes_admitted,
 	.mode_valid = radeon_vga_mode_valid,
 	.best_encoder = radeon_best_single_encoder,
 };
 
 static const struct drm_connector_funcs radeon_vga_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_vga_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_vga_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
-	.set_property = radeon_connector_set_property,
+	.set_property = radeon_connector_set_property_admitted,
 };
 
 static int radeon_tv_get_modes(struct drm_connector *connector)
@@ -1191,18 +1214,18 @@ radeon_tv_detect(struct drm_connector *connector, bool force)
 }
 
 static const struct drm_connector_helper_funcs radeon_tv_connector_helper_funcs = {
-	.get_modes = radeon_tv_get_modes,
+	.get_modes = radeon_tv_get_modes_admitted,
 	.mode_valid = radeon_tv_mode_valid,
 	.best_encoder = radeon_best_single_encoder,
 };
 
 static const struct drm_connector_funcs radeon_tv_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_tv_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_tv_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
-	.set_property = radeon_connector_set_property,
+	.set_property = radeon_connector_set_property_admitted,
 };
 
 static bool radeon_check_hpd_status_unchanged(struct drm_connector *connector)
@@ -1522,16 +1545,16 @@ static enum drm_mode_status radeon_dvi_mode_valid(struct drm_connector *connecto
 }
 
 static const struct drm_connector_helper_funcs radeon_dvi_connector_helper_funcs = {
-	.get_modes = radeon_vga_get_modes,
+	.get_modes = radeon_vga_get_modes_admitted,
 	.mode_valid = radeon_dvi_mode_valid,
 	.best_encoder = radeon_dvi_encoder,
 };
 
 static const struct drm_connector_funcs radeon_dvi_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_dvi_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_dvi_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
-	.set_property = radeon_connector_set_property,
+	.set_property = radeon_connector_set_property_admitted,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
 	.force = radeon_dvi_force,
@@ -1837,16 +1860,16 @@ radeon_connector_late_register(struct drm_connector *connector)
 }
 
 static const struct drm_connector_helper_funcs radeon_dp_connector_helper_funcs = {
-	.get_modes = radeon_dp_get_modes,
+	.get_modes = radeon_dp_get_modes_admitted,
 	.mode_valid = radeon_dp_mode_valid,
 	.best_encoder = radeon_dvi_encoder,
 };
 
 static const struct drm_connector_funcs radeon_dp_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_dp_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_dp_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
-	.set_property = radeon_connector_set_property,
+	.set_property = radeon_connector_set_property_admitted,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
 	.force = radeon_dvi_force,
@@ -1854,10 +1877,10 @@ static const struct drm_connector_funcs radeon_dp_connector_funcs = {
 };
 
 static const struct drm_connector_funcs radeon_edp_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_dp_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_dp_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
-	.set_property = radeon_lvds_set_property,
+	.set_property = radeon_lvds_set_property_admitted,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
 	.force = radeon_dvi_force,
@@ -1865,15 +1888,153 @@ static const struct drm_connector_funcs radeon_edp_connector_funcs = {
 };
 
 static const struct drm_connector_funcs radeon_lvds_bridge_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
-	.detect = radeon_dp_detect,
+	.dpms = radeon_connector_dpms_admitted,
+	.detect = radeon_dp_detect_admitted,
 	.fill_modes = drm_helper_probe_single_connector_modes,
-	.set_property = radeon_lvds_set_property,
+	.set_property = radeon_lvds_set_property_admitted,
 	.early_unregister = radeon_connector_unregister,
 	.destroy = radeon_connector_destroy,
 	.force = radeon_dvi_force,
 	.late_register = radeon_connector_late_register,
 };
+
+static int radeon_connector_get_modes_admitted(
+	struct drm_connector *connector,
+	int (*get_modes)(struct drm_connector *connector))
+{
+	struct radeon_device *rdev = connector->dev->dev_private;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return 0;
+	ret = get_modes(connector);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_lvds_get_modes_admitted(struct drm_connector *connector)
+{
+	return radeon_connector_get_modes_admitted(connector,
+						    radeon_lvds_get_modes);
+}
+
+static int radeon_vga_get_modes_admitted(struct drm_connector *connector)
+{
+	return radeon_connector_get_modes_admitted(connector,
+						    radeon_vga_get_modes);
+}
+
+static int radeon_tv_get_modes_admitted(struct drm_connector *connector)
+{
+	return radeon_connector_get_modes_admitted(connector,
+						    radeon_tv_get_modes);
+}
+
+static int radeon_dp_get_modes_admitted(struct drm_connector *connector)
+{
+	return radeon_connector_get_modes_admitted(connector,
+						    radeon_dp_get_modes);
+}
+
+static enum drm_connector_status radeon_connector_detect_admitted(
+	struct drm_connector *connector, bool force,
+	enum drm_connector_status (*detect)(struct drm_connector *connector,
+					     bool force))
+{
+	struct radeon_device *rdev = connector->dev->dev_private;
+	enum drm_connector_status status;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return connector_status_disconnected;
+	status = detect(connector, force);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return status;
+}
+
+static enum drm_connector_status radeon_lvds_detect_admitted(
+	struct drm_connector *connector, bool force)
+{
+	return radeon_connector_detect_admitted(connector, force,
+						 radeon_lvds_detect);
+}
+
+static enum drm_connector_status radeon_vga_detect_admitted(
+	struct drm_connector *connector, bool force)
+{
+	return radeon_connector_detect_admitted(connector, force,
+						 radeon_vga_detect);
+}
+
+static enum drm_connector_status radeon_tv_detect_admitted(
+	struct drm_connector *connector, bool force)
+{
+	return radeon_connector_detect_admitted(connector, force,
+						 radeon_tv_detect);
+}
+
+static enum drm_connector_status radeon_dvi_detect_admitted(
+	struct drm_connector *connector, bool force)
+{
+	return radeon_connector_detect_admitted(connector, force,
+						 radeon_dvi_detect);
+}
+
+static enum drm_connector_status radeon_dp_detect_admitted(
+	struct drm_connector *connector, bool force)
+{
+	return radeon_connector_detect_admitted(connector, force,
+						 radeon_dp_detect);
+}
+
+static int radeon_connector_dpms_admitted(struct drm_connector *connector,
+					  int mode)
+{
+	struct radeon_device *rdev = connector->dev->dev_private;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	ret = drm_helper_connector_dpms(connector, mode);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_connector_property_admitted(
+	struct drm_connector *connector, struct drm_property *property,
+	u64 value,
+	int (*set_property)(struct drm_connector *connector,
+			    struct drm_property *property, u64 value))
+{
+	struct radeon_device *rdev = connector->dev->dev_private;
+	int ret;
+
+	ret = radeon_rs4xx_hardware_access_begin(rdev);
+	if (ret)
+		return ret;
+	ret = set_property(connector, property, value);
+	radeon_rs4xx_hardware_access_end(rdev);
+	return ret;
+}
+
+static int radeon_connector_set_property_admitted(
+	struct drm_connector *connector, struct drm_property *property,
+	u64 value)
+{
+	return radeon_connector_property_admitted(connector, property, value,
+						   radeon_connector_set_property);
+}
+
+static int radeon_lvds_set_property_admitted(
+	struct drm_connector *connector, struct drm_property *property,
+	u64 value)
+{
+	return radeon_connector_property_admitted(connector, property, value,
+						   radeon_lvds_set_property);
+}
 
 void
 radeon_add_atom_connector(struct drm_device *dev,

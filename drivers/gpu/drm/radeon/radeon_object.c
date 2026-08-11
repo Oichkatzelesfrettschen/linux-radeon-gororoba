@@ -43,6 +43,26 @@
 #include "radeon_ttm.h"
 
 static void radeon_bo_clear_surface_reg(struct radeon_bo *bo);
+static void radeon_bo_forget_surface_reg(struct radeon_bo *bo);
+
+int radeon_rs4xx_retain_bo(struct radeon_bo *bo)
+{
+	struct radeon_device *rdev = bo->rdev;
+	int retained_count;
+
+	mutex_lock(&rdev->gem.mutex);
+	if (!bo->rs4xx_terminally_retained) {
+		bo->rs4xx_terminally_retained = true;
+		list_add_tail(&bo->rs4xx_retained_node,
+			      &rdev->rs4xx_retained_bos_list);
+		retained_count = atomic_inc_return(
+			&rdev->rs4xx_retained_gem_objects);
+	} else {
+		retained_count = atomic_read(&rdev->rs4xx_retained_gem_objects);
+	}
+	mutex_unlock(&rdev->gem.mutex);
+	return retained_count;
+}
 
 /*
  * To exclude mutual BO access we rely on bo_reserve exclusion, as all
@@ -52,18 +72,57 @@ static void radeon_bo_clear_surface_reg(struct radeon_bo *bo);
 static void radeon_ttm_bo_destroy(struct ttm_buffer_object *tbo)
 {
 	struct radeon_bo *bo;
+	struct radeon_device *rdev;
+	bool hardware_transaction = false;
+	bool lifetime_counted;
+	bool teardown_complete = false;
+	int r = 0;
 
 	bo = container_of(tbo, struct radeon_bo, tbo);
+	rdev = bo->rdev;
+	if (radeon_rs4xx_hardware_target(rdev)) {
+		if (READ_ONCE(bo->rs4xx_terminally_retained))
+			return;
+		teardown_complete =
+			radeon_rs4xx_gart_teardown_is_complete(rdev);
+		if (!teardown_complete) {
+			r = radeon_rs4xx_hardware_transaction_wait_begin(rdev);
+			if (r == -ESHUTDOWN) {
+				r = radeon_rs4xx_gart_teardown_wait(rdev);
+				teardown_complete = r == 0;
+			} else if (r == 0) {
+				hardware_transaction = true;
+			}
+			if (r) {
+				radeon_rs4xx_latch_teardown_refusal(rdev);
+				dev_err_ratelimited(
+					rdev->dev,
+					"RS4xx teardown refusal retains BO ownership: %d\n",
+					r);
+				(void)radeon_rs4xx_retain_bo(bo);
+				return;
+			}
+		}
+	}
 
 	mutex_lock(&bo->rdev->gem.mutex);
 	list_del_init(&bo->list);
 	mutex_unlock(&bo->rdev->gem.mutex);
-	radeon_bo_clear_surface_reg(bo);
+	if (teardown_complete)
+		radeon_bo_forget_surface_reg(bo);
+	else
+		radeon_bo_clear_surface_reg(bo);
 	WARN_ON_ONCE(!list_empty(&bo->va));
 	if (bo->tbo.base.import_attach)
 		drm_prime_gem_destroy(&bo->tbo.base, bo->tbo.sg);
 	drm_gem_object_release(&bo->tbo.base);
+	lifetime_counted = bo->rs4xx_lifetime_counted;
 	kfree(bo);
+	if (lifetime_counted &&
+	    atomic_dec_and_test(&rdev->rs4xx_live_bos))
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+	if (hardware_transaction)
+		radeon_rs4xx_hardware_transaction_end(rdev);
 }
 
 bool radeon_ttm_bo_is_radeon_bo(struct ttm_buffer_object *bo)
@@ -136,6 +195,15 @@ int radeon_bo_create(struct radeon_device *rdev,
 	unsigned long page_align = roundup(byte_align, PAGE_SIZE) >> PAGE_SHIFT;
 	int r;
 
+	*bo_ptr = NULL;
+	r = radeon_rs4xx_hardware_transaction_begin(rdev);
+	if (r)
+		return r;
+	if (sg && (rdev->flags & RADEON_IS_AGP)) {
+		r = -EOPNOTSUPP;
+		goto out_transaction;
+	}
+
 	size = ALIGN(size, PAGE_SIZE);
 
 	if (kernel) {
@@ -145,16 +213,19 @@ int radeon_bo_create(struct radeon_device *rdev,
 	} else {
 		type = ttm_bo_type_device;
 	}
-	*bo_ptr = NULL;
-
 	bo = kzalloc(sizeof(struct radeon_bo), GFP_KERNEL);
-	if (bo == NULL)
-		return -ENOMEM;
+	if (bo == NULL) {
+		r = -ENOMEM;
+		goto out_transaction;
+	}
 	drm_gem_private_object_init(rdev_to_drm(rdev), &bo->tbo.base, size);
 	bo->tbo.base.funcs = &radeon_gem_object_funcs;
 	bo->rdev = rdev;
 	bo->surface_reg = -1;
 	INIT_LIST_HEAD(&bo->list);
+	INIT_LIST_HEAD(&bo->rs4xx_retained_node);
+	bo->rs4xx_terminally_retained = false;
+	bo->rs4xx_lifetime_counted = false;
 	INIT_LIST_HEAD(&bo->va);
 	bo->initial_domain = domain & (RADEON_GEM_DOMAIN_VRAM |
 				       RADEON_GEM_DOMAIN_GTT |
@@ -199,20 +270,26 @@ int radeon_bo_create(struct radeon_device *rdev,
 #endif
 
 	radeon_ttm_placement_from_domain(bo, domain);
+	if (radeon_rs4xx_hardware_target(rdev)) {
+		bo->rs4xx_lifetime_counted = true;
+		atomic_inc(&rdev->rs4xx_live_bos);
+	}
 	/* Kernel allocation are uninterruptible */
 	down_read(&rdev->pm.mclk_lock);
 	r = ttm_bo_init_validate(&rdev->mman.bdev, &bo->tbo, type,
 				 &bo->placement, page_align, !kernel, sg, resv,
 				 &radeon_ttm_bo_destroy);
 	up_read(&rdev->pm.mclk_lock);
-	if (unlikely(r != 0)) {
-		return r;
-	}
+	if (unlikely(r != 0))
+		goto out_transaction;
 	*bo_ptr = bo;
 
 	trace_radeon_bo_create(bo);
 
-	return 0;
+	r = 0;
+out_transaction:
+	radeon_rs4xx_hardware_transaction_end(rdev);
+	return r;
 }
 
 int radeon_bo_kmap(struct radeon_bo *bo, void **ptr)
@@ -372,6 +449,8 @@ void radeon_bo_force_delete(struct radeon_device *rdev)
 	}
 	dev_err(rdev->dev, "Userspace still has active objects !\n");
 	list_for_each_entry_safe(bo, n, &rdev->gem.objects, list) {
+		if (READ_ONCE(bo->rs4xx_terminally_retained))
+			continue;
 		dev_err(rdev->dev, "%p %p %lu %lu force free\n",
 			&bo->tbo.base, bo, (unsigned long)bo->tbo.base.size,
 			*((unsigned long *)&bo->tbo.base.refcount));
@@ -402,11 +481,16 @@ int radeon_bo_init(struct radeon_device *rdev)
 	return radeon_ttm_init(rdev);
 }
 
-void radeon_bo_fini(struct radeon_device *rdev)
+int radeon_bo_fini(struct radeon_device *rdev)
 {
-	radeon_ttm_fini(rdev);
+	int r;
+
+	r = radeon_ttm_fini(rdev);
+	if (r)
+		return r;
 	arch_phys_wc_del(rdev->mc.vram_mtrr);
 	arch_io_free_memtype_wc(rdev->mc.aper_base, rdev->mc.aper_size);
+	return 0;
 }
 
 /* Returns how many bytes TTM can move per IB.
@@ -598,6 +682,16 @@ static void radeon_bo_clear_surface_reg(struct radeon_bo *bo)
 	radeon_clear_surface_reg(rdev, bo->surface_reg);
 
 	reg->bo = NULL;
+	bo->surface_reg = -1;
+}
+
+static void radeon_bo_forget_surface_reg(struct radeon_bo *bo)
+{
+	struct radeon_device *rdev = bo->rdev;
+
+	if (bo->surface_reg == -1)
+		return;
+	rdev->surface_regs[bo->surface_reg].bo = NULL;
 	bo->surface_reg = -1;
 }
 

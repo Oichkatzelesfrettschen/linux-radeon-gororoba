@@ -55,7 +55,6 @@ static void radeon_ttm_debugfs_init(struct radeon_device *rdev);
 
 static int radeon_ttm_tt_bind(struct ttm_device *bdev, struct ttm_tt *ttm,
 			      struct ttm_resource *bo_mem);
-static void radeon_ttm_tt_unbind(struct ttm_device *bdev, struct ttm_tt *ttm);
 
 struct radeon_device *radeon_get_rdev(struct ttm_device *bdev)
 {
@@ -185,6 +184,9 @@ static int radeon_move_blit(struct ttm_buffer_object *bo,
 	return r;
 }
 
+static int radeon_ttm_tt_unbind_status(struct ttm_device *bdev,
+					struct ttm_tt *ttm);
+
 static int radeon_bo_move(struct ttm_buffer_object *bo, bool evict,
 			  struct ttm_operation_ctx *ctx,
 			  struct ttm_resource *new_mem,
@@ -192,19 +194,27 @@ static int radeon_bo_move(struct ttm_buffer_object *bo, bool evict,
 {
 	struct ttm_resource *old_mem = bo->resource;
 	struct radeon_device *rdev;
+	bool newly_bound = false;
+	int rollback_result;
 	int r;
 
-	if (new_mem->mem_type == TTM_PL_TT) {
-		r = radeon_ttm_tt_bind(bo->bdev, bo->ttm, new_mem);
-		if (r)
-			return r;
-	}
-
-	r = ttm_bo_wait_ctx(bo, ctx);
+	rdev = radeon_get_rdev(bo->bdev);
+	r = radeon_rs4xx_hardware_transaction_begin(rdev);
 	if (r)
 		return r;
 
-	rdev = radeon_get_rdev(bo->bdev);
+	r = ttm_bo_wait_ctx(bo, ctx);
+	if (r)
+		goto out_transaction;
+
+	if (new_mem->mem_type == TTM_PL_TT) {
+		newly_bound = radeon_rs4xx_hardware_target(rdev) &&
+			!radeon_ttm_tt_is_bound(bo->bdev, bo->ttm);
+		r = radeon_ttm_tt_bind(bo->bdev, bo->ttm, new_mem);
+		if (r)
+			goto out_transaction;
+	}
+
 	if (!old_mem || (old_mem->mem_type == TTM_PL_SYSTEM &&
 			 bo->ttm == NULL)) {
 		ttm_bo_move_null(bo, new_mem);
@@ -218,7 +228,9 @@ static int radeon_bo_move(struct ttm_buffer_object *bo, bool evict,
 
 	if (old_mem->mem_type == TTM_PL_TT &&
 	    new_mem->mem_type == TTM_PL_SYSTEM) {
-		radeon_ttm_tt_unbind(bo->bdev, bo->ttm);
+		r = radeon_ttm_tt_unbind_status(bo->bdev, bo->ttm);
+		if (r)
+			goto out_transaction;
 		ttm_bo_move_null(bo, new_mem);
 		goto out;
 	}
@@ -232,7 +244,8 @@ static int radeon_bo_move(struct ttm_buffer_object *bo, bool evict,
 			hop->lpfn = 0;
 			hop->mem_type = TTM_PL_TT;
 			hop->flags = 0;
-			return -EMULTIHOP;
+			r = -EMULTIHOP;
+			goto out_transaction;
 		}
 
 		r = radeon_move_blit(bo, evict, new_mem, old_mem);
@@ -243,14 +256,25 @@ static int radeon_bo_move(struct ttm_buffer_object *bo, bool evict,
 	if (r) {
 		r = ttm_bo_move_memcpy(bo, ctx, new_mem);
 		if (r)
-			return r;
+			goto out_transaction;
 	}
 
 out:
 	/* update statistics */
 	atomic64_add(bo->base.size, &rdev->num_bytes_moved);
 	radeon_bo_move_notify(bo);
-	return 0;
+	r = 0;
+out_transaction:
+	/* ttm_bo_handle_move_mem retains bo->ttm after an old TT move fails.
+	 * Remove a replacement binding before returning that failure.
+	 */
+	if (r && newly_bound) {
+		rollback_result = radeon_ttm_tt_unbind_status(bo->bdev, bo->ttm);
+		if (rollback_result)
+			r = rollback_result;
+	}
+	radeon_rs4xx_hardware_transaction_end(rdev);
+	return r;
 }
 
 static int radeon_ttm_io_mem_reserve(struct ttm_device *bdev, struct ttm_resource *mem)
@@ -312,12 +336,58 @@ static int radeon_ttm_io_mem_reserve(struct ttm_device *bdev, struct ttm_resourc
 struct radeon_ttm_tt {
 	struct ttm_tt		ttm;
 	u64				offset;
+	struct radeon_bo		*rs4xx_owner;
+	struct list_head		rs4xx_retained_node;
+	bool				rs4xx_ttm_pages_accounted;
 
 	uint64_t			userptr;
 	struct mm_struct		*usermm;
 	uint32_t			userflags;
 	bool bound;
 };
+
+static void radeon_rs4xx_retain_ttm(struct radeon_device *rdev,
+				    struct radeon_ttm_tt *gtt)
+{
+	int retained_bo_count;
+	long retained_page_count;
+	int retained_ttm_count;
+
+	retained_bo_count = radeon_rs4xx_retain_bo(gtt->rs4xx_owner);
+
+	mutex_lock(&rdev->rs4xx_retained_ttm_lock);
+	if (list_empty(&gtt->rs4xx_retained_node)) {
+		list_add_tail(&gtt->rs4xx_retained_node,
+			      &rdev->rs4xx_retained_ttm_tables_list);
+		retained_ttm_count = atomic_inc_return(
+			&rdev->rs4xx_retained_ttm_tables);
+		if (gtt->rs4xx_ttm_pages_accounted) {
+			retained_page_count = atomic_long_add_return(
+				gtt->ttm.num_pages,
+				&rdev->rs4xx_retained_ttm_accounted_pages);
+			gtt->rs4xx_ttm_pages_accounted = false;
+			/* TTM clears its population accounting after this void
+			 * callback. Device retention owns the pages from this point,
+			 * and closed hardware admission prevents a later GART bind
+			 * after TTM releases the resource range.
+			 */
+			gtt->ttm.page_flags &= ~TTM_TT_FLAG_EXTERNAL;
+		} else {
+			retained_page_count = atomic_long_read(
+				&rdev->rs4xx_retained_ttm_accounted_pages);
+		}
+	} else {
+		retained_ttm_count = atomic_read(
+			&rdev->rs4xx_retained_ttm_tables);
+		retained_page_count = atomic_long_read(
+			&rdev->rs4xx_retained_ttm_accounted_pages);
+	}
+	mutex_unlock(&rdev->rs4xx_retained_ttm_lock);
+	dev_err_ratelimited(
+		rdev->dev,
+		"RS4xx teardown refusal retains BOs=%d TTM tables=%d accounted pages=%ld\n",
+		retained_bo_count, retained_ttm_count, retained_page_count);
+}
 
 /* prepare the sg table with the user pages */
 static int radeon_ttm_tt_pin_userptr(struct ttm_device *bdev, struct ttm_tt *ttm)
@@ -463,21 +533,44 @@ static int radeon_ttm_backend_bind(struct ttm_device *bdev,
 	return 0;
 }
 
-static void radeon_ttm_backend_unbind(struct ttm_device *bdev, struct ttm_tt *ttm)
+static int radeon_ttm_backend_unbind(struct ttm_device *bdev,
+				     struct ttm_tt *ttm)
 {
 	struct radeon_ttm_tt *gtt = (void *)ttm;
 	struct radeon_device *rdev = radeon_get_rdev(bdev);
+	int r;
 
 	if (!gtt->bound)
-		return;
+		return 0;
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    radeon_rs4xx_gart_teardown_is_complete(rdev)) {
+		gtt->bound = false;
+		if (gtt->userptr)
+			radeon_ttm_tt_unpin_userptr(bdev, ttm);
+		return 0;
+	}
 
-	if (rdev->gpu_parked)
-		dev_err_once(rdev->dev, "parked: first GART unbind (PTE rewrite, flush guarded)\n");
-	radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);
+	r = radeon_gart_unbind(rdev, gtt->offset, ttm->num_pages);
+	if (r == -ESHUTDOWN && radeon_rs4xx_hardware_target(rdev))
+		r = radeon_rs4xx_gart_teardown_wait(rdev);
+	if (r && radeon_rs4xx_hardware_target(rdev)) {
+		radeon_rs4xx_latch_teardown_refusal(rdev);
+		if (r == -EINVAL)
+			dev_err_once(
+				rdev->dev,
+				"RS4xx GART unbind invariant failure retains binding\n");
+		else
+			dev_err_once(
+				rdev->dev,
+				"RS4xx teardown refusal retains GART binding: %d\n",
+				r);
+		return r;
+	}
 
 	gtt->bound = false;
 	if (gtt->userptr)
 		radeon_ttm_tt_unpin_userptr(bdev, ttm);
+	return 0;
 }
 
 static void radeon_ttm_backend_destroy(struct ttm_device *bdev, struct ttm_tt *ttm)
@@ -507,6 +600,8 @@ static struct ttm_tt *radeon_ttm_tt_create(struct ttm_buffer_object *bo,
 	if (gtt == NULL) {
 		return NULL;
 	}
+	INIT_LIST_HEAD(&gtt->rs4xx_retained_node);
+	gtt->rs4xx_owner = rbo;
 
 	if (rbo->flags & RADEON_GEM_GTT_UC)
 		caching = ttm_uncached;
@@ -542,23 +637,34 @@ static int radeon_ttm_tt_populate(struct ttm_device *bdev,
 	struct radeon_device *rdev = radeon_get_rdev(bdev);
 	struct radeon_ttm_tt *gtt = radeon_ttm_tt_to_gtt(rdev, ttm);
 	bool slave = !!(ttm->page_flags & TTM_TT_FLAG_EXTERNAL);
+	int r;
 
 	if (gtt && gtt->userptr) {
 		ttm->sg = kzalloc(sizeof(struct sg_table), GFP_KERNEL);
-		if (!ttm->sg)
-			return -ENOMEM;
-
-		ttm->page_flags |= TTM_TT_FLAG_EXTERNAL;
-		return 0;
+		if (!ttm->sg) {
+			r = -ENOMEM;
+		} else {
+			ttm->page_flags |= TTM_TT_FLAG_EXTERNAL;
+			if (radeon_rs4xx_hardware_target(rdev) && !slave)
+				gtt->rs4xx_ttm_pages_accounted = true;
+			r = 0;
+		}
+		return r;
 	}
 
 	if (slave && ttm->sg) {
-		drm_prime_sg_to_dma_addr_array(ttm->sg, gtt->ttm.dma_address,
-					       ttm->num_pages);
-		return 0;
+		/* PRIME import requires the Radeon GART DMA-address array. */
+		if (!gtt)
+			return -EOPNOTSUPP;
+		return drm_prime_sg_to_dma_addr_array(ttm->sg,
+						      gtt->ttm.dma_address,
+						      ttm->num_pages);
 	}
 
-	return ttm_pool_alloc(&rdev->mman.bdev.pool, ttm, ctx);
+	r = ttm_pool_alloc(&rdev->mman.bdev.pool, ttm, ctx);
+	if (!r && gtt && radeon_rs4xx_hardware_target(rdev) && !slave)
+		gtt->rs4xx_ttm_pages_accounted = true;
+	return r;
 }
 
 static void radeon_ttm_tt_unpopulate(struct ttm_device *bdev, struct ttm_tt *ttm)
@@ -566,19 +672,70 @@ static void radeon_ttm_tt_unpopulate(struct ttm_device *bdev, struct ttm_tt *ttm
 	struct radeon_device *rdev = radeon_get_rdev(bdev);
 	struct radeon_ttm_tt *gtt = radeon_ttm_tt_to_gtt(rdev, ttm);
 	bool slave = !!(ttm->page_flags & TTM_TT_FLAG_EXTERNAL);
+	bool hardware_transaction = false;
+	int r;
 
-	radeon_ttm_tt_unbind(bdev, ttm);
+	/* An unbound Radeon TTM has no GART binding, so CPU storage owns its
+	 * complete teardown without hardware admission.
+	 */
+	if (gtt && !gtt->bound) {
+		if (gtt->userptr) {
+			radeon_ttm_tt_unpin_userptr(bdev, ttm);
+			kfree(ttm->sg);
+			ttm->sg = NULL;
+			ttm->page_flags &= ~TTM_TT_FLAG_EXTERNAL;
+			gtt->rs4xx_ttm_pages_accounted = false;
+			return;
+		}
+
+		if (slave)
+			return;
+
+		ttm_pool_free(&rdev->mman.bdev.pool, ttm);
+		gtt->rs4xx_ttm_pages_accounted = false;
+		return;
+	}
+
+	/* GART unbind can issue MMIO, so the TTM callback owns the admission
+	 * transaction until the unbind result and any parked latch are recorded.
+	 */
+	r = radeon_rs4xx_hardware_transaction_wait_begin(rdev);
+	if (r == -ESHUTDOWN)
+		r = radeon_rs4xx_gart_teardown_wait(rdev);
+	else if (r == 0)
+		hardware_transaction = true;
+	if (r) {
+		radeon_rs4xx_latch_teardown_refusal(rdev);
+		if (gtt && gtt->bound &&
+		    radeon_rs4xx_hardware_target(rdev))
+			radeon_rs4xx_retain_ttm(rdev, gtt);
+		return;
+	}
+
+	r = radeon_ttm_tt_unbind_status(bdev, ttm);
+	if (hardware_transaction)
+		radeon_rs4xx_hardware_transaction_end(rdev);
+	if (r) {
+		if (gtt && gtt->bound &&
+		    radeon_rs4xx_hardware_target(rdev))
+			radeon_rs4xx_retain_ttm(rdev, gtt);
+		return;
+	}
 
 	if (gtt && gtt->userptr) {
 		kfree(ttm->sg);
+		ttm->sg = NULL;
 		ttm->page_flags &= ~TTM_TT_FLAG_EXTERNAL;
+		gtt->rs4xx_ttm_pages_accounted = false;
 		return;
 	}
 
 	if (slave)
 		return;
 
-	return ttm_pool_free(&rdev->mman.bdev.pool, ttm);
+	ttm_pool_free(&rdev->mman.bdev.pool, ttm);
+	if (gtt)
+		gtt->rs4xx_ttm_pages_accounted = false;
 }
 
 int radeon_ttm_tt_set_userptr(struct radeon_device *rdev,
@@ -625,26 +782,31 @@ static int radeon_ttm_tt_bind(struct ttm_device *bdev,
 	return radeon_ttm_backend_bind(bdev, ttm, bo_mem);
 }
 
-static void radeon_ttm_tt_unbind(struct ttm_device *bdev,
-				 struct ttm_tt *ttm)
+static int radeon_ttm_tt_unbind_status(struct ttm_device *bdev,
+					struct ttm_tt *ttm)
 {
 #if IS_ENABLED(CONFIG_AGP)
 	struct radeon_device *rdev = radeon_get_rdev(bdev);
 
 	if (rdev->flags & RADEON_IS_AGP) {
 		ttm_agp_unbind(ttm);
-		return;
+		return 0;
 	}
 #endif
-	radeon_ttm_backend_unbind(bdev, ttm);
+	return radeon_ttm_backend_unbind(bdev, ttm);
 }
 
 static void radeon_ttm_tt_destroy(struct ttm_device *bdev,
 				  struct ttm_tt *ttm)
 {
-#if IS_ENABLED(CONFIG_AGP)
 	struct radeon_device *rdev = radeon_get_rdev(bdev);
+	struct radeon_ttm_tt *gtt = radeon_ttm_tt_to_gtt(rdev, ttm);
 
+	if (gtt && gtt->bound && radeon_rs4xx_hardware_target(rdev)) {
+		radeon_rs4xx_retain_ttm(rdev, gtt);
+		return;
+	}
+#if IS_ENABLED(CONFIG_AGP)
 	if (rdev->flags & RADEON_IS_AGP) {
 		ttm_agp_destroy(ttm);
 		return;
@@ -757,12 +919,18 @@ int radeon_ttm_init(struct radeon_device *rdev)
 	return 0;
 }
 
-void radeon_ttm_fini(struct radeon_device *rdev)
+int radeon_ttm_fini(struct radeon_device *rdev)
 {
+	int live_bos;
+	int readers;
+	long retained_accounted_pages;
+	int retained_bos;
+	int retained_tables;
+	int transactions;
 	int r;
 
 	if (!rdev->mman.initialized)
-		return;
+		return 0;
 
 	if (rdev->stolen_vga_memory) {
 		r = radeon_bo_reserve(rdev->stolen_vga_memory, false);
@@ -772,12 +940,46 @@ void radeon_ttm_fini(struct radeon_device *rdev)
 		}
 		radeon_bo_unref(&rdev->stolen_vga_memory);
 	}
+	if (radeon_rs4xx_hardware_target(rdev)) {
+		/* The TTM device workqueue contains delayed BO destruction, and an
+		 * imported reservation fence may remain pending indefinitely. The
+		 * live counter makes each pending worker terminal ownership. Its zero
+		 * acquire pairs with final BO destruction before ttm_device_fini
+		 * drains the empty queue.
+		 */
+		live_bos = atomic_read_acquire(&rdev->rs4xx_live_bos);
+		retained_bos = atomic_read(&rdev->rs4xx_retained_gem_objects);
+		retained_tables = atomic_read(&rdev->rs4xx_retained_ttm_tables);
+		retained_accounted_pages = atomic_long_read(
+			&rdev->rs4xx_retained_ttm_accounted_pages);
+		transactions = atomic_read(&rdev->rs4xx_hardware_transactions);
+		readers = atomic_read(&rdev->rs4xx_hardware_readers);
+	} else {
+		live_bos = 0;
+		retained_bos = 0;
+		retained_tables = 0;
+		retained_accounted_pages = 0;
+		transactions = 0;
+		readers = 0;
+	}
+	if (live_bos != 0 || retained_bos != 0 || retained_tables != 0 ||
+	    retained_accounted_pages != 0 || transactions != 0 || readers != 0) {
+		r = -EBUSY;
+		WRITE_ONCE(rdev->rs4xx_ttm_fini_error, r);
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+		dev_err(rdev->dev,
+			"RS4xx TTM live: BOs=%d retained BOs=%d tables=%d accounted pages=%ld transactions=%d readers=%d\n",
+			live_bos, retained_bos, retained_tables,
+			retained_accounted_pages, transactions, readers);
+		return r;
+	}
 	ttm_range_man_fini(&rdev->mman.bdev, TTM_PL_VRAM);
 	ttm_range_man_fini(&rdev->mman.bdev, TTM_PL_TT);
 	ttm_device_fini(&rdev->mman.bdev);
-	radeon_gart_fini(rdev);
+	(void)radeon_gart_fini(rdev);
 	rdev->mman.initialized = false;
 	DRM_INFO("radeon: ttm finalized\n");
+	return 0;
 }
 
 /* this should only be called at bootup or when userspace
@@ -829,6 +1031,9 @@ static ssize_t radeon_ttm_vram_read(struct file *f, char __user *buf,
 
 		if (*pos >= rdev->mc.mc_vram_size)
 			return result;
+		r = radeon_device_lock_hardware(rdev);
+		if (r)
+			return result ? result : r;
 
 		spin_lock_irqsave(&rdev->mmio_idx_lock, flags);
 		WREG32(RADEON_MM_INDEX, ((uint32_t)*pos) | 0x80000000);
@@ -836,6 +1041,7 @@ static ssize_t radeon_ttm_vram_read(struct file *f, char __user *buf,
 			WREG32(EVERGREEN_MM_INDEX_HI, *pos >> 31);
 		value = RREG32(RADEON_MM_DATA);
 		spin_unlock_irqrestore(&rdev->mmio_idx_lock, flags);
+		radeon_device_unlock_hardware(rdev);
 
 		r = put_user(value, (uint32_t __user *)buf);
 		if (r)
@@ -879,16 +1085,29 @@ static ssize_t radeon_ttm_gtt_read(struct file *f, char __user *buf,
 		struct page *page;
 		void *ptr;
 
-		if (p >= rdev->gart.num_cpu_pages)
+		r = radeon_device_lock_hardware(rdev);
+		if (r)
+			return result ? result : r;
+
+		mutex_lock(&rdev->gart.lock);
+		if (p >= rdev->gart.num_cpu_pages) {
+			mutex_unlock(&rdev->gart.lock);
+			radeon_device_unlock_hardware(rdev);
 			return result;
+		}
 
 		page = rdev->gart.pages[p];
+		if (page)
+			get_page(page);
+		mutex_unlock(&rdev->gart.lock);
+		radeon_device_unlock_hardware(rdev);
 		if (page) {
 			ptr = kmap_local_page(page);
 			ptr += off;
 
 			r = copy_to_user(buf, ptr, cur_size);
 			kunmap_local(ptr);
+			put_page(page);
 		} else
 			r = clear_user(buf, cur_size);
 
@@ -916,15 +1135,22 @@ static const struct file_operations radeon_ttm_gtt_fops = {
 static void radeon_ttm_debugfs_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct drm_minor *minor = rdev_to_drm(rdev)->primary;
-	struct dentry *root = minor->debugfs_root;
+	radeon_debugfs_add_component(rdev, "radeon_vram", 0444, rdev,
+				     &radeon_ttm_vram_fops);
+	radeon_debugfs_add_component(rdev, "radeon_gtt", 0444, rdev,
+				     &radeon_ttm_gtt_fops);
+	radeon_debugfs_add_component(rdev, "ttm_page_pool", 0444, rdev,
+				     &radeon_ttm_page_pool_fops);
+#endif
+}
 
-	debugfs_create_file("radeon_vram", 0444, root, rdev,
-			    &radeon_ttm_vram_fops);
-	debugfs_create_file("radeon_gtt", 0444, root, rdev,
-			    &radeon_ttm_gtt_fops);
-	debugfs_create_file("ttm_page_pool", 0444, root, rdev,
-			    &radeon_ttm_page_pool_fops);
+void radeon_ttm_debugfs_register_managers(struct radeon_device *rdev,
+					  struct dentry *root)
+{
+#if defined(CONFIG_DEBUG_FS)
+	if (!rdev->mman.initialized)
+		return;
+
 	ttm_resource_manager_create_debugfs(ttm_manager_type(&rdev->mman.bdev,
 							     TTM_PL_VRAM),
 					    root, "radeon_vram_mm");

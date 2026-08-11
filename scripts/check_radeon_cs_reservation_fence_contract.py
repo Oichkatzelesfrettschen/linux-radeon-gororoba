@@ -25,29 +25,29 @@ import check_rs4xx_gart_cache_policy as cache_policy
 POLICY = Path("policy/radeon-cs-reservation-fence-contract.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "1a3dc7f6a6763777429c1656923607982e973804798e114788a6e0305c9a1c9d"
+    "bc8106ea1a0a9bd275588acf76cec59890cf67e4d1aff294a94c221248adb2d7"
 )
 CS_DIRECT_PREFIX_SHA256 = {
     "relocs": "bd4645062b4348cbecfb5a1353312a61f20f1e5909401bf2c9cac9717e652ead",
     "parser_init": "3e13e4a348a49a3343eb3ba83499f57f9af4d135603a2f755ab0eba1c8cd6488",
-    "ioctl": "1ed23bf68d3eb2e5e9e640f556374c6d04a057aec4098698fa3311608d597291",
+    "ioctl": "34d442fa506862b82b7d389cf62034e7c950f2c0dd51ea9d999cdeb1a4383839",
     "next_reloc": "bd02f061ab8376685f57aaaf9e108cc2ac1a67bbd90a27abb082442393caaa2e",
 }
 EXPECTED_POLICY_ROW_SHA256 = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
-    "CS_PARKED_EARLY_REFUSAL": "39966eb5ded5c02865dbdbf80a128c5a2bb04be08388cb38749c75281ce31364",
+    "CS_PARKED_EARLY_REFUSAL": "54c22fe4390532a7476fd666051efb5748ed929d2f5dcaab9ef5dfdd7ce2af22",
     "CS_RELOCATION_RECORD_GEOMETRY": "8b9a3b46b9eeb3d1f220231321dd11d651c48d353cc2214576c4b4889b57f8c0",
-    "CS_BO_RESERVATION_LOCKS": "f1b5de72d7097b53d3fbf0aecb0fa5d85a0e186eaa5697d7d0e96831310d0626",
+    "CS_BO_RESERVATION_LOCKS": "bf5abee5a62cdad029f42d6967d562c2d4679698ebd2986cc03df67f26a33ec9",
     "CS_RESERVATION_DEPENDENCY_IMPORT": "e3980ff208d5320c64504ae557b94a5360ec46c4274c15a6eda89116af9942a8",
     "CS_RING_DEPENDENCY_AND_IB_SCHEDULE": "911cf696a10ad7bc9973cc9ae29212bd84dac11129b51f1729e064e35c346eb1",
-    "CS_SUCCESS_FENCE_INVARIANT": "e2ef42bf2a10ade2e90154b39c4454ce1a08cfbf32e0a48c509e7f2e5dd8a799",
+    "CS_SUCCESS_FENCE_INVARIANT": "e9b127085bae7a58bf322ef764900cc04dfa4457ad74a8df8f1ab1ae5f6a8608",
     "R300_FENCE_COMMAND_SEQUENCE": "a2fdd6378417272101f92fd596d2f0bf1309db8e77e2d78d127515ad8eb77184",
-    "CS_RESERVATION_FENCE_PUBLICATION": "cd0354edac2176635adb4533b6d7b2863d43a88978a93b0a6a39111c43821e0d",
-    "CS_RELOCATION_ACCESS_DIRECTION": "00a7666480c9867108a10896c05ce67c3b2170ebfb55bea16b708606d30ee740",
-    "FENCE_FORCE_COMPLETION_PUBLICATION": "cb392679622a03322f1e4c73ee62d0fbd7db6087744da82c8ebf5fab558fa36c",
+    "CS_RESERVATION_FENCE_PUBLICATION": "724822a45cec36282d8418903cfb4ddb4d49be201a572e41d480c255cf63d439",
+    "CS_RELOCATION_ACCESS_DIRECTION": "95daa42dc85a437f368f23a1cbb49a33532d92fdb1cbd90b864fcdc7bdd9acb8",
+    "FENCE_FORCE_COMPLETION_PUBLICATION": "23547d33203f13678aa3c192f0bd5211046af379f3b3bbd639650fe9e530f43f",
     "RS482_RESET_RING_REPLAY_SEMANTICS": "2af2b8ad90f3fb88315fd5d7e26f2593093fbaefe21f6ea0d184a241d15250af",
-    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "632195d11b66ae70e39d2478c87f3d49f062da38e2f2241100198bf40d21bf10",
-    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "e61dd8c04fd18073b9da6a0913a7677174226b59bed1613854caefd49d4a9923",
+    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "d5f1c05bceb9f4ec163f50a9a39e8edc56b4194e2b6968de90c825577e0392e7",
+    "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "ead3e30b7df67642aaef51257aac3a90f5c821e808f1f5141e3d51fa719f5190",
 }
 
 EXPECTED_ROWS = {
@@ -80,8 +80,8 @@ EXPECTED_ROWS = {
         "CS_BO_RESERVATION_LOCKS;RS482_ASIC_COMMAND_CALLBACK_BINDING",
     ),
     "FENCE_FORCE_COMPLETION_PUBLICATION": (
-        "open",
-        "CS_RESERVATION_FENCE_PUBLICATION",
+        "repaired",
+        "CS_PARKED_EARLY_REFUSAL",
     ),
     "RS482_RESET_RING_REPLAY_SEMANTICS": (
         "open",
@@ -108,16 +108,16 @@ EXPECTED_EXTERNAL = {
 
 EXPECTED_NONCLAIMS = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "Source binding does not prove live callback execution.",
-    "CS_PARKED_EARLY_REFUSAL": "The source guard does not prove target park or recovery behavior.",
+    "CS_PARKED_EARLY_REFUSAL": "The source transaction guard does not prove target park or recovery behavior.",
     "CS_RELOCATION_RECORD_GEOMETRY": "Static admission does not prove every userspace producer emits correct domains.",
-    "CS_BO_RESERVATION_LOCKS": "Reservation locks do not perform payload cache maintenance.",
+    "CS_BO_RESERVATION_LOCKS": "Reservation locks and transaction admission do not perform payload cache maintenance.",
     "CS_RESERVATION_DEPENDENCY_IMPORT": "Imported fences prove execution ordering, not cache visibility.",
     "CS_RING_DEPENDENCY_AND_IB_SCHEDULE": "A successful schedule means committed work, not completed work.",
     "CS_SUCCESS_FENCE_INVARIANT": "The last-ditch guard does not roll back or make safe work committed without a fence.",
     "R300_FENCE_COMMAND_SEQUENCE": "Emitted cache commands do not prove RS482 executed them or made payloads coherent.",
     "CS_RESERVATION_FENCE_PUBLICATION": "Fence publication does not prove fence completion or payload visibility.",
     "CS_RELOCATION_ACCESS_DIRECTION": "Parser address validation alone does not prove correct reservation usage.",
-    "FENCE_FORCE_COMPLETION_PUBLICATION": "Writing the hardware sequence does not by itself prove generic dma_fence signaling.",
+    "FENCE_FORCE_COMPLETION_PUBLICATION": "Source error completion does not prove target fence execution or silicon recovery.",
     "RS482_RESET_RING_REPLAY_SEMANTICS": "Source replay structure does not prove payload idempotence.",
     "CS_SUSPEND_FENCE_LOCK_CONTEXT": "A comment precondition does not prove the caller holds the lock.",
     "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "Reservations, fences, mb, and emitted GPU cache commands do not prove payload visibility.",
@@ -143,14 +143,23 @@ EXPECTED_COMPLETION_GATES = {
 SOURCE_FILES = (
     "drivers/gpu/drm/radeon/Makefile",
     "drivers/gpu/drm/radeon/radeon_asic.c",
+    "drivers/gpu/drm/radeon/radeon.h",
     "drivers/gpu/drm/radeon/radeon_cs.c",
+    "drivers/gpu/drm/radeon/radeon_cursor.c",
     "drivers/gpu/drm/radeon/radeon_device.c",
+    "drivers/gpu/drm/radeon/radeon_display.c",
+    "drivers/gpu/drm/radeon/radeon_fbdev.c",
     "drivers/gpu/drm/radeon/radeon_fence.c",
+    "drivers/gpu/drm/radeon/radeon_gem.c",
     "drivers/gpu/drm/radeon/radeon_ib.c",
+    "drivers/gpu/drm/radeon/radeon_irq_kms.c",
     "drivers/gpu/drm/radeon/radeon_object.c",
+    "drivers/gpu/drm/radeon/radeon_prime.c",
     "drivers/gpu/drm/radeon/radeon_ring.c",
     "drivers/gpu/drm/radeon/radeon_sync.c",
+    "drivers/gpu/drm/radeon/radeon_ttm.c",
     "drivers/gpu/drm/radeon/r300.c",
+    "drivers/gpu/drm/radeon/rs400.c",
 )
 
 
@@ -367,15 +376,16 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
 
     ioctl = function(root, "radeon_cs.c", "radeon_cs_ioctl")
     require_order(
-        "CS reader lock and parser lifetime",
+        "CS hardware transaction and parser lifetime",
         ioctl,
         (
-            "down_read(&rdev->exclusive_lock)",
+            "radeon_device_lock_hardware(rdev)",
             "READ_ONCE(rdev->gpu_parked)",
             "radeon_cs_parser_init",
             "radeon_cs_parser_relocs",
-            "radeon_cs_parser_fini",
-            "up_read(&rdev->exclusive_lock)",
+            "radeon_cs_parser_release_reservations",
+            "radeon_device_unlock_hardware(rdev)",
+            "radeon_cs_parser_release_storage",
         ),
     )
 
@@ -484,7 +494,7 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
             ioctl,
             "!list_empty(&parser.validated) && !parser.ib.fence",
             "r = -EINVAL;",
-            22,
+            23,
             (
                 'DRM_ERROR("Successful command submission has validated BOs '
                 'but no fence !\\n");'
@@ -494,7 +504,7 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
         lifecycle.require_direct_statement_prefix_sha256(
             "validated submission fence dominance",
             fence_statements,
-            23,
+            24,
             CS_DIRECT_PREFIX_SHA256["ioctl"],
         )
         lifecycle.require_direct_statement(
@@ -513,7 +523,7 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
             "validated submission fence guard successor differs",
             fence_statements,
             fence_guard_index + 1,
-            "out: radeon_cs_parser_fini(&parser, r);",
+            "out: radeon_cs_parser_release_reservations(&parser, r);",
         )
     except lifecycle.LifecycleError as exc:
         raise ContractError(str(exc)) from exc
@@ -526,7 +536,9 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
             "!list_empty(&parser.validated) && !parser.ib.fence",
             "r = -EINVAL;",
             "out:",
-            "radeon_cs_parser_fini",
+            "radeon_cs_parser_release_reservations",
+            "radeon_device_unlock_hardware",
+            "radeon_cs_parser_release_storage",
         ),
     )
 
@@ -679,12 +691,14 @@ def check_ring_and_fence_publication(root: Path) -> None:
             "RADEON_SW_INT_FIRE",
         ),
     )
-    parser_fini = function(root, "radeon_cs.c", "radeon_cs_parser_fini")
-    if parser_fini.count("drm_exec_fini") != 1:
+    reservation_release = function(
+        root, "radeon_cs.c", "radeon_cs_parser_release_reservations"
+    )
+    if reservation_release.count("drm_exec_fini") != 1:
         raise ContractError("parser cleanup must release drm_exec exactly once")
     require_order(
         "reservation fence publication before unlock",
-        parser_fini,
+        reservation_release,
         (
             "if (!error)",
             "list_for_each_entry",
@@ -692,6 +706,460 @@ def check_ring_and_fence_publication(root: Path) -> None:
             "DMA_RESV_USAGE_READ",
             "DMA_RESV_USAGE_WRITE",
             "drm_exec_fini",
+        ),
+    )
+
+
+def check_failed_reset_fence_publication(root: Path) -> None:
+    publisher = function(root, "radeon_device.c", "radeon_rs4xx_publish_parked_state")
+    require_order(
+        "parked publication drains admission before CPU cleanup",
+        publisher,
+        (
+            "radeon_rs4xx_latch_parked_state(rdev)",
+            "atomic_read(&rdev->rs4xx_hardware_transactions) == 0",
+            "atomic_read(&rdev->rs4xx_hardware_readers) == 0",
+            "radeon_page_flip_quiesce(rdev)",
+            "radeon_irq_kms_fini_hardwareless(rdev)",
+            "radeon_fence_driver_force_completion_parked(rdev)",
+            "radeon_page_flip_finalize_retained(rdev, false)",
+        ),
+    )
+    fail_if_present(
+        "parked publisher hardware boundary",
+        publisher,
+        ("RREG", "WREG", "radeon_fence_write", "radeon_irq_set"),
+    )
+
+    parked = function(
+        root, "radeon_fence.c", "radeon_fence_driver_force_completion_parked"
+    )
+    if parked.count("cancel_delayed_work_sync") != 2:
+        raise ContractError(
+            "parked force completion must cancel delayed work before and after publication"
+        )
+    require_order(
+        "parked CPU fence publication order",
+        parked,
+        (
+            "cancel_delayed_work_sync",
+            "mutex_lock(&rdev->ring_lock)",
+            "spin_lock_irqsave(&rdev->fence_queue.lock, flags)",
+            "if (!driver->initialized)",
+            "WRITE_ONCE(driver->delayed_irq, false)",
+            "wake_up_all_locked(&rdev->fence_queue)",
+            "spin_unlock_irqrestore(&rdev->fence_queue.lock, flags)",
+            "mutex_unlock(&rdev->ring_lock)",
+            "cancel_delayed_work_sync",
+        ),
+    )
+    fail_if_present(
+        "parked force completion hardware boundary",
+        parked,
+        (
+            "RREG",
+            "WREG",
+            "radeon_fence_write",
+            "radeon_irq_set",
+            "radeon_rs4xx_hardware_access_begin",
+            "radeon_fence_publish_last_seq",
+            "driver->last_seq",
+        ),
+    )
+
+    cpu_completion = function(
+        root, "radeon_fence.c", "radeon_fence_driver_force_completion_cpu"
+    )
+    require_order(
+        "single-ring CPU fence publication order",
+        cpu_completion,
+        (
+            "if (!driver->initialized)",
+            "spin_lock_irqsave(&rdev->fence_queue.lock, flags)",
+            "WRITE_ONCE(driver->delayed_irq, false)",
+            "wake_up_all_locked(&rdev->fence_queue)",
+            "spin_unlock_irqrestore(&rdev->fence_queue.lock, flags)",
+            "cancel_delayed_work_sync(&driver->lockup_work)",
+        ),
+    )
+    fail_if_present(
+        "single-ring CPU fence publication hardware boundary",
+        cpu_completion,
+        (
+            "RREG",
+            "WREG",
+            "radeon_fence_write",
+            "radeon_irq_set",
+            "radeon_rs4xx_hardware_access_begin",
+            "radeon_fence_publish_last_seq",
+            "driver->last_seq",
+        ),
+    )
+
+    publish = function(root, "radeon_fence.c", "radeon_fence_publish_last_seq")
+    require_order(
+        "monotonic fence sequence publication",
+        publish,
+        (
+            "atomic64_read(&driver->last_seq)",
+            "while (published_seq < seq)",
+            "atomic64_cmpxchg_release(&driver->last_seq",
+            "if (observed == published_seq)",
+            "published_seq = observed",
+        ),
+    )
+    fail_if_present(
+        "monotonic fence sequence publication",
+        publish,
+        ("atomic64_set", "driver->last_seq ="),
+    )
+
+    terminal_error = function(
+        root, "radeon_fence.c", "radeon_fence_rs4xx_terminal_error"
+    )
+    require(
+        "parked fence error differs",
+        terminal_error,
+        r"state\s*==\s*RADEON_RS4XX_HARDWARE_PARKED\s*\|\|\s*"
+        r"READ_ONCE\s*\(\s*rdev->gpu_parked\s*\)\s*\)\s*return\s+-EIO\s*;",
+    )
+    require(
+        "shutdown fence error differs",
+        terminal_error,
+        r"state\s*==\s*RADEON_RS4XX_HARDWARE_SHUTTING_DOWN\s*\|\|\s*"
+        r"state\s*==\s*RADEON_RS4XX_HARDWARE_SHUTDOWN\s*\)\s*"
+        r"return\s+-ESHUTDOWN\s*;",
+    )
+
+    set_error = function(root, "radeon_fence.c", "radeon_fence_set_error_locked")
+    require_order(
+        "fence error publication under the fence lock",
+        set_error,
+        (
+            "if (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->base.flags))",
+            "dma_fence_set_error(&fence->base, error)",
+        ),
+    )
+    fail_if_present(
+        "fence error setter signal boundary",
+        set_error,
+        ("dma_fence_signal", "WRITE_ONCE"),
+    )
+
+    signal_error = function(root, "radeon_fence.c", "radeon_fence_signal_error_locked")
+    require_order(
+        "fence error precedes signaling",
+        signal_error,
+        (
+            "radeon_fence_set_error_locked(fence, error)",
+            "if (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->base.flags))",
+            "dma_fence_signal_locked(&fence->base)",
+        ),
+    )
+
+    remove_irq_wait = function(
+        root, "radeon_fence.c", "radeon_fence_remove_irq_wait_locked"
+    )
+    require_order(
+        "fence wait-entry and IRQ-reference release",
+        remove_irq_wait,
+        (
+            "if (!fence->irq_ref_held)",
+            "__remove_wait_queue",
+            "radeon_fence_release_irq_ref_locked(fence)",
+            "return true",
+        ),
+    )
+
+    signal_terminal_locked = function(
+        root, "radeon_fence.c", "radeon_fence_signal_terminal_locked"
+    )
+    require_order(
+        "lock-held terminal fence completion",
+        signal_terminal_locked,
+        (
+            "if (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->base.flags))",
+            "radeon_fence_signal_error_locked(fence, error)",
+            "error_signaled = true",
+            "*release_ref = radeon_fence_remove_irq_wait_locked(fence)",
+            "return error_signaled",
+        ),
+    )
+
+    signal_terminal = function(root, "radeon_fence.c", "radeon_fence_signal_terminal")
+    require_order(
+        "terminal fence lock and retained-reference release",
+        signal_terminal,
+        (
+            "spin_lock_irqsave(&fence->rdev->fence_queue.lock, flags)",
+            "radeon_fence_signal_terminal_locked(",
+            "spin_unlock_irqrestore(&fence->rdev->fence_queue.lock, flags)",
+            "if (release_ref)",
+            "dma_fence_put(&fence->base)",
+            "return error_signaled",
+        ),
+    )
+    fail_if_present(
+        "terminal fence completion hardware boundary",
+        signal_terminal_locked + signal_terminal,
+        ("RREG", "WREG", "radeon_fence_write", "radeon_irq_set"),
+    )
+
+    release_irq = function(
+        root, "radeon_fence.c", "radeon_fence_release_irq_ref_locked"
+    )
+    require_order(
+        "fence logical IRQ release",
+        release_irq,
+        (
+            "if (!fence->irq_ref_held)",
+            "fence->irq_ref_held = false",
+            "radeon_irq_kms_sw_irq_put(fence->rdev, fence->ring)",
+        ),
+    )
+
+    wake = function(root, "radeon_fence.c", "radeon_fence_check_signaled")
+    require_order(
+        "terminal fence wake publication",
+        wake,
+        (
+            "terminal_error = radeon_fence_rs4xx_terminal_error(fence->rdev)",
+            "if (terminal_error || seq >= fence->seq)",
+            "radeon_fence_signal_error_locked(fence, terminal_error)",
+            "radeon_fence_remove_irq_wait_locked(fence)",
+            "dma_fence_put(&fence->base)",
+        ),
+    )
+
+    enable = function(root, "radeon_fence.c", "radeon_fence_enable_signaling")
+    fail_if_present(
+        "DMA fence enable callback owns only error publication",
+        enable,
+        ("dma_fence_signal",),
+    )
+    require(
+        "initial terminal enable branch differs",
+        enable,
+        r"if\s*\(\s*terminal_error\s*\)\s*\{\s*"
+        r"radeon_fence_set_error_locked\s*\(\s*fence\s*,\s*terminal_error\s*\)\s*;\s*"
+        r"return\s+false\s*;\s*\}",
+    )
+    require_order(
+        "enabled fence IRQ ownership",
+        enable,
+        (
+            "radeon_irq_kms_sw_irq_get(rdev, fence->ring)",
+            "fence->irq_ref_held = true",
+            "terminal_error = radeon_fence_rs4xx_terminal_error(rdev)",
+            "radeon_fence_release_irq_ref_locked(fence)",
+            "return false",
+            "radeon_irq_kms_sw_irq_get_delayed(rdev, fence->ring)",
+            "fence->irq_ref_held = true",
+            "radeon_fence_schedule_check(rdev, fence->ring)",
+        ),
+    )
+    require(
+        "final terminal enable race lacks balanced IRQ release",
+        enable,
+        r"if\s*\(\s*terminal_error\s*\)\s*\{\s*"
+        r"radeon_fence_release_irq_ref_locked\s*\(\s*fence\s*\)\s*;\s*"
+        r"radeon_fence_set_error_locked\s*\(\s*fence\s*,\s*terminal_error\s*\)\s*;\s*"
+        r"return\s+false\s*;\s*\}",
+    )
+
+    signaled = function(root, "radeon_fence.c", "radeon_fence_is_signaled")
+    require_order(
+        "side-effect-free DMA fence completion peek",
+        signaled,
+        (
+            "atomic64_read_acquire(&rdev->fence_drv[ring].last_seq) >= seq",
+            "return true",
+            "radeon_fence_rs4xx_terminal_error(rdev)",
+            "return false",
+        ),
+    )
+    require(
+        "incomplete terminal DMA fence peek differs",
+        signaled,
+        r"if\s*\(\s*radeon_fence_rs4xx_terminal_error\s*\(\s*rdev\s*\)\s*\)\s*"
+        r"return\s+false\s*;",
+    )
+    fail_if_present(
+        "DMA fence completion peek side effects",
+        signaled,
+        (
+            "spin_lock",
+            "spin_trylock",
+            "dma_fence_set_error",
+            "dma_fence_signal",
+            "dma_fence_put",
+            "irq_ref_held",
+            "radeon_fence_set_error_locked",
+            "radeon_fence_signal_terminal",
+            "radeon_fence_remove_irq_wait_locked",
+        ),
+    )
+
+    wait_seq = function(root, "radeon_fence.c", "radeon_fence_wait_seq_timeout")
+    if wait_seq.count("radeon_irq_kms_sw_irq_get(rdev, i)") != 1:
+        raise ContractError(
+            "fence wait must acquire one logical IRQ reference per ring"
+        )
+    if wait_seq.count("radeon_irq_kms_sw_irq_put(rdev, i)") != 1:
+        raise ContractError(
+            "fence wait must release one logical IRQ reference per ring"
+        )
+    require_order(
+        "RS4xx fence wait state exit",
+        wait_seq,
+        (
+            "state_error = radeon_fence_rs4xx_state_error(rdev)",
+            "radeon_irq_kms_sw_irq_get(rdev, i)",
+            "transition_owner = radeon_rs4xx_hardware_transition_owned(rdev)",
+            "for (;;) ",
+            "state_error = radeon_fence_rs4xx_state_error(rdev)",
+            "wait_slice = min_t(long, timeout",
+            "wait_event_interruptible_timeout",
+            "radeon_fence_rs4xx_state_error(rdev)",
+            "state_error = radeon_fence_rs4xx_state_error(rdev)",
+            "radeon_irq_kms_sw_irq_put(rdev, i)",
+        ),
+    )
+
+    terminal_wait = function(root, "radeon_fence.c", "radeon_fence_default_wait")
+    if terminal_wait.count("state_error = radeon_fence_rs4xx_state_error(rdev)") != 3:
+        raise ContractError("generic DMA fence wait must sample state three times")
+    require_order(
+        "generic DMA fence state exit and cleanup",
+        terminal_wait,
+        (
+            "dma_fence_add_callback",
+            "state_error = radeon_fence_rs4xx_state_error(rdev)",
+            "if (state_error && !radeon_test_signaled(fence))",
+            "state_error == -EIO || state_error == -ESHUTDOWN",
+            "radeon_fence_signal_terminal(fence, state_error)",
+            "goto out",
+            "while (t > 0)",
+            "state_error = radeon_fence_rs4xx_state_error(rdev)",
+            "if (state_error)",
+            "state_error == -EIO || state_error == -ESHUTDOWN",
+            "radeon_fence_signal_terminal(fence, state_error)",
+            "out:",
+            "__set_current_state(TASK_RUNNING)",
+            "dma_fence_remove_callback",
+            "spin_lock_irqsave(&rdev->fence_queue.lock, flags)",
+            "radeon_fence_remove_irq_wait_locked(fence)",
+            "spin_unlock_irqrestore(&rdev->fence_queue.lock, flags)",
+            "if (release_ref)",
+            "dma_fence_put(f)",
+        ),
+    )
+
+    force = function(root, "radeon_fence.c", "radeon_fence_driver_force_completion")
+    require_order(
+        "force completion terminal split",
+        force,
+        (
+            "radeon_fence_rs4xx_terminal_error(rdev)",
+            "radeon_fence_driver_force_completion_cpu(rdev, ring)",
+            "return",
+            "radeon_rs4xx_hardware_access_begin(rdev)",
+            "radeon_fence_write",
+            "cancel_delayed_work_sync",
+            "radeon_rs4xx_hardware_access_end(rdev)",
+        ),
+    )
+    fail_if_present(
+        "ordinary force completion cannot publish CPU waiter state",
+        force,
+        ("last_seq =", "dma_fence_signal", "wake_up"),
+    )
+
+    lockup = function(root, "radeon_fence.c", "radeon_fence_check_lockup")
+    if lockup.count("radeon_fence_schedule_check(rdev, ring)") != 2:
+        raise ContractError(
+            "lockup worker must requeue only the two transient refusal paths"
+        )
+    require_order(
+        "lockup worker refusal and terminal-stop order",
+        lockup,
+        (
+            "r = radeon_device_trylock_hardware(rdev)",
+            "if (r)",
+            "(r == -EBUSY || (rs4xx_device && r == -EHOSTDOWN)) &&",
+            "READ_ONCE(fence_drv->delayed_irq)",
+            "radeon_fence_schedule_check(rdev, ring)",
+            "rs4xx_device && (r == -EIO || r == -ESHUTDOWN)",
+            "WRITE_ONCE(fence_drv->delayed_irq, false)",
+            "wake_up_all(&rdev->fence_queue)",
+            "return",
+            "r = radeon_rs4xx_hardware_access_begin(rdev)",
+            "if (r)",
+            "(r == -EBUSY || (rs4xx_device && r == -EHOSTDOWN)) &&",
+            "READ_ONCE(fence_drv->delayed_irq)",
+            "radeon_fence_schedule_check(rdev, ring)",
+            "rs4xx_device && (r == -EIO || r == -ESHUTDOWN)",
+            "WRITE_ONCE(fence_drv->delayed_irq, false)",
+            "wake_up_all(&rdev->fence_queue)",
+            "radeon_device_unlock_hardware(rdev)",
+            "return",
+            "else if (!radeon_fence_rs4xx_terminal_error(rdev) &&",
+            "radeon_ring_is_lockup(rdev, ring, &rdev->ring[ring])",
+            "rdev->needs_reset = true",
+        ),
+    )
+
+    irq_allowed = function(
+        root, "radeon_irq_kms.c", "radeon_irq_hardware_update_allowed"
+    )
+    normalized_irq_allowed = " ".join(irq_allowed.split())
+    if normalized_irq_allowed != (
+        "static bool radeon_irq_hardware_update_allowed(struct radeon_device *rdev) "
+        "{ return READ_ONCE(rdev->irq.installed) && !READ_ONCE(rdev->in_reset) "
+        "&& !READ_ONCE(rdev->gpu_parked); }"
+    ):
+        raise ContractError("IRQ hardware update predicate differs")
+
+    sw_put = function(root, "radeon_irq_kms.c", "radeon_irq_kms_sw_irq_put")
+    require_order(
+        "logical fence IRQ release remains CPU-side after parking",
+        sw_put,
+        (
+            "hardware_result = radeon_rs4xx_hardware_access_begin(rdev)",
+            "atomic_dec_and_test(&rdev->irq.ring_int[ring])",
+            "if (!hardware_result && radeon_irq_hardware_update_allowed(rdev))",
+            "radeon_irq_set(rdev)",
+            "WRITE_ONCE(rdev->fence_drv[ring].delayed_irq, false)",
+            "if (!hardware_result)",
+            "radeon_rs4xx_hardware_access_end(rdev)",
+        ),
+    )
+
+    pflip_put = function(root, "radeon_irq_kms.c", "radeon_irq_kms_pflip_irq_put")
+    require_order(
+        "logical page-flip IRQ release remains CPU-side after parking",
+        pflip_put,
+        (
+            "hardware_result = radeon_rs4xx_hardware_access_begin(rdev)",
+            "atomic_dec_and_test(&rdev->irq.pflip[crtc])",
+            "if (!hardware_result &&",
+            "radeon_irq_hardware_update_allowed(rdev)",
+            "radeon_irq_set(rdev)",
+            "if (!hardware_result)",
+            "radeon_rs4xx_hardware_access_end(rdev)",
+        ),
+    )
+
+    drop_flip = function(root, "radeon_display.c", "radeon_flip_work_drop_completion")
+    require_order(
+        "retained page-flip logical completion",
+        drop_flip,
+        (
+            "if (work->pflip_acquired)",
+            "work->pflip_acquired = false",
+            "radeon_irq_kms_pflip_irq_put(rdev, work->crtc_id)",
+            "dma_fence_put(work->fence)",
+            "work->fence = NULL",
         ),
     )
 
@@ -708,18 +1176,6 @@ def check_open_boundaries(root: Path) -> None:
         raise ContractError(
             "r300 packet access now references write_domain; update the OPEN row"
         )
-
-    force = function(root, "radeon_fence.c", "radeon_fence_driver_force_completion")
-    require_order(
-        "force completion source structure",
-        force,
-        ("radeon_fence_write", "cancel_delayed_work_sync"),
-    )
-    fail_if_present(
-        "force completion OPEN boundary",
-        force,
-        ("last_seq", "dma_fence_signal", "wake_up"),
-    )
 
     suspend = function(root, "radeon_device.c", "radeon_suspend_kms")
     require_order(
@@ -772,6 +1228,7 @@ def check_tree(
     check_ioctl_and_relocation_admission(root)
     check_reservation_ownership(root)
     check_ring_and_fence_publication(root)
+    check_failed_reset_fence_publication(root)
     check_open_boundaries(root)
 
 
@@ -1151,6 +1608,228 @@ SOURCE_MUTATIONS = {
         "\t\tradeon_fence_write(rdev, rdev->fence_drv[ring].sync_seq[ring], ring);",
         "\t\trdev->fence_drv[ring].last_seq = rdev->fence_drv[ring].sync_seq[ring];\n\t\tradeon_fence_write(rdev, rdev->fence_drv[ring].sync_seq[ring], ring);",
     ),
+    "parked completion loses post-publication work drain": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tfor (ring = 0; ring < RADEON_NUM_RINGS; ring++)\n"
+            "\t\tcancel_delayed_work_sync(&rdev->fence_drv[ring].lockup_work);\n"
+            "}\n\n"
+            "static void radeon_fence_driver_force_completion_cpu"
+        ),
+        "}\n\nstatic void radeon_fence_driver_force_completion_cpu",
+    ),
+    "single-ring CPU completion reaches hardware": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tspin_lock_irqsave(&rdev->fence_queue.lock, flags);\n"
+            "\tWRITE_ONCE(driver->delayed_irq, false);"
+        ),
+        (
+            "\tspin_lock_irqsave(&rdev->fence_queue.lock, flags);\n"
+            "\tWREG32(0, 0);\n"
+            "\tWRITE_ONCE(driver->delayed_irq, false);"
+        ),
+    ),
+    "parked completion fabricates sequence progress": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\t\tif (!driver->initialized)\n"
+            "\t\t\tcontinue;\n"
+            "\t\tWRITE_ONCE(driver->delayed_irq, false);"
+        ),
+        (
+            "\t\tif (!driver->initialized)\n"
+            "\t\t\tcontinue;\n"
+            "\t\tWRITE_ONCE(driver->delayed_irq, false);\n"
+            "\t\tradeon_fence_publish_last_seq(driver, "
+            "driver->sync_seq[ring]);"
+        ),
+    ),
+    "fence sequence publication drops release ordering": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        "atomic64_cmpxchg_release",
+        "atomic64_cmpxchg",
+    ),
+    "locked fence error signals before status": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tradeon_fence_set_error_locked(fence, error);\n"
+            "\tif (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->base.flags))\n"
+            "\t\tdma_fence_signal_locked(&fence->base);"
+        ),
+        (
+            "\tif (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->base.flags))\n"
+            "\t\tdma_fence_signal_locked(&fence->base);\n"
+            "\tradeon_fence_set_error_locked(fence, error);"
+        ),
+    ),
+    "terminal locked completion drops error helper": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        "\t\tradeon_fence_signal_error_locked(fence, error);",
+        "\t\tdma_fence_signal_locked(&fence->base);",
+    ),
+    "terminal fence completion drops IRQ release": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        "\t*release_ref = radeon_fence_remove_irq_wait_locked(fence);",
+        "\t*release_ref = false;",
+    ),
+    "terminal wake drops logical IRQ release": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\t\tif (radeon_fence_remove_irq_wait_locked(fence))\n"
+            "\t\t\tdma_fence_put(&fence->base);"
+        ),
+        "\t\tif (false)\n\t\t\tdma_fence_put(&fence->base);",
+    ),
+    "initial terminal enable drops error status": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tif (terminal_error) {\n"
+            "\t\tradeon_fence_set_error_locked(fence, terminal_error);\n"
+            "\t\treturn false;\n"
+            "\t}"
+        ),
+        "\tif (terminal_error)\n\t\treturn false;",
+    ),
+    "DMA fence enable callback signals directly": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tterminal_error = radeon_fence_rs4xx_terminal_error(rdev);\n"
+            "\tif (terminal_error) {\n"
+            "\t\tradeon_fence_set_error_locked(fence, terminal_error);\n"
+            "\t\treturn false;\n"
+            "\t}"
+        ),
+        (
+            "\tterminal_error = radeon_fence_rs4xx_terminal_error(rdev);\n"
+            "\tif (terminal_error) {\n"
+            "\t\tradeon_fence_set_error_locked(fence, terminal_error);\n"
+            "\t\tdma_fence_signal_locked(&fence->base);\n"
+            "\t\treturn false;\n"
+            "\t}"
+        ),
+    ),
+    "DMA fence completion peek checks terminal before progress": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tif (atomic64_read_acquire(&rdev->fence_drv[ring].last_seq) >= seq)\n"
+            "\t\treturn true;\n"
+            "\tif (radeon_fence_rs4xx_terminal_error(rdev))\n"
+            "\t\treturn false;"
+        ),
+        (
+            "\tif (radeon_fence_rs4xx_terminal_error(rdev))\n"
+            "\t\treturn false;\n"
+            "\tif (atomic64_read_acquire(&rdev->fence_drv[ring].last_seq) >= seq)\n"
+            "\t\treturn true;"
+        ),
+    ),
+    "DMA fence completion peek publishes terminal error": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        ("\tif (radeon_fence_rs4xx_terminal_error(rdev))\n\t\treturn false;"),
+        (
+            "\tif (radeon_fence_rs4xx_terminal_error(rdev)) {\n"
+            "\t\tradeon_fence_set_error_locked(fence, -EIO);\n"
+            "\t\treturn false;\n"
+            "\t}"
+        ),
+    ),
+    "DMA fence completion peek reports incomplete terminal work": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        ("\tif (radeon_fence_rs4xx_terminal_error(rdev))\n\t\treturn false;"),
+        ("\tif (radeon_fence_rs4xx_terminal_error(rdev))\n\t\treturn true;"),
+    ),
+    "RS4xx fence wait drops initial state refusal": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tstate_error = radeon_fence_rs4xx_state_error(rdev);\n"
+            "\tif (state_error)\n"
+            "\t\treturn state_error;\n"
+        ),
+        "",
+    ),
+    "RS4xx fence wait drops logical IRQ release": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        "\t\tradeon_irq_kms_sw_irq_put(rdev, i);",
+        "\t\tatomic_dec(&rdev->irq.ring_int[i]);",
+    ),
+    "generic DMA fence wait drops initial state exit": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tstate_error = radeon_fence_rs4xx_state_error(rdev);\n"
+            "\tif (state_error && !radeon_test_signaled(fence)) {\n"
+            "\t\tif (state_error == -EIO || state_error == -ESHUTDOWN)\n"
+            "\t\t\tt = radeon_fence_signal_terminal(fence, state_error) ?\n"
+            "\t\t\t\tstate_error : t;\n"
+            "\t\telse\n"
+            "\t\t\tt = state_error;\n"
+            "\t\tgoto out;\n"
+            "\t}\n"
+        ),
+        "",
+    ),
+    "generic DMA fence wait drops retained IRQ cleanup": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tspin_lock_irqsave(&rdev->fence_queue.lock, flags);\n"
+            "\trelease_ref = radeon_fence_remove_irq_wait_locked(fence);\n"
+            "\tspin_unlock_irqrestore(&rdev->fence_queue.lock, flags);\n"
+            "\tif (release_ref)\n"
+            "\t\tdma_fence_put(f);"
+        ),
+        (
+            "\tspin_lock_irqsave(&rdev->fence_queue.lock, flags);\n"
+            "\trelease_ref = false;\n"
+            "\tspin_unlock_irqrestore(&rdev->fence_queue.lock, flags);\n"
+            "\tif (release_ref)\n"
+            "\t\tdma_fence_put(f);"
+        ),
+    ),
+    "fence IRQ put drops hardware refusal gate": (
+        "drivers/gpu/drm/radeon/radeon_irq_kms.c",
+        (
+            "\tif (atomic_dec_and_test(&rdev->irq.ring_int[ring])) {\n"
+            "\t\tif (!hardware_result && radeon_irq_hardware_update_allowed(rdev))"
+        ),
+        (
+            "\tif (atomic_dec_and_test(&rdev->irq.ring_int[ring])) {\n"
+            "\t\tif (radeon_irq_hardware_update_allowed(rdev))"
+        ),
+    ),
+    "page-flip IRQ put drops hardware refusal gate": (
+        "drivers/gpu/drm/radeon/radeon_irq_kms.c",
+        (
+            "\tif (atomic_dec_and_test(&rdev->irq.pflip[crtc])) {\n"
+            "\t\tif (!hardware_result &&\n"
+            "\t\t    radeon_irq_hardware_update_allowed(rdev))"
+        ),
+        (
+            "\tif (atomic_dec_and_test(&rdev->irq.pflip[crtc])) {\n"
+            "\t\tif (radeon_irq_hardware_update_allowed(rdev))"
+        ),
+    ),
+    "lockup worker rearms reset after terminal state": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\telse if (!radeon_fence_rs4xx_terminal_error(rdev) &&\n"
+            "\t\t radeon_ring_is_lockup(rdev, ring, &rdev->ring[ring]))"
+        ),
+        "\telse if (radeon_ring_is_lockup(rdev, ring, &rdev->ring[ring]))",
+    ),
+    "lockup worker requeues suspended work without demand": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "\tr = radeon_device_trylock_hardware(rdev);\n"
+            "\tif (r) {\n"
+            "\t\tif ((r == -EBUSY || (rs4xx_device && r == -EHOSTDOWN)) &&\n"
+            "\t\t    READ_ONCE(fence_drv->delayed_irq))"
+        ),
+        (
+            "\tr = radeon_device_trylock_hardware(rdev);\n"
+            "\tif (r) {\n"
+            "\t\tif (r == -EBUSY || (rs4xx_device && r == -EHOSTDOWN))"
+        ),
+    ),
 }
 
 SOURCE_EXPECTED_ERRORS = {
@@ -1162,8 +1841,7 @@ SOURCE_EXPECTED_ERRORS = {
         "missing or out of order: down_write(&rdev->exclusive_lock)"
     ),
     "parked CS condition is inverted": (
-        "command-submission: expected one unconditional parked guard in "
-        "radeon_cs_ioctl, found 0"
+        "command-submission projected path requires one direct parked guard"
     ),
     "relocation chunk accepts a partial record": (
         "relocation chunk length admission guard differs: "
@@ -1236,11 +1914,10 @@ SOURCE_EXPECTED_ERRORS = {
         "expected one match at depth 1, found 0"
     ),
     "validated submission fence guard is bypassed by a goto": (
-        "command-submission VM-failure-to-fence-guard "
-        "contains an intervening source token"
+        "command-submission goto denominator differs: expected 2, found 3"
     ),
     "CS ioctl declaration hides a statement-expression return": (
-        "command-submission declaration and lock prefix statement sequence differs"
+        "command-submission declaration and helper-admission prefix statement sequence differs"
     ),
     "relocation index accepts unaligned records": (
         "relocation record index admission guard differs: "

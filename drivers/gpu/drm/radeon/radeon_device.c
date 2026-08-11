@@ -50,6 +50,468 @@
 #include "atom.h"
 #include <linux/panic_notifier.h>
 
+static int radeon_rs4xx_hardware_state_errno(int state)
+{
+	switch (state) {
+	case RADEON_RS4XX_HARDWARE_PARKED:
+		return -EIO;
+	case RADEON_RS4XX_HARDWARE_SUSPENDED:
+		return -EHOSTDOWN;
+	case RADEON_RS4XX_HARDWARE_SHUTTING_DOWN:
+	case RADEON_RS4XX_HARDWARE_SHUTDOWN:
+		return -ESHUTDOWN;
+	case RADEON_RS4XX_HARDWARE_RESETTING:
+	case RADEON_RS4XX_HARDWARE_SUSPENDING:
+	case RADEON_RS4XX_HARDWARE_RESUMING:
+		return -EBUSY;
+	case RADEON_RS4XX_HARDWARE_RUNNING:
+		return -EALREADY;
+	default:
+		return -EIO;
+	}
+}
+
+static void radeon_rs4xx_queue_parked_publish(struct radeon_device *rdev)
+{
+	if (!radeon_rs4xx_hardware_target(rdev) ||
+	    !READ_ONCE(rdev->rs4xx_parked_publish_work_initialized) ||
+	    !atomic_read(&rdev->rs4xx_parked_publish_pending) ||
+	    atomic_read(&rdev->rs4xx_parked_publish_running) ||
+	    atomic_read(&rdev->rs4xx_hardware_transactions) != 0)
+		return;
+	queue_work(system_unbound_wq, &rdev->rs4xx_parked_publish_work);
+}
+
+bool radeon_rs4xx_hardware_transition_owned(struct radeon_device *rdev)
+{
+	return radeon_rs4xx_hardware_target(rdev) && in_task() &&
+	       READ_ONCE(rdev->rs4xx_hardware_owner) == current;
+}
+
+static bool radeon_rs4xx_hardware_transition_owner_admitted(
+	struct radeon_device *rdev, int state)
+{
+	if (READ_ONCE(rdev->gpu_parked))
+		return false;
+
+	switch (state) {
+	case RADEON_RS4XX_HARDWARE_RESETTING:
+	case RADEON_RS4XX_HARDWARE_SUSPENDING:
+	case RADEON_RS4XX_HARDWARE_RESUMING:
+	case RADEON_RS4XX_HARDWARE_SHUTTING_DOWN:
+		return radeon_rs4xx_hardware_transition_owned(rdev);
+	default:
+		return false;
+	}
+}
+
+static int radeon_rs4xx_hardware_reader_begin(struct radeon_device *rdev)
+{
+	int state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+	if (state != RADEON_RS4XX_HARDWARE_RUNNING &&
+	    !radeon_rs4xx_hardware_transition_owner_admitted(rdev, state))
+		return radeon_rs4xx_hardware_state_errno(state);
+
+	atomic_inc(&rdev->rs4xx_hardware_readers);
+	/* Publish the reader count before the closed-state validation. */
+	smp_mb__after_atomic();
+	state = atomic_read(&rdev->rs4xx_hardware_state);
+	if ((likely(state == RADEON_RS4XX_HARDWARE_RUNNING) &&
+	     !READ_ONCE(rdev->gpu_parked)) ||
+	    radeon_rs4xx_hardware_transition_owner_admitted(rdev, state))
+		return 0;
+
+	if (atomic_dec_and_test(&rdev->rs4xx_hardware_readers))
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+	return radeon_rs4xx_hardware_state_errno(state);
+}
+
+static void radeon_rs4xx_hardware_reader_end(struct radeon_device *rdev)
+{
+	if (WARN_ON_ONCE(atomic_read(&rdev->rs4xx_hardware_readers) <= 0))
+		return;
+	if (atomic_dec_and_test(&rdev->rs4xx_hardware_readers))
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+}
+
+int __radeon_rs4xx_hardware_access_begin(struct radeon_device *rdev)
+{
+	return radeon_rs4xx_hardware_reader_begin(rdev);
+}
+
+void __radeon_rs4xx_hardware_access_end(struct radeon_device *rdev)
+{
+	radeon_rs4xx_hardware_reader_end(rdev);
+}
+
+static bool radeon_rs4xx_hardware_disposition_available(
+	struct radeon_device *rdev)
+{
+	int state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+
+	if (READ_ONCE(rdev->gpu_parked))
+		return true;
+	/* SUSPENDED remains unavailable so a destructor resumes cleanup after
+	 * resume instead of retaining an object for the rest of the boot.
+	 */
+	return (state == RADEON_RS4XX_HARDWARE_RUNNING &&
+		!atomic_read_acquire(&rdev->rs4xx_hardware_closing)) ||
+	       state == RADEON_RS4XX_HARDWARE_PARKED ||
+	       state == RADEON_RS4XX_HARDWARE_SHUTTING_DOWN ||
+	       state == RADEON_RS4XX_HARDWARE_SHUTDOWN;
+}
+
+int radeon_rs4xx_hardware_access_wait_begin(struct radeon_device *rdev)
+{
+	int r;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+
+	for (;;) {
+		r = radeon_rs4xx_hardware_reader_begin(rdev);
+		if (r != -EBUSY && r != -EHOSTDOWN)
+			return r;
+
+		/* A delayed TTM destructor waits for reset, suspend, or resume to
+		 * publish a stable disposition. Shutdown returns immediately because
+		 * ttm_device_fini may already wait for the same destructor.
+		 */
+		wait_event(rdev->rs4xx_hardware_wait,
+			radeon_rs4xx_hardware_disposition_available(rdev));
+	}
+}
+
+int radeon_rs4xx_hardware_transaction_begin(struct radeon_device *rdev)
+{
+	int state;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+	if (READ_ONCE(rdev->gpu_parked))
+		return -EIO;
+	state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+	if (state != RADEON_RS4XX_HARDWARE_RUNNING &&
+	    !radeon_rs4xx_hardware_transition_owner_admitted(rdev, state))
+		return radeon_rs4xx_hardware_state_errno(state);
+	if (state == RADEON_RS4XX_HARDWARE_RUNNING &&
+	    atomic_read_acquire(&rdev->rs4xx_hardware_closing))
+		return -EBUSY;
+
+	atomic_inc(&rdev->rs4xx_hardware_transactions);
+	/* The barrier publishes the transaction root before revalidation. */
+	smp_mb__after_atomic();
+	state = atomic_read(&rdev->rs4xx_hardware_state);
+	if (radeon_rs4xx_hardware_transition_owner_admitted(rdev, state) ||
+	    (state == RADEON_RS4XX_HARDWARE_RUNNING &&
+	     !READ_ONCE(rdev->gpu_parked) &&
+	     !atomic_read(&rdev->rs4xx_hardware_closing)))
+		return 0;
+
+	if (atomic_dec_and_test(&rdev->rs4xx_hardware_transactions)) {
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+		radeon_rs4xx_queue_parked_publish(rdev);
+	}
+	if (state == RADEON_RS4XX_HARDWARE_RUNNING)
+		return -EBUSY;
+	return radeon_rs4xx_hardware_state_errno(state);
+}
+
+int radeon_rs4xx_hardware_transaction_wait_begin(struct radeon_device *rdev)
+{
+	int r;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+
+	for (;;) {
+		r = radeon_rs4xx_hardware_transaction_begin(rdev);
+		if (r != -EBUSY && r != -EHOSTDOWN)
+			return r;
+
+		wait_event(rdev->rs4xx_hardware_wait,
+			radeon_rs4xx_hardware_disposition_available(rdev));
+	}
+}
+
+int radeon_rs4xx_hardware_transaction_try_begin(struct radeon_device *rdev)
+{
+	return radeon_rs4xx_hardware_transaction_begin(rdev);
+}
+
+void radeon_rs4xx_hardware_transaction_end(struct radeon_device *rdev)
+{
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return;
+	if (WARN_ON_ONCE(atomic_read(&rdev->rs4xx_hardware_transactions) <= 0))
+		return;
+	if (atomic_dec_and_test(&rdev->rs4xx_hardware_transactions)) {
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+		radeon_rs4xx_queue_parked_publish(rdev);
+	}
+}
+
+static void radeon_rs4xx_publish_parked_hardware_state_locked(
+	struct radeon_device *rdev)
+{
+	int state = atomic_read(&rdev->rs4xx_hardware_state);
+
+	if (state != RADEON_RS4XX_HARDWARE_PARKED &&
+	    state != RADEON_RS4XX_HARDWARE_SHUTDOWN)
+		atomic_set_release(&rdev->rs4xx_hardware_state,
+				   RADEON_RS4XX_HARDWARE_PARKED);
+}
+
+static void radeon_rs4xx_publish_parked_hardware_state(
+	struct radeon_device *rdev)
+{
+	unsigned long irqflags;
+
+	spin_lock_irqsave(&rdev->rs4xx_hardware_state_lock, irqflags);
+	radeon_rs4xx_publish_parked_hardware_state_locked(rdev);
+	spin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);
+}
+
+static int radeon_rs4xx_hardware_transition_start_locked(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state expected_state,
+	enum radeon_rs4xx_hardware_state transition_state,
+	bool terminal_shutdown)
+{
+	int observed_state;
+	unsigned long irqflags;
+
+	atomic_set(&rdev->rs4xx_hardware_closing, 1);
+	/* Closing excludes callback-bearing transaction roots. Simple readers
+	 * close at transition-state publication, and the reader counter drains
+	 * every admission that preceded that publication. The full barrier pairs
+	 * transition intent with the root post-increment barrier. Either the
+	 * transition observes the root count or the root observes closing.
+	 */
+	smp_mb();
+	wait_event(rdev->rs4xx_hardware_wait,
+		   atomic_read(&rdev->rs4xx_hardware_transactions) == 0);
+	if (!terminal_shutdown && READ_ONCE(rdev->gpu_parked)) {
+		radeon_rs4xx_publish_parked_hardware_state(rdev);
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+		smp_mb();
+		wait_event(rdev->rs4xx_hardware_wait,
+			   atomic_read(&rdev->rs4xx_hardware_readers) == 0);
+		return -EIO;
+	}
+
+	WRITE_ONCE(rdev->rs4xx_hardware_owner, current);
+	/* Publish the transition owner before the closed state becomes visible. */
+	smp_wmb();
+	spin_lock_irqsave(&rdev->rs4xx_hardware_state_lock, irqflags);
+	if (terminal_shutdown) {
+		atomic_set_release(&rdev->rs4xx_hardware_state,
+				   transition_state);
+	} else {
+		observed_state = atomic_read(&rdev->rs4xx_hardware_state);
+		if (observed_state != expected_state) {
+			spin_unlock_irqrestore(
+				&rdev->rs4xx_hardware_state_lock, irqflags);
+			WRITE_ONCE(rdev->rs4xx_hardware_owner, NULL);
+			wake_up_all(&rdev->rs4xx_hardware_wait);
+			return radeon_rs4xx_hardware_state_errno(observed_state);
+		}
+		atomic_set_release(&rdev->rs4xx_hardware_state,
+				   transition_state);
+	}
+	spin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);
+	wake_up_all(&rdev->rs4xx_hardware_wait);
+	/* Pair the closed-state publication with the reader's post-increment
+	 * barrier before testing the active-reader count.
+	 */
+	smp_mb();
+	wait_event(rdev->rs4xx_hardware_wait,
+		   atomic_read(&rdev->rs4xx_hardware_readers) == 0);
+	if (!terminal_shutdown &&
+	    (READ_ONCE(rdev->gpu_parked) ||
+	     atomic_read_acquire(&rdev->rs4xx_hardware_state) ==
+		RADEON_RS4XX_HARDWARE_PARKED)) {
+		radeon_rs4xx_publish_parked_hardware_state(rdev);
+		WRITE_ONCE(rdev->rs4xx_hardware_owner, NULL);
+		wake_up_all(&rdev->rs4xx_hardware_wait);
+		return -EIO;
+	}
+	return 0;
+}
+
+int radeon_rs4xx_hardware_transition_begin(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state expected_state,
+	enum radeon_rs4xx_hardware_state transition_state)
+{
+	int state;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return 0;
+
+	mutex_lock(&rdev->rs4xx_hardware_transition_lock);
+	if (READ_ONCE(rdev->gpu_parked)) {
+		mutex_unlock(&rdev->rs4xx_hardware_transition_lock);
+		return -EIO;
+	}
+	state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+	if (state != expected_state) {
+		mutex_unlock(&rdev->rs4xx_hardware_transition_lock);
+		return radeon_rs4xx_hardware_state_errno(state);
+	}
+	state = radeon_rs4xx_hardware_transition_start_locked(
+		rdev, expected_state, transition_state, false);
+	if (state) {
+		mutex_unlock(&rdev->rs4xx_hardware_transition_lock);
+		return state;
+	}
+	return 0;
+}
+
+void radeon_rs4xx_hardware_shutdown_begin(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state *prior_state)
+{
+	int state;
+
+	if (!radeon_rs4xx_hardware_target(rdev)) {
+		if (prior_state)
+			*prior_state = RADEON_RS4XX_HARDWARE_RUNNING;
+		return;
+	}
+
+	mutex_lock(&rdev->rs4xx_hardware_transition_lock);
+	state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+	if (prior_state)
+		*prior_state = state;
+	WARN_ON_ONCE(radeon_rs4xx_hardware_transition_start_locked(
+		rdev, state, RADEON_RS4XX_HARDWARE_SHUTTING_DOWN, true));
+}
+
+void radeon_rs4xx_hardware_transition_end(
+	struct radeon_device *rdev,
+	enum radeon_rs4xx_hardware_state final_state)
+{
+	int published_state;
+	int state;
+	unsigned long irqflags;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return;
+
+	wait_event(rdev->rs4xx_hardware_wait,
+		   atomic_read(&rdev->rs4xx_hardware_transactions) == 0 &&
+		   atomic_read(&rdev->rs4xx_hardware_readers) == 0);
+	WRITE_ONCE(rdev->rs4xx_hardware_owner, NULL);
+	/* Clear the transition owner before publishing the terminal state. */
+	smp_wmb();
+	spin_lock_irqsave(&rdev->rs4xx_hardware_state_lock, irqflags);
+	state = atomic_read(&rdev->rs4xx_hardware_state);
+	published_state = final_state;
+	if (final_state != RADEON_RS4XX_HARDWARE_SHUTDOWN &&
+	    (state == RADEON_RS4XX_HARDWARE_PARKED ||
+	     READ_ONCE(rdev->gpu_parked)))
+		published_state = RADEON_RS4XX_HARDWARE_PARKED;
+	atomic_set_release(&rdev->rs4xx_hardware_state, published_state);
+	if (published_state == RADEON_RS4XX_HARDWARE_RUNNING)
+		atomic_set_release(&rdev->rs4xx_hardware_closing, 0);
+	else if (published_state == RADEON_RS4XX_HARDWARE_PARKED)
+		atomic_set_release(&rdev->rs4xx_hardware_closing, 1);
+	spin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);
+	wake_up_all(&rdev->rs4xx_hardware_wait);
+	mutex_unlock(&rdev->rs4xx_hardware_transition_lock);
+}
+
+void radeon_rs4xx_latch_parked_state(struct radeon_device *rdev)
+{
+	unsigned long irqflags;
+	int ring_index;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return;
+
+	spin_lock_irqsave(&rdev->rs4xx_hardware_state_lock, irqflags);
+	WRITE_ONCE(rdev->gpu_parked, true);
+	WRITE_ONCE(rdev->accel_working, false);
+	WRITE_ONCE(rdev->needs_reset, false);
+	for (ring_index = 0; ring_index < RADEON_NUM_RINGS; ++ring_index)
+		WRITE_ONCE(rdev->ring[ring_index].ready, false);
+	atomic_set_release(&rdev->rs4xx_hardware_closing, 1);
+	radeon_rs4xx_publish_parked_hardware_state_locked(rdev);
+	spin_unlock_irqrestore(&rdev->rs4xx_hardware_state_lock, irqflags);
+	/* The full barrier pairs with each admission counter's post-increment
+	 * barrier before the parked publisher tests the counters. The publisher
+	 * observes an admitted caller or that caller observes the terminal state.
+	 */
+	smp_mb();
+	wake_up_all(&rdev->rs4xx_hardware_wait);
+	if (READ_ONCE(rdev->rs4xx_fence_work_initialized))
+		wake_up_all(&rdev->fence_queue);
+}
+
+void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)
+{
+	/* A void TTM callback cannot return an unbind failure to TTM. The
+	 * latch closes later hardware admission. The retained BO and TTM lists
+	 * keep the affected storage live while unload retains device ownership.
+	 * The process-context publisher queues when the caller has no active
+	 * transaction; a callback-owned transaction queues from its final release.
+	 */
+	radeon_rs4xx_latch_parked_state(rdev);
+	atomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);
+	radeon_rs4xx_queue_parked_publish(rdev);
+}
+
+void radeon_rs4xx_publish_parked_state(struct radeon_device *rdev)
+{
+	bool transition_owned;
+
+	if (!radeon_rs4xx_hardware_target(rdev))
+		return;
+
+	radeon_rs4xx_latch_parked_state(rdev);
+	transition_owned = radeon_rs4xx_hardware_transition_owned(rdev);
+	if (!transition_owned)
+		mutex_lock(&rdev->rs4xx_hardware_transition_lock);
+	mutex_lock(&rdev->rs4xx_parked_publish_lock);
+	wait_event(rdev->rs4xx_hardware_wait,
+		   atomic_read(&rdev->rs4xx_hardware_transactions) == 0 &&
+		   atomic_read(&rdev->rs4xx_hardware_readers) == 0);
+	(void)radeon_page_flip_quiesce(rdev);
+	radeon_irq_kms_fini_hardwareless(rdev);
+	if (rdev->rs4xx_pm_work_initialized)
+		cancel_delayed_work_sync(&rdev->pm.dynpm_idle_work);
+	if (rdev->rs4xx_fence_work_initialized)
+		radeon_fence_driver_force_completion_parked(rdev);
+	(void)radeon_page_flip_finalize_retained(rdev, false);
+	mutex_unlock(&rdev->rs4xx_parked_publish_lock);
+	if (!transition_owned)
+		mutex_unlock(&rdev->rs4xx_hardware_transition_lock);
+}
+
+static void radeon_rs4xx_parked_publish_work(struct work_struct *work_item)
+{
+	struct radeon_device *rdev = container_of(
+		work_item, struct radeon_device, rs4xx_parked_publish_work);
+
+	if (!READ_ONCE(rdev->rs4xx_parked_publish_work_initialized)) {
+		atomic_set(&rdev->rs4xx_parked_publish_pending, 0);
+		return;
+	}
+	atomic_set(&rdev->rs4xx_parked_publish_running, 1);
+	atomic_set(&rdev->rs4xx_parked_publish_pending, 0);
+	radeon_rs4xx_publish_parked_state(rdev);
+	/* The refusal request and worker release use fully ordered exchanges. A
+	 * refusal leaves pending set for this final queue check or observes running
+	 * clear and queues the next worker.
+	 */
+	atomic_xchg(&rdev->rs4xx_parked_publish_running, 0);
+	radeon_rs4xx_queue_parked_publish(rdev);
+}
+
 /*
  * RS480/RS482 GPU-hang panic breadcrumb.
  *
@@ -133,6 +595,64 @@ static void radeon_rs480_panic_unregister(struct radeon_device *rdev)
 		return;
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &radeon_rs480_panic_nb);
+}
+
+static void radeon_device_fini_external_interfaces(struct radeon_device *rdev)
+{
+	if (rdev->switcheroo_domain_pm_initialized) {
+		vga_switcheroo_fini_domain_pm_ops(rdev->dev);
+		rdev->switcheroo_domain_pm_initialized = false;
+	}
+	if (rdev->switcheroo_client_registered) {
+		vga_switcheroo_unregister_client(rdev->pdev);
+		rdev->switcheroo_client_registered = false;
+	}
+	if (rdev->vga_client_registered) {
+		vga_client_unregister(rdev->pdev);
+		rdev->vga_client_registered = false;
+	}
+}
+
+void radeon_rs4xx_terminal_quiesce(struct radeon_device *rdev)
+{
+	int state;
+
+	if (!radeon_rs4xx_hardware_target(rdev) ||
+	    rdev->rs4xx_terminal_work_quiesced)
+		return;
+	state = atomic_read_acquire(&rdev->rs4xx_hardware_state);
+	if (WARN_ON_ONCE(state != RADEON_RS4XX_HARDWARE_SHUTDOWN &&
+			 state != RADEON_RS4XX_HARDWARE_PARKED))
+		return;
+
+	/* disable_work_sync rejects queue_work attempts that race terminal
+	 * quiescence and waits for queued publisher completion. The initialized
+	 * flag closes the helper lifetime check after the work item reaches the
+	 * idle, disabled state.
+	 */
+	disable_work_sync(&rdev->rs4xx_parked_publish_work);
+	WRITE_ONCE(rdev->rs4xx_parked_publish_work_initialized, false);
+	atomic_set(&rdev->rs4xx_parked_publish_pending, 0);
+	atomic_set(&rdev->rs4xx_parked_publish_running, 0);
+	WRITE_ONCE(rdev->shutdown, true);
+	radeon_device_fini_external_interfaces(rdev);
+	radeon_acpi_fini(rdev);
+	radeon_audio_component_fini(rdev);
+	cancel_delayed_work_sync(&rdev->rs4xx_flip_cleanup_work);
+	radeon_irq_kms_fini_hardwareless(rdev);
+	radeon_pm_fini_hardwareless(rdev);
+	if (rdev->rs4xx_fence_work_initialized) {
+		radeon_fence_driver_force_completion_parked(rdev);
+		rdev->rs4xx_fence_work_initialized = false;
+	}
+	if (rdev->mode_info.mode_config_initialized) {
+		if (rdev_to_drm(rdev)->mode_config.poll_enabled)
+			drm_kms_helper_poll_disable(rdev_to_drm(rdev));
+		(void)radeon_page_flip_quiesce(rdev);
+		(void)radeon_page_flip_finalize_retained(rdev, false);
+	}
+	radeon_rs480_panic_unregister(rdev);
+	rdev->rs4xx_terminal_work_quiesced = true;
 }
 
 static const char radeon_family_name[][16] = {
@@ -1166,13 +1686,21 @@ void radeon_combios_fini(struct radeon_device *rdev)
 static unsigned int radeon_vga_set_decode(struct pci_dev *pdev, bool state)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
-	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_device *rdev;
+	unsigned int resources = VGA_RSRC_NORMAL_IO | VGA_RSRC_NORMAL_MEM;
+	int r;
+
+	if (!dev || !dev->dev_private)
+		return resources;
+	rdev = dev->dev_private;
+	r = radeon_rs4xx_hardware_access_begin(rdev);
+	if (r)
+		return resources;
 	radeon_vga_set_state(rdev, state);
+	radeon_rs4xx_hardware_access_end(rdev);
 	if (state)
-		return VGA_RSRC_LEGACY_IO | VGA_RSRC_LEGACY_MEM |
-		       VGA_RSRC_NORMAL_IO | VGA_RSRC_NORMAL_MEM;
-	else
-		return VGA_RSRC_NORMAL_IO | VGA_RSRC_NORMAL_MEM;
+		resources |= VGA_RSRC_LEGACY_IO | VGA_RSRC_LEGACY_MEM;
+	return resources;
 }
 
 /**
@@ -1302,25 +1830,41 @@ static void radeon_check_arguments(struct radeon_device *rdev)
 static void radeon_switcheroo_set_state(struct pci_dev *pdev, enum vga_switcheroo_state state)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
+	int r;
 
 	if (radeon_is_px(dev) && state == VGA_SWITCHEROO_OFF)
 		return;
 
 	if (state == VGA_SWITCHEROO_ON) {
-		pr_info("radeon: switched on\n");
 		/* don't suspend or resume card normally */
 		dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
 
-		radeon_resume_kms(dev, true, true);
+		r = radeon_resume_kms(dev, true, true);
+		if (r) {
+			dev_err(&pdev->dev,
+				"GPU resume failed; switcheroo state remains off: %d\n",
+				r);
+			dev->switch_power_state = DRM_SWITCH_POWER_OFF;
+			return;
+		}
 
 		dev->switch_power_state = DRM_SWITCH_POWER_ON;
 		drm_kms_helper_poll_enable(dev);
+		pr_info("radeon: switched on\n");
 	} else {
-		pr_info("radeon: switched off\n");
 		drm_kms_helper_poll_disable(dev);
 		dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
-		radeon_suspend_kms(dev, true, true, false);
+		r = radeon_suspend_kms(dev, true, true, false);
+		if (r) {
+			dev_err(&pdev->dev,
+				"GPU suspend failed; switcheroo state remains on: %d\n",
+				r);
+			dev->switch_power_state = DRM_SWITCH_POWER_ON;
+			drm_kms_helper_poll_enable(dev);
+			return;
+		}
 		dev->switch_power_state = DRM_SWITCH_POWER_OFF;
+		pr_info("radeon: switched off\n");
 	}
 }
 
@@ -1379,6 +1923,53 @@ int radeon_device_init(struct radeon_device *rdev,
 	rdev->usec_timeout = RADEON_MAX_USEC_TIMEOUT;
 	rdev->mc.gtt_size = 512 * 1024 * 1024;
 	rdev->accel_working = false;
+	rdev->rs4xx_terminal_drm_ref_held = false;
+	rdev->rs4xx_terminal_retained = false;
+	rdev->rs4xx_terminal_work_quiesced = false;
+	rdev->rs4xx_unload_completed = false;
+	rdev->vga_client_registered = false;
+	rdev->switcheroo_client_registered = false;
+	rdev->switcheroo_domain_pm_initialized = false;
+	rdev->rs4xx_irq_work_initialized = false;
+	rdev->rs4xx_pm_work_initialized = false;
+	rdev->rs4xx_fence_work_initialized = false;
+	rdev->rs4xx_parked_publish_work_initialized = false;
+	rdev->debugfs_component_count = 0;
+	rdev->debugfs_registration_complete = false;
+	rdev->acpi_registered = false;
+	atomic_set(&rdev->rs4xx_hardware_state,
+		   RADEON_RS4XX_HARDWARE_RUNNING);
+	atomic_set(&rdev->rs4xx_hardware_closing, 0);
+	atomic_set(&rdev->rs4xx_hardware_transactions, 0);
+	atomic_set(&rdev->rs4xx_hardware_readers, 0);
+	atomic_set(&rdev->rs4xx_live_bos, 0);
+	atomic_set(&rdev->rs4xx_retained_gem_objects, 0);
+	atomic_set(&rdev->rs4xx_retained_ttm_tables, 0);
+	atomic_long_set(&rdev->rs4xx_retained_ttm_accounted_pages, 0);
+	atomic_set(&rdev->rs4xx_parked_publish_pending, 0);
+	atomic_set(&rdev->rs4xx_parked_publish_running, 0);
+	init_waitqueue_head(&rdev->rs4xx_hardware_wait);
+	spin_lock_init(&rdev->rs4xx_hardware_state_lock);
+	mutex_init(&rdev->rs4xx_hardware_transition_lock);
+	mutex_init(&rdev->rs4xx_parked_publish_lock);
+	mutex_init(&rdev->debugfs_component_lock);
+	mutex_init(&rdev->rs4xx_unload_lock);
+	mutex_init(&rdev->rs4xx_retained_ttm_lock);
+	INIT_LIST_HEAD(&rdev->rs4xx_retained_bos_list);
+	INIT_LIST_HEAD(&rdev->rs4xx_retained_ttm_tables_list);
+	WRITE_ONCE(rdev->rs4xx_hardware_owner, NULL);
+	WRITE_ONCE(rdev->rs4xx_gart_fini_error, 0);
+	WRITE_ONCE(rdev->rs4xx_ttm_fini_error, 0);
+	WRITE_ONCE(rdev->rs4xx_gart_teardown_complete, false);
+	mutex_init(&rdev->rs4xx_retained_flip_lock);
+	INIT_LIST_HEAD(&rdev->rs4xx_retained_flips);
+	INIT_DELAYED_WORK(&rdev->rs4xx_flip_cleanup_work,
+			  radeon_page_flip_cleanup_work);
+	INIT_WORK(&rdev->rs4xx_parked_publish_work,
+		  radeon_rs4xx_parked_publish_work);
+	rdev->rs4xx_parked_publish_work_initialized = true;
+	WRITE_ONCE(rdev->rs4xx_scanout_release_tracking, false);
+	WRITE_ONCE(rdev->rs4xx_scanout_release_failed, false);
 	/* set up ring ids */
 	for (i = 0; i < RADEON_NUM_RINGS; i++) {
 		rdev->ring[i].idx = i;
@@ -1395,12 +1986,14 @@ int radeon_device_init(struct radeon_device *rdev,
 	mutex_init(&rdev->dc_hw_i2c_mutex);
 	atomic_set(&rdev->ih.lock, 0);
 	mutex_init(&rdev->gem.mutex);
+	mutex_init(&rdev->gart.lock);
 	mutex_init(&rdev->pm.mutex);
 	mutex_init(&rdev->gpu_clock_mutex);
 	mutex_init(&rdev->srbm_mutex);
 	mutex_init(&rdev->audio.component_mutex);
 	init_rwsem(&rdev->pm.mclk_lock);
 	init_rwsem(&rdev->exclusive_lock);
+	spin_lock_init(&rdev->irq.lock);
 	init_waitqueue_head(&rdev->irq.vblank_queue);
 	r = radeon_gem_init(rdev);
 	if (r)
@@ -1510,15 +2103,35 @@ int radeon_device_init(struct radeon_device *rdev,
 	/* if we have > 1 VGA cards, then disable the radeon VGA resources */
 	/* this will fail for cards that aren't VGA class devices, just
 	 * ignore it */
-	vga_client_register(rdev->pdev, radeon_vga_set_decode);
+	r = vga_client_register(rdev->pdev, radeon_vga_set_decode);
+	if (r)
+		dev_warn(rdev->dev,
+			 "VGA arbiter client registration failed: %d\n", r);
+	else
+		rdev->vga_client_registered = true;
 
 	if (rdev->flags & RADEON_IS_PX)
 		runtime = true;
-	if (!pci_is_thunderbolt_attached(rdev->pdev))
-		vga_switcheroo_register_client(rdev->pdev,
-					       &radeon_switcheroo_ops, runtime);
-	if (runtime)
-		vga_switcheroo_init_domain_pm_ops(rdev->dev, &rdev->vga_pm_domain);
+	if (!pci_is_thunderbolt_attached(rdev->pdev)) {
+		r = vga_switcheroo_register_client(
+			rdev->pdev, &radeon_switcheroo_ops, runtime);
+		if (r)
+			dev_warn(rdev->dev,
+				 "VGA switcheroo client registration failed: %d\n",
+				 r);
+		else
+			rdev->switcheroo_client_registered = true;
+	}
+	if (runtime) {
+		r = vga_switcheroo_init_domain_pm_ops(
+			rdev->dev, &rdev->vga_pm_domain);
+		if (r)
+			dev_warn(rdev->dev,
+				 "VGA switcheroo PM domain initialization failed: %d\n",
+				 r);
+		else
+			rdev->switcheroo_domain_pm_initialized = true;
+	}
 
 	r = radeon_init(rdev);
 	if (r)
@@ -1532,6 +2145,9 @@ int radeon_device_init(struct radeon_device *rdev,
 		 */
 		radeon_asic_reset(rdev);
 		radeon_fini(rdev);
+		r = READ_ONCE(rdev->rs4xx_gart_fini_error);
+		if (r)
+			goto failed;
 		radeon_agp_disable(rdev);
 		r = radeon_init(rdev);
 		if (r)
@@ -1542,8 +2158,12 @@ int radeon_device_init(struct radeon_device *rdev,
 	radeon_audio_component_init(rdev);
 
 	r = radeon_ib_ring_tests(rdev);
-	if (r)
+	if (r) {
 		DRM_ERROR("ib ring test failed (%d).\n", r);
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->gpu_parked))
+			goto failed;
+	}
 
 	/*
 	 * Turks/Thames GPU will freeze whole laptop if DPM is not restarted
@@ -1584,8 +2204,10 @@ failed:
 	/* balance pm_runtime_get_sync() in radeon_driver_unload_kms() */
 	if (radeon_is_px(ddev))
 		pm_runtime_put_noidle(ddev->dev);
-	if (runtime)
+	if (rdev->switcheroo_domain_pm_initialized) {
 		vga_switcheroo_fini_domain_pm_ops(rdev->dev);
+		rdev->switcheroo_domain_pm_initialized = false;
+	}
 	return r;
 }
 
@@ -1597,20 +2219,30 @@ failed:
  * Tear down the driver info (all asics).
  * Called at driver shutdown.
  */
-void radeon_device_fini(struct radeon_device *rdev)
+int radeon_device_fini(struct radeon_device *rdev)
 {
+	int r;
+
+	r = radeon_rs4xx_terminal_ownership_error(rdev);
+	if (r)
+		return r;
+
 	DRM_INFO("radeon: finishing device.\n");
-	rdev->shutdown = true;
+	WRITE_ONCE(rdev->shutdown, true);
 	radeon_rs480_panic_unregister(rdev);
 	/* evict vram memory */
-	radeon_bo_evict_vram(rdev);
+	r = radeon_bo_evict_vram(rdev);
+	if (r && radeon_rs4xx_hardware_target(rdev))
+		return r;
+	r = radeon_rs4xx_terminal_ownership_error(rdev);
+	if (r)
+		return r;
 	radeon_audio_component_fini(rdev);
 	radeon_fini(rdev);
-	if (!pci_is_thunderbolt_attached(rdev->pdev))
-		vga_switcheroo_unregister_client(rdev->pdev);
-	if (rdev->flags & RADEON_IS_PX)
-		vga_switcheroo_fini_domain_pm_ops(rdev->dev);
-	vga_client_unregister(rdev->pdev);
+	r = radeon_rs4xx_terminal_ownership_error(rdev);
+	if (r)
+		return r;
+	radeon_device_fini_external_interfaces(rdev);
 	if (rdev->rio_mem)
 		pci_iounmap(rdev->pdev, rdev->rio_mem);
 	rdev->rio_mem = NULL;
@@ -1618,6 +2250,95 @@ void radeon_device_fini(struct radeon_device *rdev)
 	rdev->rmmio = NULL;
 	if (rdev->family >= CHIP_BONAIRE)
 		radeon_doorbell_fini(rdev);
+	return 0;
+}
+
+struct radeon_scanout_pin {
+	struct radeon_bo *bo;
+	unsigned int count;
+};
+
+static int radeon_scanout_pin_record(struct radeon_scanout_pin *pins,
+				     unsigned int *pin_count,
+				     unsigned int pin_limit,
+				     struct radeon_bo *bo)
+{
+	unsigned int pin_index;
+
+	for (pin_index = 0; pin_index < *pin_count; ++pin_index) {
+		if (pins[pin_index].bo == bo) {
+			pins[pin_index].count++;
+			return 0;
+		}
+	}
+	if (*pin_count == pin_limit)
+		return -E2BIG;
+	pins[*pin_count].bo = bo;
+	pins[*pin_count].count = 1;
+	(*pin_count)++;
+	return 0;
+}
+
+static int radeon_suspend_release_scanout_pins(struct radeon_device *rdev)
+{
+	struct radeon_scanout_pin pins[RADEON_MAX_CRTCS * 2] = { };
+	struct drm_device *dev = rdev_to_drm(rdev);
+	struct drm_crtc *crtc;
+	unsigned int pin_count = 0;
+	unsigned int pin_index;
+	unsigned int reserved = 0;
+	int r = 0;
+
+	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
+		struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
+		struct drm_framebuffer *fb = crtc->primary->fb;
+		struct radeon_bo *bo;
+
+		if (radeon_crtc->cursor_bo) {
+			bo = gem_to_radeon_bo(radeon_crtc->cursor_bo);
+			r = radeon_scanout_pin_record(pins, &pin_count,
+						      ARRAY_SIZE(pins), bo);
+			if (r)
+				return r;
+		}
+		if (!fb || !fb->obj[0])
+			continue;
+		bo = gem_to_radeon_bo(fb->obj[0]);
+		if (radeon_fbdev_robj_is_fb(rdev, bo))
+			continue;
+		r = radeon_scanout_pin_record(pins, &pin_count,
+					      ARRAY_SIZE(pins), bo);
+		if (r)
+			return r;
+	}
+
+	/* Every reservation succeeds before any pin count changes, so a busy BO
+	 * leaves the complete scanout ownership set intact for suspend rollback.
+	 */
+	for (reserved = 0; reserved < pin_count; ++reserved) {
+		r = ttm_bo_reserve(&pins[reserved].bo->tbo, false, true, NULL);
+		if (r)
+			goto unreserve;
+	}
+	for (pin_index = 0; pin_index < pin_count; ++pin_index) {
+		if (pins[pin_index].bo->tbo.pin_count < pins[pin_index].count) {
+			r = -EINVAL;
+			goto unreserve;
+		}
+	}
+	for (pin_index = 0; pin_index < pin_count; ++pin_index) {
+		unsigned int unpin_count;
+
+		for (unpin_count = 0;
+		     unpin_count < pins[pin_index].count;
+		     ++unpin_count)
+			radeon_bo_unpin(pins[pin_index].bo);
+	}
+
+unreserve:
+	while (reserved)
+		radeon_bo_unreserve(pins[--reserved].bo);
+	return r;
 }
 
 
@@ -1636,8 +2357,10 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 {
 	struct radeon_device *rdev;
 	struct pci_dev *pdev;
-	struct drm_crtc *crtc;
 	struct drm_connector *connector;
+	bool displays_disabled = true;
+	bool page_flip_buffers_released;
+	int suspend_result = 0;
 	int i, r;
 
 	if (dev == NULL || dev->dev_private == NULL) {
@@ -1650,55 +2373,118 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 	if (dev->switch_power_state == DRM_SWITCH_POWER_OFF)
 		return 0;
 
+	r = radeon_rs4xx_hardware_transition_begin(
+		rdev, RADEON_RS4XX_HARDWARE_RUNNING,
+		RADEON_RS4XX_HARDWARE_SUSPENDING);
+	if (r)
+		return r;
+	if (radeon_rs4xx_hardware_target(rdev))
+		cancel_delayed_work_sync(&rdev->rs4xx_flip_cleanup_work);
+
 	drm_kms_helper_poll_disable(dev);
+	if (!radeon_page_flip_quiesce(rdev)) {
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->gpu_parked)) {
+			r = -EIO;
+			goto rs4xx_suspend_parked;
+		}
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_RUNNING);
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->gpu_parked)) {
+			radeon_rs4xx_publish_parked_state(rdev);
+			return -EIO;
+		}
+		if (radeon_rs4xx_hardware_target(rdev))
+			queue_delayed_work(system_unbound_wq,
+					   &rdev->rs4xx_flip_cleanup_work, 0);
+		drm_kms_helper_poll_enable(dev);
+		return -EDEADLK;
+	}
 
 	drm_modeset_lock_all(dev);
 	/* turn off display hw */
 	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		drm_helper_connector_dpms(connector, DRM_MODE_DPMS_OFF);
+		int connector_result;
+
+		connector_result = drm_helper_connector_dpms(
+			connector, DRM_MODE_DPMS_OFF);
+		if (connector_result) {
+			displays_disabled = false;
+			if (!suspend_result)
+				suspend_result = connector_result;
+			DRM_ERROR("failed to disable connector %u: %d\n",
+				  connector->base.id, connector_result);
+		}
 	}
 	drm_modeset_unlock_all(dev);
+	page_flip_buffers_released =
+		radeon_page_flip_finalize_retained(rdev, displays_disabled);
+	page_flip_buffers_released &= displays_disabled;
 
-	/* unpin the front buffers and cursors */
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
-		struct drm_framebuffer *fb = crtc->primary->fb;
-		struct radeon_bo *robj;
+	if (page_flip_buffers_released)
+		r = radeon_suspend_release_scanout_pins(rdev);
+	else
+		r = -EBUSY;
+	if (r) {
+		if (!suspend_result)
+			suspend_result = r;
+		DRM_ERROR("retaining scanout buffers after display shutdown failure\n");
+	}
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->gpu_parked)) {
+		r = -EIO;
+		goto rs4xx_suspend_parked;
+	}
+	if (suspend_result && radeon_rs4xx_hardware_target(rdev)) {
+		drm_modeset_lock_all(dev);
+		list_for_each_entry(connector,
+				    &dev->mode_config.connector_list, head) {
+			int connector_result;
 
-		if (radeon_crtc->cursor_bo) {
-			struct radeon_bo *robj = gem_to_radeon_bo(radeon_crtc->cursor_bo);
-			r = radeon_bo_reserve(robj, false);
-			if (r == 0) {
-				radeon_bo_unpin(robj);
-				radeon_bo_unreserve(robj);
-			}
+			connector_result = drm_helper_connector_dpms(
+				connector, DRM_MODE_DPMS_ON);
+			if (connector_result)
+				DRM_ERROR("failed to restore connector %u: %d\n",
+					  connector->base.id, connector_result);
 		}
-
-		if (fb == NULL || fb->obj[0] == NULL) {
-			continue;
+		drm_modeset_unlock_all(dev);
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_RUNNING);
+		if (READ_ONCE(rdev->gpu_parked)) {
+			radeon_rs4xx_publish_parked_state(rdev);
+			return -EIO;
 		}
-		robj = gem_to_radeon_bo(fb->obj[0]);
-		/* don't unpin kernel fb objects */
-		if (!radeon_fbdev_robj_is_fb(rdev, robj)) {
-			r = radeon_bo_reserve(robj, false);
-			if (r == 0) {
-				radeon_bo_unpin(robj);
-				radeon_bo_unreserve(robj);
-			}
-		}
+		queue_delayed_work(system_unbound_wq,
+				   &rdev->rs4xx_flip_cleanup_work, 0);
+		drm_kms_helper_poll_enable(dev);
+		return suspend_result;
 	}
 	/* evict vram memory */
-	radeon_bo_evict_vram(rdev);
+	r = radeon_bo_evict_vram(rdev);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    (r || READ_ONCE(rdev->gpu_parked))) {
+		if (!r)
+			r = -EIO;
+		goto rs4xx_suspend_parked;
+	}
 
 	/* wait for gpu to finish processing current batch */
 	for (i = 0; i < RADEON_NUM_RINGS; i++) {
 		r = radeon_fence_wait_empty(rdev, i);
 		if (r) {
+			if (radeon_rs4xx_hardware_target(rdev))
+				goto rs4xx_suspend_parked;
 			/* delay GPU reset to resume */
 			radeon_fence_driver_force_completion(rdev, i);
 		} else {
 			/* finish executing delayed work */
 			flush_delayed_work(&rdev->fence_drv[i].lockup_work);
+		}
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->gpu_parked)) {
+			r = -EIO;
+			goto rs4xx_suspend_parked;
 		}
 	}
 
@@ -1706,12 +2492,23 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 
 	WRITE_ONCE(rdev->asic_suspended, true);
 	radeon_suspend(rdev);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->gpu_parked)) {
+		r = -EIO;
+		goto rs4xx_suspend_parked;
+	}
 	radeon_hpd_fini(rdev);
 	/* evict remaining vram memory
 	 * This second call to evict vram is to evict the gart page table
 	 * using the CPU.
 	 */
-	radeon_bo_evict_vram(rdev);
+	r = radeon_bo_evict_vram(rdev);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    (r || READ_ONCE(rdev->gpu_parked))) {
+		if (!r)
+			r = -EIO;
+		goto rs4xx_suspend_parked;
+	}
 
 	radeon_agp_suspend(rdev);
 
@@ -1732,7 +2529,27 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 		drm_client_dev_suspend(dev, false);
 #endif
 
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_SUSPENDED);
+
 	return 0;
+
+rs4xx_suspend_parked:
+	radeon_rs4xx_publish_parked_state(rdev);
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_PARKED);
+	return r;
+}
+
+static void radeon_rs4xx_system_resume_rollback(struct pci_dev *pdev)
+{
+	/* pci_restore_state may restore PCI_COMMAND_MASTER before enablement
+	 * fails. Save the cleared command register so a later resume retry
+	 * restores a device without bus mastering until enablement succeeds.
+	 */
+	pci_clear_master(pdev);
+	pci_save_state(pdev);
+	pci_set_power_state(pdev, PCI_D3hot);
 }
 
 /*
@@ -1753,20 +2570,50 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 	if (dev->switch_power_state == DRM_SWITCH_POWER_OFF)
 		return 0;
 
+	r = radeon_rs4xx_hardware_transition_begin(
+		rdev, RADEON_RS4XX_HARDWARE_SUSPENDED,
+		RADEON_RS4XX_HARDWARE_RESUMING);
+	/* RUNNING already satisfies resume and owns no transition to release. */
+	if (r == -EALREADY && radeon_rs4xx_hardware_target(rdev) &&
+	    !READ_ONCE(rdev->gpu_parked) &&
+	    atomic_read_acquire(&rdev->rs4xx_hardware_state) ==
+		RADEON_RS4XX_HARDWARE_RUNNING)
+		return 0;
+	if (r)
+		return r;
+
 	if (resume) {
 		pci_set_power_state(pdev, PCI_D0);
 		pci_restore_state(pdev);
-		if (pci_enable_device(pdev))
+		r = pci_enable_device(pdev);
+		if (r) {
+			if (radeon_rs4xx_hardware_target(rdev)) {
+				radeon_rs4xx_system_resume_rollback(pdev);
+				radeon_rs4xx_hardware_transition_end(
+					rdev, RADEON_RS4XX_HARDWARE_SUSPENDED);
+				return r;
+			}
 			return -1;
+		}
+		if (radeon_rs4xx_hardware_target(rdev))
+			pci_set_master(pdev);
 	}
 	/* resume AGP if in use */
 	radeon_agp_resume(rdev);
-	radeon_resume(rdev);
-	WRITE_ONCE(rdev->asic_suspended, false);
+	r = radeon_resume(rdev);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    (r || READ_ONCE(rdev->gpu_parked))) {
+		if (!r)
+			r = -EIO;
+		goto rs4xx_resume_parked;
+	}
 
 	r = radeon_ib_ring_tests(rdev);
-	if (r)
+	if (r) {
+		if (radeon_rs4xx_hardware_target(rdev))
+			goto rs4xx_resume_parked;
 		DRM_ERROR("ib ring test failed (%d).\n", r);
+	}
 
 	if ((rdev->pm.pm_method == PM_METHOD_DPM) && rdev->pm.dpm_enabled) {
 		/* do dpm late init */
@@ -1778,6 +2625,11 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 	} else {
 		/* resume old pm late */
 		radeon_pm_resume(rdev);
+	}
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->gpu_parked)) {
+		r = -EIO;
+		goto rs4xx_resume_parked;
 	}
 
 	radeon_restore_bios_scratch_regs(rdev);
@@ -1801,6 +2653,11 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 				radeon_bo_unreserve(robj);
 			}
 		}
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->gpu_parked)) {
+			r = -EIO;
+			goto rs4xx_resume_parked;
+		}
 	}
 
 	/* init dig PHYs, disp eng pll */
@@ -1820,6 +2677,11 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 	/* blat the mode back in */
 	if (notify_clients) {
 		drm_helper_resume_force_mode(dev);
+		if (radeon_rs4xx_hardware_target(rdev) &&
+		    READ_ONCE(rdev->gpu_parked)) {
+			r = -EIO;
+			goto rs4xx_resume_parked;
+		}
 		/* turn on display hw */
 		drm_modeset_lock_all(dev);
 		list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
@@ -1828,11 +2690,27 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 		drm_modeset_unlock_all(dev);
 	}
 
-	drm_kms_helper_poll_enable(dev);
-
 	/* set the power state here in case we are a PX system or headless */
 	if ((rdev->pm.pm_method == PM_METHOD_DPM) && rdev->pm.dpm_enabled)
 		radeon_pm_compute_clocks(rdev);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->gpu_parked)) {
+		r = -EIO;
+		goto rs4xx_resume_parked;
+	}
+
+	WRITE_ONCE(rdev->asic_suspended, false);
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_RUNNING);
+	if (radeon_rs4xx_hardware_target(rdev) &&
+	    READ_ONCE(rdev->gpu_parked)) {
+		radeon_rs4xx_publish_parked_state(rdev);
+		return -EIO;
+	}
+	if (radeon_rs4xx_hardware_target(rdev))
+		queue_delayed_work(system_unbound_wq,
+				   &rdev->rs4xx_flip_cleanup_work, 0);
+	drm_kms_helper_poll_enable(dev);
 
 	if (notify_clients)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
@@ -1842,6 +2720,13 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 #endif
 
 	return 0;
+
+rs4xx_resume_parked:
+	radeon_rs4xx_publish_parked_state(rdev);
+	dev_err(rdev->dev, "RS4xx resume failed: GPU remains parked (%d)\n", r);
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_PARKED);
+	return r;
 }
 
 /**
@@ -1856,30 +2741,90 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 				     bool force_reset)
 {
-	unsigned ring_sizes[RADEON_NUM_RINGS];
-	uint32_t *ring_data[RADEON_NUM_RINGS];
+	struct drm_crtc *reset_crtc;
+	unsigned ring_sizes[RADEON_NUM_RINGS] = { };
+	uint32_t *ring_data[RADEON_NUM_RINGS] = { };
 
 	bool saved = false;
 	bool gpu_parked;
+	bool irq_installed = false;
+	bool page_flips_drained = true;
+	bool rs4xx_reset;
+	unsigned int released_ring_count = 0;
+	unsigned int released_ring_dwords = 0;
+	unsigned int reset_crtcs_expected = 0;
+	unsigned long irqflags;
 
 	int i, r;
 
-	down_write(&rdev->exclusive_lock);
+	rs4xx_reset = radeon_rs4xx_hardware_target(rdev);
+	if (rs4xx_reset) {
+		r = radeon_rs4xx_hardware_transition_begin(
+			rdev, RADEON_RS4XX_HARDWARE_RUNNING,
+			RADEON_RS4XX_HARDWARE_RESETTING);
+		if (r)
+			return r;
+	}
 
-	if (!force_reset && !rdev->needs_reset) {
+	down_write(&rdev->exclusive_lock);
+	if (READ_ONCE(rdev->gpu_parked)) {
+		WRITE_ONCE(rdev->needs_reset, false);
 		up_write(&rdev->exclusive_lock);
+		dev_err_once(rdev->dev,
+			     "RS4xx reset re-entry refused after terminal park\n");
+		if (rs4xx_reset)
+			radeon_rs4xx_hardware_transition_end(
+				rdev, RADEON_RS4XX_HARDWARE_PARKED);
+		return -EIO;
+	}
+	if (!force_reset && !READ_ONCE(rdev->needs_reset)) {
+		if (READ_ONCE(rdev->gpu_parked)) {
+			WRITE_ONCE(rdev->needs_reset, false);
+			up_write(&rdev->exclusive_lock);
+			if (rs4xx_reset)
+				radeon_rs4xx_hardware_transition_end(
+					rdev, RADEON_RS4XX_HARDWARE_PARKED);
+			return -EIO;
+		}
+		up_write(&rdev->exclusive_lock);
+		if (rs4xx_reset)
+			radeon_rs4xx_hardware_transition_end(
+				rdev, RADEON_RS4XX_HARDWARE_RUNNING);
 		return 0;
 	}
 
-	if (rdev->gpu_parked) {
-		rdev->needs_reset = false;
-		up_write(&rdev->exclusive_lock);
-		dev_err_once(rdev->dev,
-			     "parked: refusing radeon_gpu_reset re-entry\n");
-		return -EIO;
-	}
 	if (force_reset)
-		rdev->needs_reset = true;
+		WRITE_ONCE(rdev->needs_reset, true);
+
+	if (rs4xx_reset) {
+		/* The RESETTING admission state closes before the writer lock and
+		 * drains every admitted hardware transaction. The anonymous GEM
+		 * mapping invalidation then removes CPU aperture PTEs before reset
+		 * performs its first register access.
+		 */
+		WRITE_ONCE(rdev->in_reset, true);
+		unmap_mapping_range(rdev_to_drm(rdev)->anon_inode->i_mapping,
+				    0, 0, 1);
+		irq_installed = READ_ONCE(rdev->irq.installed);
+		if (irq_installed)
+			synchronize_irq(rdev->pdev->irq);
+		cancel_delayed_work_sync(&rdev->pm.dynpm_idle_work);
+		if (irq_installed) {
+			cancel_delayed_work_sync(&rdev->hotplug_work);
+			cancel_work_sync(&rdev->dp_work);
+		}
+		drm_kms_helper_poll_disable(rdev_to_drm(rdev));
+		cancel_delayed_work_sync(&rdev->rs4xx_flip_cleanup_work);
+		page_flips_drained = radeon_page_flip_quiesce(rdev);
+		if (READ_ONCE(rdev->gpu_parked)) {
+			radeon_rs4xx_publish_parked_state(rdev);
+			WRITE_ONCE(rdev->in_reset, false);
+			up_write(&rdev->exclusive_lock);
+			radeon_rs4xx_hardware_transition_end(
+				rdev, RADEON_RS4XX_HARDWARE_PARKED);
+			return -EIO;
+		}
+	}
 
 	atomic_inc(&rdev->gpu_reset_counter);
 
@@ -1898,7 +2843,7 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 	if (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) {
 		u32 rbbm_status = RREG32(RADEON_RBBM_STATUS);
 
-		DRM_ERROR("=== RS482 CRASH SHIM TRIGGERED ===\n");
+		DRM_ERROR("RS4xx reset preflight register capture\n");
 		DRM_ERROR("RBBM_STATUS: 0x%08X\n", rbbm_status);
 		DRM_ERROR("CP_RB_CNTL: 0x%08X\n", RREG32(RADEON_CP_RB_CNTL));
 		DRM_ERROR("CP_RB_RPTR: 0x%08X\n", RREG32(RADEON_CP_RB_RPTR));
@@ -1908,14 +2853,29 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 			DRM_ERROR("RB3D_DSTCACHE_CTLSTAT: skipped, 3D register bus wedged\n");
 		else
 			DRM_ERROR("RB3D_DSTCACHE_CTLSTAT: 0x%08X\n", RREG32(0x4E4C));
-		DRM_ERROR("==================================\n");
 	}
 
 	radeon_save_bios_scratch_regs(rdev);
 	radeon_suspend(rdev);
+	if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+		radeon_rs4xx_publish_parked_state(rdev);
+		WRITE_ONCE(rdev->in_reset, false);
+		up_write(&rdev->exclusive_lock);
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_PARKED);
+		return -EIO;
+	}
 	radeon_hpd_fini(rdev);
 
 	for (i = 0; i < RADEON_NUM_RINGS; ++i) {
+		if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+			r = -EIO;
+			gpu_parked = true;
+			radeon_rs4xx_publish_parked_state(rdev);
+			dev_err(rdev->dev,
+				"RS4xx reset stops before ASIC reset after terminal park\n");
+			goto rs4xx_reset_release_ring_copies;
+		}
 		ring_sizes[i] = radeon_ring_backup(rdev, &rdev->ring[i],
 						   &ring_data[i]);
 		if (ring_sizes[i]) {
@@ -1926,6 +2886,14 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 	}
 
 	r = radeon_asic_reset(rdev);
+	if (!r) {
+		int resume_result;
+
+		dev_info(rdev->dev, "GPU reset succeeded, trying to resume\n");
+		resume_result = radeon_resume(rdev);
+		if (rs4xx_reset && resume_result)
+			r = resume_result;
+	}
 
 	/* Park the GPU when the ASIC reset fails on an RS400/RS480 IGP.
 	 *
@@ -1942,89 +2910,71 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 	 * frontend, and the stage breadcrumbs let netconsole pin any residual
 	 * hazard to an exact instruction window.
 	 */
-	gpu_parked = (r != 0) &&
-		(rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400);
-	if (gpu_parked)
+	gpu_parked = rs4xx_reset &&
+		(r != 0 || READ_ONCE(rdev->gpu_parked));
+	if (gpu_parked) {
+		if (!r)
+			r = -EIO;
+		/* The terminal latch and IRQ removal precede every failed-reset
+		 * cleanup operation. Fence publication remains CPU-only.
+		 */
+		radeon_rs4xx_publish_parked_state(rdev);
 		dev_err(rdev->dev, "RS480 reset failed: parking GPU, skipping resume-side access\n");
-
-	if (!r) {
-		dev_info(rdev->dev, "GPU reset succeeded, trying to resume\n");
-		radeon_resume(rdev);
 	}
 
-	if (gpu_parked)
-		dev_err(rdev->dev, "parked: restoring BIOS scratch (posted writes)\n");
-	radeon_restore_bios_scratch_regs(rdev);
+rs4xx_reset_release_ring_copies:
+	if (!gpu_parked)
+		radeon_restore_bios_scratch_regs(rdev);
 
 	for (i = 0; i < RADEON_NUM_RINGS; ++i) {
+		if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+			gpu_parked = true;
+			if (!r)
+				r = -EIO;
+		}
 		if (!r && ring_data[i]) {
-			radeon_ring_restore(rdev, &rdev->ring[i],
-					    ring_sizes[i], ring_data[i]);
-		} else {
-			if (gpu_parked) {
-				msleep(1);
-				dev_err(rdev->dev, "parked: force-completing fences on ring %d\n", i);
+			int restore_result;
+
+			restore_result = radeon_ring_restore(
+				rdev, &rdev->ring[i], ring_sizes[i], ring_data[i]);
+			if (restore_result) {
+				kvfree(ring_data[i]);
+				if (rs4xx_reset) {
+					r = restore_result;
+					radeon_rs4xx_latch_parked_state(rdev);
+					gpu_parked = true;
+				}
 			}
+			ring_data[i] = NULL;
+		} else if (!gpu_parked) {
 			radeon_fence_driver_force_completion(rdev, i);
-			kfree(ring_data[i]);
+			kvfree(ring_data[i]);
+			ring_data[i] = NULL;
+		} else {
+			if (ring_data[i]) {
+				released_ring_count++;
+				released_ring_dwords += ring_sizes[i];
+			}
+			kvfree(ring_data[i]);
+			ring_data[i] = NULL;
+		}
+		if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+			gpu_parked = true;
+			if (!r)
+				r = -EIO;
 		}
 	}
 
 	if (gpu_parked) {
-		/* Paced breadcrumbs: netconsole netpoll has no flow control and
-		 * drops frames under printk bursts; a millisecond between lines
-		 * keeps every stage on the wire so the off-box capture pins a
-		 * death to one instruction window.
-		 */
-		msleep(1);
-		dev_err(rdev->dev, "parked: acceleration off, skipping pm/atom/hpd/modeset resume\n");
-		rdev->accel_working = false;
-		/* Stop TTM blit eviction choosing the copy ring after park. */
-		for (i = 0; i < RADEON_NUM_RINGS; ++i)
-			rdev->ring[i].ready = false;
-		rdev->gpu_parked = true;
-		for (i = 0; i < RADEON_NUM_RINGS; ++i)
-			cancel_delayed_work(&rdev->fence_drv[i].lockup_work);
-		/* free_irq uses the same dev_id as request_irq so only the radeon
-		 * handler is removed. disable_irq would mask a shared PCI line.
-		 * The IRQ handler also early-returns under gpu_parked.
-		 */
-		dev_err(rdev->dev, "parked: freeing radeon IRQ handler (shared-line safe)\n");
-		free_irq(rdev->pdev->irq, rdev_to_drm(rdev));
-		msleep(1);
-		/* Zap GEM CPU mappings immediately so a live VRAM PTE cannot be
-		 * touched during the drain sleeps. Page-table only, no MMIO.
-		 */
-		dev_err(rdev->dev, "parked: zapping userspace GEM mappings (SIGBUS on re-fault)\n");
-		unmap_mapping_range(rdev_to_drm(rdev)->anon_inode->i_mapping,
-				    0, 0, 1);
-		msleep(1);
-		/* Drain remaining delayed works after gpu_parked is latched. */
-		dev_err(rdev->dev, "parked: draining fence lockup works (sync)\n");
-		for (i = 0; i < RADEON_NUM_RINGS; ++i)
-			cancel_delayed_work_sync(&rdev->fence_drv[i].lockup_work);
-		msleep(1);
-		dev_err(rdev->dev, "parked: draining dynpm idle work (sync)\n");
-		cancel_delayed_work_sync(&rdev->pm.dynpm_idle_work);
-		msleep(1);
-		dev_err(rdev->dev, "parked: draining hotplug work (sync)\n");
-		cancel_delayed_work_sync(&rdev->hotplug_work);
-		msleep(1);
-		dev_err(rdev->dev, "parked: disabling KMS output poll worker (sync)\n");
-		drm_kms_helper_poll_disable(rdev_to_drm(rdev));
-		msleep(1);
-		dev_err(rdev->dev, "parked: async agents quiesced, entering quiet epoch\n");
-		rdev->in_reset = true;
-		rdev->needs_reset = false;
-		msleep(1);
-		dev_err(rdev->dev, "parked: downgrading exclusive lock\n");
+		radeon_rs4xx_publish_parked_state(rdev);
 		downgrade_write(&rdev->exclusive_lock);
-		msleep(1);
-		dev_info(rdev->dev, "GPU reset failed, GPU parked, host kept alive\n");
-		rdev->in_reset = false;
+		WRITE_ONCE(rdev->in_reset, false);
 		up_read(&rdev->exclusive_lock);
-		msleep(1);
-		dev_err(rdev->dev, "parked: radeon_gpu_reset returning %d to caller\n", r);
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_PARKED);
+		dev_err(rdev->dev,
+			"RS4xx reset failed: GPU parked, released command copies rings=%u dwords=%u, error=%d\n",
+			released_ring_count, released_ring_dwords, r);
 		return r;
 	}
 
@@ -2038,6 +2988,14 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 	} else {
 		/* resume old pm late */
 		radeon_pm_resume(rdev);
+	}
+	if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+		radeon_rs4xx_publish_parked_state(rdev);
+		WRITE_ONCE(rdev->in_reset, false);
+		up_write(&rdev->exclusive_lock);
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_PARKED);
+		return -EIO;
 	}
 
 	/* init dig PHYs, disp eng pll */
@@ -2054,13 +3012,63 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 	}
 	/* reset hpd state */
 	radeon_hpd_init(rdev);
+	if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+		radeon_rs4xx_publish_parked_state(rdev);
+		WRITE_ONCE(rdev->in_reset, false);
+		up_write(&rdev->exclusive_lock);
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_PARKED);
+		return -EIO;
+	}
 
-	rdev->in_reset = true;
-	rdev->needs_reset = false;
+	WRITE_ONCE(rdev->needs_reset, false);
+	if (rs4xx_reset) {
+		spin_lock_irqsave(&rdev->irq.lock, irqflags);
+		if (READ_ONCE(rdev->irq.installed) &&
+		    !READ_ONCE(rdev->gpu_parked))
+			radeon_irq_set(rdev);
+		spin_unlock_irqrestore(&rdev->irq.lock, irqflags);
+	} else {
+		rdev->in_reset = true;
+	}
 
 	downgrade_write(&rdev->exclusive_lock);
 
+	if (rs4xx_reset) {
+		list_for_each_entry(reset_crtc,
+				    &rdev_to_drm(rdev)->mode_config.crtc_list,
+				    head)
+			if (reset_crtc->enabled)
+				reset_crtcs_expected++;
+		WRITE_ONCE(rdev->rs4xx_reset_reprogram_failed, false);
+		WRITE_ONCE(rdev->rs4xx_reset_reprogram_completed, 0);
+		WRITE_ONCE(rdev->rs4xx_reset_reprogramming, true);
+	}
 	drm_helper_resume_force_mode(rdev_to_drm(rdev));
+	if (rs4xx_reset) {
+		WRITE_ONCE(rdev->rs4xx_reset_reprogramming, false);
+		if (READ_ONCE(rdev->gpu_parked) ||
+		    READ_ONCE(rdev->rs4xx_reset_reprogram_failed) ||
+		    READ_ONCE(rdev->rs4xx_reset_reprogram_completed) !=
+			reset_crtcs_expected) {
+			dev_err(rdev->dev,
+				"RS4xx reset display restore failed: expected=%u completed=%u\n",
+				reset_crtcs_expected,
+				READ_ONCE(rdev->rs4xx_reset_reprogram_completed));
+			r = -EIO;
+			goto rs4xx_reset_parked_after_downgrade;
+		}
+		if (!radeon_page_flip_finalize_retained(rdev, true))
+			page_flips_drained = false;
+		if (!page_flips_drained)
+			queue_delayed_work(system_unbound_wq,
+					   &rdev->rs4xx_flip_cleanup_work,
+					   0);
+		if (READ_ONCE(rdev->gpu_parked)) {
+			r = -EIO;
+			goto rs4xx_reset_parked_after_downgrade;
+		}
+	}
 
 	/* set the power state here in case we are a PX system or headless */
 	if ((rdev->pm.pm_method == PM_METHOD_DPM) && rdev->pm.dpm_enabled)
@@ -2068,6 +3076,8 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 
 	if (!r) {
 		r = radeon_ib_ring_tests(rdev);
+		if (rs4xx_reset && READ_ONCE(rdev->gpu_parked))
+			goto rs4xx_reset_parked_after_downgrade;
 		if (r && saved)
 			r = -EAGAIN;
 	} else {
@@ -2075,10 +3085,34 @@ static int radeon_gpu_reset_internal(struct radeon_device *rdev,
 		dev_info(rdev->dev, "GPU reset failed\n");
 	}
 
-	rdev->needs_reset = r == -EAGAIN;
-	rdev->in_reset = false;
-
+	if (rs4xx_reset && READ_ONCE(rdev->gpu_parked)) {
+		if (!r)
+			r = -EIO;
+		goto rs4xx_reset_parked_after_downgrade;
+	}
+	WRITE_ONCE(rdev->needs_reset, r == -EAGAIN);
+	WRITE_ONCE(rdev->in_reset, false);
 	up_read(&rdev->exclusive_lock);
+	if (rs4xx_reset) {
+		radeon_rs4xx_hardware_transition_end(
+			rdev, RADEON_RS4XX_HARDWARE_RUNNING);
+		if (READ_ONCE(rdev->gpu_parked)) {
+			radeon_rs4xx_publish_parked_state(rdev);
+			return -EIO;
+		}
+		drm_kms_helper_poll_enable(rdev_to_drm(rdev));
+	}
+	return r;
+
+rs4xx_reset_parked_after_downgrade:
+	if (!r)
+		r = -EIO;
+	radeon_rs4xx_publish_parked_state(rdev);
+	WRITE_ONCE(rdev->needs_reset, false);
+	WRITE_ONCE(rdev->in_reset, false);
+	up_read(&rdev->exclusive_lock);
+	radeon_rs4xx_hardware_transition_end(
+		rdev, RADEON_RS4XX_HARDWARE_PARKED);
 	return r;
 }
 
