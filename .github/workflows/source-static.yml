@@ -461,6 +461,10 @@ jobs:
         run: python3 scripts/check_all_dev_interfaces.py --self-test
       - name: all-dev interface inventory
         run: python3 scripts/check_all_dev_interfaces.py
+      - name: Radeon debugfs registration calibration
+        run: python3 scripts/check_radeon_debugfs_registration.py --selftest
+      - name: Radeon debugfs registration contract
+        run: python3 scripts/check_radeon_debugfs_registration.py
       - name: parked admission guard calibration
         run: python3 scripts/check_parked_admission_guards.py --selftest
       - name: parked admission guards
@@ -469,6 +473,14 @@ jobs:
         run: python3 scripts/check_parked_entry_policy.py --selftest
       - name: parked entry policy
         run: python3 scripts/check_parked_entry_policy.py
+      - name: RS4xx hardware transition calibration
+        run: python3 scripts/check_rs4xx_hardware_transition_contract.py --selftest
+      - name: RS4xx hardware transition contract
+        run: python3 scripts/check_rs4xx_hardware_transition_contract.py
+      - name: RS4xx hardware admission calibration
+        run: python3 scripts/check_rs4xx_hardware_admission_contract.py --selftest
+      - name: RS4xx hardware admission contract
+        run: python3 scripts/check_rs4xx_hardware_admission_contract.py
       - name: RS4xx GART cache policy calibration
         run: python3 scripts/check_rs4xx_gart_cache_policy.py --selftest
       - name: RS4xx GART cache policy
