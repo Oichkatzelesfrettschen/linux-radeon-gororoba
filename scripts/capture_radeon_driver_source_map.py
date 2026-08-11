@@ -9109,6 +9109,7 @@ def verify_capture(
                     entry_map,
                     root / "source",
                     source_path_prefix=cscope_source_path_prefix,
+                    strict_text=False,
                 )
             )
     reparsed_cscope_rows.sort(
