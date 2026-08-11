@@ -100,7 +100,7 @@ EXPECTED_BINDING_DENOMINATOR_COUNT = 70
 EXPECTED_BINDING_DENOMINATOR_SHA256 = (
     "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 )
-EXPECTED_SELFTEST_VERDICT_COUNT = 254
+EXPECTED_SELFTEST_VERDICT_COUNT = 255
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -4169,10 +4169,13 @@ def parse_cscope_rows(
             (source_root / source_path).read_text(encoding="utf-8").splitlines()
         )
         source_line = int(line_text)
-        require(
-            source_line <= len(source_lines),
-            f"cscope line is outside {source_path}: {source_line}",
-        )
+        if source_line > len(source_lines):
+            if strict_text:
+                require(
+                    False,
+                    f"cscope line is outside {source_path}: {source_line}",
+                )
+            continue
         normalized_source = source_text.strip()
         if normalized_source != source_lines[source_line - 1].strip():
             # Cscope can mis-bind a few call sites on this corpus. Strict
@@ -12115,6 +12118,18 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 cscope_entries,
                 cscope_source_root,
             ),
+        )
+        check(
+            "cscope production parser drops an out-of-range mis-bound row",
+            parse_cscope_rows(
+                f"{cscope_path} cscope_test 99 return 0;\n".encode("ascii"),
+                "definition",
+                "cscope_test",
+                cscope_entries,
+                cscope_source_root,
+                strict_text=False,
+            )
+            == [],
         )
         rejects(
             "cscope parser rejects changed source text",
