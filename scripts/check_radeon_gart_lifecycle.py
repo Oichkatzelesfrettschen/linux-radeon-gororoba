@@ -1961,8 +1961,7 @@ def check_terminal_ownership(root: Path) -> None:
             "r = radeon_bo_fini(rdev);",
             "if (r) return;",
             "radeon_atombios_fini(rdev);",
-            "kfree(rdev->bios);",
-            "rdev->bios = NULL;",
+            "radeon_bios_fini(rdev);",
         ),
     )
     require_order(

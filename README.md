@@ -157,7 +157,7 @@ or runtime execution.
 
 The RS482 VRAM and GTT capacity contract contributes 73 partition bound roots,
 13 exact hazards, 55 exact declared bindings, and six contextual witnesses.
-The integrated RS4xx policy closes 125 roots, 31 hazards, 70 bindings, and
+The integrated Radeon policy closes 129 roots, 33 hazards, 70 bindings, and
 eight witnesses. The added failed-reset graph covers terminal state
 publication, hardware-access admission, retained GART and TTM ownership, PCI
 runtime and system resume rollback, system power callbacks, switcheroo state,
@@ -288,6 +288,14 @@ The active RS4xx hardware and memory source model has four finite owners:
   four-selector matrix, exclusion ledger, coefficient ledger, source-lineage
   ledger, and narrative live beside it in `policy/` and
   `docs/rs4xx-vram-gtt-capacity-contract.md`.
+
+The firmware parser adds a separate bounded input owner.
+`docs/radeon-combios-bounded-rom-contract.md` defines BIOS acquisition extent,
+first PCI image admission, COMBIOS table preflight, exact offline RS482 ROM
+replay, and the ATOM parser nonclaim. It changes driver C behavior by refusing
+an invalid firmware span before hardware driving commands execute. The capacity
+authority at commit `6667d7561617debdc62cf99c62fb47bd67f95043` remains a
+source policy intake and does not claim a driver C behavior change.
 
 All four ledgers separate source status from runtime and silicon status. The
 transition contract proves finite source ordering, not scheduler interleavings

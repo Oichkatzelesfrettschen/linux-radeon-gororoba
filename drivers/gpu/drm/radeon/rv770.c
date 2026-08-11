@@ -2013,8 +2013,7 @@ void rv770_fini(struct radeon_device *rdev)
 	radeon_agp_fini(rdev);
 	radeon_bo_fini(rdev);
 	radeon_atombios_fini(rdev);
-	kfree(rdev->bios);
-	rdev->bios = NULL;
+	radeon_bios_fini(rdev);
 }
 
 static void rv770_pcie_gen2_enable(struct radeon_device *rdev)

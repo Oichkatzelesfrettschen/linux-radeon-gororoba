@@ -327,8 +327,8 @@ The work proceeds through explicit gates:
 2. The capacity contract contributes exactly 73 partition bound roots, 13
    hazards, 55 declared bindings, and six contextual witnesses across the
    request, selector, address fit, allocator, GART, ioctl, debugfs, and raw
-   reader structural boundaries. The integrated live policy closes 125 roots,
-   31 hazards, 70 bindings, and eight witnesses. A fresh source map remains a
+   reader structural boundaries. The integrated live policy closes 129 roots,
+   33 hazards, 70 bindings, and eight witnesses. A fresh source map remains a
    lexical candidate graph rather than runtime proof.
 3. A read-only exact-target production baseline records the loaded request,
    effective GTT interval, GART state, allocator counters, device identity,

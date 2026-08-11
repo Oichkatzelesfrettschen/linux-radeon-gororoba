@@ -1367,8 +1367,8 @@ bool radeon_boot_test_post_card(struct radeon_device *rdev)
 		DRM_INFO("GPU not posted. posting now...\n");
 		if (rdev->is_atom_bios)
 			atom_asic_init(rdev->mode_info.atom_context);
-		else
-			radeon_combios_asic_init(rdev_to_drm(rdev));
+		else if (radeon_combios_asic_init(rdev_to_drm(rdev)))
+			return false;
 		return true;
 	} else {
 		dev_err(rdev->dev, "Card not posted and no BIOS - ignoring\n");

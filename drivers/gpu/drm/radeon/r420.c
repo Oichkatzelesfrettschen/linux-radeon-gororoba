@@ -322,7 +322,9 @@ int r420_resume(struct radeon_device *rdev)
 	if (rdev->is_atom_bios) {
 		atom_asic_init(rdev->mode_info.atom_context);
 	} else {
-		radeon_combios_asic_init(rdev_to_drm(rdev));
+		r = radeon_combios_asic_init(rdev_to_drm(rdev));
+		if (r)
+			return r;
 	}
 	/* Resume clock after posting */
 	r420_clock_resume(rdev);
@@ -371,8 +373,7 @@ void r420_fini(struct radeon_device *rdev)
 	} else {
 		radeon_combios_fini(rdev);
 	}
-	kfree(rdev->bios);
-	rdev->bios = NULL;
+	radeon_bios_fini(rdev);
 }
 
 int r420_init(struct radeon_device *rdev)
