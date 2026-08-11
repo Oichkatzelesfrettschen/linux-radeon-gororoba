@@ -3549,7 +3549,7 @@ int radeon_combios_asic_init(struct drm_device *dev)
 
 	/* port hardcoded mac stuff from radeonfb */
 	if (rdev->bios == NULL)
-		return -EINVAL;
+		return 0;
 	skip_dyn_clk_1 =
 		(rdev->family == CHIP_RS480 &&
 		 rdev->pdev->subsystem_vendor == 0x103c &&

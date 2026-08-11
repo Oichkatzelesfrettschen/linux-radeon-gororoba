@@ -15,7 +15,7 @@ from check_all_dev_interfaces import InterfaceError, function_body
 DRIVER = Path("drivers/gpu/drm/radeon")
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_ROM_BYTES = 1024 * 1024
-EXPECTED_BAD_COUNT = 10
+EXPECTED_BAD_COUNT = 12
 
 
 class BiosContractError(RuntimeError):
@@ -122,6 +122,10 @@ def validate_sources(sources: dict[str, str]) -> None:
         "image_size > rdev->bios_size" in get_bios,
         "PCI image length ceiling is absent",
     )
+    require(
+        "pcir > image_size || 0x18 > image_size - pcir" in get_bios,
+        "PCI image PCIR ceiling is absent",
+    )
 
     acquisition_tokens = (
         "rdev->bios_size = size;",
@@ -151,6 +155,10 @@ def validate_sources(sources: dict[str, str]) -> None:
     )
 
     asic_init = body(combios, "radeon_combios_asic_init")
+    require(
+        "if (rdev->bios == NULL)\n\t\treturn 0;" in asic_init,
+        "missing BIOS no-op differs",
+    )
     require_order(
         asic_init,
         (
@@ -206,6 +214,7 @@ def admit_pci_image(image: bytes) -> tuple[bytes, int]:
     declared_size = u16(image, pcir + 0x10) * 512
     require(declared_size > 0, "PCI image declares zero bytes")
     require(declared_size <= len(image), "PCI image exceeds the copied ROM")
+    require(pcir + 0x18 <= declared_size, "PCIR span exceeds the declared image")
     require(image[pcir + 0x14] == 0, "PCI image is not x86 code")
     image = image[:declared_size]
     header = u16(image, 0x48)
@@ -310,6 +319,20 @@ def self_test(sources: dict[str, str]) -> None:
             "PCI image admission is incomplete",
         ),
         (
+            "missing-pcir-image-span",
+            "radeon_bios.c",
+            "pcir > image_size || 0x18 > image_size - pcir",
+            "false",
+            "PCI image PCIR ceiling is absent",
+        ),
+        (
+            "missing-bios-noop",
+            "radeon_combios.c",
+            "if (rdev->bios == NULL)\n\t\treturn 0;",
+            "if (rdev->bios == NULL)\n\t\treturn -EINVAL;",
+            "missing BIOS no-op differs",
+        ),
+        (
             "missing-edid-base-span",
             "radeon_combios.c",
             "radeon_bios_span_valid(rdev, edid_info, EDID_LENGTH)",
@@ -375,6 +398,17 @@ def self_test(sources: dict[str, str]) -> None:
         pass
     else:
         raise BiosContractError("oversized PCI image accepted")
+    bad_image = bytearray(image)
+    bad_image[0x18:0x1A] = (0x280).to_bytes(2, "little")
+    bad_image[0x280:0x284] = b"PCIR"
+    bad_image[0x290:0x292] = (1).to_bytes(2, "little")
+    bad_image[0x294] = 0
+    try:
+        admit_pci_image(bytes(bad_image))
+    except BiosContractError:
+        pass
+    else:
+        raise BiosContractError("PCIR beyond the declared image accepted")
 
 
 def main() -> int:

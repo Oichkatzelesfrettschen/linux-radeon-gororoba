@@ -96,7 +96,7 @@ ruff check scripts/
 ruff format --check scripts/
 ```
 
-The self test admits the current source and rejects ten mutations covering
+The self test admits the current source and rejects twelve mutations covering
 direct BIOS access, missing extent ownership, arithmetic overflow, ATRM and
 VFCT overrun, missing PCI image identity, incomplete EDID bounds, execution
 before preflight, and missing TMDS preflight. Both required kernel module lanes

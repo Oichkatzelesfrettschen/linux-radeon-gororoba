@@ -775,7 +775,8 @@ bool radeon_get_bios(struct radeon_device *rdev)
 		goto free_bios;
 	}
 	image_size = (size_t)RBIOS16(pcir + 0x10) * 512;
-	if (!image_size || image_size > rdev->bios_size) {
+	if (!image_size || image_size > rdev->bios_size ||
+	    pcir > image_size || 0x18 > image_size - pcir) {
 		DRM_INFO("PCI BIOS image length is invalid.\n");
 		goto free_bios;
 	}
