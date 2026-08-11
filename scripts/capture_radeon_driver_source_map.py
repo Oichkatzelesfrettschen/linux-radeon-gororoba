@@ -4527,6 +4527,7 @@ def replay_cscope_queries(
                     entries,
                     source_root,
                     source_path_prefix=source_path_prefix,
+                    strict_text=False,
                 )
             )
     replayed_rows.sort(key=lambda row: (row[0], row[1], row[2], row[4], row[3], row[5]))
