@@ -125,7 +125,8 @@ VFCT overrun, missing PCI image identity, incomplete EDID bounds, execution
 before preflight, and missing TMDS preflight. Both required kernel module lanes
 must also compile with warnings treated as errors.
 
-The ATOM self test admits the current source and rejects thirteen mutations
+The ATOM self test admits the current source and rejects seventeen mutations
 covering missing image extent, overflow, unbounded reads, command underflow and
 overflow, opcode fetch bypass, operand-triggered register access, nested-table
-interval restoration, malformed indirect IO, and raw master-table access.
+interval restoration, nested parameter windows, workspace failure cleanup,
+malformed indirect IO, and raw master-table access.

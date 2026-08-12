@@ -226,7 +226,8 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 			return 0;
 		/* get_unaligned_le32 avoids unaligned accesses from atombios
 		 * tables, noticed on a DEC Alpha. */
-		if (idx < ctx->ps_size)
+		if (ctx->ps_size >= sizeof(u32) &&
+		    idx <= (ctx->ps_size - sizeof(u32)) / sizeof(u32))
 			val = get_unaligned_le32((u32 *)&ctx->ps[idx]);
 		else
 			pr_info("PS index out of range: %i > %i\n", idx, ctx->ps_size);
@@ -521,7 +522,8 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 		if (gctx->io_error)
 			return;
 		DEBUG("PS[0x%02X]", idx);
-		if (idx >= ctx->ps_size) {
+		if (ctx->ps_size < sizeof(u32) ||
+		    idx > (ctx->ps_size - sizeof(u32)) / sizeof(u32)) {
 			pr_info("PS index out of range: %i > %i\n", idx, ctx->ps_size);
 			return;
 		}
@@ -659,6 +661,7 @@ static void atom_op_beep(atom_exec_context *ctx, int *ptr, int arg)
 static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 {
 	int idx = U8((*ptr)++);
+	int parameter_bytes = ctx->ps_shift * sizeof(u32);
 	int r = 0;
 
 	if (ctx->ctx->io_error)
@@ -668,8 +671,12 @@ static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 		SDEBUG("   table: %d (%s)\n", idx, atom_table_names[idx]);
 	else
 		SDEBUG("   table: %d\n", idx);
+	if (parameter_bytes > ctx->ps_size) {
+		ctx->abort = true;
+		return;
+	}
 	r = atom_execute_table_locked(ctx->ctx, idx, ctx->ps + ctx->ps_shift,
-				      ctx->ps_size - ctx->ps_shift);
+				      ctx->ps_size - parameter_bytes);
 	if (r) {
 		ctx->abort = true;
 	}
@@ -1269,6 +1276,10 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 	ectx.last_jump = 0;
 	if (ws) {
 		ectx.ws = kcalloc(4, ws, GFP_KERNEL);
+		if (!ectx.ws) {
+			ret = -ENOMEM;
+			goto restore;
+		}
 		ectx.ws_size = ws;
 	} else {
 		ectx.ws = NULL;
@@ -1308,10 +1319,10 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 		if (op == ATOM_OP_EOT)
 			break;
 	}
-	debug_depth--;
 	SDEBUG("<<\n");
 
 free:
+	debug_depth--;
 	kfree(ectx.ws);
 restore:
 	ctx->bios_read_start = previous_read_start;

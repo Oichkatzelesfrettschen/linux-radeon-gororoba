@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_BAD_COUNT = 13
+EXPECTED_BAD_COUNT = 17
 
 
 class ContractError(RuntimeError):
@@ -112,6 +112,22 @@ def check_tree(root: Path) -> None:
         "ATOM register operand failure guards differ",
     )
     require(
+        "int parameter_bytes = ctx->ps_shift * sizeof(u32);" in atom_source
+        and "if (parameter_bytes > ctx->ps_size)" in atom_source
+        and "ctx->ps_size - parameter_bytes" in atom_source,
+        "ATOM nested parameter window bounds differ",
+    )
+    require(
+        "if (!ectx.ws) {\n\t\t\tret = -ENOMEM;" in atom_source
+        and "free:\n\tdebug_depth--;\n\tkfree(ectx.ws);" in atom_source,
+        "ATOM workspace failure cleanup differs",
+    )
+    require(
+        "ctx->ps_size >= sizeof(u32)" in atom_source
+        and atom_source.count("(ctx->ps_size - sizeof(u32)) / sizeof(u32)") == 2,
+        "ATOM parameter byte extent differs",
+    )
+    require(
         atom_source.count("offset > table_size - sizeof(u16)") == 2
         and atom_source.count("atom_span_valid(ctx, idx, table_size)") == 2,
         "ATOM master table header bounds differ",
@@ -184,6 +200,30 @@ def self_test(root: Path) -> None:
             "command interval is not restored",
             "atom.c",
             "\tctx->bios_read_start = previous_read_start;\n",
+            "",
+        ),
+        (
+            "nested table parameter window underflows",
+            "atom.c",
+            "\tif (parameter_bytes > ctx->ps_size) {\n",
+            "\tif (false) {\n",
+        ),
+        (
+            "workspace allocation failure is ignored",
+            "atom.c",
+            "\t\tif (!ectx.ws) {\n\t\t\tret = -ENOMEM;\n\t\t\tgoto restore;\n\t\t}\n",
+            "",
+        ),
+        (
+            "error exit leaks debug depth",
+            "atom.c",
+            "free:\n\tdebug_depth--;\n\tkfree(ectx.ws);",
+            "free:\n\tkfree(ectx.ws);",
+        ),
+        (
+            "parameter size is treated as a word count",
+            "atom.c",
+            "ctx->ps_size >= sizeof(u32) &&\n\t\t    ",
             "",
         ),
         (
