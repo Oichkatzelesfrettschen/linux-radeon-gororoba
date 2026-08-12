@@ -1533,7 +1533,7 @@ bool atom_parse_data_header(struct atom_context *ctx, int index,
 			    uint16_t *data_start)
 {
 	int offset;
-	int idx;
+	u16 idx;
 	u16 table_size;
 
 	if (index < 0 || index > (INT_MAX - 4) / 2)
@@ -1564,7 +1564,7 @@ bool atom_parse_cmd_header(struct atom_context *ctx, int index, uint8_t *frev,
 			   uint8_t *crev)
 {
 	int offset;
-	int idx;
+	u16 idx;
 	u16 table_size;
 
 	if (index < 0 || index > (INT_MAX - 4) / 2)

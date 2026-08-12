@@ -327,8 +327,8 @@ def self_test(root: Path) -> None:
         (
             "raw data-table cast",
             "atom.c",
-            "\tint idx;\n\tu16 table_size;\n",
-            "\tint idx;\n\tu16 table_size;\n\tu16 *mdt = (u16 *)(ctx->bios + ctx->data_table + 4);\n",
+            "\tu16 idx;\n\tu16 table_size;\n",
+            "\tu16 idx;\n\tu16 table_size;\n\tu16 *mdt = (u16 *)(ctx->bios + ctx->data_table + 4);\n",
         ),
         (
             "dropped Radeon extent",
