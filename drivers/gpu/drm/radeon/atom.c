@@ -674,10 +674,6 @@ static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 		SDEBUG("   table: %d (%s)\n", idx, atom_table_names[idx]);
 	else
 		SDEBUG("   table: %d\n", idx);
-	if (parameter_bytes > ctx->ps_size) {
-		ctx->abort = true;
-		return;
-	}
 	offset = idx * 2 + 4;
 	if (!atom_bios_read_u16(ctx->ctx, ctx->ctx->cmd_table,
 				&command_table_size) ||
@@ -690,6 +686,10 @@ static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 	}
 	if (!command_table_offset)
 		return;
+	if (parameter_bytes > ctx->ps_size) {
+		ctx->abort = true;
+		return;
+	}
 	r = atom_execute_table_locked(ctx->ctx, idx, ctx->ps + ctx->ps_shift,
 				      ctx->ps_size - parameter_bytes);
 	if (r) {
@@ -1419,6 +1419,8 @@ struct atom_context *atom_parse(struct card_info *card, void *bios,
 				size_t bios_size)
 {
 	int base;
+	u16 data_table_size;
+	u16 iio_offset;
 	struct atom_context *ctx =
 	    kzalloc(sizeof(struct atom_context), GFP_KERNEL);
 	char *str;
@@ -1462,9 +1464,16 @@ struct atom_context *atom_parse(struct card_info *card, void *bios,
 	ctx->cmd_table = CU16(base + ATOM_ROM_CMD_PTR);
 	ctx->data_table = CU16(base + ATOM_ROM_DATA_PTR);
 	if (ctx->io_error || !atom_span_valid(ctx, ctx->cmd_table, 4) ||
-	    !atom_span_valid(ctx, ctx->data_table, 4) ||
-	    !atom_index_iio(ctx,
-			    CU16(ctx->data_table + ATOM_DATA_IIO_PTR) + 4)) {
+	    !atom_span_valid(ctx, ctx->data_table, 4)) {
+		atom_destroy(ctx);
+		return NULL;
+	}
+	data_table_size = CU16(ctx->data_table);
+	if (ctx->io_error || data_table_size < 4 ||
+	    ATOM_DATA_IIO_PTR > data_table_size - sizeof(iio_offset) ||
+	    !atom_bios_read_u16(ctx, ctx->data_table + ATOM_DATA_IIO_PTR,
+				 &iio_offset) ||
+	    !atom_index_iio(ctx, iio_offset + 4)) {
 		atom_destroy(ctx);
 		return NULL;
 	}
@@ -1496,28 +1505,37 @@ struct atom_context *atom_parse(struct card_info *card, void *bios,
 int atom_asic_init(struct atom_context *ctx)
 {
 	struct radeon_device *rdev = ctx->card->dev->dev_private;
-	int hwi = CU16(ctx->data_table + ATOM_DATA_FWI_PTR);
+	int index = GetIndexIntoMasterTable(DATA, FirmwareInfo);
 	uint32_t ps[16];
+	u16 hwi;
+	u16 hwi_size;
 	int ret;
 
-	memset(ps, 0, 64);
+	memset(ps, 0, sizeof(ps));
 
-	ps[0] = cpu_to_le32(CU32(hwi + ATOM_FWI_DEFSCLK_PTR));
-	ps[1] = cpu_to_le32(CU32(hwi + ATOM_FWI_DEFMCLK_PTR));
+	if (!atom_parse_data_header(ctx, index, &hwi_size, NULL, NULL, &hwi) ||
+	    ATOM_FWI_DEFSCLK_PTR > hwi_size - sizeof(ps[0]) ||
+	    ATOM_FWI_DEFMCLK_PTR > hwi_size - sizeof(ps[1]) ||
+	    !atom_bios_read_u32(ctx, hwi + ATOM_FWI_DEFSCLK_PTR, &ps[0]) ||
+	    !atom_bios_read_u32(ctx, hwi + ATOM_FWI_DEFMCLK_PTR, &ps[1]))
+		return 1;
+	ps[0] = cpu_to_le32(ps[0]);
+	ps[1] = cpu_to_le32(ps[1]);
 	if (!ps[0] || !ps[1])
 		return 1;
 
 	if (!CU16(ctx->cmd_table + 4 + 2 * ATOM_CMD_INIT))
 		return 1;
-	ret = atom_execute_table(ctx, ATOM_CMD_INIT, ps, 16);
+	ret = atom_execute_table(ctx, ATOM_CMD_INIT, ps, sizeof(ps));
 	if (ret)
 		return ret;
 
-	memset(ps, 0, 64);
+	memset(ps, 0, sizeof(ps));
 
 	if (rdev->family < CHIP_R600) {
 		if (CU16(ctx->cmd_table + 4 + 2 * ATOM_CMD_SPDFANCNTL))
-			atom_execute_table(ctx, ATOM_CMD_SPDFANCNTL, ps, 16);
+			atom_execute_table(ctx, ATOM_CMD_SPDFANCNTL, ps,
+					   sizeof(ps));
 	}
 	return ret;
 }

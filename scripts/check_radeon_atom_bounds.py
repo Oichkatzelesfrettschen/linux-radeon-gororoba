@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_BAD_COUNT = 22
+EXPECTED_BAD_COUNT = 26
 
 
 class ContractError(RuntimeError):
@@ -52,6 +52,8 @@ def check_tree(root: Path) -> None:
     calltable_source = function_text(atom_source, "static void atom_op_calltable(")
     compare_source = function_text(atom_source, "static void atom_op_compare(")
     test_source = function_text(atom_source, "static void atom_op_test(")
+    parser_source = function_text(atom_source, "struct atom_context *atom_parse(")
+    asic_init_source = function_text(atom_source, "int atom_asic_init(")
 
     require(
         "size_t bios_size;" in atom_header
@@ -85,6 +87,7 @@ def check_tree(root: Path) -> None:
     require(
         "atom_bios_read_u8(const struct atom_context *ctx" in atom_bits
         and "atom_bios_read_u16(const struct atom_context *ctx" in atom_bits
+        and "atom_bios_read_u32(const struct atom_context *ctx" in atom_bits
         and "atom_bios_span_in_range(ctx, ptr, sizeof(*value))" in atom_bits,
         "ATOM pure full image readers differ",
     )
@@ -176,9 +179,29 @@ def check_tree(root: Path) -> None:
         "ATOM absent nested command table handling differs",
     )
     require(
+        calltable_source.index("if (!command_table_offset)")
+        < calltable_source.index("if (parameter_bytes > ctx->ps_size)"),
+        "ATOM absent nested command lookup follows parameter validation",
+    )
+    require(
         "if (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal" in compare_source
         and "if (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal" in test_source,
         "ATOM failed condition operands mutate interpreter state",
+    )
+    require(
+        "ATOM_DATA_IIO_PTR > data_table_size - sizeof(iio_offset)" in parser_source
+        and "atom_bios_read_u16(ctx, ctx->data_table + ATOM_DATA_IIO_PTR"
+        in parser_source,
+        "ATOM indirect IO slot escapes the master data table",
+    )
+    require(
+        "atom_parse_data_header(ctx, index, &hwi_size" in asic_init_source
+        and "atom_bios_read_u32(ctx, hwi + ATOM_FWI_DEFSCLK_PTR" in asic_init_source
+        and "atom_bios_read_u32(ctx, hwi + ATOM_FWI_DEFMCLK_PTR" in asic_init_source
+        and asic_init_source.count("sizeof(ps)") >= 4
+        and "atom_execute_table(ctx, ATOM_CMD_INIT, ps, sizeof(ps))"
+        in asic_init_source,
+        "ATOM ASIC initialization table or parameter extent differs",
     )
     require(
         "(u16 *)(ctx->bios + ctx->data_table + 4)" not in atom_source
@@ -289,8 +312,8 @@ def self_test(root: Path) -> None:
         (
             "missing data-table extent",
             "atom.c",
-            "\t    !atom_span_valid(ctx, ctx->data_table, 4) ||\n",
-            "",
+            "\t    !atom_span_valid(ctx, ctx->data_table, 4)) {\n",
+            "\t    false) {\n",
         ),
         (
             "public data header resets interpreter bounds",
@@ -323,6 +346,30 @@ def self_test(root: Path) -> None:
             "atom.c",
             "\tif (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal = ((dst & src) == 0);",
             "\tctx->ctx->cs_equal = ((dst & src) == 0);",
+        ),
+        (
+            "indirect IO slot read escapes its master table",
+            "atom.c",
+            "\t    ATOM_DATA_IIO_PTR > data_table_size - sizeof(iio_offset) ||\n",
+            "",
+        ),
+        (
+            "absent nested table checks parameters first",
+            "atom.c",
+            "\tif (!command_table_offset)\n\t\treturn;\n\tif (parameter_bytes > ctx->ps_size)",
+            "\tif (parameter_bytes > ctx->ps_size) {\n\t\tctx->abort = true;\n\t\treturn;\n\t}\n\tif (!command_table_offset)\n\t\treturn;\n\tif (false)",
+        ),
+        (
+            "ASIC initialization parameter window is sixteen bytes",
+            "atom.c",
+            "atom_execute_table(ctx, ATOM_CMD_INIT, ps, sizeof(ps))",
+            "atom_execute_table(ctx, ATOM_CMD_INIT, ps, 16)",
+        ),
+        (
+            "ASIC initialization ignores failed FirmwareInfo lookup",
+            "atom.c",
+            "\tif (!atom_parse_data_header(ctx, index, &hwi_size, NULL, NULL, &hwi) ||\n",
+            "\tif (false ||\n",
         ),
         (
             "raw data-table cast",

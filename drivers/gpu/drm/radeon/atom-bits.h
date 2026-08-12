@@ -81,6 +81,16 @@ static inline bool atom_bios_read_u16(const struct atom_context *ctx, int ptr,
 	return true;
 }
 
+static inline bool atom_bios_read_u32(const struct atom_context *ctx, int ptr,
+				      uint32_t *value)
+{
+	if (!atom_bios_span_in_range(ctx, ptr, sizeof(*value)))
+		return false;
+
+	*value = get_unaligned_le32((uint8_t *)ctx->bios + ptr);
+	return true;
+}
+
 static inline uint8_t get_u8(struct atom_context *ctx, int ptr)
 {
 	if (!atom_span_valid(ctx, ptr, sizeof(uint8_t)))
