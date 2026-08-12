@@ -1277,7 +1277,7 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 
 	debug_depth++;
 	while (1) {
-		op = U8(ptr++);
+		op = get_u8(ctx, ptr++);
 		if (ctx->io_error) {
 			ret = -EINVAL;
 			goto free;
