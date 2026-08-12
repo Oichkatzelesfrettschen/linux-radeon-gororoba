@@ -25,24 +25,84 @@
 #ifndef ATOM_BITS_H
 #define ATOM_BITS_H
 
-static inline uint8_t get_u8(void *bios, int ptr)
+static inline bool atom_span_valid(struct atom_context *ctx, int ptr,
+				   size_t length)
 {
-    return ((unsigned char *)bios)[ptr];
+	if (ptr < 0 || (size_t)ptr < ctx->bios_read_start ||
+	    (size_t)ptr > ctx->bios_read_limit ||
+	    length > ctx->bios_read_limit - (size_t)ptr) {
+		ctx->io_error = true;
+		return false;
+	}
+
+	return true;
 }
-#define U8(ptr) get_u8(ctx->ctx->bios, (ptr))
-#define CU8(ptr) get_u8(ctx->bios, (ptr))
-static inline uint16_t get_u16(void *bios, int ptr)
+
+static inline bool atom_bios_span_valid(struct atom_context *ctx, int ptr,
+					size_t length)
 {
-    return get_u8(bios, ptr)|(((uint16_t)get_u8(bios, ptr+1))<<8);
+	if (ptr < 0 || (size_t)ptr > ctx->bios_size ||
+	    length > ctx->bios_size - (size_t)ptr) {
+		ctx->io_error = true;
+		return false;
+	}
+
+	return true;
 }
-#define U16(ptr) get_u16(ctx->ctx->bios, (ptr))
-#define CU16(ptr) get_u16(ctx->bios, (ptr))
-static inline uint32_t get_u32(void *bios, int ptr)
+
+static inline uint8_t get_u8(struct atom_context *ctx, int ptr)
 {
-    return get_u16(bios, ptr)|(((uint32_t)get_u16(bios, ptr+2))<<16);
+	if (!atom_span_valid(ctx, ptr, sizeof(uint8_t)))
+		return 0;
+
+	return ((uint8_t *)ctx->bios)[ptr];
 }
-#define U32(ptr) get_u32(ctx->ctx->bios, (ptr))
-#define CU32(ptr) get_u32(ctx->bios, (ptr))
-#define CSTR(ptr) (((char *)(ctx->bios))+(ptr))
+
+static inline uint16_t get_u16(struct atom_context *ctx, int ptr)
+{
+	if (!atom_span_valid(ctx, ptr, sizeof(uint16_t)))
+		return 0;
+
+	return get_unaligned_le16((uint8_t *)ctx->bios + ptr);
+}
+
+static inline uint32_t get_u32(struct atom_context *ctx, int ptr)
+{
+	if (!atom_span_valid(ctx, ptr, sizeof(uint32_t)))
+		return 0;
+
+	return get_unaligned_le32((uint8_t *)ctx->bios + ptr);
+}
+
+static inline uint8_t get_bios_u8(struct atom_context *ctx, int ptr)
+{
+	if (!atom_bios_span_valid(ctx, ptr, sizeof(uint8_t)))
+		return 0;
+
+	return ((uint8_t *)ctx->bios)[ptr];
+}
+
+static inline uint16_t get_bios_u16(struct atom_context *ctx, int ptr)
+{
+	if (!atom_bios_span_valid(ctx, ptr, sizeof(uint16_t)))
+		return 0;
+
+	return get_unaligned_le16((uint8_t *)ctx->bios + ptr);
+}
+
+static inline uint32_t get_bios_u32(struct atom_context *ctx, int ptr)
+{
+	if (!atom_bios_span_valid(ctx, ptr, sizeof(uint32_t)))
+		return 0;
+
+	return get_unaligned_le32((uint8_t *)ctx->bios + ptr);
+}
+
+#define U8(ptr) get_u8(ctx->ctx, (ptr))
+#define CU8(ptr) get_bios_u8(ctx, (ptr))
+#define U16(ptr) get_u16(ctx->ctx, (ptr))
+#define CU16(ptr) get_bios_u16(ctx, (ptr))
+#define U32(ptr) get_u32(ctx->ctx, (ptr))
+#define CU32(ptr) get_bios_u32(ctx, (ptr))
 
 #endif
