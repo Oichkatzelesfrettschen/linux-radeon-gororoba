@@ -188,6 +188,8 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 	case ATOM_ARG_REG:
 		idx = U16(*ptr);
 		(*ptr) += 2;
+		if (gctx->io_error)
+			return 0;
 		if (print)
 			DEBUG("REG[0x%04X]", idx);
 		idx += gctx->reg_block;
@@ -220,9 +222,12 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 	case ATOM_ARG_PS:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return 0;
 		/* get_unaligned_le32 avoids unaligned accesses from atombios
 		 * tables, noticed on a DEC Alpha. */
-		if (idx < ctx->ps_size)
+		if (ctx->ps_size >= sizeof(u32) &&
+		    idx <= (ctx->ps_size - sizeof(u32)) / sizeof(u32))
 			val = get_unaligned_le32((u32 *)&ctx->ps[idx]);
 		else
 			pr_info("PS index out of range: %i > %i\n", idx, ctx->ps_size);
@@ -232,6 +237,8 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 	case ATOM_ARG_WS:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return 0;
 		if (print)
 			DEBUG("WS[0x%02X]", idx);
 		switch (idx) {
@@ -272,17 +279,21 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 	case ATOM_ARG_ID:
 		idx = U16(*ptr);
 		(*ptr) += 2;
+		if (gctx->io_error)
+			return 0;
 		if (print) {
 			if (gctx->data_block)
 				DEBUG("ID[0x%04X+%04X]", idx, gctx->data_block);
 			else
 				DEBUG("ID[0x%04X]", idx);
 		}
-		val = U32(idx + gctx->data_block);
+		val = get_bios_u32(gctx, idx + gctx->data_block);
 		break;
 	case ATOM_ARG_FB:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return 0;
 		if ((gctx->fb_base + (idx * 4)) > gctx->scratch_size_bytes) {
 			DRM_ERROR("ATOM: fb read beyond scratch region: %d vs. %d\n",
 				  gctx->fb_base + (idx * 4), gctx->scratch_size_bytes);
@@ -322,6 +333,8 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 	case ATOM_ARG_PLL:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return 0;
 		if (print)
 			DEBUG("PLL[0x%02X]", idx);
 		val = gctx->card->pll_read(gctx->card, idx);
@@ -329,6 +342,8 @@ static uint32_t atom_get_src_int(atom_exec_context *ctx, uint8_t attr,
 	case ATOM_ARG_MC:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return 0;
 		if (print)
 			DEBUG("MC[0x%02X]", idx);
 		val = gctx->card->mc_read(gctx->card, idx);
@@ -458,6 +473,8 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 	    atom_dst_to_src[(attr >> 3) & 7][(attr >> 6) & 3], old_val =
 	    val, idx;
 	struct atom_context *gctx = ctx->ctx;
+	if (gctx->io_error)
+		return;
 	old_val &= atom_arg_mask[align] >> atom_arg_shift[align];
 	val <<= atom_arg_shift[align];
 	val &= atom_arg_mask[align];
@@ -467,6 +484,8 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 	case ATOM_ARG_REG:
 		idx = U16(*ptr);
 		(*ptr) += 2;
+		if (gctx->io_error)
+			return;
 		DEBUG("REG[0x%04X]", idx);
 		idx += gctx->reg_block;
 		switch (gctx->io_mode) {
@@ -500,8 +519,11 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 	case ATOM_ARG_PS:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return;
 		DEBUG("PS[0x%02X]", idx);
-		if (idx >= ctx->ps_size) {
+		if (ctx->ps_size < sizeof(u32) ||
+		    idx > (ctx->ps_size - sizeof(u32)) / sizeof(u32)) {
 			pr_info("PS index out of range: %i > %i\n", idx, ctx->ps_size);
 			return;
 		}
@@ -510,6 +532,8 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 	case ATOM_ARG_WS:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return;
 		DEBUG("WS[0x%02X]", idx);
 		switch (idx) {
 		case ATOM_WS_QUOTIENT:
@@ -547,6 +571,8 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 	case ATOM_ARG_FB:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return;
 		if ((gctx->fb_base + (idx * 4)) > gctx->scratch_size_bytes) {
 			DRM_ERROR("ATOM: fb write beyond scratch region: %d vs. %d\n",
 				  gctx->fb_base + (idx * 4), gctx->scratch_size_bytes);
@@ -557,12 +583,16 @@ static void atom_put_dst(atom_exec_context *ctx, int arg, uint8_t attr,
 	case ATOM_ARG_PLL:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return;
 		DEBUG("PLL[0x%02X]", idx);
 		gctx->card->pll_write(gctx->card, idx, val);
 		break;
 	case ATOM_ARG_MC:
 		idx = U8(*ptr);
 		(*ptr)++;
+		if (gctx->io_error)
+			return;
 		DEBUG("MC[0x%02X]", idx);
 		gctx->card->mc_write(gctx->card, idx, val);
 		return;
@@ -631,14 +661,37 @@ static void atom_op_beep(atom_exec_context *ctx, int *ptr, int arg)
 static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 {
 	int idx = U8((*ptr)++);
+	int parameter_bytes = ctx->ps_shift * sizeof(u32);
+	int offset;
 	int r = 0;
+	u16 command_table_size;
+	u16 command_table_offset;
+
+	if (ctx->ctx->io_error)
+		return;
 
 	if (idx < ATOM_TABLE_NAMES_CNT)
 		SDEBUG("   table: %d (%s)\n", idx, atom_table_names[idx]);
 	else
 		SDEBUG("   table: %d\n", idx);
-	if (U16(ctx->ctx->cmd_table + 4 + 2 * idx))
-		r = atom_execute_table_locked(ctx->ctx, idx, ctx->ps + ctx->ps_shift, ctx->ps_size - ctx->ps_shift);
+	offset = idx * 2 + 4;
+	if (!atom_bios_read_u16(ctx->ctx, ctx->ctx->cmd_table,
+				&command_table_size) ||
+	    command_table_size < 4 ||
+	    offset > command_table_size - sizeof(command_table_offset) ||
+	    !atom_bios_read_u16(ctx->ctx, ctx->ctx->cmd_table + offset,
+				 &command_table_offset)) {
+		ctx->abort = true;
+		return;
+	}
+	if (!command_table_offset)
+		return;
+	if (parameter_bytes > ctx->ps_size) {
+		ctx->abort = true;
+		return;
+	}
+	r = atom_execute_table_locked(ctx->ctx, idx, ctx->ps + ctx->ps_shift,
+				      ctx->ps_size - parameter_bytes);
 	if (r) {
 		ctx->abort = true;
 	}
@@ -664,6 +717,8 @@ static void atom_op_compare(atom_exec_context *ctx, int *ptr, int arg)
 	dst = atom_get_dst(ctx, arg, attr, ptr, NULL, 1);
 	SDEBUG("   src2: ");
 	src = atom_get_src(ctx, attr, ptr);
+	if (ctx->ctx->io_error)
+		return;
 	ctx->ctx->cs_equal = (dst == src);
 	ctx->ctx->cs_above = (dst > src);
 	SDEBUG("   result: %s %s\n", ctx->ctx->cs_equal ? "EQ" : "NE",
@@ -673,6 +728,9 @@ static void atom_op_compare(atom_exec_context *ctx, int *ptr, int arg)
 static void atom_op_delay(atom_exec_context *ctx, int *ptr, int arg)
 {
 	unsigned count = U8((*ptr)++);
+
+	if (ctx->ctx->io_error)
+		return;
 	SDEBUG("   count: %d\n", count);
 	if (arg == ATOM_UNIT_MICROSEC)
 		udelay(count);
@@ -710,6 +768,8 @@ static void atom_op_jump(atom_exec_context *ctx, int *ptr, int arg)
 	unsigned long cjiffies;
 
 	(*ptr) += 2;
+	if (ctx->ctx->io_error)
+		return;
 	switch (arg) {
 	case ATOM_COND_ABOVE:
 		execute = ctx->ctx->cs_above;
@@ -845,14 +905,30 @@ static void atom_op_savereg(atom_exec_context *ctx, int *ptr, int arg)
 static void atom_op_setdatablock(atom_exec_context *ctx, int *ptr, int arg)
 {
 	int idx = U8(*ptr);
+	int offset;
+	u16 master_size;
+
 	(*ptr)++;
+	if (ctx->ctx->io_error)
+		return;
 	SDEBUG("   block: %d\n", idx);
 	if (!idx)
 		ctx->ctx->data_block = 0;
 	else if (idx == 255)
 		ctx->ctx->data_block = ctx->start;
-	else
-		ctx->ctx->data_block = U16(ctx->ctx->data_table + 4 + 2 * idx);
+	else {
+		offset = 4 + 2 * idx;
+		master_size = get_bios_u16(ctx->ctx, ctx->ctx->data_table);
+		if (ctx->ctx->io_error || master_size < 4 ||
+		    offset > master_size - sizeof(u16)) {
+			ctx->abort = true;
+			return;
+		}
+		ctx->ctx->data_block =
+			get_bios_u16(ctx->ctx, ctx->ctx->data_table + offset);
+		if (ctx->ctx->io_error)
+			ctx->abort = true;
+	}
 	SDEBUG("   base: 0x%04X\n", ctx->ctx->data_block);
 }
 
@@ -869,6 +945,8 @@ static void atom_op_setport(atom_exec_context *ctx, int *ptr, int arg)
 	switch (arg) {
 	case ATOM_PORT_ATI:
 		port = U16(*ptr);
+		if (ctx->ctx->io_error)
+			return;
 		if (port < ATOM_IO_NAMES_CNT)
 			SDEBUG("   port: %d (%s)\n", port, atom_io_names[port]);
 		else
@@ -892,8 +970,12 @@ static void atom_op_setport(atom_exec_context *ctx, int *ptr, int arg)
 
 static void atom_op_setregblock(atom_exec_context *ctx, int *ptr, int arg)
 {
-	ctx->ctx->reg_block = U16(*ptr);
+	u16 reg_block = U16(*ptr);
+
 	(*ptr) += 2;
+	if (ctx->ctx->io_error)
+		return;
+	ctx->ctx->reg_block = reg_block;
 	SDEBUG("   base: 0x%04X\n", ctx->ctx->reg_block);
 }
 
@@ -1016,6 +1098,8 @@ static void atom_op_test(atom_exec_context *ctx, int *ptr, int arg)
 	dst = atom_get_dst(ctx, arg, attr, ptr, NULL, 1);
 	SDEBUG("   src2: ");
 	src = atom_get_src(ctx, attr, ptr);
+	if (ctx->ctx->io_error)
+		return;
 	ctx->ctx->cs_equal = ((dst & src) == 0);
 	SDEBUG("   result: %s\n", ctx->ctx->cs_equal ? "EQ" : "NE");
 }
@@ -1169,16 +1253,33 @@ atom_op_debug, 0},};
 
 static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32_t *params, int params_size)
 {
-	int base = CU16(ctx->cmd_table + 4 + 2 * index);
+	int base;
 	int len, ws, ps, ptr;
+	size_t previous_read_start = ctx->bios_read_start;
+	size_t previous_read_limit = ctx->bios_read_limit;
+	bool previous_io_error = ctx->io_error;
 	unsigned char op;
 	atom_exec_context ectx;
 	int ret = 0;
 
-	if (!base)
-		return -EINVAL;
+	ctx->bios_read_start = 0;
+	ctx->bios_read_limit = ctx->bios_size;
+	ctx->io_error = false;
+	if (!atom_parse_cmd_header(ctx, index, NULL, NULL)) {
+		ret = -EINVAL;
+		goto restore;
+	}
+	base = CU16(ctx->cmd_table + 4 + 2 * index);
 
 	len = CU16(base + ATOM_CT_SIZE_PTR);
+	if (ctx->io_error || len < ATOM_CT_CODE_PTR ||
+	    !atom_span_valid(ctx, base, len)) {
+		ret = -EINVAL;
+		goto restore;
+	}
+	ctx->bios_read_start = base + ATOM_CT_CODE_PTR;
+	ctx->bios_read_limit = base + len;
+	ctx->io_error = false;
 	ws = CU8(base + ATOM_CT_WS_PTR);
 	ps = CU8(base + ATOM_CT_PS_PTR) & ATOM_CT_PS_MASK;
 	ptr = base + ATOM_CT_CODE_PTR;
@@ -1194,6 +1295,10 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 	ectx.last_jump = 0;
 	if (ws) {
 		ectx.ws = kcalloc(4, ws, GFP_KERNEL);
+		if (!ectx.ws) {
+			ret = -ENOMEM;
+			goto restore;
+		}
 		ectx.ws_size = ws;
 	} else {
 		ectx.ws = NULL;
@@ -1202,7 +1307,11 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 
 	debug_depth++;
 	while (1) {
-		op = CU8(ptr++);
+		op = get_u8(ctx, ptr++);
+		if (ctx->io_error) {
+			ret = -EINVAL;
+			goto free;
+		}
 		if (op < ATOM_OP_NAMES_CNT)
 			SDEBUG("%s @ 0x%04X\n", atom_op_names[op], ptr - 1);
 		else
@@ -1217,17 +1326,27 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 		if (op < ATOM_OP_CNT && op > 0)
 			opcode_table[op].func(&ectx, &ptr,
 					      opcode_table[op].arg);
-		else
-			break;
+		else {
+			ret = -EINVAL;
+			goto free;
+		}
+		if (ctx->io_error) {
+			ret = -EINVAL;
+			goto free;
+		}
 
 		if (op == ATOM_OP_EOT)
 			break;
 	}
-	debug_depth--;
 	SDEBUG("<<\n");
 
 free:
+	debug_depth--;
 	kfree(ectx.ws);
+restore:
+	ctx->bios_read_start = previous_read_start;
+	ctx->bios_read_limit = previous_read_limit;
+	ctx->io_error = previous_io_error;
 	return ret;
 }
 
@@ -1263,23 +1382,45 @@ int atom_execute_table(struct atom_context *ctx, int index, uint32_t *params, in
 
 static int atom_iio_len[] = { 1, 2, 3, 3, 3, 3, 4, 4, 4, 3 };
 
-static void atom_index_iio(struct atom_context *ctx, int base)
+static bool atom_index_iio(struct atom_context *ctx, int base)
 {
 	ctx->iio = kzalloc(2 * 256, GFP_KERNEL);
 	if (!ctx->iio)
-		return;
+		return false;
 	while (CU8(base) == ATOM_IIO_START) {
+		if (ctx->io_error || !atom_span_valid(ctx, base, 2))
+			goto invalid;
 		ctx->iio[CU8(base + 1)] = base + 2;
 		base += 2;
-		while (CU8(base) != ATOM_IIO_END)
-			base += atom_iio_len[CU8(base)];
+		while (CU8(base) != ATOM_IIO_END) {
+			u8 op = CU8(base);
+
+			if (ctx->io_error || op >= ARRAY_SIZE(atom_iio_len) ||
+			    !atom_span_valid(ctx, base, atom_iio_len[op]))
+				goto invalid;
+			base += atom_iio_len[op];
+		}
+		if (ctx->io_error || !atom_span_valid(ctx, base, 3))
+			goto invalid;
 		base += 3;
 	}
+	if (ctx->io_error)
+		goto invalid;
+
+	return true;
+
+invalid:
+	kfree(ctx->iio);
+	ctx->iio = NULL;
+	return false;
 }
 
-struct atom_context *atom_parse(struct card_info *card, void *bios)
+struct atom_context *atom_parse(struct card_info *card, void *bios,
+				size_t bios_size)
 {
 	int base;
+	u16 data_table_size;
+	u16 iio_offset;
 	struct atom_context *ctx =
 	    kzalloc(sizeof(struct atom_context), GFP_KERNEL);
 	char *str;
@@ -1291,24 +1432,30 @@ struct atom_context *atom_parse(struct card_info *card, void *bios)
 
 	ctx->card = card;
 	ctx->bios = bios;
+	ctx->bios_size = bios_size;
+	ctx->bios_read_start = 0;
+	ctx->bios_read_limit = bios_size;
+	ctx->io_error = false;
 
 	if (CU16(0) != ATOM_BIOS_MAGIC) {
 		pr_info("Invalid BIOS magic\n");
 		kfree(ctx);
 		return NULL;
 	}
-	if (strncmp
-	    (CSTR(ATOM_ATI_MAGIC_PTR), ATOM_ATI_MAGIC,
-	     strlen(ATOM_ATI_MAGIC))) {
+	if (!atom_span_valid(ctx, ATOM_ATI_MAGIC_PTR,
+			     strlen(ATOM_ATI_MAGIC)) ||
+	    memcmp(ctx->bios + ATOM_ATI_MAGIC_PTR, ATOM_ATI_MAGIC,
+		   strlen(ATOM_ATI_MAGIC))) {
 		pr_info("Invalid ATI magic\n");
 		kfree(ctx);
 		return NULL;
 	}
 
 	base = CU16(ATOM_ROM_TABLE_PTR);
-	if (strncmp
-	    (CSTR(base + ATOM_ROM_MAGIC_PTR), ATOM_ROM_MAGIC,
-	     strlen(ATOM_ROM_MAGIC))) {
+	if (!atom_span_valid(ctx, base + ATOM_ROM_MAGIC_PTR,
+			     strlen(ATOM_ROM_MAGIC)) ||
+	    memcmp(ctx->bios + base + ATOM_ROM_MAGIC_PTR, ATOM_ROM_MAGIC,
+		   strlen(ATOM_ROM_MAGIC))) {
 		pr_info("Invalid ATOM magic\n");
 		kfree(ctx);
 		return NULL;
@@ -1316,23 +1463,40 @@ struct atom_context *atom_parse(struct card_info *card, void *bios)
 
 	ctx->cmd_table = CU16(base + ATOM_ROM_CMD_PTR);
 	ctx->data_table = CU16(base + ATOM_ROM_DATA_PTR);
-	atom_index_iio(ctx, CU16(ctx->data_table + ATOM_DATA_IIO_PTR) + 4);
-	if (!ctx->iio) {
+	if (ctx->io_error || !atom_span_valid(ctx, ctx->cmd_table, 4) ||
+	    !atom_span_valid(ctx, ctx->data_table, 4)) {
+		atom_destroy(ctx);
+		return NULL;
+	}
+	data_table_size = CU16(ctx->data_table);
+	if (ctx->io_error || data_table_size < 4 ||
+	    ATOM_DATA_IIO_PTR > data_table_size - sizeof(iio_offset) ||
+	    !atom_bios_read_u16(ctx, ctx->data_table + ATOM_DATA_IIO_PTR,
+				 &iio_offset) ||
+	    !atom_index_iio(ctx, iio_offset + 4)) {
 		atom_destroy(ctx);
 		return NULL;
 	}
 
-	str = CSTR(CU16(base + ATOM_ROM_MSG_PTR));
-	while (*str && ((*str == '\n') || (*str == '\r')))
+	base = CU16(base + ATOM_ROM_MSG_PTR);
+	if (ctx->io_error || !atom_span_valid(ctx, base, 1)) {
+		atom_destroy(ctx);
+		return NULL;
+	}
+	str = ctx->bios + base;
+	while ((size_t)(str - (char *)ctx->bios) < ctx->bios_size && *str &&
+	       ((*str == '\n') || (*str == '\r')))
 		str++;
 	/* name string isn't always 0 terminated */
-	for (i = 0; i < 511; i++) {
+	for (i = 0; i < 511 &&
+	     (size_t)(str - (char *)ctx->bios) + i < ctx->bios_size; i++) {
 		name[i] = str[i];
 		if (name[i] < '.' || name[i] > 'z') {
 			name[i] = 0;
 			break;
 		}
 	}
+	name[i] = 0;
 	pr_info("ATOM BIOS: %s\n", name);
 
 	return ctx;
@@ -1341,28 +1505,37 @@ struct atom_context *atom_parse(struct card_info *card, void *bios)
 int atom_asic_init(struct atom_context *ctx)
 {
 	struct radeon_device *rdev = ctx->card->dev->dev_private;
-	int hwi = CU16(ctx->data_table + ATOM_DATA_FWI_PTR);
+	int index = GetIndexIntoMasterTable(DATA, FirmwareInfo);
 	uint32_t ps[16];
+	u16 hwi;
+	u16 hwi_size;
 	int ret;
 
-	memset(ps, 0, 64);
+	memset(ps, 0, sizeof(ps));
 
-	ps[0] = cpu_to_le32(CU32(hwi + ATOM_FWI_DEFSCLK_PTR));
-	ps[1] = cpu_to_le32(CU32(hwi + ATOM_FWI_DEFMCLK_PTR));
+	if (!atom_parse_data_header(ctx, index, &hwi_size, NULL, NULL, &hwi) ||
+	    ATOM_FWI_DEFSCLK_PTR > hwi_size - sizeof(ps[0]) ||
+	    ATOM_FWI_DEFMCLK_PTR > hwi_size - sizeof(ps[1]) ||
+	    !atom_bios_read_u32(ctx, hwi + ATOM_FWI_DEFSCLK_PTR, &ps[0]) ||
+	    !atom_bios_read_u32(ctx, hwi + ATOM_FWI_DEFMCLK_PTR, &ps[1]))
+		return 1;
+	ps[0] = cpu_to_le32(ps[0]);
+	ps[1] = cpu_to_le32(ps[1]);
 	if (!ps[0] || !ps[1])
 		return 1;
 
 	if (!CU16(ctx->cmd_table + 4 + 2 * ATOM_CMD_INIT))
 		return 1;
-	ret = atom_execute_table(ctx, ATOM_CMD_INIT, ps, 16);
+	ret = atom_execute_table(ctx, ATOM_CMD_INIT, ps, sizeof(ps));
 	if (ret)
 		return ret;
 
-	memset(ps, 0, 64);
+	memset(ps, 0, sizeof(ps));
 
 	if (rdev->family < CHIP_R600) {
 		if (CU16(ctx->cmd_table + 4 + 2 * ATOM_CMD_SPDFANCNTL))
-			atom_execute_table(ctx, ATOM_CMD_SPDFANCNTL, ps, 16);
+			atom_execute_table(ctx, ATOM_CMD_SPDFANCNTL, ps,
+					   sizeof(ps));
 	}
 	return ret;
 }
@@ -1377,19 +1550,30 @@ bool atom_parse_data_header(struct atom_context *ctx, int index,
 			    uint16_t *size, uint8_t *frev, uint8_t *crev,
 			    uint16_t *data_start)
 {
-	int offset = index * 2 + 4;
-	int idx = CU16(ctx->data_table + offset);
-	u16 *mdt = (u16 *)(ctx->bios + ctx->data_table + 4);
+	int offset;
+	u16 idx;
+	u16 table_size;
 
-	if (!mdt[index])
+	if (index < 0 || index > (INT_MAX - 4) / 2)
+		return false;
+	offset = index * 2 + 4;
+	if (!atom_bios_read_u16(ctx, ctx->data_table, &table_size))
+		return false;
+	if (table_size < 4 ||
+	    offset > table_size - sizeof(u16) ||
+	    !atom_bios_read_u16(ctx, ctx->data_table + offset, &idx))
+		return false;
+	if (!idx || !atom_bios_read_u16(ctx, idx, &table_size))
+		return false;
+	if (table_size < 4 || !atom_bios_span_in_range(ctx, idx, table_size))
 		return false;
 
 	if (size)
-		*size = CU16(idx);
+		*size = table_size;
 	if (frev)
-		*frev = CU8(idx + 2);
+		atom_bios_read_u8(ctx, idx + 2, frev);
 	if (crev)
-		*crev = CU8(idx + 3);
+		atom_bios_read_u8(ctx, idx + 3, crev);
 	*data_start = idx;
 	return true;
 }
@@ -1397,17 +1581,29 @@ bool atom_parse_data_header(struct atom_context *ctx, int index,
 bool atom_parse_cmd_header(struct atom_context *ctx, int index, uint8_t *frev,
 			   uint8_t *crev)
 {
-	int offset = index * 2 + 4;
-	int idx = CU16(ctx->cmd_table + offset);
-	u16 *mct = (u16 *)(ctx->bios + ctx->cmd_table + 4);
+	int offset;
+	u16 idx;
+	u16 table_size;
 
-	if (!mct[index])
+	if (index < 0 || index > (INT_MAX - 4) / 2)
+		return false;
+	offset = index * 2 + 4;
+	if (!atom_bios_read_u16(ctx, ctx->cmd_table, &table_size))
+		return false;
+	if (table_size < 4 ||
+	    offset > table_size - sizeof(u16) ||
+	    !atom_bios_read_u16(ctx, ctx->cmd_table + offset, &idx))
+		return false;
+	if (!idx || !atom_bios_read_u16(ctx, idx, &table_size))
+		return false;
+	if (table_size < ATOM_CT_CODE_PTR ||
+	    !atom_bios_span_in_range(ctx, idx, table_size))
 		return false;
 
 	if (frev)
-		*frev = CU8(idx + 2);
+		atom_bios_read_u8(ctx, idx + 2, frev);
 	if (crev)
-		*crev = CU8(idx + 3);
+		atom_bios_read_u8(ctx, idx + 3, crev);
 	return true;
 }
 

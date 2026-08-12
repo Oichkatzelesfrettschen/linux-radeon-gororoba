@@ -127,6 +127,10 @@ struct atom_context {
 	struct mutex mutex;
 	struct mutex scratch_mutex;
 	void *bios;
+	size_t bios_size;
+	size_t bios_read_start;
+	size_t bios_read_limit;
+	bool io_error;
 	uint32_t cmd_table, data_table;
 	uint16_t *iio;
 
@@ -144,7 +148,7 @@ struct atom_context {
 
 extern int atom_debug;
 
-struct atom_context *atom_parse(struct card_info *, void *);
+struct atom_context *atom_parse(struct card_info *, void *, size_t);
 int atom_execute_table(struct atom_context *, int, uint32_t *, int);
 int atom_execute_table_scratch_unlocked(struct atom_context *, int, uint32_t *, int);
 int atom_asic_init(struct atom_context *);

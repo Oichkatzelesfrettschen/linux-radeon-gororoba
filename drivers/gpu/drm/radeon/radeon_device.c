@@ -1605,7 +1605,8 @@ int radeon_atombios_init(struct radeon_device *rdev)
 	atom_card_info->pll_read = cail_pll_read;
 	atom_card_info->pll_write = cail_pll_write;
 
-	rdev->mode_info.atom_context = atom_parse(atom_card_info, rdev->bios);
+	rdev->mode_info.atom_context = atom_parse(atom_card_info, rdev->bios,
+						 rdev->bios_size);
 	if (!rdev->mode_info.atom_context) {
 		radeon_atombios_fini(rdev);
 		return -ENOMEM;

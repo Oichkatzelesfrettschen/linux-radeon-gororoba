@@ -291,9 +291,9 @@ The active RS4xx hardware and memory source model has four finite owners:
 
 The firmware parser adds a separate bounded input owner.
 `docs/radeon-combios-bounded-rom-contract.md` defines BIOS acquisition extent,
-first PCI image admission, COMBIOS table preflight, exact offline RS482 ROM
-replay, and the ATOM parser nonclaim. It changes driver C behavior by refusing
-an invalid firmware span before hardware driving commands execute. The capacity
+first PCI image admission, COMBIOS table preflight, bounded ATOM interpretation,
+and exact offline RS482 ROM replay. It changes driver C behavior by refusing an
+invalid firmware span before hardware driving commands execute. The capacity
 authority at commit `6667d7561617debdc62cf99c62fb47bd67f95043` remains a
 source policy intake and does not claim a driver C behavior change.
 
