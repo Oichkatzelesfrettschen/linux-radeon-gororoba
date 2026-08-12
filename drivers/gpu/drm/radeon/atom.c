@@ -662,7 +662,10 @@ static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 {
 	int idx = U8((*ptr)++);
 	int parameter_bytes = ctx->ps_shift * sizeof(u32);
+	int offset;
 	int r = 0;
+	u16 command_table_size;
+	u16 command_table_offset;
 
 	if (ctx->ctx->io_error)
 		return;
@@ -675,6 +678,18 @@ static void atom_op_calltable(atom_exec_context *ctx, int *ptr, int arg)
 		ctx->abort = true;
 		return;
 	}
+	offset = idx * 2 + 4;
+	if (!atom_bios_read_u16(ctx->ctx, ctx->ctx->cmd_table,
+				&command_table_size) ||
+	    command_table_size < 4 ||
+	    offset > command_table_size - sizeof(command_table_offset) ||
+	    !atom_bios_read_u16(ctx->ctx, ctx->ctx->cmd_table + offset,
+				 &command_table_offset)) {
+		ctx->abort = true;
+		return;
+	}
+	if (!command_table_offset)
+		return;
 	r = atom_execute_table_locked(ctx->ctx, idx, ctx->ps + ctx->ps_shift,
 				      ctx->ps_size - parameter_bytes);
 	if (r) {
@@ -702,6 +717,8 @@ static void atom_op_compare(atom_exec_context *ctx, int *ptr, int arg)
 	dst = atom_get_dst(ctx, arg, attr, ptr, NULL, 1);
 	SDEBUG("   src2: ");
 	src = atom_get_src(ctx, attr, ptr);
+	if (ctx->ctx->io_error)
+		return;
 	ctx->ctx->cs_equal = (dst == src);
 	ctx->ctx->cs_above = (dst > src);
 	SDEBUG("   result: %s %s\n", ctx->ctx->cs_equal ? "EQ" : "NE",
@@ -1081,6 +1098,8 @@ static void atom_op_test(atom_exec_context *ctx, int *ptr, int arg)
 	dst = atom_get_dst(ctx, arg, attr, ptr, NULL, 1);
 	SDEBUG("   src2: ");
 	src = atom_get_src(ctx, attr, ptr);
+	if (ctx->ctx->io_error)
+		return;
 	ctx->ctx->cs_equal = ((dst & src) == 0);
 	SDEBUG("   result: %s\n", ctx->ctx->cs_equal ? "EQ" : "NE");
 }
@@ -1517,34 +1536,26 @@ bool atom_parse_data_header(struct atom_context *ctx, int index,
 	int idx;
 	u16 table_size;
 
-	ctx->bios_read_start = 0;
-	ctx->bios_read_limit = ctx->bios_size;
-	ctx->io_error = false;
-
 	if (index < 0 || index > (INT_MAX - 4) / 2)
 		return false;
 	offset = index * 2 + 4;
-	if (!atom_span_valid(ctx, ctx->data_table, sizeof(table_size)))
+	if (!atom_bios_read_u16(ctx, ctx->data_table, &table_size))
 		return false;
-	table_size = CU16(ctx->data_table);
-	if (ctx->io_error || table_size < 4 ||
+	if (table_size < 4 ||
 	    offset > table_size - sizeof(u16) ||
-	    !atom_span_valid(ctx, ctx->data_table + offset, sizeof(u16)))
+	    !atom_bios_read_u16(ctx, ctx->data_table + offset, &idx))
 		return false;
-	idx = CU16(ctx->data_table + offset);
-	if (ctx->io_error || !idx || !atom_span_valid(ctx, idx, 4))
+	if (!idx || !atom_bios_read_u16(ctx, idx, &table_size))
 		return false;
-	table_size = CU16(idx);
-	if (ctx->io_error || table_size < 4 ||
-	    !atom_span_valid(ctx, idx, table_size))
+	if (table_size < 4 || !atom_bios_span_in_range(ctx, idx, table_size))
 		return false;
 
 	if (size)
-		*size = CU16(idx);
+		*size = table_size;
 	if (frev)
-		*frev = CU8(idx + 2);
+		atom_bios_read_u8(ctx, idx + 2, frev);
 	if (crev)
-		*crev = CU8(idx + 3);
+		atom_bios_read_u8(ctx, idx + 3, crev);
 	*data_start = idx;
 	return true;
 }
@@ -1556,32 +1567,25 @@ bool atom_parse_cmd_header(struct atom_context *ctx, int index, uint8_t *frev,
 	int idx;
 	u16 table_size;
 
-	ctx->bios_read_start = 0;
-	ctx->bios_read_limit = ctx->bios_size;
-	ctx->io_error = false;
-
 	if (index < 0 || index > (INT_MAX - 4) / 2)
 		return false;
 	offset = index * 2 + 4;
-	if (!atom_span_valid(ctx, ctx->cmd_table, sizeof(table_size)))
+	if (!atom_bios_read_u16(ctx, ctx->cmd_table, &table_size))
 		return false;
-	table_size = CU16(ctx->cmd_table);
-	if (ctx->io_error || table_size < 4 ||
+	if (table_size < 4 ||
 	    offset > table_size - sizeof(u16) ||
-	    !atom_span_valid(ctx, ctx->cmd_table + offset, sizeof(u16)))
+	    !atom_bios_read_u16(ctx, ctx->cmd_table + offset, &idx))
 		return false;
-	idx = CU16(ctx->cmd_table + offset);
-	if (ctx->io_error || !idx || !atom_span_valid(ctx, idx, ATOM_CT_CODE_PTR))
+	if (!idx || !atom_bios_read_u16(ctx, idx, &table_size))
 		return false;
-	table_size = CU16(idx);
-	if (ctx->io_error || table_size < ATOM_CT_CODE_PTR ||
-	    !atom_span_valid(ctx, idx, table_size))
+	if (table_size < ATOM_CT_CODE_PTR ||
+	    !atom_bios_span_in_range(ctx, idx, table_size))
 		return false;
 
 	if (frev)
-		*frev = CU8(idx + 2);
+		atom_bios_read_u8(ctx, idx + 2, frev);
 	if (crev)
-		*crev = CU8(idx + 3);
+		atom_bios_read_u8(ctx, idx + 3, crev);
 	return true;
 }
 

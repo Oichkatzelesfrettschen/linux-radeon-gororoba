@@ -40,15 +40,44 @@ static inline bool atom_span_valid(struct atom_context *ctx, int ptr,
 	return true;
 }
 
+static inline bool atom_bios_span_in_range(const struct atom_context *ctx,
+					    int ptr, size_t length)
+{
+	if (ptr < 0 || (size_t)ptr > ctx->bios_size ||
+	    length > ctx->bios_size - (size_t)ptr)
+		return false;
+
+	return true;
+}
+
 static inline bool atom_bios_span_valid(struct atom_context *ctx, int ptr,
 					size_t length)
 {
-	if (ptr < 0 || (size_t)ptr > ctx->bios_size ||
-	    length > ctx->bios_size - (size_t)ptr) {
+	if (!atom_bios_span_in_range(ctx, ptr, length)) {
 		ctx->io_error = true;
 		return false;
 	}
 
+	return true;
+}
+
+static inline bool atom_bios_read_u8(const struct atom_context *ctx, int ptr,
+				     uint8_t *value)
+{
+	if (!atom_bios_span_in_range(ctx, ptr, sizeof(*value)))
+		return false;
+
+	*value = ((uint8_t *)ctx->bios)[ptr];
+	return true;
+}
+
+static inline bool atom_bios_read_u16(const struct atom_context *ctx, int ptr,
+				      uint16_t *value)
+{
+	if (!atom_bios_span_in_range(ctx, ptr, sizeof(*value)))
+		return false;
+
+	*value = get_unaligned_le16((uint8_t *)ctx->bios + ptr);
 	return true;
 }
 

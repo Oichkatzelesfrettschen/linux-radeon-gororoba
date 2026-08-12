@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_BAD_COUNT = 17
+EXPECTED_BAD_COUNT = 22
 
 
 class ContractError(RuntimeError):
@@ -26,11 +26,32 @@ def read_text(root: Path, relative_path: str) -> str:
     return (root / relative_path).read_text(encoding="ascii")
 
 
+def function_text(source: str, declaration: str) -> str:
+    start = source.find(declaration)
+    require(start >= 0, f"function declaration is absent: {declaration}")
+    opening_brace = source.find("{", start)
+    require(opening_brace >= 0, f"function body is absent: {declaration}")
+    depth = 0
+    for offset in range(opening_brace, len(source)):
+        if source[offset] == "{":
+            depth += 1
+        elif source[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : offset + 1]
+    raise ContractError(f"function closing brace is absent: {declaration}")
+
+
 def check_tree(root: Path) -> None:
     atom_header = read_text(root, "drivers/gpu/drm/radeon/atom.h")
     atom_bits = read_text(root, "drivers/gpu/drm/radeon/atom-bits.h")
     atom_source = read_text(root, "drivers/gpu/drm/radeon/atom.c")
     device_source = read_text(root, "drivers/gpu/drm/radeon/radeon_device.c")
+    data_header_source = function_text(atom_source, "bool atom_parse_data_header(")
+    command_header_source = function_text(atom_source, "bool atom_parse_cmd_header(")
+    calltable_source = function_text(atom_source, "static void atom_op_calltable(")
+    compare_source = function_text(atom_source, "static void atom_op_compare(")
+    test_source = function_text(atom_source, "static void atom_op_test(")
 
     require(
         "size_t bios_size;" in atom_header
@@ -60,6 +81,12 @@ def check_tree(root: Path) -> None:
         "(size_t)ptr > ctx->bios_size" in atom_bits
         and "length > ctx->bios_size - (size_t)ptr" in atom_bits,
         "ATOM full image span predicate differs",
+    )
+    require(
+        "atom_bios_read_u8(const struct atom_context *ctx" in atom_bits
+        and "atom_bios_read_u16(const struct atom_context *ctx" in atom_bits
+        and "atom_bios_span_in_range(ctx, ptr, sizeof(*value))" in atom_bits,
+        "ATOM pure full image readers differ",
     )
     require(
         "if (!atom_span_valid(ctx, ptr, sizeof(uint8_t)))" in atom_bits
@@ -128,9 +155,30 @@ def check_tree(root: Path) -> None:
         "ATOM parameter byte extent differs",
     )
     require(
-        atom_source.count("offset > table_size - sizeof(u16)") == 2
-        and atom_source.count("atom_span_valid(ctx, idx, table_size)") == 2,
+        "offset > table_size - sizeof(u16)" in data_header_source
+        and "offset > table_size - sizeof(u16)" in command_header_source
+        and "atom_bios_span_in_range(ctx, idx, table_size)" in data_header_source
+        and "atom_bios_span_in_range(ctx, idx, table_size)" in command_header_source,
         "ATOM master table header bounds differ",
+    )
+    require(
+        "bios_read_start" not in data_header_source
+        and "bios_read_limit" not in data_header_source
+        and "io_error" not in data_header_source
+        and "bios_read_start" not in command_header_source
+        and "bios_read_limit" not in command_header_source
+        and "io_error" not in command_header_source,
+        "ATOM public header lookup mutates interpreter state",
+    )
+    require(
+        "atom_bios_read_u16(ctx->ctx, ctx->ctx->cmd_table" in calltable_source
+        and "if (!command_table_offset)\n\t\treturn;" in calltable_source,
+        "ATOM absent nested command table handling differs",
+    )
+    require(
+        "if (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal" in compare_source
+        and "if (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal" in test_source,
+        "ATOM failed condition operands mutate interpreter state",
     )
     require(
         "(u16 *)(ctx->bios + ctx->data_table + 4)" not in atom_source
@@ -243,6 +291,38 @@ def self_test(root: Path) -> None:
             "atom.c",
             "\t    !atom_span_valid(ctx, ctx->data_table, 4) ||\n",
             "",
+        ),
+        (
+            "public data header resets interpreter bounds",
+            "atom.c",
+            "\tu16 table_size;\n\n\tif (index < 0",
+            "\tu16 table_size;\n\n\tctx->bios_read_start = 0;\n\tif (index < 0",
+        ),
+        (
+            "public command header clears interpreter failure",
+            "atom.c",
+            "bool atom_parse_cmd_header(struct atom_context *ctx, int index, uint8_t *frev,\n"
+            "\t\t\t   uint8_t *crev)\n{\n\tint offset;",
+            "bool atom_parse_cmd_header(struct atom_context *ctx, int index, uint8_t *frev,\n"
+            "\t\t\t   uint8_t *crev)\n{\n\tctx->io_error = false;\n\tint offset;",
+        ),
+        (
+            "absent nested command table aborts the caller",
+            "atom.c",
+            "\tif (!command_table_offset)\n\t\treturn;",
+            "\tif (!command_table_offset)\n\t\tctx->abort = true;",
+        ),
+        (
+            "failed compare operand changes condition state",
+            "atom.c",
+            "\tif (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal = (dst == src);",
+            "\tctx->ctx->cs_equal = (dst == src);",
+        ),
+        (
+            "failed test operand changes condition state",
+            "atom.c",
+            "\tif (ctx->ctx->io_error)\n\t\treturn;\n\tctx->ctx->cs_equal = ((dst & src) == 0);",
+            "\tctx->ctx->cs_equal = ((dst & src) == 0);",
         ),
         (
             "raw data-table cast",
