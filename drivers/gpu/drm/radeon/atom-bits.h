@@ -25,6 +25,8 @@
 #ifndef ATOM_BITS_H
 #define ATOM_BITS_H
 
+#include <linux/unaligned.h>
+
 static inline bool atom_span_valid(struct atom_context *ctx, int ptr,
 				   size_t length)
 {
