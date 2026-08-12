@@ -736,5 +736,7 @@ The source intelligence program advances through these concrete gates:
 12. The COMBIOS source contract preserves every acquisition extent, admits one
     declared PCI image, preflights every RS400 and RS480 hardware driving table,
     and propagates a parser failure through post and resume owners. The exact
-    Vostro ROM replay remains offline structure evidence. ATOM interpreter
-    bounds remain a separate unresolved parser surface.
+    Vostro ROM replay remains offline structure evidence. The ATOM interpreter
+    carries the same image extent, confines bytecode reads to each declared
+    command body, and rejects malformed master and indirect IO tables. Typed
+    ATOM table views outside the interpreter remain a separate source frontier.

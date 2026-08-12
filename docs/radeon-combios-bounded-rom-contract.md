@@ -8,9 +8,9 @@ or replaced.
 
 This contract targets the COMBIOS path used by RS400 and RS480 devices. The
 retained Dell Vostro 1000 firmware identifies a COMBIOS image for the RS482
-device `1002:5974`. It does not identify an ATOM image. ATOM command and data
-table parsing remains a separate parser surface and is not promoted by this
-work.
+device `1002:5974`. It does not identify an ATOM image, so the ATOM bounds carry
+source and compile evidence without an RS482 firmware replay or hardware
+promotion.
 
 ## Acquisition boundary
 
@@ -57,6 +57,27 @@ hardware driving table from executing a valid prefix. It does not prove that a
 well formed command is safe for a particular board. Register and runtime
 verdicts remain owned by `steinmarder-r300`.
 
+## ATOM interpreter boundary
+
+`atom_parse` receives the admitted BIOS image size from `radeon_atombios_init`.
+Its structural readers validate the ROM header, master command table, master
+data table, indirect IO programs, and table headers against that full image.
+Its execution readers use a narrower interval whose lower edge is the first
+command byte and whose upper edge is the table's declared size. A nested table
+call saves and restores its caller's interval.
+
+An operand read that crosses the active command interval latches `io_error`.
+Register, PLL, MC, scratch, parameter, and workspace access stops after that
+latch, and the dispatcher returns `-EINVAL`. This prevents a truncated operand
+from becoming register zero or another valid hardware access.
+
+The boundary does not make every typed ATOM data table view size aware. Files
+such as `radeon_atombios.c` and the DPM implementations still cast validated
+table starts to versioned structures. The source verifier requires that
+frontier to remain visible and nonempty. A later batch carries each table's
+declared size through those consumers and proves the minimum structure extent
+for every version before field access.
+
 ## Exact firmware replay
 
 The source verifier accepts an optional ROM without touching hardware:
@@ -92,6 +113,8 @@ hardware result.
 ```sh
 python3 scripts/check_radeon_bios_bounds.py --selftest
 python3 scripts/check_radeon_bios_bounds.py
+python3 scripts/check_radeon_atom_bounds.py --selftest
+python3 scripts/check_radeon_atom_bounds.py
 ruff check scripts/
 ruff format --check scripts/
 ```
@@ -101,3 +124,8 @@ direct BIOS access, missing extent ownership, arithmetic overflow, ATRM and
 VFCT overrun, missing PCI image identity, incomplete EDID bounds, execution
 before preflight, and missing TMDS preflight. Both required kernel module lanes
 must also compile with warnings treated as errors.
+
+The ATOM self test admits the current source and rejects thirteen mutations
+covering missing image extent, overflow, unbounded reads, command underflow and
+overflow, opcode fetch bypass, operand-triggered register access, nested-table
+interval restoration, malformed indirect IO, and raw master-table access.
