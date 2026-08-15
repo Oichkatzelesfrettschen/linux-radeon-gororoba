@@ -46,14 +46,14 @@ printf '\nfirst-decline-reason histogram:\n'
 awk '/verdict=DECLINE/{for(i=1;i<=NF;i++) if($i~/^first=/){split($i,a,"=");r[a[2]]++}}
      END{for(k in r) printf "  %-22s %d\n", k, r[k]}' "$raw" | sort -k2 -rn
 
-printf '\nfull-identity-EXT draws (ext_mask=0xff, ext_nonident=0) verdict split:\n'
-awk '/ext_mask=0xff/ && /ext_nonident=0/{for(i=1;i<=NF;i++) if($i~/^verdict=/){split($i,a,"=");v[a[2]]++}}
+printf '\nPSC-declared draws (cntl_mask and ext_mask nonzero) verdict split:\n'
+awk '!/cntl_mask=0x00/ && !/ext_mask=0x00/{for(i=1;i<=NF;i++) if($i~/^verdict=/){split($i,a,"=");v[a[2]]++}}
      END{for(k in v) printf "  %-8s %d\n", k, v[k]}' "$raw"
 
 printf '\ndraws one VAP_VTX_SIZE write from the firing shape:\n'
 awk '{delete f; for(i=1;i<=NF;i++){split($i,a,"=");f[a[1]]=a[2]}
       if(f["pin_tcl"]==1&&f["pin_fmt0"]==1&&f["pin_fmt1"]==1&&
-         f["ext_mask"]=="0xff"&&f["ext_nonident"]==0&&f["pw_imm"]==0&&
+         f["cntl_mask"]!="0x00"&&f["ext_mask"]!="0x00"&&f["pw_imm"]==0&&
          f["pos_present"]==1&&f["fmt0_extra"]=="0x00000000"&&
          f["fmt1_undecoded"]=="0x00000000"&&f["comp_gt4"]==0&&f["pin_vtx"]==0)n++}
      END{printf "  %d\n", n+0}' "$raw"
@@ -70,13 +70,12 @@ awk '{
     else if(f["pin_fmt0"]==0) e="no_fmt0"
     else if(f["pin_fmt1"]==0) e="no_fmt1"
     else if(f["pin_vtx"]==0) e="no_vtx_size"
-    else if(!(f["ext_mask"]=="0xff" && f["ext_nonident"]==0))
-        e=(f["ext_mask"]!="0xff")?"ext_incomplete":"ext_nonidentity"
     else if(f["pw_imm"]==1) e="prim_walk_immediate"
     else if(f["pos_present"]==0) e="position_absent"
     else if(f["fmt0_extra"]!="0x00000000") e="fmt0_beyond_position"
     else if(f["fmt1_undecoded"]!="0x00000000") e="fmt1_undecoded"
     else if(f["comp_gt4"]==1) e="component_gt4"
+    else if(f["cntl_mask"]=="0x00" || f["ext_mask"]=="0x00") e="psc_undeclared"
     else e="-"
     lines++; ex[e]++
     if(e != f["first"]){mism++; if(mism<=3) printf "  MISMATCH line %d: emitted=%s recomputed=%s\n", NR, f["first"], e}

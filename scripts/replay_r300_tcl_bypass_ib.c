@@ -41,8 +41,9 @@
 struct tracker {
 	unsigned int vap_vf_cntl;
 	unsigned int fmt0, fmt1, vtx_size, cntl_status;
+	unsigned int psc_cntl[8], psc_ext[8];
 	unsigned char fmt0_seen, fmt1_seen, vtx_size_seen, cntl_status_seen;
-	unsigned char psc_ext_seen_mask, psc_ext_nonident;
+	unsigned char psc_cntl_seen_mask, psc_ext_seen_mask;
 };
 
 static const char *verdict_name(enum r300_tcl_bypass_vtx_verdict v)
@@ -71,9 +72,11 @@ static void track_write(struct tracker *t, unsigned int reg,
 	} else if (reg == 0x2140) {
 		t->cntl_status = val;
 		t->cntl_status_seen = 1;
+	} else if (reg >= 0x2150 && reg <= 0x216C) {
+		t->psc_cntl[(reg - 0x2150) >> 2] = val;
+		t->psc_cntl_seen_mask |= 1u << ((reg - 0x2150) >> 2);
 	} else if (reg >= 0x21E0 && reg <= 0x21FC) {
-		if (val != 0xF688F688)
-			t->psc_ext_nonident = 1;
+		t->psc_ext[(reg - 0x21E0) >> 2] = val;
 		t->psc_ext_seen_mask |= 1u << ((reg - 0x21E0) >> 2);
 	}
 }
@@ -88,7 +91,8 @@ static void emit_reasons(const struct tracker *t, long idx, unsigned int op,
 {
 	unsigned int pos_bit = R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
 	int tcl = t->cntl_status_seen && (t->cntl_status & R300_VAP_TCL_BYPASS);
-	int ext_complete = t->psc_ext_seen_mask == 0xff && !t->psc_ext_nonident;
+	int psc_declared = t->psc_cntl_seen_mask != 0 &&
+		t->psc_ext_seen_mask != 0;
 	unsigned int pw = (t->vap_vf_cntl >> 4) & 0x3;
 	int pos = t->fmt0_seen && (t->fmt0 & pos_bit);
 	unsigned int fmt0_extra = t->fmt0_seen ? (t->fmt0 & ~pos_bit) : 0;
@@ -110,9 +114,6 @@ static void emit_reasons(const struct tracker *t, long idx, unsigned int op,
 		first = "no_fmt1";
 	else if (!t->vtx_size_seen)
 		first = "no_vtx_size";
-	else if (!ext_complete)
-		first = t->psc_ext_seen_mask != 0xff ? "ext_incomplete"
-						     : "ext_nonidentity";
 	else if (pw == 3)
 		first = "prim_walk_immediate";
 	else if (!pos)
@@ -123,14 +124,16 @@ static void emit_reasons(const struct tracker *t, long idx, unsigned int op,
 		first = "fmt1_undecoded";
 	else if (comp_gt4)
 		first = "component_gt4";
+	else if (!psc_declared)
+		first = "psc_undeclared";
 
 	printf("reason idx=%ld op=0x%02X verdict=%s first=%s pin_tcl=%d "
-	       "pin_fmt0=%u pin_fmt1=%u pin_vtx=%u ext_mask=0x%02x "
-	       "ext_nonident=%u pw_imm=%d pos_present=%d fmt0_extra=0x%08x "
+	       "pin_fmt0=%u pin_fmt1=%u pin_vtx=%u cntl_mask=0x%02x "
+	       "ext_mask=0x%02x pw_imm=%d pos_present=%d fmt0_extra=0x%08x "
 	       "fmt1_undecoded=0x%08x comp_gt4=%d vtx_size=%u required=%u\n",
 	       idx, op, verdict_name(v), first, tcl, t->fmt0_seen,
-	       t->fmt1_seen, t->vtx_size_seen, t->psc_ext_seen_mask,
-	       t->psc_ext_nonident, pw == 3, pos, fmt0_extra, fmt1_undec,
+	       t->fmt1_seen, t->vtx_size_seen, t->psc_cntl_seen_mask,
+	       t->psc_ext_seen_mask, pw == 3, pos, fmt0_extra, fmt1_undec,
 	       comp_gt4, t->vtx_size, required);
 }
 
@@ -143,15 +146,17 @@ draw_check(const struct tracker *t, unsigned int *required)
 		.fmt0_seen = t->fmt0_seen,
 		.fmt1_seen = t->fmt1_seen,
 		.vtx_size_seen = t->vtx_size_seen,
-		.ext_identity_complete = !t->psc_ext_nonident &&
-			t->psc_ext_seen_mask == 0xff,
+		.psc_cntl_seen_mask = t->psc_cntl_seen_mask,
+		.psc_ext_seen_mask = t->psc_ext_seen_mask,
 		.prim_walk = (t->vap_vf_cntl >> 4) & 0x3,
 		.fmt0 = t->fmt0,
 		.fmt1 = t->fmt1,
 		.vtx_size = t->vtx_size,
 	};
 
-	return r300_tcl_bypass_vtx_check(&in, required);
+	memcpy(in.psc_cntl, t->psc_cntl, sizeof(in.psc_cntl));
+	memcpy(in.psc_ext, t->psc_ext, sizeof(in.psc_ext));
+	return r300_tcl_bypass_vtx_check(&in, required, NULL);
 }
 
 int main(int argc, char **argv)
@@ -296,14 +301,14 @@ int main(int argc, char **argv)
 					decline++;
 				printf("draw idx=%ld op=0x%02X vf_cntl=0x%08x "
 				       "tcl_bypass=%u fmt0=0x%08x fmt1=0x%08x "
-				       "vtx_size=%u required=%u ext_mask=0x%02x "
-				       "ext_nonident=%u verdict=%s\n",
+				       "vtx_size=%u required=%u cntl_mask=0x%02x "
+				       "ext_mask=0x%02x verdict=%s\n",
 				       i, op, t.vap_vf_cntl,
 				       t.cntl_status_seen &&
 				       !!(t.cntl_status & R300_VAP_TCL_BYPASS),
 				       t.fmt0, t.fmt1, t.vtx_size, required,
-				       t.psc_ext_seen_mask,
-				       t.psc_ext_nonident, verdict_name(v));
+				       t.psc_cntl_seen_mask,
+				       t.psc_ext_seen_mask, verdict_name(v));
 				if (reasons)
 					emit_reasons(&t, i, op, v,
 						     required);
