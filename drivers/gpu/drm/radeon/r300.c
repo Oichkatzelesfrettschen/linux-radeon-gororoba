@@ -860,6 +860,23 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 		track->vap_cntl_status = idx_value;
 		track->vap_cntl_status_seen = true;
 		break;
+	case 0x2150:
+	case 0x2154:
+	case 0x2158:
+	case 0x215C:
+	case 0x2160:
+	case 0x2164:
+	case 0x2168:
+	case 0x216C:
+		/* VAP_PROG_STREAM_CNTL_0..7 each declare two vertex
+		 * elements: DATA_TYPE, SKIP_DWORDS, DST_VEC_LOC, and the
+		 * LAST_VEC terminator per 16-bit half.  The TCL-bypass
+		 * width check walks these halves through LAST_VEC, so the
+		 * fetch width of every consumed element is decodable. */
+		track->vap_psc_cntl[(reg - 0x2150) / 4] = idx_value;
+		track->vap_psc_cntl_seen_mask |=
+			(u8)(1u << ((reg - 0x2150) / 4));
+		break;
 	case 0x21E0:
 	case 0x21E4:
 	case 0x21E8:
@@ -869,14 +886,13 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 	case 0x21F8:
 	case 0x21FC:
 		/* VAP_PROG_STREAM_CNTL_EXT_0..7 each hold the PSC swizzle
-		 * pair for two vertex elements.  0xF688F688 is the identity
-		 * pair (select X, Y, Z, W with a full write mask in both
-		 * halves); any other value can widen or narrow a fetched
-		 * element, so the TCL-bypass size cross-check declines.
-		 * Bit i of vap_psc_ext_seen_mask records EXT_i written in
-		 * this CS; the draw-time check requires all eight. */
-		if (idx_value != 0xF688F688)
-			track->vap_psc_ext_nonident = true;
+		 * pair for two vertex elements.  0xF688 is the identity
+		 * half (select X, Y, Z, W with a full write mask); 0xFB08
+		 * is the XY01 half that synthesizes Z and W as constants
+		 * over a FLOAT_2 fetch.  The draw-time check validates the
+		 * selector of every element the CNTL list declares and
+		 * ignores registers past the LAST_VEC element. */
+		track->vap_psc_ext[(reg - 0x21E0) / 4] = idx_value;
 		track->vap_psc_ext_seen_mask |=
 			(u8)(1u << ((reg - 0x21E0) / 4));
 		break;
@@ -1320,11 +1336,15 @@ fail:
  *
  * The comparison is sound only when the command stream pins every input:
  * TCL bypass proven by a VAP_CNTL_STATUS write with R300_VAP_TCL_BYPASS
- * set, both output-format words written, VAP_VTX_SIZE written, and all
- * eight VAP_PROG_STREAM_CNTL_EXT_0..7 written as the identity swizzle so
- * one fetched dword maps to one delivered dword.  When any of those is
- * missing or undecodable the state is inherited or expanded outside this
- * command stream and the check declines rather than guesses.
+ * set, both output-format words written, VAP_VTX_SIZE written, and the
+ * PSC element list fully declared this CS -- VAP_PROG_STREAM_CNTL and
+ * its EXT selector written for every element through LAST_VEC.  An
+ * identity selector maps one fetched dword to one delivered lane; the
+ * XY01 selector over a FLOAT_2 fetch delivers a full four-lane vector
+ * with Z and W synthesized, and then VAP_VTX_SIZE must equal the summed
+ * element fetch widths.  When any input is missing or undecodable the
+ * state is inherited or expanded outside this command stream and the
+ * check declines rather than guesses.
  *
  * The width decision itself lives in r300_tcl_bypass_vtx_check.h, a pure
  * function shared verbatim with the userspace calibration harness
@@ -1340,21 +1360,24 @@ static int r300_cs_tcl_bypass_vtx_output_check(struct radeon_cs_parser *p,
 		.fmt0_seen = track->vap_out_vtx_fmt_0_seen,
 		.fmt1_seen = track->vap_out_vtx_fmt_1_seen,
 		.vtx_size_seen = track->vap_vtx_size_seen,
-		.ext_identity_complete = !track->vap_psc_ext_nonident &&
-			track->vap_psc_ext_seen_mask == 0xff,
+		.psc_cntl_seen_mask = track->vap_psc_cntl_seen_mask,
+		.psc_ext_seen_mask = track->vap_psc_ext_seen_mask,
 		.prim_walk = (track->vap_vf_cntl >> 4) & 0x3,
 		.fmt0 = track->vap_out_vtx_fmt_0,
 		.fmt1 = track->vap_out_vtx_fmt_1,
 		.vtx_size = track->vtx_size,
 	};
 	unsigned int required_dwords = 0;
+	unsigned int fetch_dwords = 0;
 
-	if (r300_tcl_bypass_vtx_check(&in, &required_dwords) !=
+	memcpy(in.psc_cntl, track->vap_psc_cntl, sizeof(in.psc_cntl));
+	memcpy(in.psc_ext, track->vap_psc_ext, sizeof(in.psc_ext));
+	if (r300_tcl_bypass_vtx_check(&in, &required_dwords, &fetch_dwords) !=
 	    R300_TCL_BYPASS_VTX_REJECT)
 		return 0;
 	dev_warn_once(p->dev,
-		      "TCL-bypass draw: VAP_VTX_SIZE %u dwords < %u dwords required by VAP_OUT_VTX_FMT 0x%08x/0x%08x\n",
-		      track->vtx_size, required_dwords,
+		      "TCL-bypass draw: VAP_VTX_SIZE %u dwords under PSC fetch %u or output %u required by VAP_OUT_VTX_FMT 0x%08x/0x%08x\n",
+		      track->vtx_size, fetch_dwords, required_dwords,
 		      track->vap_out_vtx_fmt_0,
 		      track->vap_out_vtx_fmt_1);
 	return -EINVAL;

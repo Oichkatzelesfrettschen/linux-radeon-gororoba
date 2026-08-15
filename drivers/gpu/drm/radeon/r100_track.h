@@ -73,8 +73,10 @@ struct r100_cs_track {
 	bool				vap_out_vtx_fmt_1_seen;
 	bool				vap_cntl_status_seen;
 	bool				vap_vtx_size_seen;
+	u8				vap_psc_cntl_seen_mask;
 	u8				vap_psc_ext_seen_mask;
-	bool				vap_psc_ext_nonident;
+	unsigned			vap_psc_cntl[8];
+	unsigned			vap_psc_ext[8];
 	struct r100_cs_track_array	arrays[16];
 	struct r100_cs_track_cb 	cb[R300_MAX_CB];
 	struct r100_cs_track_cb 	zb;
