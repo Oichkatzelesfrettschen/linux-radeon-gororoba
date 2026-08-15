@@ -3,7 +3,7 @@
 # of retained PM4 indirect buffers. Builds replay_r300_tcl_bypass_ib with the
 # same r300_tcl_bypass_vtx_check.h the kernel compiles, runs it in --reasons
 # mode over every *.bin under the corpus root, and tabulates the verdict split,
-# the first-decline-reason histogram, and the full-identity-EXT subset. The
+# the first-decline-reason histogram, and the PSC-declared subset. The
 # census measures how much of a real corpus reaches the REJECT/PASS decision
 # rather than declining on an unwitnessed premise.
 #
@@ -58,31 +58,23 @@ awk '{delete f; for(i=1;i<=NF;i++){split($i,a,"=");f[a[1]]=a[2]}
          f["fmt1_undecoded"]=="0x00000000"&&f["comp_gt4"]==0&&f["pin_vtx"]==0)n++}
      END{printf "  %d\n", n+0}' "$raw"
 
-# Calibration: recompute the first-decline reason from the independent premise
-# flags on each line, in the header's evaluation order, and assert it equals the
-# reason emit_reasons printed. A mismatch means the emitter and the flags
-# disagree, so the census is untrusted. The exercised set names which reason
+# Calibration: the first= reason on every line is the decision function's
+# own decline branch (an enum out-param, not a re-derivation), so the
+# census is trusted when every DECLINE carries a named reason and every
+# PASS or REJECT carries none. The exercised set names which decline
 # branches the corpus actually drove.
-printf '\nreason-emitter calibration (recompute first= from flags):\n'
+printf '\nreason coverage (first= from the decision function):\n'
 awk '{
     delete f; for(i=1;i<=NF;i++){split($i,a,"=");f[a[1]]=a[2]}
-    if(f["pin_tcl"]==0) e="no_tcl_bypass"
-    else if(f["pin_fmt0"]==0) e="no_fmt0"
-    else if(f["pin_fmt1"]==0) e="no_fmt1"
-    else if(f["pin_vtx"]==0) e="no_vtx_size"
-    else if(f["pw_imm"]==1) e="prim_walk_immediate"
-    else if(f["pos_present"]==0) e="position_absent"
-    else if(f["fmt0_extra"]!="0x00000000") e="fmt0_beyond_position"
-    else if(f["fmt1_undecoded"]!="0x00000000") e="fmt1_undecoded"
-    else if(f["comp_gt4"]==1) e="component_gt4"
-    else if(f["cntl_mask"]=="0x00" || f["ext_mask"]=="0x00") e="psc_undeclared"
-    else e="-"
-    lines++; ex[e]++
-    if(e != f["first"]){mism++; if(mism<=3) printf "  MISMATCH line %d: emitted=%s recomputed=%s\n", NR, f["first"], e}
+    lines++; ex[f["first"]]++
+    if(f["verdict"]=="DECLINE" && f["first"]=="-"){bad++;
+        if(bad<=3) printf "  UNNAMED DECLINE line %d\n", NR}
+    if(f["verdict"]!="DECLINE" && f["first"]!="-"){bad++;
+        if(bad<=3) printf "  NAMED NON-DECLINE line %d: %s\n", NR, f["first"]}
 }
 END{
     n=0; for(k in ex) n++
-    printf "  lines=%d mismatches=%d branches_exercised=%d\n", lines, mism+0, n
+    printf "  lines=%d violations=%d branches_exercised=%d\n", lines, bad+0, n
     for(k in ex) printf "    %-22s %d\n", k, ex[k]
-    if(mism+0 > 0) exit 1
+    if(bad+0 > 0) exit 1
 }' "$raw"

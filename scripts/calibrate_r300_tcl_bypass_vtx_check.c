@@ -51,6 +51,8 @@ struct calib_case {
 	struct r300_tcl_bypass_vtx_inputs in;
 	enum r300_tcl_bypass_vtx_verdict expected;
 	unsigned int expected_required;
+	/* Nonzero: the fetch width the check must report. */
+	unsigned int expected_fetch;
 };
 
 /* One CNTL element half: data type, destination vector, optional LAST. */
@@ -111,7 +113,7 @@ static struct r300_tcl_bypass_vtx_inputs float2_tuple(void)
 	return in;
 }
 
-#define NCASES 26
+#define NCASES 31
 static struct calib_case cases[NCASES];
 
 static void build_cases(void)
@@ -263,6 +265,7 @@ static void build_cases(void)
 	c->in = float2_tuple();
 	c->expected = R300_TCL_BYPASS_VTX_PASS;
 	c->expected_required = 8;
+	c->expected_fetch = 6;
 
 	c = &cases[n++];
 	c->name = "float2 tuple underfeed: VTX_SIZE 5 under fetch 6";
@@ -294,6 +297,57 @@ static void build_cases(void)
 	c->in.vtx_size = 2;
 	c->expected = R300_TCL_BYPASS_VTX_REJECT;
 	c->expected_required = 4;
+
+	c = &cases[n++];
+	c->name = "identity BYTE element keeps the anchored arithmetic";
+	c->in = pinned();
+	c->in.psc_cntl[1] = cntl_half(4 /* DATA_TYPE_BYTE */, 7, 1);
+	c->in.vtx_size = 12;
+	c->expected = R300_TCL_BYPASS_VTX_PASS;
+	c->expected_required = 12;
+	c->expected_fetch = 12;
+
+	c = &cases[n++];
+	c->name = "sixteen elements without LAST_VEC";
+	c->in = pinned();
+	for (unsigned int w = 0; w < 8; w++) {
+		c->in.psc_cntl[w] = cntl_half(FLOAT_4, (2 * w) & 0x1F, 0) |
+				    (cntl_half(FLOAT_4, (2 * w + 1) & 0x1F, 0)
+				     << 16);
+		c->in.psc_ext[w] = IDENT | (IDENT << 16);
+	}
+	c->in.psc_cntl_seen_mask = 0xFF;
+	c->in.psc_ext_seen_mask = 0xFF;
+	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
+
+	c = &cases[n++];
+	c->name = "unknowable width beside a synthesized element";
+	c->in = float2_tuple();
+	c->in.psc_cntl[0] = cntl_half(4 /* DATA_TYPE_BYTE */, 0, 0) |
+			    (cntl_half(FLOAT_2, 6, 1) << 16);
+	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
+
+	c = &cases[n++];
+	c->name = "identity overfeed keeps the anchored arithmetic";
+	c->in = pinned();
+	c->in.psc_cntl[1] = cntl_half(FLOAT_4, 7, 1);
+	c->in.vtx_size = 16;
+	c->expected = R300_TCL_BYPASS_VTX_PASS;
+	c->expected_required = 12;
+	c->expected_fetch = 16;
+
+	c = &cases[n++];
+	c->name = "two elements writing one destination vector";
+	c->in = float2_tuple();
+	c->in.psc_cntl[0] = cntl_half(FLOAT_4, 0, 0) |
+			    (cntl_half(FLOAT_2, 0, 1) << 16);
+	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
+
+	if (n != NCASES) {
+		printf("case table drifted: built %u of %u\n", n,
+		       (unsigned int)NCASES);
+		__builtin_trap();
+	}
 }
 
 /* Known-bad shape: the width comparison without the position-presence
@@ -310,10 +364,10 @@ tcl_bypass_vtx_check_no_pos_premise(const struct r300_tcl_bypass_vtx_inputs *in)
 	return r300_tcl_bypass_vtx_check(&relaxed, NULL, NULL);
 }
 
-/* Known-bad shape: the identity assumption.  VAP_VTX_SIZE is taken as
+/* Known-bad shape: a selector-blind checker.  VAP_VTX_SIZE is taken as
  * the delivered width whatever the PSC selectors say, so a synthesized
- * XY01 tuple is judged by its fetch width and the FLOAT_2 extension's
- * whole reason to exist disappears. */
+ * XY01 tuple is judged by its fetch width -- the failure class the
+ * per-element decode exists to prevent. */
 static enum r300_tcl_bypass_vtx_verdict
 tcl_bypass_vtx_check_identity_assumption(
 	const struct r300_tcl_bypass_vtx_inputs *in)
@@ -366,16 +420,18 @@ int main(void)
 	for (i = 0; i < NCASES; i++) {
 		const struct calib_case *c = &cases[i];
 		unsigned int required = 0;
+		unsigned int fetch = 0;
 		enum r300_tcl_bypass_vtx_verdict got =
-			r300_tcl_bypass_vtx_check(&c->in, &required, NULL);
+			r300_tcl_bypass_vtx_check(&c->in, &required, &fetch);
 
 		if (got != c->expected ||
 		    (c->expected != R300_TCL_BYPASS_VTX_DECLINE &&
-		     required != c->expected_required)) {
-			printf("FAIL %s: got %s required %u, expected %s required %u\n",
-			       c->name, verdict_name(got), required,
+		     required != c->expected_required) ||
+		    (c->expected_fetch != 0 && fetch != c->expected_fetch)) {
+			printf("FAIL %s: got %s required %u fetch %u, expected %s required %u fetch %u\n",
+			       c->name, verdict_name(got), required, fetch,
 			       verdict_name(c->expected),
-			       c->expected_required);
+			       c->expected_required, c->expected_fetch);
 			failures++;
 		}
 

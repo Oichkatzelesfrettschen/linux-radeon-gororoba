@@ -1376,10 +1376,10 @@ static int r300_cs_tcl_bypass_vtx_output_check(struct radeon_cs_parser *p,
 	    R300_TCL_BYPASS_VTX_REJECT)
 		return 0;
 	dev_warn_once(p->dev,
-		      "TCL-bypass draw: VAP_VTX_SIZE %u dwords under PSC fetch %u or output %u required by VAP_OUT_VTX_FMT 0x%08x/0x%08x\n",
-		      track->vtx_size, fetch_dwords, required_dwords,
-		      track->vap_out_vtx_fmt_0,
-		      track->vap_out_vtx_fmt_1);
+		      "TCL-bypass draw: VAP_VTX_SIZE %u dwords, PSC fetch %u dwords, VAP_OUT_VTX_FMT 0x%08x/0x%08x requires %u\n",
+		      track->vtx_size, fetch_dwords,
+		      track->vap_out_vtx_fmt_0, track->vap_out_vtx_fmt_1,
+		      required_dwords);
 	return -EINVAL;
 }
 

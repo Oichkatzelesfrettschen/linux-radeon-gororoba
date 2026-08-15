@@ -31,6 +31,26 @@
 #define R300_TCL_BYPASS_PSC_DATA_TYPE_FLOAT_4 3u
 #define R300_TCL_BYPASS_PSC_LAST_VEC (1u << 13)
 
+/* The first premise the decision declined on, for reason censuses and
+ * refusal reports.  NONE names a PASS or REJECT verdict.
+ */
+enum r300_tcl_bypass_vtx_decline_reason {
+	R300_TCL_BYPASS_DECLINE_NONE = 0,
+	R300_TCL_BYPASS_DECLINE_PIN_MISSING,
+	R300_TCL_BYPASS_DECLINE_PRIM_WALK_IMMEDIATE,
+	R300_TCL_BYPASS_DECLINE_POSITION_ABSENT,
+	R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_POSITION,
+	R300_TCL_BYPASS_DECLINE_FMT1_UNDECODED,
+	R300_TCL_BYPASS_DECLINE_COMPONENT_GT4,
+	R300_TCL_BYPASS_DECLINE_PSC_WORD_UNWRITTEN,
+	R300_TCL_BYPASS_DECLINE_SKIP_DWORDS,
+	R300_TCL_BYPASS_DECLINE_SELECTOR_UNMODELED,
+	R300_TCL_BYPASS_DECLINE_DST_VEC_DUPLICATE,
+	R300_TCL_BYPASS_DECLINE_NO_LAST_VEC,
+	R300_TCL_BYPASS_DECLINE_WIDTH_UNKNOWABLE,
+	R300_TCL_BYPASS_DECLINE_FETCH_OVERFEED,
+};
+
 enum r300_tcl_bypass_vtx_verdict {
 	/* The pinned-input premises do not all hold, so the width claim is
 	 * outside the proven scope and the ordinary CS tracking stands
@@ -83,59 +103,89 @@ struct r300_tcl_bypass_vtx_inputs {
  * exactly (the underfeed rejects, the overfeed leaves the proven scope)
  * and the delivered width is the summed per-element delivery.  A
  * nonzero SKIP_DWORDS field, a selector half outside identity and XY01,
- * XY01 paired with a data type other than FLOAT_2, and a non-identity
- * list containing an element of unknowable fetch width each decline.
+ * XY01 paired with a data type other than FLOAT_2, two elements writing
+ * one destination vector, and a non-identity list containing an element
+ * of unknowable fetch width each decline.
  */
 static inline enum r300_tcl_bypass_vtx_verdict
-r300_tcl_bypass_vtx_check(const struct r300_tcl_bypass_vtx_inputs *in,
-			  unsigned int *required_dwords,
-			  unsigned int *fetch_dwords)
+r300_tcl_bypass_vtx_check_reason(
+	const struct r300_tcl_bypass_vtx_inputs *in,
+	unsigned int *required_dwords, unsigned int *fetch_dwords,
+	enum r300_tcl_bypass_vtx_decline_reason *reason)
 {
 	unsigned int required = 4;
 	unsigned int delivered = 0;
 	unsigned int fetch = 0;
+	unsigned int dst_vec_mask = 0;
 	unsigned int comp_cnt;
 	unsigned int identity_only = 1;
 	unsigned int widths_known = 1;
 	unsigned int last_seen = 0;
 	unsigned int e;
 	unsigned int i;
+	enum r300_tcl_bypass_vtx_decline_reason why =
+		R300_TCL_BYPASS_DECLINE_NONE;
 
+	if (reason)
+		*reason = R300_TCL_BYPASS_DECLINE_NONE;
 	if (!in->tcl_bypass_seen || !in->fmt0_seen || !in->fmt1_seen ||
 	    !in->vtx_size_seen)
+		why = R300_TCL_BYPASS_DECLINE_PIN_MISSING;
+	else if (in->prim_walk == 3)
+		why = R300_TCL_BYPASS_DECLINE_PRIM_WALK_IMMEDIATE;
+	else if (!(in->fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT))
+		why = R300_TCL_BYPASS_DECLINE_POSITION_ABSENT;
+	else if (in->fmt0 & ~R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
+		why = R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_POSITION;
+	else if (in->fmt1 & ~0x00FFFFFFUL)
+		why = R300_TCL_BYPASS_DECLINE_FMT1_UNDECODED;
+	if (why) {
+		if (reason)
+			*reason = why;
 		return R300_TCL_BYPASS_VTX_DECLINE;
-	if (in->prim_walk == 3)
-		return R300_TCL_BYPASS_VTX_DECLINE;
-	if (!(in->fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT))
-		return R300_TCL_BYPASS_VTX_DECLINE;
-	if (in->fmt0 & ~R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
-		return R300_TCL_BYPASS_VTX_DECLINE;
-	if (in->fmt1 & ~0x00FFFFFFUL)
-		return R300_TCL_BYPASS_VTX_DECLINE;
+	}
 
 	for (i = 0; i < 8; i++) {
 		comp_cnt = (in->fmt1 >> (3 * i)) & 0x7;
-		if (comp_cnt > 4)
+		if (comp_cnt > 4) {
+			if (reason)
+				*reason = R300_TCL_BYPASS_DECLINE_COMPONENT_GT4;
 			return R300_TCL_BYPASS_VTX_DECLINE;
+		}
 		required += comp_cnt;
 	}
 
-	for (e = 0; e < 16; e++) {
+	for (e = 0; e < 16 && !why; e++) {
 		unsigned int word = e / 2;
 		unsigned int cntl_half;
 		unsigned int sel_half;
 		unsigned int data_type;
+		unsigned int dst_vec;
 
 		if (!(in->psc_cntl_seen_mask & (1u << word)) ||
-		    !(in->psc_ext_seen_mask & (1u << word)))
-			return R300_TCL_BYPASS_VTX_DECLINE;
+		    !(in->psc_ext_seen_mask & (1u << word))) {
+			why = R300_TCL_BYPASS_DECLINE_PSC_WORD_UNWRITTEN;
+			break;
+		}
 		cntl_half = (e & 1) ? (in->psc_cntl[word] >> 16)
 				    : (in->psc_cntl[word] & 0xFFFFu);
 		sel_half = (e & 1) ? (in->psc_ext[word] >> 16)
 				   : (in->psc_ext[word] & 0xFFFFu);
 		data_type = cntl_half & 0xFu;
-		if ((cntl_half >> 4) & 0xFu)
-			return R300_TCL_BYPASS_VTX_DECLINE;
+		dst_vec = (cntl_half >> 8) & 0x1Fu;
+		if ((cntl_half >> 4) & 0xFu) {
+			why = R300_TCL_BYPASS_DECLINE_SKIP_DWORDS;
+			break;
+		}
+		/* Two elements writing one destination vector deliver
+		 * fewer distinct lanes than their sum; the summed
+		 * delivery below is honest only over distinct vectors.
+		 */
+		if (dst_vec_mask & (1u << dst_vec)) {
+			why = R300_TCL_BYPASS_DECLINE_DST_VEC_DUPLICATE;
+			break;
+		}
+		dst_vec_mask |= 1u << dst_vec;
 
 		if (sel_half == R300_TCL_BYPASS_PSC_IDENTITY_HALF) {
 			if (data_type <= R300_TCL_BYPASS_PSC_DATA_TYPE_FLOAT_4) {
@@ -150,7 +200,8 @@ r300_tcl_bypass_vtx_check(const struct r300_tcl_bypass_vtx_inputs *in,
 			fetch += 2;
 			delivered += 4;
 		} else {
-			return R300_TCL_BYPASS_VTX_DECLINE;
+			why = R300_TCL_BYPASS_DECLINE_SELECTOR_UNMODELED;
+			break;
 		}
 
 		if (cntl_half & R300_TCL_BYPASS_PSC_LAST_VEC) {
@@ -158,14 +209,19 @@ r300_tcl_bypass_vtx_check(const struct r300_tcl_bypass_vtx_inputs *in,
 			break;
 		}
 	}
-	if (!last_seen)
+	if (!why && !last_seen)
+		why = R300_TCL_BYPASS_DECLINE_NO_LAST_VEC;
+	if (!why && !identity_only && !widths_known)
+		why = R300_TCL_BYPASS_DECLINE_WIDTH_UNKNOWABLE;
+	if (why) {
+		if (reason)
+			*reason = why;
 		return R300_TCL_BYPASS_VTX_DECLINE;
+	}
 
 	if (identity_only) {
 		delivered = in->vtx_size;
 		fetch = in->vtx_size;
-	} else if (!widths_known) {
-		return R300_TCL_BYPASS_VTX_DECLINE;
 	}
 
 	if (required_dwords)
@@ -176,12 +232,24 @@ r300_tcl_bypass_vtx_check(const struct r300_tcl_bypass_vtx_inputs *in,
 	if (!identity_only) {
 		if (in->vtx_size < fetch)
 			return R300_TCL_BYPASS_VTX_REJECT;
-		if (in->vtx_size != fetch)
+		if (in->vtx_size != fetch) {
+			if (reason)
+				*reason = R300_TCL_BYPASS_DECLINE_FETCH_OVERFEED;
 			return R300_TCL_BYPASS_VTX_DECLINE;
+		}
 	}
 	if (delivered < required)
 		return R300_TCL_BYPASS_VTX_REJECT;
 	return R300_TCL_BYPASS_VTX_PASS;
+}
+
+static inline enum r300_tcl_bypass_vtx_verdict
+r300_tcl_bypass_vtx_check(const struct r300_tcl_bypass_vtx_inputs *in,
+			  unsigned int *required_dwords,
+			  unsigned int *fetch_dwords)
+{
+	return r300_tcl_bypass_vtx_check_reason(in, required_dwords,
+						fetch_dwords, NULL);
 }
 
 #endif
