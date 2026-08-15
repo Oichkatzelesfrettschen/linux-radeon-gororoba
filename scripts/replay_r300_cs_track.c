@@ -58,6 +58,7 @@
  *   --set-bo-size SLOT=N    resize one buffer object
  *   --set-bo-domains SLOT=R,W  rewrite one entry's read and write domains
  *   --set-vtx-size N        rewrite the payload of every VAP_VTX_SIZE write
+ *   --set-reg REG=VAL       rewrite the payload of every packet0 write of REG
  *   --verbose               report each tracking decision
  *
  * Output ends in one summary line.  Exit 0 when the stream parses and every
@@ -84,6 +85,8 @@
 #define R300_VAP_VF_MAX_VTX_INDX	0x2134
 #define R300_VAP_VTX_SIZE		0x20B4
 #define R300_VAP_CNTL_STATUS		0x2140
+#define R300_VAP_PSC_CNTL_0		0x2150
+#define R300_VAP_PSC_CNTL_7		0x216C
 #define R300_VAP_PSC_EXT_0		0x21E0
 #define R300_VAP_PSC_EXT_7		0x21FC
 #define R300_SC_SCISSOR1		0x43E4
@@ -172,8 +175,10 @@ struct track {
 	unsigned int vap_out_vtx_fmt_0, vap_out_vtx_fmt_1, vap_cntl_status;
 	int vap_out_vtx_fmt_0_seen, vap_out_vtx_fmt_1_seen;
 	int vap_cntl_status_seen, vap_vtx_size_seen;
+	uint8_t vap_psc_cntl_seen_mask;
 	uint8_t vap_psc_ext_seen_mask;
-	int vap_psc_ext_nonident;
+	unsigned int vap_psc_cntl[8];
+	unsigned int vap_psc_ext[8];
 	int z_enabled;
 	int zb_cb_clear;
 	int blend_read_enable;
@@ -342,25 +347,29 @@ static int tcl_bypass_vtx_check(struct parser *p)
 		.fmt0_seen = t->vap_out_vtx_fmt_0_seen,
 		.fmt1_seen = t->vap_out_vtx_fmt_1_seen,
 		.vtx_size_seen = t->vap_vtx_size_seen,
-		.ext_identity_complete = !t->vap_psc_ext_nonident &&
-			t->vap_psc_ext_seen_mask == 0xff,
+		.psc_cntl_seen_mask = t->vap_psc_cntl_seen_mask,
+		.psc_ext_seen_mask = t->vap_psc_ext_seen_mask,
 		.prim_walk = (t->vap_vf_cntl >> 4) & 0x3,
 		.fmt0 = t->vap_out_vtx_fmt_0,
 		.fmt1 = t->vap_out_vtx_fmt_1,
 		.vtx_size = t->vtx_size,
 	};
 	unsigned int required = 0;
+	unsigned int fetch = 0;
 	enum r300_tcl_bypass_vtx_verdict v;
 
-	v = r300_tcl_bypass_vtx_check(&in, &required);
-	note("  tcl-bypass width: verdict=%s vtx_size=%u required=%u\n",
+	memcpy(in.psc_cntl, t->vap_psc_cntl, sizeof(in.psc_cntl));
+	memcpy(in.psc_ext, t->vap_psc_ext, sizeof(in.psc_ext));
+	v = r300_tcl_bypass_vtx_check(&in, &required, &fetch);
+	note("  tcl-bypass width: verdict=%s vtx_size=%u fetch=%u required=%u\n",
 	     v == R300_TCL_BYPASS_VTX_PASS ? "PASS" :
 	     v == R300_TCL_BYPASS_VTX_REJECT ? "REJECT" : "DECLINE",
-	     t->vtx_size, required);
+	     t->vtx_size, fetch, required);
 	if (v != R300_TCL_BYPASS_VTX_REJECT)
 		return 0;
-	reject("TCL-bypass draw: VAP_VTX_SIZE %u dwords < %u dwords required "
-	       "by VAP_OUT_VTX_FMT 0x%08x/0x%08x", t->vtx_size, required,
+	reject("TCL-bypass draw: VAP_VTX_SIZE %u dwords under PSC fetch %u "
+	       "or output %u required by VAP_OUT_VTX_FMT 0x%08x/0x%08x",
+	       t->vtx_size, fetch, required,
 	       t->vap_out_vtx_fmt_0, t->vap_out_vtx_fmt_1);
 	return -EINVAL;
 }
@@ -738,9 +747,14 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		t->vap_vf_cntl = v;
 		break;
 	default:
+		if (reg >= R300_VAP_PSC_CNTL_0 && reg <= R300_VAP_PSC_CNTL_7) {
+			t->vap_psc_cntl[(reg - R300_VAP_PSC_CNTL_0) / 4] = v;
+			t->vap_psc_cntl_seen_mask |=
+				(uint8_t)(1u << ((reg - R300_VAP_PSC_CNTL_0) / 4));
+			break;
+		}
 		if (reg >= R300_VAP_PSC_EXT_0 && reg <= R300_VAP_PSC_EXT_7) {
-			if (v != 0xF688F688)
-				t->vap_psc_ext_nonident = 1;
+			t->vap_psc_ext[(reg - R300_VAP_PSC_EXT_0) / 4] = v;
 			t->vap_psc_ext_seen_mask |=
 				(uint8_t)(1u << ((reg - R300_VAP_PSC_EXT_0) / 4));
 			break;
@@ -1055,6 +1069,9 @@ int main(int argc, char **argv)
 	uint32_t *ib = NULL;
 	long size, ndw, truncate = 0;
 	unsigned int forced_vtx_size = 0;
+	unsigned int forced_reg = 0;
+	unsigned int forced_reg_value = 0;
+	int force_reg = 0;
 	int force_vtx = 0, arg = 1, rc;
 	FILE *f;
 	struct { long idx; uint32_t value; int set; } dword_mutations[8];
@@ -1078,6 +1095,20 @@ int main(int argc, char **argv)
 			forced_vtx_size = (unsigned int)strtoul(argv[arg + 1],
 								NULL, 0);
 			force_vtx = 1;
+			arg += 2;
+		} else if (strcmp(argv[arg], "--set-reg") == 0 &&
+			   arg + 1 < argc) {
+			unsigned long r, v;
+
+			if (sscanf(argv[arg + 1], "%li=%li", (long *)&r,
+				   (long *)&v) != 2) {
+				fprintf(stderr, "bad --set-reg %s\n",
+					argv[arg + 1]);
+				return 2;
+			}
+			forced_reg = (unsigned int)r;
+			forced_reg_value = (unsigned int)v;
+			force_reg = 1;
 			arg += 2;
 		} else if (strcmp(argv[arg], "--truncate") == 0 &&
 			   arg + 1 < argc) {
@@ -1177,6 +1208,25 @@ int main(int argc, char **argv)
 			if (PACKET_GET_TYPE(ib[i]) == PACKET_TYPE0 &&
 			    PACKET0_GET_REG(ib[i]) == R300_VAP_VTX_SIZE)
 				ib[i + 1] = forced_vtx_size;
+		}
+	}
+	if (force_reg) {
+		/* The payload of a multi-register packet0 run covers
+		 * base..base+count*4; rewrite the dword addressed to the
+		 * named register wherever a run reaches it.
+		 */
+		for (long i = 0; i + 1 < ndw; i++) {
+			unsigned int base, cnt;
+
+			if (PACKET_GET_TYPE(ib[i]) != PACKET_TYPE0)
+				continue;
+			base = PACKET0_GET_REG(ib[i]);
+			cnt = PACKET_GET_COUNT(ib[i]) + 1;
+			if (forced_reg >= base &&
+			    forced_reg < base + cnt * 4 &&
+			    i + 1 + (forced_reg - base) / 4 < ndw)
+				ib[i + 1 + (forced_reg - base) / 4] =
+					forced_reg_value;
 		}
 	}
 

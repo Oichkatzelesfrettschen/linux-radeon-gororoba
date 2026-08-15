@@ -41,8 +41,9 @@
 struct tracker {
 	unsigned int vap_vf_cntl;
 	unsigned int fmt0, fmt1, vtx_size, cntl_status;
+	unsigned int psc_cntl[8], psc_ext[8];
 	unsigned char fmt0_seen, fmt1_seen, vtx_size_seen, cntl_status_seen;
-	unsigned char psc_ext_seen_mask, psc_ext_nonident;
+	unsigned char psc_cntl_seen_mask, psc_ext_seen_mask;
 };
 
 static const char *verdict_name(enum r300_tcl_bypass_vtx_verdict v)
@@ -71,71 +72,86 @@ static void track_write(struct tracker *t, unsigned int reg,
 	} else if (reg == 0x2140) {
 		t->cntl_status = val;
 		t->cntl_status_seen = 1;
+	} else if (reg >= 0x2150 && reg <= 0x216C) {
+		t->psc_cntl[(reg - 0x2150) >> 2] = val;
+		t->psc_cntl_seen_mask |= 1u << ((reg - 0x2150) >> 2);
 	} else if (reg >= 0x21E0 && reg <= 0x21FC) {
-		if (val != 0xF688F688)
-			t->psc_ext_nonident = 1;
+		t->psc_ext[(reg - 0x21E0) >> 2] = val;
 		t->psc_ext_seen_mask |= 1u << ((reg - 0x21E0) >> 2);
 	}
 }
 
-/* Emit the full premise vector for one draw, evaluating every decline
- * condition independently rather than short-circuiting, so a corpus census
- * can attribute each decline to its cause set.  "first" names the condition
- * r300_tcl_bypass_vtx_check returns on, in that function's own order. */
+/* The census vocabulary for the decision function's own decline reason:
+ * one name per enum value, so the reason a corpus line carries is the
+ * reason the kernel declined on rather than a re-derivation.
+ */
+static const char *decline_reason_name(
+	enum r300_tcl_bypass_vtx_decline_reason r)
+{
+	switch (r) {
+	case R300_TCL_BYPASS_DECLINE_NONE: return "-";
+	case R300_TCL_BYPASS_DECLINE_PIN_MISSING: return "pin_missing";
+	case R300_TCL_BYPASS_DECLINE_PRIM_WALK_IMMEDIATE:
+		return "prim_walk_immediate";
+	case R300_TCL_BYPASS_DECLINE_POSITION_ABSENT:
+		return "position_absent";
+	case R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_POSITION:
+		return "fmt0_beyond_position";
+	case R300_TCL_BYPASS_DECLINE_FMT1_UNDECODED:
+		return "fmt1_undecoded";
+	case R300_TCL_BYPASS_DECLINE_COMPONENT_GT4: return "component_gt4";
+	case R300_TCL_BYPASS_DECLINE_PSC_WORD_UNWRITTEN:
+		return "psc_word_unwritten";
+	case R300_TCL_BYPASS_DECLINE_SKIP_DWORDS: return "skip_dwords";
+	case R300_TCL_BYPASS_DECLINE_SELECTOR_UNMODELED:
+		return "selector_unmodeled";
+	case R300_TCL_BYPASS_DECLINE_DST_VEC_DUPLICATE:
+		return "dst_vec_duplicate";
+	case R300_TCL_BYPASS_DECLINE_NO_LAST_VEC: return "no_last_vec";
+	case R300_TCL_BYPASS_DECLINE_WIDTH_UNKNOWABLE:
+		return "width_unknowable";
+	case R300_TCL_BYPASS_DECLINE_FETCH_OVERFEED:
+		return "fetch_overfeed";
+	}
+	return "?";
+}
+
+/* Emit the full premise vector for one draw beside the decision
+ * function's own decline reason, so a corpus census attributes each
+ * decline to the exact branch the kernel took. */
 static void emit_reasons(const struct tracker *t, long idx, unsigned int op,
 			 enum r300_tcl_bypass_vtx_verdict v,
+			 enum r300_tcl_bypass_vtx_decline_reason why,
 			 unsigned int required)
 {
 	unsigned int pos_bit = R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT;
 	int tcl = t->cntl_status_seen && (t->cntl_status & R300_VAP_TCL_BYPASS);
-	int ext_complete = t->psc_ext_seen_mask == 0xff && !t->psc_ext_nonident;
 	unsigned int pw = (t->vap_vf_cntl >> 4) & 0x3;
 	int pos = t->fmt0_seen && (t->fmt0 & pos_bit);
 	unsigned int fmt0_extra = t->fmt0_seen ? (t->fmt0 & ~pos_bit) : 0;
 	unsigned int fmt1_undec = t->fmt1_seen ? (t->fmt1 & ~0x00FFFFFFu) : 0;
 	int comp_gt4 = 0;
 	unsigned int i;
-	const char *first = "-";
+	const char *first = decline_reason_name(why);
 
 	if (t->fmt1_seen)
 		for (i = 0; i < 8; i++)
 			if (((t->fmt1 >> (3 * i)) & 0x7) > 4)
 				comp_gt4 = 1;
 
-	if (!tcl)
-		first = "no_tcl_bypass";
-	else if (!t->fmt0_seen)
-		first = "no_fmt0";
-	else if (!t->fmt1_seen)
-		first = "no_fmt1";
-	else if (!t->vtx_size_seen)
-		first = "no_vtx_size";
-	else if (!ext_complete)
-		first = t->psc_ext_seen_mask != 0xff ? "ext_incomplete"
-						     : "ext_nonidentity";
-	else if (pw == 3)
-		first = "prim_walk_immediate";
-	else if (!pos)
-		first = "position_absent";
-	else if (fmt0_extra)
-		first = "fmt0_beyond_position";
-	else if (fmt1_undec)
-		first = "fmt1_undecoded";
-	else if (comp_gt4)
-		first = "component_gt4";
-
 	printf("reason idx=%ld op=0x%02X verdict=%s first=%s pin_tcl=%d "
-	       "pin_fmt0=%u pin_fmt1=%u pin_vtx=%u ext_mask=0x%02x "
-	       "ext_nonident=%u pw_imm=%d pos_present=%d fmt0_extra=0x%08x "
+	       "pin_fmt0=%u pin_fmt1=%u pin_vtx=%u cntl_mask=0x%02x "
+	       "ext_mask=0x%02x pw_imm=%d pos_present=%d fmt0_extra=0x%08x "
 	       "fmt1_undecoded=0x%08x comp_gt4=%d vtx_size=%u required=%u\n",
 	       idx, op, verdict_name(v), first, tcl, t->fmt0_seen,
-	       t->fmt1_seen, t->vtx_size_seen, t->psc_ext_seen_mask,
-	       t->psc_ext_nonident, pw == 3, pos, fmt0_extra, fmt1_undec,
+	       t->fmt1_seen, t->vtx_size_seen, t->psc_cntl_seen_mask,
+	       t->psc_ext_seen_mask, pw == 3, pos, fmt0_extra, fmt1_undec,
 	       comp_gt4, t->vtx_size, required);
 }
 
 static enum r300_tcl_bypass_vtx_verdict
-draw_check(const struct tracker *t, unsigned int *required)
+draw_check(const struct tracker *t, unsigned int *required,
+	   enum r300_tcl_bypass_vtx_decline_reason *why)
 {
 	struct r300_tcl_bypass_vtx_inputs in = {
 		.tcl_bypass_seen = t->cntl_status_seen &&
@@ -143,15 +159,17 @@ draw_check(const struct tracker *t, unsigned int *required)
 		.fmt0_seen = t->fmt0_seen,
 		.fmt1_seen = t->fmt1_seen,
 		.vtx_size_seen = t->vtx_size_seen,
-		.ext_identity_complete = !t->psc_ext_nonident &&
-			t->psc_ext_seen_mask == 0xff,
+		.psc_cntl_seen_mask = t->psc_cntl_seen_mask,
+		.psc_ext_seen_mask = t->psc_ext_seen_mask,
 		.prim_walk = (t->vap_vf_cntl >> 4) & 0x3,
 		.fmt0 = t->fmt0,
 		.fmt1 = t->fmt1,
 		.vtx_size = t->vtx_size,
 	};
 
-	return r300_tcl_bypass_vtx_check(&in, required);
+	memcpy(in.psc_cntl, t->psc_cntl, sizeof(in.psc_cntl));
+	memcpy(in.psc_ext, t->psc_ext, sizeof(in.psc_ext));
+	return r300_tcl_bypass_vtx_check_reason(&in, required, NULL, why);
 }
 
 int main(int argc, char **argv)
@@ -284,8 +302,10 @@ int main(int argc, char **argv)
 			}
 			if (is_draw) {
 				unsigned int required = 0;
+				enum r300_tcl_bypass_vtx_decline_reason why =
+					R300_TCL_BYPASS_DECLINE_NONE;
 				enum r300_tcl_bypass_vtx_verdict v =
-					draw_check(&t, &required);
+					draw_check(&t, &required, &why);
 
 				draws++;
 				if (v == R300_TCL_BYPASS_VTX_PASS)
@@ -296,16 +316,16 @@ int main(int argc, char **argv)
 					decline++;
 				printf("draw idx=%ld op=0x%02X vf_cntl=0x%08x "
 				       "tcl_bypass=%u fmt0=0x%08x fmt1=0x%08x "
-				       "vtx_size=%u required=%u ext_mask=0x%02x "
-				       "ext_nonident=%u verdict=%s\n",
+				       "vtx_size=%u required=%u cntl_mask=0x%02x "
+				       "ext_mask=0x%02x verdict=%s\n",
 				       i, op, t.vap_vf_cntl,
 				       t.cntl_status_seen &&
 				       !!(t.cntl_status & R300_VAP_TCL_BYPASS),
 				       t.fmt0, t.fmt1, t.vtx_size, required,
-				       t.psc_ext_seen_mask,
-				       t.psc_ext_nonident, verdict_name(v));
+				       t.psc_cntl_seen_mask,
+				       t.psc_ext_seen_mask, verdict_name(v));
 				if (reasons)
-					emit_reasons(&t, i, op, v,
+					emit_reasons(&t, i, op, v, why,
 						     required);
 			}
 			i += 2 + count;
