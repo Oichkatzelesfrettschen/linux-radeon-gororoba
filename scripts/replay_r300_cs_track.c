@@ -58,6 +58,7 @@
  *   --set-bo-size SLOT=N    resize one buffer object
  *   --set-bo-domains SLOT=R,W  rewrite one entry's read and write domains
  *   --set-vtx-size N        rewrite the payload of every VAP_VTX_SIZE write
+ *   --set-reg REG=VAL       rewrite the payload of every packet0 write of REG
  *   --verbose               report each tracking decision
  *
  * Output ends in one summary line.  Exit 0 when the stream parses and every
@@ -1068,6 +1069,9 @@ int main(int argc, char **argv)
 	uint32_t *ib = NULL;
 	long size, ndw, truncate = 0;
 	unsigned int forced_vtx_size = 0;
+	unsigned int forced_reg = 0;
+	unsigned int forced_reg_value = 0;
+	int force_reg = 0;
 	int force_vtx = 0, arg = 1, rc;
 	FILE *f;
 	struct { long idx; uint32_t value; int set; } dword_mutations[8];
@@ -1091,6 +1095,20 @@ int main(int argc, char **argv)
 			forced_vtx_size = (unsigned int)strtoul(argv[arg + 1],
 								NULL, 0);
 			force_vtx = 1;
+			arg += 2;
+		} else if (strcmp(argv[arg], "--set-reg") == 0 &&
+			   arg + 1 < argc) {
+			unsigned long r, v;
+
+			if (sscanf(argv[arg + 1], "%li=%li", (long *)&r,
+				   (long *)&v) != 2) {
+				fprintf(stderr, "bad --set-reg %s\n",
+					argv[arg + 1]);
+				return 2;
+			}
+			forced_reg = (unsigned int)r;
+			forced_reg_value = (unsigned int)v;
+			force_reg = 1;
 			arg += 2;
 		} else if (strcmp(argv[arg], "--truncate") == 0 &&
 			   arg + 1 < argc) {
@@ -1190,6 +1208,25 @@ int main(int argc, char **argv)
 			if (PACKET_GET_TYPE(ib[i]) == PACKET_TYPE0 &&
 			    PACKET0_GET_REG(ib[i]) == R300_VAP_VTX_SIZE)
 				ib[i + 1] = forced_vtx_size;
+		}
+	}
+	if (force_reg) {
+		/* The payload of a multi-register packet0 run covers
+		 * base..base+count*4; rewrite the dword addressed to the
+		 * named register wherever a run reaches it.
+		 */
+		for (long i = 0; i + 1 < ndw; i++) {
+			unsigned int base, cnt;
+
+			if (PACKET_GET_TYPE(ib[i]) != PACKET_TYPE0)
+				continue;
+			base = PACKET0_GET_REG(ib[i]);
+			cnt = PACKET_GET_COUNT(ib[i]) + 1;
+			if (forced_reg >= base &&
+			    forced_reg < base + cnt * 4 &&
+			    i + 1 + (forced_reg - base) / 4 < ndw)
+				ib[i + 1 + (forced_reg - base) / 4] =
+					forced_reg_value;
 		}
 	}
 
