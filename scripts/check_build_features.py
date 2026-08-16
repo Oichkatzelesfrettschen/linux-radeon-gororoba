@@ -175,12 +175,13 @@ FAILED_RESET_SOURCE_OBJECTS = (
 SPLIT_MECHANISMS = {
     "B11": {"production", "unsafe"},
     "M03": {"passive", "hazard"},
-    "M10": {"pll", "first-read", "status-pair"},
+    "M10": {"pll", "first-read", "status-pair", "status-census"},
 }
 SPLIT_TIERS = {
     "B11": {"production": "prod", "unsafe": "mutate-dev"},
     "M03": {"passive": "observe-dev", "hazard": "probe-dev"},
-    "M10": {"pll": "probe-dev", "first-read": "probe-dev", "status-pair": "probe-dev"},
+    "M10": {"pll": "probe-dev", "first-read": "probe-dev",
+            "status-pair": "probe-dev", "status-census": "probe-dev"},
 }
 SPLIT_PLAN_PART = {"B11": "production", "M03": "hazard", "M10": "pll"}
 KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

@@ -2752,8 +2752,8 @@ SOURCE_MUTATIONS = {
     ),
     "reader bypasses hardware transaction admission": (
         "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
-        "\tif (radeon_device_lock_hardware(rdev)) {",
-        "\tif (false && radeon_device_lock_hardware(rdev)) {",
+        "\tif (radeon_device_lock_hardware(rdev)) {\n\t\tseq_puts(m, \"metadata",
+        "\tif (false && radeon_device_lock_hardware(rdev)) {\n\t\tseq_puts(m, \"metadata",
     ),
     "TTM move drops reservation wait before bind": (
         "drivers/gpu/drm/radeon/radeon_ttm.c",
