@@ -145,6 +145,7 @@ int radeon_rs480_frontier_index = -1;
 int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
 int radeon_rs480_hazard_readers_armed;
+int radeon_rs480_cp_status_arm;
 #endif
 
 #if RADEON_MUTATE_DEV
@@ -206,6 +207,19 @@ MODULE_PARM_DESC(rs480_cp_me_ram_dump,
 	"calibration) and there is no separately-addressable ROM through this port."
 );
 module_param_named(rs480_cp_me_ram_dump, radeon_rs480_cp_me_ram_dump, int, 0644);
+
+MODULE_PARM_DESC(rs480_cp_status_arm,
+	"Arm the one-shot RBBM/CP status pair reader debugfs node "
+	"radeon_rs480_cp_status. Default 0 (OFF); arm with the exact token "
+	"0x43505354 ('CPST'), a stray nonzero value does nothing. The armed "
+	"read consumes the token atomically, takes the hardware lock, and "
+	"performs exactly two plain 32-bit reads -- RBBM_STATUS (0x0e40) then "
+	"CP_STAT (0x07c0) -- bracketed by three CLOCK_MONOTONIC_RAW-class "
+	"timestamps. RBBM_STATUS is on the promoted read-safe list; CP_STAT "
+	"takes its first disciplined RS48x observation through this node. "
+	"No writes, no offset selector, one register pair per arming."
+);
+module_param_named(rs480_cp_status_arm, radeon_rs480_cp_status_arm, int, 0644);
 #endif
 
 #if RADEON_MUTATE_DEV

@@ -32,6 +32,8 @@ candidate-registers	debugfs-file	radeon_rs480_sclk_cntl	drivers/gpu/drm/radeon/r
 hazard-readers	module-parameter	rs480_hazard_readers_armed	drivers/gpu/drm/radeon/radeon_dev.c	M03.hazard
 cp-me-dump	module-parameter	rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_dev.c	M05
 cp-me-dump	debugfs-file	radeon_rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M05
+cp-status-pair	module-parameter	rs480_cp_status_arm	drivers/gpu/drm/radeon/radeon_dev.c	M10.status-pair
+cp-status-pair	debugfs-file	radeon_rs480_cp_status	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M10.status-pair
 cp-me-write	module-parameter	rs480_cp_me_ram_inject	drivers/gpu/drm/radeon/radeon_dev.c	M06
 cp-me-write	debugfs-file	radeon_rs480_cp_me_ram_inject	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M06
 cp-me-oracle	module-parameter	rs480_cp_me_oracle	drivers/gpu/drm/radeon/radeon_dev.c	M07
