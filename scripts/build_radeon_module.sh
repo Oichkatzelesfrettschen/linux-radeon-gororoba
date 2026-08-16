@@ -283,8 +283,9 @@ fi
 build_log="$WORK/build.log"
 build_status=0
 # shellcheck disable=SC2086
+build_jobs=$(nproc 2>/dev/null || echo 1)
 ( cd "$WORK/$subtree" && \
-  make "$@" RADEON_BUILD_PROFILE="$resolved_profile" \
+  make "$@" -j"$build_jobs" RADEON_BUILD_PROFILE="$resolved_profile" \
     KCFLAGS="-I$WORK/include/trace -include $profile_header" \
     -C "$KB" M="$PWD" modules ) \
   >"$build_log" 2>&1 || build_status=$?
