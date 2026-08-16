@@ -83,6 +83,7 @@ extern int radeon_rs480_frontier_index;
 extern int radeon_rs480_hazard_index;
 extern int radeon_rs480_hazard_readers_armed;
 extern int radeon_rs480_vertex_index;
+extern int radeon_rs480_cp_status_arm;
 #else
 #define radeon_rs480_hazard_readers_armed 0
 #endif

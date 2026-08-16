@@ -53,7 +53,7 @@ STATIC_COMPONENTS = {
 DIRECT_CREATION_COUNTS = {
     "radeon_drv.c": 1,
     "radeon_evergreen_dev.c": 1,
-    "radeon_rs4xx_dev.c": 31,
+    "radeon_rs4xx_dev.c": 32,
 }
 RING_COMPONENT_COUNT = 8
 TTM_MANAGER_COUNT = 2

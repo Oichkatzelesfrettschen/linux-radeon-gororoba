@@ -137,6 +137,7 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "rs480_cp_me_oracle_show": (1, 0, 1),
     "rs480_cp_me_ram_inject_write": (0, 1, 2),
     "rs480_cp_me_ram_seq_show": (1, 0, 1),
+    "rs480_cp_status_show": (1, 0, 1),
     "rs480_debugfs_lock_hardware": (0, 1, 0),
     "rs480_force_clock_3d_read_show": (1, 0, 1),
     "rs480_force_clock_read_show": (1, 0, 1),
@@ -152,9 +153,9 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "rs480_wedged_3d_reset": (0, 2, 3),
 }
 RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
-    "rs480_debugfs_lock_hardware": 18,
+    "rs480_debugfs_lock_hardware": 19,
     "radeon_device_lock_hardware": 6,
-    "radeon_device_unlock_hardware": 28,
+    "radeon_device_unlock_hardware": 29,
 }
 PROFILE_RANK = {
     "prod": 0,
@@ -240,6 +241,7 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_cp_me_oracle_show",
         "rs480_cp_me_ram_inject_show",
         "rs480_cp_me_ram_seq_show",
+        "rs480_cp_status_show",
         "rs480_force_clock_3d_read_show",
         "rs480_force_clock_read_show",
         "rs480_frontier_probe_show",
@@ -253,8 +255,8 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_vertex_probe_show",
     }
 )
-RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 30
-RS4XX_DEBUGFS_NODE_COUNT = 31
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 31
+RS4XX_DEBUGFS_NODE_COUNT = 32
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
@@ -283,6 +285,7 @@ RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     "radeon_rs480_cp_ib_scratch_oracle": "rs480_cp_ib_scratch_oracle_fops",
     "radeon_rs480_cp_me_oracle": "rs480_cp_me_oracle_fops",
     "radeon_rs480_cp_me_ram_dump": "rs480_cp_me_ram_dump_fops",
+    "radeon_rs480_cp_status": "rs480_cp_status_fops",
     "radeon_rs480_cp_me_ram_inject": "rs480_cp_me_ram_inject_fops",
     "radeon_rs480_force_clock_3d_read": "rs480_force_clock_3d_read_fops",
     "radeon_rs480_force_clock_read": "rs480_force_clock_read_fops",
