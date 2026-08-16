@@ -84,6 +84,9 @@ extern int radeon_rs480_hazard_index;
 extern int radeon_rs480_hazard_readers_armed;
 extern int radeon_rs480_vertex_index;
 extern int radeon_rs480_cp_status_arm;
+extern int radeon_rs480_status_census_arm;
+extern int radeon_rs480_status_census_records;
+extern int radeon_rs480_status_census_read_order;
 #else
 #define radeon_rs480_hazard_readers_armed 0
 #endif
