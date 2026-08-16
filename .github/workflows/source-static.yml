@@ -236,21 +236,21 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/6.18.38-2-cachyos-lts.toml \
             --manifest ci/kernel-build-roots/6.18.38-2-cachyos-lts.manifest.tsv
-          timeout 300 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 300 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh --self-test
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --prod \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --observe-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --probe-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --mutate-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
@@ -347,21 +347,21 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/7.1.4-1-cachyos.toml \
             --manifest ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv
-          timeout 300 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 300 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh --self-test
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --prod \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --observe-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --probe-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
-          timeout 1800 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --mutate-dev \
               --kernel-build-root "$KERNEL_BUILD_ROOT"
@@ -399,7 +399,7 @@ jobs:
           done
           mkdir -p "$HOME/.cache/gororoba-ci"
           output="$RUNNER_TEMP/radeon-driver-source-map"
-          timeout 6900 flock "$HOME/.cache/gororoba-ci/radeon-build.lock" \
+          timeout 6900 sh scripts/with_build_slot.sh \
             python3 scripts/capture_radeon_driver_source_map.py \
               --output "$output" \
               --kernel-build-root "$KERNEL_BUILD_ROOT_618" \
