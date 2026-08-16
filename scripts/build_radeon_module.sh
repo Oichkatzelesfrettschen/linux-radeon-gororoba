@@ -284,8 +284,11 @@ build_log="$WORK/build.log"
 build_status=0
 # shellcheck disable=SC2086
 build_jobs=$(nproc 2>/dev/null || echo 1)
+# -l bounds spawning to the thread count, so a solo build runs at full width
+# while two builds sharing this host self-throttle to the cores instead of
+# oversubscribing when concurrent runner instances overlap.
 ( cd "$WORK/$subtree" && \
-  make "$@" -j"$build_jobs" RADEON_BUILD_PROFILE="$resolved_profile" \
+  make "$@" -j"$build_jobs" -l"$build_jobs" RADEON_BUILD_PROFILE="$resolved_profile" \
     KCFLAGS="-I$WORK/include/trace -include $profile_header" \
     -C "$KB" M="$PWD" modules ) \
   >"$build_log" 2>&1 || build_status=$?
