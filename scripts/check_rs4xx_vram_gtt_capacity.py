@@ -663,15 +663,15 @@ def parse_tsv_bytes(
     header: tuple[str, ...],
 ) -> list[dict[str, str]]:
     try:
-        text = data.decode("ascii")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise CapacityError(f"{source_name}: TSV is not ASCII") from error
+        raise CapacityError(f"{source_name}: TSV is not UTF-8 text") from error
     if not data.endswith(b"\n") or b"\r" in data:
         raise CapacityError(f"{source_name}: TSV must use canonical LF termination")
     lines = text[:-1].split("\n")
     if any(not line for line in lines):
         raise CapacityError(f"{source_name}: TSV contains an empty physical row")
-    if any(len(line.encode("ascii")) > MAX_TSV_LINE_BYTES for line in lines):
+    if any(len(line.encode("utf-8")) > MAX_TSV_LINE_BYTES for line in lines):
         raise CapacityError(f"{source_name}: TSV line exceeds the byte ceiling")
     fields = tuple(lines[0].split("\t"))
     if fields != header or len(fields) != len(set(fields)):
@@ -691,7 +691,7 @@ def parse_tsv_bytes(
         + "\n"
         + "\n".join("\t".join(row[field] for field in header) for row in rows)
         + "\n"
-    ).encode("ascii")
+    ).encode("utf-8")
     if data != canonical:
         raise CapacityError(f"{source_name}: TSV serialization is not canonical")
     if not rows:
@@ -703,18 +703,18 @@ def read_tsv(path: Path, header: tuple[str, ...]) -> list[dict[str, str]]:
     return parse_tsv_bytes(read_bounded_file(path, MAX_TSV_BYTES), str(path), header)
 
 
-def read_ascii_source(path: Path) -> str:
+def read_utf8_source(path: Path) -> str:
     data = read_bounded_file(path, MAX_SOURCE_BYTES)
     try:
-        return data.decode("ascii")
+        return data.decode("utf-8")
     except UnicodeDecodeError as error:
-        raise CapacityError(f"{path}: source is not ASCII") from error
+        raise CapacityError(f"{path}: source is not UTF-8 text") from error
 
 
 def framed_row_sha256(row: dict[str, str], fields: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
     for field in fields:
-        value = row[field].encode("ascii")
+        value = row[field].encode("utf-8")
         digest.update(len(value).to_bytes(4, "big"))
         digest.update(value)
     return digest.hexdigest()
@@ -878,9 +878,9 @@ def resolve_authority_commit(
     tag_reference = f"refs/tags/{tag_name}"
     tag_object = git_output(repository, "rev-parse", "--verify", tag_reference)
     try:
-        tag_object_text = tag_object.decode("ascii").strip()
+        tag_object_text = tag_object.decode("utf-8").strip()
     except UnicodeDecodeError as error:
-        raise CapacityError("authority tag object identity is not ASCII") from error
+        raise CapacityError("authority tag object identity is not UTF-8 text") from error
     if tag_object_text != expected_tag_object:
         raise CapacityError("authority tag object identity differs")
     if git_output(repository, "cat-file", "-t", tag_object_text) != b"tag\n":
@@ -889,9 +889,9 @@ def resolve_authority_commit(
         repository, "rev-parse", "--verify", f"{tag_reference}^{{commit}}"
     )
     try:
-        commit = peeled.decode("ascii").strip()
+        commit = peeled.decode("utf-8").strip()
     except UnicodeDecodeError as error:
-        raise CapacityError("authority commit identity is not ASCII") from error
+        raise CapacityError("authority commit identity is not UTF-8 text") from error
     if commit != expected_commit:
         raise CapacityError("authority tag peels to a different commit")
     if git_output(repository, "cat-file", "-t", commit) != b"commit\n":
@@ -908,7 +908,7 @@ def read_authority_artifact(
     commit = lineage_row["input_commit"]
     path = lineage_row["input_path"]
     blob = lineage_row["input_blob_sha1"]
-    expected_tree_row = f"{expected_mode} blob {blob}\t{path}\n".encode("ascii")
+    expected_tree_row = f"{expected_mode} blob {blob}\t{path}\n".encode("utf-8")
     tree_row = git_output(repository, "ls-tree", commit, "--", path)
     if tree_row != expected_tree_row:
         raise CapacityError(f"authority tree entry differs: {path}")
@@ -916,7 +916,7 @@ def read_authority_artifact(
     object_specification = f"{commit}:{path}"
     raw_size = git_output(repository, "cat-file", "-s", object_specification)
     try:
-        size = int(raw_size.decode("ascii").strip())
+        size = int(raw_size.decode("utf-8").strip())
     except (UnicodeDecodeError, ValueError) as error:
         raise CapacityError(f"authority blob size is invalid: {path}") from error
     if not 0 < size <= MAX_TSV_BYTES:
@@ -1270,13 +1270,13 @@ def validate_gart_parameter_declaration(source: str) -> None:
         )
     except InterfaceError as error:
         raise CapacityError(str(error)) from error
-    digest = hashlib.sha256("\n".join(lines).encode("ascii")).hexdigest()
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
     if digest != EXPECTED_GART_PARAMETER_DECLARATION_SHA256:
         raise CapacityError("radeon_drv.c: exact gartsize declaration identity differs")
 
 
 def function_token_sha256(body: str) -> str:
-    return hashlib.sha256("\0".join(c_tokens(body)).encode("ascii")).hexdigest()
+    return hashlib.sha256("\0".join(c_tokens(body)).encode("utf-8")).hexdigest()
 
 
 def validate_function_body(
@@ -1425,7 +1425,7 @@ def validate_source(root: Path) -> None:
     for filename, _symbol in EXPECTED_FUNCTION_SHA256:
         if filename not in source_cache:
             path = root / SUBTREE / filename
-            source_cache[filename] = read_ascii_source(path)
+            source_cache[filename] = read_utf8_source(path)
     for (filename, symbol), expected_sha256 in EXPECTED_FUNCTION_SHA256.items():
         validate_function_source(
             filename,
@@ -1444,11 +1444,11 @@ def validate_source(root: Path) -> None:
             "radeon_device.c: device init no longer calls argument validation"
         )
 
-    radeon_drv_source = read_ascii_source(root / SUBTREE / "radeon_drv.c")
+    radeon_drv_source = read_utf8_source(root / SUBTREE / "radeon_drv.c")
     validate_gart_parameter_declaration(radeon_drv_source)
     validate_capacity_ioctl_bindings(radeon_drv_source)
 
-    header = read_ascii_source(root / SUBTREE / "r500_reg.h")
+    header = read_utf8_source(root / SUBTREE / "r500_reg.h")
     validate_register_macros(header)
 
 
@@ -1770,7 +1770,7 @@ def run_capacity_mutation_matrix(
     root: Path,
     mutations: list[tuple[str, Callable[[], None]]],
 ) -> None:
-    driver_source = read_ascii_source(root / SUBTREE / "radeon_drv.c")
+    driver_source = read_utf8_source(root / SUBTREE / "radeon_drv.c")
     changed_declaration = replace_once(
         driver_source,
         "int radeon_gart_size = -1; /* auto */",
@@ -1798,7 +1798,7 @@ def run_capacity_mutation_matrix(
         )
     )
 
-    device_source = read_ascii_source(root / SUBTREE / "radeon_device.c")
+    device_source = read_utf8_source(root / SUBTREE / "radeon_device.c")
     changed_device_init = replace_once(
         device_source,
         "radeon_check_arguments(rdev);",
@@ -1884,7 +1884,7 @@ def run_capacity_mutation_matrix(
         )
     )
 
-    register_source = read_ascii_source(root / SUBTREE / "r500_reg.h")
+    register_source = read_utf8_source(root / SUBTREE / "r500_reg.h")
     macro_match = re.search(
         r"(?m)^#\s*define\s+RS480_VA_SIZE_512MB\s+\(4 << 1\)\s*$",
         register_source,

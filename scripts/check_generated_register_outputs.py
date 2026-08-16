@@ -21,7 +21,7 @@ class OutputError(Exception):
 def read_expected(path: Path) -> dict[str, tuple[int, str]]:
     lines = [
         line
-        for line in path.read_text(encoding="ascii").splitlines()
+        for line in path.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     ]
     rows = csv.DictReader(lines, delimiter="\t")
@@ -61,7 +61,7 @@ def build_generator(tree: Path, output: Path) -> str:
 
 
 def targets(tree: Path) -> list[str]:
-    makefile = (tree / "Makefile").read_text(encoding="ascii")
+    makefile = (tree / "Makefile").read_text(encoding="utf-8")
     match = re.search(r"^targets := (.+)$", makefile, re.MULTILINE)
     if not match:
         raise OutputError("Radeon Makefile lacks the generated target list")
@@ -74,7 +74,7 @@ def targets(tree: Path) -> list[str]:
 
 
 def target_source(tree: Path, target: str) -> Path:
-    makefile = (tree / "Makefile").read_text(encoding="ascii")
+    makefile = (tree / "Makefile").read_text(encoding="utf-8")
     pattern = re.compile(
         rf"^\$\(obj\)/{re.escape(target)}: "
         rf"\$\(src\)/reg_srcs/([A-Za-z0-9_.-]+)(?:\s|$)",
@@ -162,7 +162,7 @@ def self_test(root: Path) -> int:
                 "targets := evergreen_dev_reg_safe.h\n"
                 "$(obj)/evergreen_dev_reg_safe.h: "
                 "$(src)/reg_srcs/evergreen $(obj)/mkregtable FORCE\n",
-                encoding="ascii",
+                encoding="utf-8",
             )
             if (
                 target_source(mapping_tree, "evergreen_dev_reg_safe.h").name
@@ -178,13 +178,13 @@ def self_test(root: Path) -> int:
                 "# manifest-schema: gororoba-source-tree-v1\n"
                 "path\tmode\tsize\tsha256\n"
                 f"r100_reg_safe.h\t100644\t{len(content)}\t{digest}\n",
-                encoding="ascii",
+                encoding="utf-8",
             )
             verify_outputs(tree, good, expected_legacy_count=1)
             bad = work / "bad.tsv"
             bad.write_text(
-                good.read_text(encoding="ascii").replace(digest, "0" * 64),
-                encoding="ascii",
+                good.read_text(encoding="utf-8").replace(digest, "0" * 64),
+                encoding="utf-8",
             )
             try:
                 verify_outputs(tree, bad, expected_legacy_count=1)

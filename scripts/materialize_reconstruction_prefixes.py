@@ -48,7 +48,7 @@ def sha256_bytes(content: bytes) -> str:
 
 
 def read_plan(path: Path) -> list[dict[str, str]]:
-    with path.open(encoding="ascii", newline="") as source:
+    with path.open(encoding="utf-8", newline="") as source:
         rows = list(csv.DictReader(source, delimiter="\t"))
     if not rows:
         raise PrefixError(f"plan is empty: {path}")
@@ -62,7 +62,7 @@ def read_plan(path: Path) -> list[dict[str, str]]:
 
 
 def git_tree(repository: Path) -> str:
-    return run(["git", "write-tree"], cwd=repository).decode("ascii").strip()
+    return run(["git", "write-tree"], cwd=repository).decode("utf-8").strip()
 
 
 def reject_generated_inputs(repository: Path) -> None:
@@ -78,7 +78,7 @@ def reject_generated_inputs(repository: Path) -> None:
 
 def expected_manifest_text(root: Path, repository: Path) -> bytes:
     policy = load_policy(root)
-    return ("\n".join(manifest(repository, policy)) + "\n").encode("ascii")
+    return ("\n".join(manifest(repository, policy)) + "\n").encode("utf-8")
 
 
 def verify_row(
@@ -127,7 +127,7 @@ def materialize(
     quiet: bool = False,
 ) -> None:
     upstream = __import__("tomllib").loads(
-        (root / "UPSTREAM_BASE.toml").read_text(encoding="ascii")
+        (root / "UPSTREAM_BASE.toml").read_text(encoding="utf-8")
     )
     archive = run(
         ["git", "archive", upstream["subtree_tree"]],

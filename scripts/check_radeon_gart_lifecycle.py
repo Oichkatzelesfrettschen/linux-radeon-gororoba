@@ -581,7 +581,7 @@ def direct_statement_prefix_sha256(
     for statement in statements[: through_index + 1]:
         digest.update(len(statement).to_bytes(4, "big"))
         for token in statement:
-            token_bytes = token.encode("ascii")
+            token_bytes = token.encode("utf-8")
             digest.update(len(token_bytes).to_bytes(4, "big"))
             digest.update(token_bytes)
     return digest.hexdigest()
@@ -745,9 +745,9 @@ def check_direct_statement_parser_calibration() -> None:
 def source(root: Path, filename: str) -> str:
     path = root / SUBTREE / filename
     try:
-        return cache_policy.strip_comments(path.read_text(encoding="ascii"))
+        return cache_policy.strip_comments(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, UnicodeDecodeError) as exc:
-        raise LifecycleError(f"cannot read ASCII source {path}") from exc
+        raise LifecycleError(f"cannot read UTF-8 source {path}") from exc
 
 
 def function(root: Path, filename: str, name: str) -> str:
@@ -782,11 +782,11 @@ def read_policy(
     except FileNotFoundError as exc:
         raise LifecycleError(f"missing policy table {path}") from exc
     if not raw.isascii() or b"\r" in raw:
-        raise LifecycleError("policy table must be LF terminated ASCII")
+        raise LifecycleError("policy table must be LF terminated text")
     digest = hashlib.sha256(raw).hexdigest()
     if digest != expected_policy_sha256:
         raise LifecycleError(f"policy bytes differ from exact contract: {digest}")
-    text = raw.decode("ascii")
+    text = raw.decode("utf-8")
     reader = csv.DictReader(text.splitlines(), delimiter="\t")
     if tuple(reader.fieldnames or ()) != HEADER:
         raise LifecycleError("policy header differs from the 19 field schema")
@@ -814,7 +814,7 @@ def policy_row_identity_sha256(row: dict[str, str]) -> str:
 
     digest = hashlib.sha256()
     for field in HEADER[1:]:
-        value = row[field].encode("ascii")
+        value = row[field].encode("utf-8")
         digest.update(len(value).to_bytes(4, "big"))
         digest.update(value)
     return digest.hexdigest()
@@ -906,14 +906,14 @@ def check_policy_row_identities(rows: dict[str, dict[str, str]]) -> None:
 def check_ttm_authority(root: Path) -> None:
     authority_raw = (root / TTM_AUTHORITY).read_bytes()
     try:
-        authority_raw.decode("ascii")
+        authority_raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise LifecycleError("TTM authority is not ASCII") from exc
+        raise LifecycleError("TTM authority is not UTF-8 text") from exc
     if hashlib.sha256(authority_raw).hexdigest() != EXPECTED_TTM_AUTHORITY_SHA256:
         raise LifecycleError("TTM authority identity differs")
 
-    authority = tomllib.loads(authority_raw.decode("ascii"))
-    upstream = tomllib.loads((root / UPSTREAM_BASE).read_text(encoding="ascii"))
+    authority = tomllib.loads(authority_raw.decode("utf-8"))
+    upstream = tomllib.loads((root / UPSTREAM_BASE).read_text(encoding="utf-8"))
     expected_commits = {
         "6.18": upstream["commit"],
         "7.1": upstream["target"]["mainline"]["commit"],
@@ -950,7 +950,7 @@ def check_ttm_authority(root: Path) -> None:
 
 
 def check_build_and_callbacks(root: Path) -> None:
-    makefile = (root / SUBTREE / "Makefile").read_text(encoding="ascii")
+    makefile = (root / SUBTREE / "Makefile").read_text(encoding="utf-8")
     for owner in (
         "radeon_asic.o",
         "radeon_fence.o",
@@ -3475,7 +3475,7 @@ def copy_inputs(source_root: Path, destination: Path) -> None:
 
 
 def mutate_policy(path: Path, row_prefix: str, field_index: int, value: str) -> None:
-    lines = path.read_text(encoding="ascii").splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     matches = [index for index, line in enumerate(lines) if line.startswith(row_prefix)]
     if len(matches) != 1:
         raise LifecycleError(
@@ -3484,7 +3484,7 @@ def mutate_policy(path: Path, row_prefix: str, field_index: int, value: str) -> 
     fields = lines[matches[0]].split("\t")
     fields[field_index] = value
     lines[matches[0]] = "\t".join(fields)
-    path.write_text("\n".join(lines) + "\n", encoding="ascii")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def selftest(root: Path) -> int:
@@ -3509,12 +3509,12 @@ def selftest(root: Path) -> int:
             mutant = Path(directory) / re.sub(r"[^a-z0-9]+", "-", label.lower())
             copy_inputs(root, mutant)
             path = mutant / relative
-            text = path.read_text(encoding="ascii")
+            text = path.read_text(encoding="utf-8")
             if text.count(old) != 1:
                 print(f"selftest fixture error for {label}", file=sys.stderr)
                 failures += 1
                 continue
-            path.write_text(text.replace(old, new, 1), encoding="ascii")
+            path.write_text(text.replace(old, new, 1), encoding="utf-8")
             try:
                 check_tree(mutant)
             except LifecycleError as exc:

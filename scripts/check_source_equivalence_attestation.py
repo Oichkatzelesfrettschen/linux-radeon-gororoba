@@ -87,11 +87,11 @@ def public_key_identity(
     try:
         lines = [
             line
-            for line in content.decode("ascii").splitlines()
+            for line in content.decode("utf-8").splitlines()
             if line and not line.startswith("#")
         ]
     except UnicodeDecodeError as exc:
-        raise AttestationError("allowed signers file is not ASCII") from exc
+        raise AttestationError("allowed signers file is not UTF-8 text") from exc
     if len(lines) != 1:
         raise AttestationError("allowed signers file must carry exactly one entry")
     fields = lines[0].split()
@@ -101,7 +101,7 @@ def public_key_identity(
         )
     if fields[0] != principal:
         raise AttestationError(f"allowed signers principal {fields[0]} != {principal}")
-    key_bytes = f"{fields[1]} {fields[2]}\n".encode("ascii")
+    key_bytes = f"{fields[1]} {fields[2]}\n".encode("utf-8")
     result = subprocess.run(
         ["ssh-keygen", "-lf", "-", "-E", "sha256"],
         input=key_bytes,
@@ -112,7 +112,7 @@ def public_key_identity(
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise AttestationError(f"ssh-keygen rejected the public key: {detail}")
-    output = result.stdout.decode("ascii").split()
+    output = result.stdout.decode("utf-8").split()
     fingerprint = next(
         (field for field in output if field.startswith("SHA256:")),
         "",

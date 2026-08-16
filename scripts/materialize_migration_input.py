@@ -26,7 +26,7 @@ def sha256_file(path: Path) -> str:
 
 def inventory(control_root: Path) -> list[dict[str, str]]:
     path = control_root / "docs/reconstruction-input-inventory.tsv"
-    with path.open(encoding="ascii", newline="") as source:
+    with path.open(encoding="utf-8", newline="") as source:
         rows = list(csv.DictReader(source, delimiter="\t"))
     if len(rows) != 7:
         raise InputError("reconstruction input inventory must contain seven rows")
@@ -75,7 +75,7 @@ def materialize(control_root: Path, packaging_root: Path, output_root: Path) -> 
     )
     (output_root / "ORACLE_PROVENANCE").write_text(
         provenance,
-        encoding="ascii",
+        encoding="utf-8",
     )
     print(f"materialized {len(seen)} pinned migration files")
 

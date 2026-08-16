@@ -863,7 +863,7 @@ def require_one_match(body: str, pattern: str, label: str) -> re.Match[str]:
 
 
 def read_manifest(path: Path) -> list[dict[str, str]]:
-    text = path.read_text(encoding="ascii")
+    text = path.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line]
     require(bool(lines), "all-dev interface manifest is empty")
     rows = list(csv.DictReader(lines, delimiter="\t"))
@@ -875,7 +875,7 @@ def read_manifest(path: Path) -> list[dict[str, str]]:
 
 
 def read_registration_contract(path: Path) -> list[dict[str, str]]:
-    text = path.read_text(encoding="ascii")
+    text = path.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line]
     require(bool(lines), "development interface registration contract is empty")
     rows = list(csv.DictReader(lines, delimiter="\t"))
@@ -887,13 +887,13 @@ def read_registration_contract(path: Path) -> list[dict[str, str]]:
 
 
 def read_features(path: Path) -> dict[str, dict[str, object]]:
-    policy = tomllib.loads(path.read_text(encoding="ascii"))
+    policy = tomllib.loads(path.read_text(encoding="utf-8"))
     return {feature["id"]: feature for feature in policy["feature"]}
 
 
 def advertised_interface_texts(root: Path) -> dict[str, str]:
     return {
-        path: (root / path).read_text(encoding="ascii")
+        path: (root / path).read_text(encoding="utf-8")
         for path in ADVERTISED_INTERFACE_TOTAL_PATTERNS
     }
 
@@ -1019,7 +1019,7 @@ def runtime_rows(
 
 def runtime_source_texts(root: Path) -> dict[str, str]:
     texts = {
-        path: (root / path).read_text(encoding="ascii")
+        path: (root / path).read_text(encoding="utf-8")
         for path in RUNTIME_SOURCE_PATTERNS
     }
     driver_root = root / "drivers/gpu/drm/radeon"
@@ -1031,7 +1031,7 @@ def runtime_source_texts(root: Path) -> dict[str, str]:
 
 def retired_reset_probe_source_texts(root: Path) -> dict[str, str]:
     return {
-        path: (root / path).read_text(encoding="ascii")
+        path: (root / path).read_text(encoding="utf-8")
         for path in RETIRED_RESET_PROBE_MARKERS
     }
 
@@ -1040,7 +1040,7 @@ def validate_output_schema_version(root: Path) -> None:
     """The schema version has one home per artifact class: the macro in
     radeon_dev.h drives every emitted line, and build-features.toml pins
     the value a probe runner may accept, so drift between them fails."""
-    header = (root / "drivers/gpu/drm/radeon/radeon_dev.h").read_text(encoding="ascii")
+    header = (root / "drivers/gpu/drm/radeon/radeon_dev.h").read_text(encoding="utf-8")
     macro = re.search(r"#define RADEON_DEV_OUTPUT_SCHEMA_VERSION (\d+)", header)
     require(macro is not None, "RADEON_DEV_OUTPUT_SCHEMA_VERSION is absent")
     line = re.search(
@@ -1053,7 +1053,7 @@ def validate_output_schema_version(root: Path) -> None:
         macro.group(1) == line.group(1),
         "schema line version differs from RADEON_DEV_OUTPUT_SCHEMA_VERSION",
     )
-    features = (root / "policy/build-features.toml").read_text(encoding="ascii")
+    features = (root / "policy/build-features.toml").read_text(encoding="utf-8")
     pinned = re.search(r"^output_schema_version = (\d+)$", features, re.M)
     require(
         pinned is not None,
@@ -2578,7 +2578,7 @@ def validate_retired_reset_probe_denominator(
         "retired reset-probe marker denominator contains a duplicate identity",
     )
     serialized = "".join(f"{path}\t{marker}\n" for path, marker in identities).encode(
-        "ascii"
+        "utf-8"
     )
     require(
         hashlib.sha256(serialized).hexdigest() == RETIRED_RESET_PROBE_MARKER_SHA256,
@@ -2987,7 +2987,7 @@ def validate_mutation_audit(
 
 def debugfs_fops_symbol(root: Path, row: dict[str, str]) -> str:
     source = root / row["source_path"]
-    text = source.read_text(encoding="ascii")
+    text = source.read_text(encoding="utf-8")
     pattern = re.compile(
         rf'debugfs_create_file\(\s*"{re.escape(row["marker"])}"'
         rf".*?&([A-Za-z0-9_]+)\s*\)",
