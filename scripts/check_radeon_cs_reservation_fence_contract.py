@@ -182,11 +182,11 @@ def read_policy(
     except FileNotFoundError as exc:
         raise ContractError(f"missing policy table {path}") from exc
     if not raw.isascii() or b"\r" in raw:
-        raise ContractError("policy table must be LF terminated ASCII")
+        raise ContractError("policy table must be LF terminated text")
     digest = hashlib.sha256(raw).hexdigest()
     if digest != expected_policy_sha256:
         raise ContractError(f"policy bytes differ from exact contract: {digest}")
-    reader = csv.DictReader(raw.decode("ascii").splitlines(), delimiter="\t")
+    reader = csv.DictReader(raw.decode("utf-8").splitlines(), delimiter="\t")
     if tuple(reader.fieldnames or ()) != lifecycle.HEADER:
         raise ContractError("policy header differs from the 19 field schema")
     rows: dict[str, dict[str, str]] = {}
@@ -322,7 +322,7 @@ def require_order(label: str, body: str, needles: tuple[str, ...]) -> None:
 
 
 def check_build_and_callbacks(root: Path) -> None:
-    makefile = (root / SUBTREE / "Makefile").read_text(encoding="ascii")
+    makefile = (root / SUBTREE / "Makefile").read_text(encoding="utf-8")
     for owner in (
         "radeon_asic.o",
         "radeon_cs.o",
@@ -2069,7 +2069,7 @@ def copy_inputs(source_root: Path, destination: Path) -> None:
 
 
 def mutate_policy(path: Path, row_prefix: str, field_index: int, value: str) -> None:
-    lines = path.read_text(encoding="ascii").splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     matches = [index for index, line in enumerate(lines) if line.startswith(row_prefix)]
     if len(matches) != 1:
         raise ContractError(
@@ -2078,7 +2078,7 @@ def mutate_policy(path: Path, row_prefix: str, field_index: int, value: str) -> 
     fields = lines[matches[0]].split("\t")
     fields[field_index] = value
     lines[matches[0]] = "\t".join(fields)
-    path.write_text("\n".join(lines) + "\n", encoding="ascii")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def selftest(root: Path) -> int:

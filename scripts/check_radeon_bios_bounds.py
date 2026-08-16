@@ -27,15 +27,15 @@ def require(condition: bool, message: str) -> None:
         raise BiosContractError(message)
 
 
-def read_ascii(path: Path) -> str:
+def read_utf8(path: Path) -> str:
     require(path.is_file(), f"source file is absent: {path}")
     require(
         path.stat().st_size <= MAX_SOURCE_BYTES, f"source file is too large: {path}"
     )
     try:
-        return path.read_text(encoding="ascii")
+        return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
-        raise BiosContractError(f"source file is not ASCII: {path}") from error
+        raise BiosContractError(f"source file is not UTF-8 text: {path}") from error
 
 
 def load_sources(root: Path) -> dict[str, str]:
@@ -59,7 +59,7 @@ def load_sources(root: Path) -> dict[str, str]:
         "rv770.c",
         "si.c",
     )
-    return {name: read_ascii(root / DRIVER / name) for name in names}
+    return {name: read_utf8(root / DRIVER / name) for name in names}
 
 
 def body(source: str, name: str) -> str:

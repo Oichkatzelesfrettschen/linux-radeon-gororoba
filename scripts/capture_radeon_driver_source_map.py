@@ -300,6 +300,13 @@ REQUIRED_BOUNDED_QUERIES = {
 }
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+
+# str.isdigit() accepts every Unicode decimal digit, and int() then folds a
+# fullwidth alias such as U+FF10 to the same value as its ASCII counterpart, so
+# two manifests carrying different bytes reach the same size. A manifest field
+# holds ASCII decimal digits alone, and this pattern is the boundary that keeps
+# the byte identity and the parsed value in agreement.
+DECIMAL = re.compile(r"^[0-9]+$")
 UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 C_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MECHANISM_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -567,7 +574,7 @@ def root_denominator_sha256(partitions: list[Partition]) -> str:
     )
     payload = (
         json.dumps(records, ensure_ascii=True, separators=(",", ":")) + "\n"
-    ).encode("ascii")
+    ).encode("utf-8")
     return sha256_bytes(payload)
 
 
@@ -590,7 +597,7 @@ def hazard_denominator_sha256(hazards: list[Hazard]) -> str:
     )
     payload = (
         json.dumps(records, ensure_ascii=True, separators=(",", ":")) + "\n"
-    ).encode("ascii")
+    ).encode("utf-8")
     return sha256_bytes(payload)
 
 
@@ -612,7 +619,7 @@ def binding_denominator_sha256(bindings: list[Binding]) -> str:
     )
     payload = (
         json.dumps(records, ensure_ascii=True, separators=(",", ":")) + "\n"
-    ).encode("ascii")
+    ).encode("utf-8")
     return sha256_bytes(payload)
 
 
@@ -639,7 +646,7 @@ def regular_tree_files(root: Path, label: str) -> set[str]:
             require(
                 entry.name.isascii()
                 and not any(ord(character) < 32 for character in entry.name),
-                f"{label} path is not plain ASCII",
+                f"{label} path is not UTF-8 text",
             )
             status = entry.stat(follow_symlinks=False)
             path_parts = (*relative_parts, entry.name)
@@ -673,7 +680,7 @@ def regular_tree_directories(root: Path, label: str) -> set[str]:
             require(
                 entry.name.isascii()
                 and not any(ord(character) < 32 for character in entry.name),
-                f"{label} path is not plain ASCII",
+                f"{label} path is not UTF-8 text",
             )
             status = entry.stat(follow_symlinks=False)
             path_parts = (*relative_parts, entry.name)
@@ -762,7 +769,7 @@ def git_object_id(object_type: str, content: bytes) -> str:
         object_type in {"blob", "commit", "tree"},
         f"unsupported Git object type: {object_type}",
     )
-    header = f"{object_type} {len(content)}\0".encode("ascii")
+    header = f"{object_type} {len(content)}\0".encode("utf-8")
     return hashlib.sha1(header + content, usedforsecurity=False).hexdigest()
 
 
@@ -773,9 +780,9 @@ def commit_identity(content: bytes) -> tuple[str, str]:
     require(lines and lines[0].startswith(b"tree "), "Git commit object has no tree")
     tree_text = lines[0].removeprefix(b"tree ")
     try:
-        tree_id = tree_text.decode("ascii")
+        tree_id = tree_text.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SourceMapError("Git commit tree identity is not ASCII") from exc
+        raise SourceMapError("Git commit tree identity is not UTF-8 text") from exc
     require(
         HEX_40.fullmatch(tree_id) is not None, "Git commit tree identity is invalid"
     )
@@ -810,9 +817,9 @@ def parse_git_tree_object(content: bytes) -> list[tuple[str, bytes, str]]:
             object_end <= len(content), "Git tree object carries a truncated object ID"
         )
         try:
-            mode = content[offset:mode_end].decode("ascii")
+            mode = content[offset:mode_end].decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise SourceMapError("Git tree object carries a non-ASCII mode") from exc
+            raise SourceMapError("Git tree object carries a mode that is not UTF-8 text") from exc
         name = content[mode_end + 1 : name_end]
         require(
             mode in {"40000", "100644", "100755", "120000", "160000"},
@@ -892,7 +899,7 @@ def retained_driver_tree_id(entries: list[SourceEntry], source_root: str) -> str
                 (
                     name,
                     False,
-                    mode.encode("ascii")
+                    mode.encode("utf-8")
                     + b" "
                     + name
                     + b"\0"
@@ -974,14 +981,14 @@ def read_tsv(path: Path, expected_schema: str) -> tuple[list[str], list[list[str
     return parsed[0], parsed[1:]
 
 
-def read_canonical_ascii_tsv(
+def read_canonical_tsv(
     path: Path,
     expected_schema: str,
     maximum_size: int,
     label: str,
     expected_sha256: str | None = None,
 ) -> tuple[list[str], list[list[str]]]:
-    """Read, authenticate, and parse one bounded canonical ASCII TSV."""
+    """Read, authenticate, and parse one bounded canonical UTF-8 TSV."""
     content = read_bounded_file(path, maximum_size, label)
     if expected_sha256 is not None:
         require(
@@ -989,9 +996,9 @@ def read_canonical_ascii_tsv(
             f"{label} identity differs",
         )
     try:
-        text = content.decode("ascii")
+        text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SourceMapError(f"{label} is not ASCII") from exc
+        raise SourceMapError(f"{label} is not UTF-8 text") from exc
     lines = text.splitlines()
     require(
         lines and lines[0] == f"# schema: {expected_schema}",
@@ -1074,7 +1081,7 @@ def validate_path_witness_shape(
 ) -> None:
     require(
         MECHANISM_NAME.fullmatch(witness.name) is not None,
-        f"{label}.name is not mechanism-first ASCII",
+        f"{label}.name is not a mechanism-first identifier",
     )
     require(
         all(
@@ -1451,10 +1458,10 @@ def load_policy(
 ) -> Policy:
     try:
         content = path.read_bytes()
-        content.decode("ascii")
-        data = tomllib.loads(content.decode("ascii"))
+        content.decode("utf-8")
+        data = tomllib.loads(content.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise SourceMapError(f"cannot read ASCII policy {path}: {exc}") from exc
+        raise SourceMapError(f"cannot read UTF-8 policy {path}: {exc}") from exc
 
     policy_schema = data.get("schema")
     require(
@@ -2170,9 +2177,9 @@ def load_source_closure(repository: Path, commit: str, expected_root: str) -> by
     )
     assert isinstance(content, bytes)
     try:
-        declaration = tomllib.loads(content.decode("ascii"))
+        declaration = tomllib.loads(content.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise SourceMapError(f"source closure is not valid ASCII TOML: {exc}") from exc
+        raise SourceMapError(f"source closure is not UTF-8 text TOML: {exc}") from exc
     closure = declaration.get("closure")
     require(isinstance(closure, dict), "source closure has no closure table")
     require(
@@ -2221,7 +2228,7 @@ def parse_ls_tree(raw: bytes, policy: Policy) -> list[tuple[str, str, str, int, 
         try:
             metadata, path_bytes = record.split(b"\t", 1)
             path = path_bytes.decode("utf-8")
-            mode, object_type, object_id, size_text = metadata.decode("ascii").split()
+            mode, object_type, object_id, size_text = metadata.decode("utf-8").split()
         except (ValueError, UnicodeDecodeError) as exc:
             raise SourceMapError("git ls-tree emitted a malformed record") from exc
         require(object_type == "blob", f"non-blob source entry: {path}")
@@ -2231,7 +2238,7 @@ def parse_ls_tree(raw: bytes, policy: Policy) -> list[tuple[str, str, str, int, 
         require(
             HEX_40.fullmatch(object_id) is not None, f"invalid source object ID: {path}"
         )
-        require(size_text.isdigit(), f"invalid source size: {path}")
+        require(DECIMAL.fullmatch(size_text) is not None, f"invalid source size: {path}")
         require(
             path.startswith(policy.source_root + "/"),
             f"source path escaped root: {path}",
@@ -3830,7 +3837,7 @@ def parse_global_rows(
             f"GNU Global emitted an invalid identifier: {symbol}",
         )
         require(
-            source_line.isdigit() and int(source_line) > 0,
+            DECIMAL.fullmatch(source_line) is not None and int(source_line) > 0,
             f"GNU Global emitted an invalid line: {source_line}",
         )
         entry = entries.get(source_path)
@@ -4162,7 +4169,7 @@ def parse_cscope_rows(
             f"cscope function is invalid for {query_symbol}: {function}",
         )
         require(
-            line_text.isdigit() and int(line_text) > 0,
+            DECIMAL.fullmatch(line_text) is not None and int(line_text) > 0,
             f"cscope line is invalid for {query_symbol}",
         )
         source_lines = (
@@ -5551,7 +5558,7 @@ def evaluate_bounded_queries(
                 len(selected),
                 query.expected_matches,
                 match_count,
-                sha256_bytes(query.pattern.encode("ascii")),
+                sha256_bytes(query.pattern.encode("utf-8")),
                 sha256_bytes(
                     b"".join(path.encode("utf-8") + b"\0" for path in selected)
                 ),
@@ -5933,10 +5940,10 @@ def parse_top_level_toml(
     content = git_output(repository, "show", f"{commit}:{path}", text=False)
     assert isinstance(content, bytes)
     try:
-        data = tomllib.loads(content.decode("ascii"))
+        data = tomllib.loads(content.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise SourceMapError(
-            f"{path} is not valid ASCII TOML at {commit}: {exc}"
+            f"{path} is not UTF-8 text TOML at {commit}: {exc}"
         ) from exc
     return content, data
 
@@ -5967,7 +5974,7 @@ def sanitize_preprocessor_bytes(
     for path, token in sorted(
         replacements, key=lambda item: len(str(item[0])), reverse=True
     ):
-        output = output.replace(str(path).encode("utf-8"), token.encode("ascii"))
+        output = output.replace(str(path).encode("utf-8"), token.encode("utf-8"))
     return output
 
 
@@ -5981,7 +5988,7 @@ def validate_toolchain_prefix_relative_path(relative_path: str, label: str) -> P
             character == "\\" or ord(character) < 32 or ord(character) == 127
             for character in relative_path
         ),
-        f"{label} is not plain ASCII: {relative_path!r}",
+        f"{label} is not UTF-8 text: {relative_path!r}",
     )
     path = Path(relative_path)
     require(
@@ -6063,7 +6070,7 @@ def load_toolchain_prefix_manifest(
             0 < expected_entry_count <= MAX_TOOLCHAIN_PREFIX_ENTRIES,
             "kernel toolchain prefix declaration exceeds its row boundary",
         )
-    columns, rows = read_canonical_ascii_tsv(
+    columns, rows = read_canonical_tsv(
         manifest,
         TOOLCHAIN_PREFIX_TREE_SCHEMA,
         MAX_MANIFEST_BYTES,
@@ -6130,7 +6137,7 @@ def load_toolchain_prefix_manifest(
             size = None
         elif entry_type == "regular":
             require(
-                size_text.isdigit(),
+                DECIMAL.fullmatch(size_text) is not None,
                 f"kernel toolchain regular size is invalid: {relative_path}",
             )
             size = int(size_text)
@@ -6143,7 +6150,7 @@ def load_toolchain_prefix_manifest(
             )
         else:
             require(
-                size_text.isdigit(),
+                DECIMAL.fullmatch(size_text) is not None,
                 f"kernel toolchain symlink size is invalid: {relative_path}",
             )
             size = int(size_text)
@@ -6156,7 +6163,7 @@ def load_toolchain_prefix_manifest(
                 )
                 and not Path(link_target).is_absolute()
                 and size == len(os.fsencode(link_target))
-                and identity_sha256 == sha256_bytes(link_target.encode("ascii"))
+                and identity_sha256 == sha256_bytes(link_target.encode("utf-8"))
                 and HEX_64.fullmatch(resolved_sha256) is not None,
                 f"kernel toolchain symlink identity differs: {relative_path}",
             )
@@ -6296,7 +6303,7 @@ def derive_toolchain_prefix_entries(
                     character in "\\\t\r\n" or ord(character) < 32
                     for character in child.name
                 ),
-                "kernel toolchain prefix path is not plain ASCII",
+                "kernel toolchain prefix path is not UTF-8 text",
             )
             try:
                 status = child.stat(follow_symlinks=False)
@@ -6446,7 +6453,7 @@ def derive_toolchain_prefix_entries(
                         "symlink",
                         mode,
                         status.st_size,
-                        sha256_bytes(target.encode("ascii")),
+                        sha256_bytes(target.encode("utf-8")),
                         target,
                         resolved_relative.as_posix(),
                         resolved_sha256,
@@ -6513,7 +6520,7 @@ def load_toolchain_closure(
     list[ToolchainPrefixEntry],
 ]:
     try:
-        declaration_data = tomllib.loads(declaration.read_text(encoding="ascii"))
+        declaration_data = tomllib.loads(declaration.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise SourceMapError(
             f"kernel toolchain declaration is invalid: {declaration}: {exc}"
@@ -6677,7 +6684,7 @@ def load_toolchain_closure(
         "kernel toolchain host policy differs",
     )
 
-    columns, rows = read_canonical_ascii_tsv(
+    columns, rows = read_canonical_tsv(
         manifest,
         "gororoba-kernel-toolchain-closure-v1",
         MAX_MANIFEST_BYTES,
@@ -6738,7 +6745,7 @@ def load_toolchain_closure(
             f"kernel toolchain manifest mode is invalid: {relative_path}",
         )
         require(
-            size_text.isdigit() and int(size_text) > 0,
+            DECIMAL.fullmatch(size_text) is not None and int(size_text) > 0,
             f"kernel toolchain manifest size is invalid: {relative_path}",
         )
         require(
@@ -6935,7 +6942,7 @@ def validate_kernel_toolchain(
     )
     try:
         kernel_declaration_data = tomllib.loads(
-            kernel_declaration.read_text(encoding="ascii")
+            kernel_declaration.read_text(encoding="utf-8")
         )
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise SourceMapError(
@@ -7391,9 +7398,9 @@ def validate_toolchain_runtime_rows(
 def parse_module_symbol_map(content: bytes, label: str) -> dict[str, str]:
     """Parse one exact llvm-nm POSIX map into canonical to raw names."""
     try:
-        text = content.decode("ascii", errors="strict")
+        text = content.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
-        raise SourceMapError(f"module symbol map is not ASCII: {label}") from exc
+        raise SourceMapError(f"module symbol map is not UTF-8 text: {label}") from exc
     require(text.endswith("\n"), f"module symbol map lacks final newline: {label}")
     lines = text.splitlines()
     require(bool(lines), f"module symbol map is empty: {label}")
@@ -7426,7 +7433,7 @@ def parse_module_symbol_map(content: bytes, label: str) -> dict[str, str]:
 
 
 def symbol_name_set_sha256(names: set[str]) -> str:
-    serialized = "".join(f"{name}\n" for name in sorted(names)).encode("ascii")
+    serialized = "".join(f"{name}\n" for name in sorted(names)).encode("utf-8")
     return sha256_bytes(serialized)
 
 
@@ -7704,7 +7711,7 @@ def capture_preprocessor_views(
             release_path.is_file(),
             f"kernel build root has no release: {kernel_root}",
         )
-        release = release_path.read_text(encoding="ascii").strip()
+        release = release_path.read_text(encoding="utf-8").strip()
         require(
             release in lane_by_release,
             f"kernel release is not declared by source-map policy: {release}",
@@ -8211,9 +8218,9 @@ def verify_hash_ledger(root: Path) -> int:
         "capture hash ledger",
     )
     try:
-        ledger_lines = ledger_content.decode("ascii").splitlines()
+        ledger_lines = ledger_content.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
-        raise SourceMapError("capture hash ledger is not ASCII") from exc
+        raise SourceMapError("capture hash ledger is not UTF-8 text") from exc
     for line_number, line in enumerate(ledger_lines, 1):
         match = re.fullmatch(r"([0-9a-f]{64})  ([^\r\n]+)", line)
         require(match is not None, f"hash ledger row {line_number} is malformed")
@@ -8344,7 +8351,7 @@ def verify_no_host_path_leaks(
             "preprocessed",
         }
         for match in ABSOLUTE_PATH_TOKEN.finditer(content):
-            candidate = match.group(0).decode("ascii")
+            candidate = match.group(0).decode("utf-8")
             if source_derived_raw and not candidate.startswith(
                 (
                     CANONICAL_ANALYZER_SOURCE_ROOT,
@@ -8788,7 +8795,7 @@ def verify_capture(
     require(
         all(
             len(row) == 6
-            and row[3].isdigit()
+            and DECIMAL.fullmatch(row[3]) is not None
             and int(row[3]) <= policy.max_source_bytes
             for row in source_rows
         )
@@ -8817,7 +8824,7 @@ def verify_capture(
             f"file-list source class differs: {path}",
         )
         require(mode in {"100644", "100755"}, f"file-list mode is invalid: {path}")
-        require(size_text.isdigit(), f"file-list size is invalid: {path}")
+        require(DECIMAL.fullmatch(size_text) is not None, f"file-list size is invalid: {path}")
         require(
             HEX_40.fullmatch(object_id) is not None
             and HEX_64.fullmatch(digest) is not None,
@@ -10616,7 +10623,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     def synthetic_symbol_content(names: tuple[str, ...]) -> bytes:
         return "".join(
             f"{name} T {index:x} 1\n" for index, name in enumerate(names)
-        ).encode("ascii")
+        ).encode("utf-8")
 
     synthetic_symbol_bytes = {
         ("kernel-a", "prod"): synthetic_symbol_content(("base.llvm.1",)),
@@ -10802,7 +10809,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "    2 {   1}     child: void (void), <child.c 2>\n"
         "    3 {   2}         external_call: <>\n"
         "    4 {   1}     child: 2\n"
-    ).encode("ascii")
+    ).encode("utf-8")
     expected_edges = [
         ("child", "external_call", "external"),
         ("root", "child", "driver"),
@@ -11346,7 +11353,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         == 3
         and sha256_bytes(
-            " ".join(spliced_binding_match.group(0).split()).encode("ascii")
+            " ".join(spliced_binding_match.group(0).split()).encode("utf-8")
         )
         == sha256_bytes(b".member = target,"),
     )
@@ -11375,7 +11382,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         f"100644 blob {object_id} 12\tdrivers/gpu/drm/radeon/a.h\0"
         f"100644 blob {object_id} 8\tdrivers/gpu/drm/radeon/Makefile\0"
         f"100644 blob {object_id} 5\tdrivers/gpu/drm/radeon/.gitignore\0"
-    ).encode("ascii")
+    ).encode("utf-8")
     parsed = parse_ls_tree(raw_tree, policy)
     check(
         "tracked denominator parser retains regular source and repository metadata",
@@ -11385,7 +11392,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "tracked denominator rejects a symlink",
         lambda: parse_ls_tree(
             f"120000 blob {object_id} 3\tdrivers/gpu/drm/radeon/link.c\0".encode(
-                "ascii"
+                "utf-8"
             ),
             policy,
         ),
@@ -11394,7 +11401,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         "tracked denominator rejects traversal",
         lambda: parse_ls_tree(
             f"100644 blob {object_id} 3\tdrivers/gpu/drm/radeon/../x.c\0".encode(
-                "ascii"
+                "utf-8"
             ),
             policy,
         ),
@@ -11447,7 +11454,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         f"{policy.source_root}/a.c", "100644", object_id, 10, "2" * 64, "c"
     )
     good_global = f"address_taken 1 {entry.path} &address_taken\ndirect_call 1 {entry.path} direct_call()\n".encode(
-        "ascii"
+        "utf-8"
     )
     parsed_global = parse_global_rows(good_global, "reference", {entry.path: entry})
     check(
@@ -12025,7 +12032,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "c",
         )
         cscope_entries = {cscope_path: cscope_entry}
-        good_cscope = (f"{cscope_path} cscope_test 3 return 0;\n").encode("ascii")
+        good_cscope = (f"{cscope_path} cscope_test 3 return 0;\n").encode("utf-8")
         check(
             "cscope parser accepts one admitted full path and retained source line",
             len(
@@ -12112,7 +12119,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         rejects(
             "cscope parser rejects a line beyond retained source",
             lambda: parse_cscope_rows(
-                f"{cscope_path} cscope_test 99 return 0;\n".encode("ascii"),
+                f"{cscope_path} cscope_test 99 return 0;\n".encode("utf-8"),
                 "definition",
                 "cscope_test",
                 cscope_entries,
@@ -12122,7 +12129,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         check(
             "cscope production parser drops an out-of-range mis-bound row",
             parse_cscope_rows(
-                f"{cscope_path} cscope_test 99 return 0;\n".encode("ascii"),
+                f"{cscope_path} cscope_test 99 return 0;\n".encode("utf-8"),
                 "definition",
                 "cscope_test",
                 cscope_entries,
@@ -12134,7 +12141,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         rejects(
             "cscope parser rejects changed source text",
             lambda: parse_cscope_rows(
-                f"{cscope_path} cscope_test 3 return 1;\n".encode("ascii"),
+                f"{cscope_path} cscope_test 3 return 1;\n".encode("utf-8"),
                 "definition",
                 "cscope_test",
                 cscope_entries,
@@ -13025,7 +13032,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
             ),
         )
 
-        live_policy = policy_path.read_text(encoding="ascii")
+        live_policy = policy_path.read_text(encoding="utf-8")
         missing_capacity_root = temp / "missing-capacity-root.toml"
         capacity_root_row = '  "radeon_ttm_vram_read",\n'
         require(
@@ -13669,7 +13676,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         live_lane = policy.kernel_lanes[0]
         changed_toolchain_manifest = temp / "changed-toolchain-manifest.tsv"
         toolchain_manifest_text = (repository / live_lane.toolchain_manifest).read_text(
-            encoding="ascii"
+            encoding="utf-8"
         )
         write_text(
             changed_toolchain_manifest,
@@ -13689,7 +13696,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         toolchain_declaration_text = (
             repository / live_lane.toolchain_declaration
-        ).read_text(encoding="ascii")
+        ).read_text(encoding="utf-8")
         for field in ("runner_file_write", "extended_attributes"):
             permissive_declaration = temp / f"permissive-{field}.toml"
             write_text(
@@ -13729,7 +13736,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         )
         prefix_manifest_lines = (
             (repository / live_lane.toolchain_prefix_manifest)
-            .read_text(encoding="ascii")
+            .read_text(encoding="utf-8")
             .splitlines()
         )
         unsorted_prefix_manifest = temp / "unsorted-prefix-tree.tsv"
@@ -13779,7 +13786,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         del_lines[2] = "\t".join(del_fields)
         write_text(del_prefix_manifest, "\n".join(del_lines) + "\n")
         rejects(
-            "toolchain prefix manifest rejects ASCII DEL",
+            "toolchain prefix manifest rejects the DEL control character",
             lambda: load_toolchain_prefix_manifest(del_prefix_manifest),
         )
         changed_prefix_manifest = temp / "changed-prefix-semantic-row.tsv"
@@ -13884,7 +13891,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
         admitted_prefix_entries = load_toolchain_prefix_manifest(
             mutable_prefix_manifest
         )
-        mutable_prefix_text = mutable_prefix_manifest.read_text(encoding="ascii")
+        mutable_prefix_text = mutable_prefix_manifest.read_text(encoding="utf-8")
         require(
             mutable_prefix_text.count("bin/FileCheck\tregular\t0755\t") == 1,
             "toolchain mutable-prefix fixture anchor differs",

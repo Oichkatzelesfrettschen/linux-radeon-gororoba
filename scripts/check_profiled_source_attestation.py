@@ -179,9 +179,9 @@ def require(condition: bool, message: str) -> None:
 
 def parse_toml_bytes(raw: bytes, label: str) -> dict[str, Any]:
     try:
-        text = raw.decode("ascii")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise AttestationError(f"{label} is not ASCII") from exc
+        raise AttestationError(f"{label} is not UTF-8 text") from exc
     try:
         value = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -218,10 +218,10 @@ def git_bytes(repository: Path, *arguments: str) -> bytes:
 def git_output(repository: Path, *arguments: str) -> str:
     raw = git_bytes(repository, *arguments)
     try:
-        return raw.decode("ascii").strip()
+        return raw.decode("utf-8").strip()
     except UnicodeDecodeError as exc:
         raise AttestationError(
-            f"git {' '.join(arguments)} returned non-ASCII output"
+            f"git {' '.join(arguments)} returned output that is not UTF-8 text"
         ) from exc
 
 
@@ -230,9 +230,9 @@ def exact_string(record: dict[str, Any], field: str) -> str:
     if type(value) is not str or value == "":
         raise AttestationError(f"{field} must be a nonempty string")
     try:
-        value.encode("ascii")
+        value.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise AttestationError(f"{field} is not ASCII") from exc
+        raise AttestationError(f"{field} is not UTF-8 text") from exc
     return value
 
 
@@ -397,13 +397,13 @@ UPSTREAM_ROOT_FIELDS = {
 UPSTREAM_TARGET_FIELDS = {"tag", "commit", "subtree_tree"}
 
 
-def strict_ascii_value(value: Any, field: str) -> str:
+def strict_text_value(value: Any, field: str) -> str:
     if type(value) is not str or value == "":
         raise AttestationError(f"{field} must be a nonempty string")
     try:
-        value.encode("ascii")
+        value.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise AttestationError(f"{field} is not ASCII") from exc
+        raise AttestationError(f"{field} is not UTF-8 text") from exc
     return value
 
 
@@ -442,7 +442,7 @@ def validate_upstream_data(
         "import_method",
         "import_script",
     ):
-        strict_ascii_value(upstream[field], f"UPSTREAM_BASE.toml {field}")
+        strict_text_value(upstream[field], f"UPSTREAM_BASE.toml {field}")
     require(
         type(upstream["signature_verified"]) is bool,
         "UPSTREAM_BASE.toml signature_verified must be a Boolean",
@@ -482,7 +482,7 @@ def validate_upstream_data(
         "UPSTREAM_BASE.toml mainline target schema differs",
     )
     for field in UPSTREAM_TARGET_FIELDS:
-        strict_ascii_value(
+        strict_text_value(
             mainline[field], f"UPSTREAM_BASE.toml target.mainline {field}"
         )
     require(
@@ -550,13 +550,13 @@ def authority_identity(
 ) -> tuple[str, str, str]:
     try:
         raw = authority.read_bytes()
-        text = raw.decode("ascii")
+        text = raw.decode("utf-8")
     except FileNotFoundError as exc:
         raise AttestationError(
             f"allowed signers authority is absent: {authority}"
         ) from exc
     except UnicodeDecodeError as exc:
-        raise AttestationError("allowed signers authority is not ASCII") from exc
+        raise AttestationError("allowed signers authority is not UTF-8 text") from exc
     lines = [line for line in text.splitlines() if line and not line.startswith("#")]
     require(
         len(lines) == 1,
@@ -573,7 +573,7 @@ def authority_identity(
         key_type == "ssh-ed25519",
         "allowed signers authority key type is not SSH Ed25519",
     )
-    key_bytes = f"{key_type} {key_value}\n".encode("ascii")
+    key_bytes = f"{key_type} {key_value}\n".encode("utf-8")
     result = subprocess.run(
         ["ssh-keygen", "-lf", "-", "-E", "sha256"],
         input=key_bytes,
@@ -585,7 +585,7 @@ def authority_identity(
         result.returncode == 0,
         "ssh-keygen rejected the external allowed signer key",
     )
-    output = result.stdout.decode("ascii", errors="replace").split()
+    output = result.stdout.decode("utf-8", errors="replace").split()
     fingerprint = next(
         (field for field in output if field.startswith("SHA256:")),
         "",
@@ -856,7 +856,7 @@ def validate_delta_map(
         "source-delta baseline declaration differs from canonical identity",
     )
     try:
-        rows = canonical_parse_map(map_bytes.decode("ascii"))
+        rows = canonical_parse_map(map_bytes.decode("utf-8"))
         changed = changed_source_commit_paths_at(repository, target_commit)
         canonical_validate_map(rows, changed)
     except (UnicodeDecodeError, DeltaMapError) as exc:
@@ -1095,7 +1095,7 @@ def calibrate_real_merge_history(repository: Path) -> None:
     )
     try:
         ec5_map = canonical_parse_map(
-            git_bytes(repository, "show", f"{ec5_target}:{MAP_FILE}").decode("ascii")
+            git_bytes(repository, "show", f"{ec5_target}:{MAP_FILE}").decode("utf-8")
         )
         canonical_validate_map(ec5_map, changed)
     except (UnicodeDecodeError, DeltaMapError) as exc:
@@ -1114,9 +1114,9 @@ def expect_parse_failure(raw: bytes, label: str) -> None:
 
 def map_metadata(raw: bytes) -> tuple[str, str, str]:
     try:
-        lines = raw.decode("ascii").splitlines()
+        lines = raw.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
-        raise AttestationError("self-test map is not ASCII") from exc
+        raise AttestationError("self-test map is not UTF-8 text") from exc
     require(len(lines) >= 5, "self-test map has incomplete headers")
     values = tuple(line.split(": ", 1)[1] for line in lines[1:4])
     require(len(values) == 3, "self-test map metadata is malformed")
@@ -1150,14 +1150,14 @@ def cryptographic_untrusted_fixture(
         require(result.returncode == 0, "self-test could not create an SSH key")
         public = (
             key_path.with_name(key_path.name + ".pub")
-            .read_text(encoding="ascii")
+            .read_text(encoding="utf-8")
             .split()
         )
         require(len(public) >= 3, "self-test public key is malformed")
         bad_authority = Path(temp) / "allowed-signers"
         bad_authority.write_text(
             f"{record['signer_principal']} {public[0]} {public[1]}\n",
-            encoding="ascii",
+            encoding="utf-8",
         )
         digest, _principal, fingerprint = authority_identity(
             bad_authority, record["signer_principal"]
@@ -1379,7 +1379,7 @@ def self_test(repository: Path, authority: Path) -> int:
 
     expect_union_failure(repository, "divergent driver-source merge rejected")
     calibrate_real_merge_history(repository)
-    expect_parse_failure(b'schema = 2\nvalue = "\xff"\n', "non-ASCII record")
+    expect_parse_failure(b'schema = 2\nvalue = "\xff"\n', "record that is not UTF-8 text")
     expect_parse_failure(b"schema = [2\n", "malformed TOML record")
 
     mutations: list[tuple[str, str, Any]] = [

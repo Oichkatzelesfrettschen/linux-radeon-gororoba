@@ -230,7 +230,7 @@ def require(condition: bool, message: str) -> None:
 
 
 def read_tsv(path: Path) -> list[dict[str, str]]:
-    text = path.read_text(encoding="ascii")
+    text = path.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line]
     require(bool(lines), f"TSV is empty: {path}")
     return list(csv.DictReader(lines, delimiter="\t"))
@@ -238,7 +238,7 @@ def read_tsv(path: Path) -> list[dict[str, str]]:
 
 def load_policy(root: Path) -> dict[str, object]:
     return tomllib.loads(
-        (root / "policy/build-features.toml").read_text(encoding="ascii")
+        (root / "policy/build-features.toml").read_text(encoding="utf-8")
     )
 
 
@@ -349,7 +349,7 @@ def validate_guard_scope_mechanisms(
             plan is not None, f"{guard_id}: guard is absent from reconstruction plan"
         )
         source_digest = hashlib.sha256(
-            row["source_symbols"].encode("ascii")
+            row["source_symbols"].encode("utf-8")
         ).hexdigest()
         require(
             source_digest == CANONICAL_GUARD_SOURCE_DIGESTS[guard_id],
@@ -648,7 +648,7 @@ def validate_feature_shape(
         )
         if files:
             radeon_driver = (root / "drivers/gpu/drm/radeon/radeon_drv.c").read_text(
-                encoding="ascii"
+                encoding="utf-8"
             )
             require(
                 "rdev = devm_drm_dev_alloc(" in radeon_driver,
@@ -656,7 +656,7 @@ def validate_feature_shape(
                 "devm_drm_dev_alloc",
             )
             radeon_header = (root / "drivers/gpu/drm/radeon/radeon.h").read_text(
-                encoding="ascii"
+                encoding="utf-8"
             )
             require(
                 re.search(r"\bbool\s+gpu_parked;", radeon_header) is not None,

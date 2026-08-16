@@ -121,7 +121,7 @@ GUARDS = {guard["id"]: guard for guard in admission.GUARDS}
 def read_policy(root: Path) -> dict[str, dict[str, str]]:
     path = root / POLICY_PATH
     try:
-        with path.open(encoding="ascii", newline="") as source:
+        with path.open(encoding="utf-8", newline="") as source:
             reader = csv.DictReader(source, delimiter="\t")
             if tuple(reader.fieldnames or ()) != POLICY_FIELDS:
                 raise ContractError(f"{POLICY_PATH}: columns differ from schema")
@@ -297,7 +297,7 @@ POLICY_MUTATIONS = (
 def write_policy(root: Path, rows: tuple[dict[str, str], ...]) -> None:
     path = root / POLICY_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="ascii", newline="") as output:
+    with path.open("w", encoding="utf-8", newline="") as output:
         writer = csv.DictWriter(
             output,
             fieldnames=POLICY_FIELDS,
@@ -320,7 +320,7 @@ def write_sources(root: Path) -> None:
     for guard_id, source in fixtures.items():
         path = root / GUARDS[guard_id]["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(source, encoding="ascii")
+        path.write_text(source, encoding="utf-8")
 
 
 def expect_rejection(root: Path, label: str) -> bool:
@@ -376,14 +376,14 @@ def selftest(root: Path) -> int:
                 )
                 failures += 1
                 continue
-            path.write_text(source.replace(old, new, 1), encoding="ascii")
+            path.write_text(source.replace(old, new, 1), encoding="utf-8")
             failures += 0 if expect_rejection(root, f"{guard_id} {label}") else 1
 
     for label, source in admission.CS_FIXTURES_BAD.items():
         write_policy(root, GOOD_POLICY)
         write_sources(root)
         path = root / GUARDS["command-submission"]["path"]
-        path.write_text(source, encoding="ascii")
+        path.write_text(source, encoding="utf-8")
         failures += 0 if expect_rejection(root, f"command-submission {label}") else 1
 
     if failures:

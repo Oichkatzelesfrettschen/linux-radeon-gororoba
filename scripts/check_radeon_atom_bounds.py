@@ -23,7 +23,7 @@ def require(condition: bool, message: str) -> None:
 
 
 def read_text(root: Path, relative_path: str) -> str:
-    return (root / relative_path).read_text(encoding="ascii")
+    return (root / relative_path).read_text(encoding="utf-8")
 
 
 def function_text(source: str, declaration: str) -> str:
@@ -399,11 +399,11 @@ def self_test(root: Path) -> None:
         for label, name, old, new in mutations:
             for source_name, relative_path in source_paths.items():
                 (temp_root / relative_path).write_text(
-                    originals[source_name], encoding="ascii"
+                    originals[source_name], encoding="utf-8"
                 )
             require(old in originals[name], f"self-test anchor is absent: {label}")
             mutated = originals[name].replace(old, new, 1)
-            (temp_root / source_paths[name]).write_text(mutated, encoding="ascii")
+            (temp_root / source_paths[name]).write_text(mutated, encoding="utf-8")
             try:
                 check_tree(temp_root)
             except ContractError:

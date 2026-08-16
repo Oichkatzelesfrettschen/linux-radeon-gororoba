@@ -60,7 +60,7 @@ def split_list(value: str) -> list[str]:
 
 
 def read_tsv(path: Path, *, comments: bool = False) -> list[dict[str, str]]:
-    text = path.read_text(encoding="ascii")
+    text = path.read_text(encoding="utf-8")
     lines = [
         line
         for line in text.splitlines()
@@ -395,7 +395,7 @@ def validate_input_inventory(root: Path) -> None:
     inventory = read_tsv(root / "docs/reconstruction-input-inventory.tsv")
     require(len(inventory) == 7, "input inventory must contain seven frozen files")
     migration = tomllib.loads(
-        (root / "MIGRATION_INPUT.toml").read_text(encoding="ascii")
+        (root / "MIGRATION_INPUT.toml").read_text(encoding="utf-8")
     )
     expected = {
         "base-delta-map.tsv": migration["base_delta_map_sha256"],

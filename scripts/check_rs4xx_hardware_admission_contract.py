@@ -2103,7 +2103,7 @@ def write_fixture_sources(root: Path) -> None:
     for path, source in FIXTURE_SOURCES.items():
         destination = root / path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(source, encoding="ascii")
+        destination.write_text(source, encoding="utf-8")
 
 
 def selftest(root: Path) -> int:
@@ -2620,12 +2620,12 @@ def selftest(root: Path) -> int:
     for label, path, old, new in mutations:
         write_fixture_sources(root)
         source_path = root / path
-        source = source_path.read_text(encoding="ascii")
+        source = source_path.read_text(encoding="utf-8")
         if source.count(old) != 1:
             print(f"selftest fixture error: {label}", file=sys.stderr)
             failures += 1
             continue
-        source_path.write_text(source.replace(old, new, 1), encoding="ascii")
+        source_path.write_text(source.replace(old, new, 1), encoding="utf-8")
         try:
             check_contract(root)
         except GuardError:

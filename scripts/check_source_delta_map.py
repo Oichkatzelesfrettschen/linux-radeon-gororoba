@@ -73,7 +73,7 @@ def parse_map(text: str) -> list[dict[str, str]]:
 
 
 def read_map(root: Path) -> list[dict[str, str]]:
-    return parse_map((root / MAP_PATH).read_text(encoding="ascii"))
+    return parse_map((root / MAP_PATH).read_text(encoding="utf-8"))
 
 
 def git_output(root: Path, *arguments: str) -> str:
@@ -319,7 +319,7 @@ def validate(
 
 
 def self_test(root: Path) -> int:
-    map_text = (root / MAP_PATH).read_text(encoding="ascii")
+    map_text = (root / MAP_PATH).read_text(encoding="utf-8")
     rows = parse_map(map_text)
     validate_baseline(root)
     changed_commit_paths = changed_source_commit_paths(root)

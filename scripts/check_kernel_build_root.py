@@ -82,9 +82,9 @@ def build_manifest(root: Path) -> list[str]:
 
 def parse_manifest(path: Path) -> list[str]:
     try:
-        lines = path.read_text(encoding="ascii").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError as exc:
-        raise VerificationError(f"manifest is not plain ASCII: {path}") from exc
+        raise VerificationError(f"manifest is not UTF-8 text: {path}") from exc
     if len(lines) < 2 or lines[0] != SCHEMA_LINE or lines[1] != COLUMNS:
         raise VerificationError(f"manifest schema or columns are invalid: {path}")
     seen: set[str] = set()
@@ -214,13 +214,13 @@ def verify_kernel_identity(root: Path, declaration: dict[str, object]) -> None:
         if not path.is_file():
             raise VerificationError(f"kernel identity file is missing: {path}")
 
-    release = release_path.read_text(encoding="ascii").strip()
+    release = release_path.read_text(encoding="utf-8").strip()
     if release != declaration["kernel_release"]:
         raise VerificationError(
             f"kernel release differs: expected {declaration['kernel_release']}, got {release}"
         )
 
-    version_match = VERSION_CODE.search(version_path.read_text(encoding="ascii"))
+    version_match = VERSION_CODE.search(version_path.read_text(encoding="utf-8"))
     if not version_match:
         raise VerificationError("LINUX_VERSION_CODE is missing")
     version_code = int(version_match.group(1))
@@ -230,7 +230,7 @@ def verify_kernel_identity(root: Path, declaration: dict[str, object]) -> None:
             f"{declaration['linux_version_code']}, got {version_code}"
         )
 
-    compiler_match = COMPILER.search(compile_path.read_text(encoding="ascii"))
+    compiler_match = COMPILER.search(compile_path.read_text(encoding="utf-8"))
     if not compiler_match:
         raise VerificationError("kernel compiler identity is missing or unsupported")
     compiler_version, linker_version = compiler_match.groups()
@@ -253,7 +253,7 @@ def verify_kernel_identity(root: Path, declaration: dict[str, object]) -> None:
 def verify_host_policy(root: Path) -> None:
     if os.geteuid() == 0:
         raise VerificationError("host-policy verification must run as the runner")
-    status = Path("/proc/self/status").read_text(encoding="ascii")
+    status = Path("/proc/self/status").read_text(encoding="utf-8")
     capability = re.search(r"^CapEff:\s+([0-9a-fA-F]+)$", status, re.MULTILINE)
     if capability is None or int(capability.group(1), 16) != 0:
         raise VerificationError("runner carries effective Linux capabilities")
@@ -357,7 +357,7 @@ def self_test() -> None:
             raise VerificationError("self-test accepted a special file")
 
         bad_manifest = base / "bad.tsv"
-        bad_manifest.write_text("path\ttype\n", encoding="ascii")
+        bad_manifest.write_text("path\ttype\n", encoding="utf-8")
         try:
             parse_manifest(bad_manifest)
         except VerificationError:
@@ -398,7 +398,7 @@ def main() -> int:
             if not args.root:
                 parser.error("--emit-manifest requires --root")
             lines = build_manifest(args.root.resolve(strict=True))
-            args.emit_manifest.write_text("\n".join(lines) + "\n", encoding="ascii")
+            args.emit_manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
             print(f"wrote kernel build root manifest: {len(lines) - 2} entries")
             return 0
         if not args.root or not args.declaration or not args.manifest:

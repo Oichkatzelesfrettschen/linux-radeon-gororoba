@@ -91,7 +91,7 @@ class DenominatorError(Exception):
 
 def read_tsv(path: Path) -> list[dict[str, str]]:
     try:
-        text = path.read_text(encoding="ascii")
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise DenominatorError(f"missing input {path}") from exc
     content = "\n".join(line for line in text.splitlines() if not line.startswith("#"))
@@ -140,7 +140,7 @@ def check_patch_set_manifest(root: Path) -> dict[str, dict[str, str]]:
 
     path = root / PATCH_SET_MANIFEST
     try:
-        text = path.read_text(encoding="ascii")
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise DenominatorError(f"missing input {path}") from exc
     required_metadata = {
@@ -214,7 +214,7 @@ def check_patch_set_manifest(root: Path) -> dict[str, dict[str, str]]:
     require(len(selected) == 73, "top-level numeric patch denominator differs from 73")
     path_list = "".join(f"{patch_path}\n" for patch_path in sorted(selected))
     require(
-        hashlib.sha256(path_list.encode("ascii")).hexdigest() == PATCH_LIST_SHA256,
+        hashlib.sha256(path_list.encode("utf-8")).hexdigest() == PATCH_LIST_SHA256,
         "selected patch path-list SHA-256 differs",
     )
     numeric_ids = [int(row["numeric_id"]) for row in selected.values()]
@@ -527,7 +527,7 @@ def check_inactive_source(root: Path) -> None:
     joined = b"\n".join(path.read_bytes() for path in source_paths)
     for token in INACTIVE_TOKENS:
         require(
-            token.encode("ascii") not in joined,
+            token.encode("utf-8") not in joined,
             f"excluded historical token is active: {token}",
         )
     try:
@@ -561,19 +561,19 @@ def copy_fixture(source_root: Path, fixture_root: Path) -> None:
         "RS480_REQ_TYPE_SNOOP_DIS);\n"
         "\treturn 0;\n"
         "}\n",
-        encoding="ascii",
+        encoding="utf-8",
     )
 
 
 def remove_last_data_row(path: Path) -> None:
-    lines = path.read_text(encoding="ascii").splitlines()
-    path.write_text("\n".join(lines[:-1]) + "\n", encoding="ascii")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
-    text = path.read_text(encoding="ascii")
+    text = path.read_text(encoding="utf-8")
     require(text.count(old) == 1, f"selftest fixture does not contain one {old!r}")
-    path.write_text(text.replace(old, new, 1), encoding="ascii")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
 def selftest(source_root: Path, fixture_root: Path) -> int:

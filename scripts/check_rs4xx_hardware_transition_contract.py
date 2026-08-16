@@ -89,13 +89,13 @@ def require(condition: bool, message: str) -> None:
         raise ContractError(message)
 
 
-def read_ascii(path: Path) -> str:
+def read_utf8(path: Path) -> str:
     try:
-        return path.read_bytes().decode("ascii")
+        return path.read_bytes().decode("utf-8")
     except FileNotFoundError as exc:
         raise ContractError(f"required file is absent: {path}") from exc
     except UnicodeDecodeError as exc:
-        raise ContractError(f"checked-in text is not plain ASCII: {path}") from exc
+        raise ContractError(f"checked-in text is not UTF-8 text: {path}") from exc
 
 
 def read_source(path: Path) -> str:
@@ -229,7 +229,7 @@ def call_matches(function: FunctionSource, target: str) -> list[re.Match[str]]:
 
 
 def load_policy(root: Path) -> list[dict[str, str]]:
-    raw = read_ascii(root / POLICY)
+    raw = read_utf8(root / POLICY)
     reader = csv.DictReader(raw.splitlines(), delimiter="\t")
     require(
         tuple(reader.fieldnames or ()) == POLICY_COLUMNS,
@@ -706,15 +706,15 @@ def check_ib_failure_propagation(root: Path) -> None:
 def check_runtime_pm_failure_restoration(root: Path) -> None:
     authority_raw = (root / PCI_AUTHORITY).read_bytes()
     try:
-        authority_text = authority_raw.decode("ascii")
+        authority_text = authority_raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ContractError("PCI runtime rollback authority is not ASCII") from exc
+        raise ContractError("PCI runtime rollback authority is not UTF-8 text") from exc
     require(
         hashlib.sha256(authority_raw).hexdigest() == EXPECTED_PCI_AUTHORITY_SHA256,
         "PCI runtime rollback authority identity differs",
     )
     authority = tomllib.loads(authority_text)
-    upstream = tomllib.loads(read_ascii(root / UPSTREAM_BASE))
+    upstream = tomllib.loads(read_utf8(root / UPSTREAM_BASE))
     observed_commits = {
         entry["kernel"]: entry["commit"] for entry in authority["authority"]
     }
@@ -1080,19 +1080,19 @@ def replace_in_function(
 
 def replace_policy_once(root: Path, old: str, new: str) -> None:
     path = root / POLICY
-    source = read_ascii(path)
+    source = read_utf8(path)
     require(source.count(old) == 1, f"self-test policy anchor is not unique: {old}")
-    path.write_text(source.replace(old, new, 1), encoding="ascii")
+    path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
 def replace_file_once(root: Path, path: Path, old: str, new: str) -> None:
     source_path = root / path
-    source = read_ascii(source_path)
+    source = read_utf8(source_path)
     require(
         source.count(old) == 1,
         f"self-test file anchor is not unique: {path}:{old}",
     )
-    source_path.write_text(source.replace(old, new, 1), encoding="ascii")
+    source_path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
 Mutation = tuple[str, Path | None, str | None, str, str]

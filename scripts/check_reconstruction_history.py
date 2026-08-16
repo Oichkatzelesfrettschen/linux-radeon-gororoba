@@ -112,7 +112,7 @@ def git(repository: Path, *arguments: str, input_bytes: bytes | None = None) -> 
 
 
 def read_tsv(path: Path) -> list[dict[str, str]]:
-    with path.open(encoding="ascii", newline="") as source:
+    with path.open(encoding="utf-8", newline="") as source:
         return list(csv.DictReader(source, delimiter="\t"))
 
 
@@ -157,7 +157,7 @@ def verify_oracle(control_root: Path, oracle_root: Path) -> None:
         f"source_repository={next(iter(repository))}\n"
         f"source_commit={next(iter(commits))}\n"
     )
-    provenance = (oracle_root / "ORACLE_PROVENANCE").read_text(encoding="ascii")
+    provenance = (oracle_root / "ORACLE_PROVENANCE").read_text(encoding="utf-8")
     if provenance != expected_provenance:
         raise HistoryError("downloaded oracle provenance differs")
     for row in inventory:
@@ -191,7 +191,7 @@ def commit_trailers(repository: Path, commit: str) -> dict[str, list[str]]:
 
 
 def changed_paths(repository: Path, commit: str) -> list[str]:
-    parent = git(repository, "rev-parse", f"{commit}^").decode("ascii").strip()
+    parent = git(repository, "rev-parse", f"{commit}^").decode("utf-8").strip()
     return changed_paths_between(repository, parent, commit)
 
 
@@ -304,7 +304,7 @@ def verify_post_tag_commit(
 ) -> None:
     commit_and_parents = (
         git(repository, "rev-list", "--parents", "-n", "1", commit)
-        .decode("ascii")
+        .decode("utf-8")
         .split()
     )
     parents = commit_and_parents[1:]
@@ -427,7 +427,7 @@ def verify_commit_content(
             "rev-parse",
             f"{commit}:drivers/gpu/drm/radeon",
         )
-        .decode("ascii")
+        .decode("utf-8")
         .strip()
     )
     if actual_tree != plan["expected_driver_tree"]:
@@ -472,7 +472,7 @@ def verify_commit_content(
     if compat_changes and not pre_frontier and plan["kernel_lanes"] != "6.18,7.1":
         raise HistoryError(f"{commit_id}: compatibility change lacks both kernel lanes")
 
-    parent = git(repository, "rev-parse", f"{commit}^").decode("ascii").strip()
+    parent = git(repository, "rev-parse", f"{commit}^").decode("utf-8").strip()
     run(
         ["git", "diff", "--check", parent, commit],
         cwd=repository,
@@ -490,7 +490,7 @@ def range_commits(repository: Path, base: str, head: str) -> list[str]:
         "--reverse",
         "--ancestry-path",
         f"{base}..{head}",
-    ).decode("ascii")
+    ).decode("utf-8")
     commits = output.splitlines()
     if not commits:
         raise HistoryError("reconstruction range contains no commits")
@@ -522,9 +522,9 @@ def prepare(
     head: str,
     require_complete: bool,
 ) -> list[tuple[str, str]]:
-    if git(repository, "rev-parse", "HEAD").decode("ascii").strip() != head:
+    if git(repository, "rev-parse", "HEAD").decode("utf-8").strip() != head:
         raise HistoryError("subject checkout HEAD differs from --head")
-    if git(control_root, "rev-parse", "HEAD").decode("ascii").strip() != base:
+    if git(control_root, "rev-parse", "HEAD").decode("utf-8").strip() != base:
         raise HistoryError("control checkout HEAD differs from --base")
     verify_oracle(control_root, oracle_root)
     control = load_control(control_root)
@@ -535,7 +535,7 @@ def prepare(
     compatibility_files = {
         line
         for line in (control_root / "policy/kernel-compat-files.txt")
-        .read_text(encoding="ascii")
+        .read_text(encoding="utf-8")
         .splitlines()
         if line and not line.startswith("#")
     }
@@ -547,7 +547,7 @@ def prepare(
             verify_post_tag_commit(repository, commit, base)
         head_and_parents = (
             git(repository, "rev-list", "--parents", "-n", "1", head)
-            .decode("ascii")
+            .decode("utf-8")
             .split()
         )
         verify_post_tag_head(head, head_and_parents[1:], base)
@@ -584,7 +584,7 @@ def verify_worktree_manifest(
 ) -> None:
     driver = worktree / "drivers/gpu/drm/radeon"
     policy = load_policy(control_root)
-    actual = ("\n".join(manifest(driver, policy)) + "\n").encode("ascii")
+    actual = ("\n".join(manifest(driver, policy)) + "\n").encode("utf-8")
     expected = (control_root / plan["expected_manifest"]).read_bytes()
     if actual != expected:
         raise HistoryError(
@@ -619,7 +619,7 @@ def run_build(
         "--kernel-build-root",
         str(kernel_root),
     ]
-    with lock_path.open("w", encoding="ascii") as lock:
+    with lock_path.open("w", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             result = subprocess.run(
@@ -701,7 +701,7 @@ def build_one(
                 "rev-parse",
                 "HEAD:drivers/gpu/drm/radeon",
             )
-            .decode("ascii")
+            .decode("utf-8")
             .strip()
         )
         if actual != plan["expected_driver_tree"]:

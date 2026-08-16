@@ -4804,7 +4804,7 @@ def selftest(tmp: Path) -> int:
     for locked_spec, good_fixture, mutations in locked_fixtures:
         path = tmp / locked_spec["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(good_fixture, encoding="ascii")
+        path.write_text(good_fixture, encoding="utf-8")
         try:
             check_guard(tmp, locked_spec)
             print(f"selftest known-good accepted: {locked_spec['id']} lock order")
@@ -4822,7 +4822,7 @@ def selftest(tmp: Path) -> int:
                 )
                 failures += 1
                 continue
-            path.write_text(good_fixture.replace(old, new, 1), encoding="ascii")
+            path.write_text(good_fixture.replace(old, new, 1), encoding="utf-8")
             try:
                 check_guard(tmp, locked_spec)
             except GuardError as exc:
