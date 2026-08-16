@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 33 fork-added debugfs nodes and 18 module
+The development surface is 34 fork-added debugfs nodes and 21 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
