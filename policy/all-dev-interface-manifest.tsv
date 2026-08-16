@@ -34,6 +34,10 @@ cp-me-dump	module-parameter	rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_d
 cp-me-dump	debugfs-file	radeon_rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M05
 cp-status-pair	module-parameter	rs480_cp_status_arm	drivers/gpu/drm/radeon/radeon_dev.c	M10.status-pair
 cp-status-pair	debugfs-file	radeon_rs480_cp_status	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M10.status-pair
+status-census	module-parameter	rs480_status_census_arm	drivers/gpu/drm/radeon/radeon_dev.c	M10.status-census
+status-census	module-parameter	rs480_status_census_records	drivers/gpu/drm/radeon/radeon_dev.c	M10.status-census
+status-census	module-parameter	rs480_status_census_read_order	drivers/gpu/drm/radeon/radeon_dev.c	M10.status-census
+status-census	debugfs-file	radeon_rs480_paired_status_census	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M10.status-census
 cp-me-write	module-parameter	rs480_cp_me_ram_inject	drivers/gpu/drm/radeon/radeon_dev.c	M06
 cp-me-write	debugfs-file	radeon_rs480_cp_me_ram_inject	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M06
 cp-me-oracle	module-parameter	rs480_cp_me_oracle	drivers/gpu/drm/radeon/radeon_dev.c	M07

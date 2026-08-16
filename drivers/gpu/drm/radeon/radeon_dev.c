@@ -146,6 +146,9 @@ int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
 int radeon_rs480_hazard_readers_armed;
 int radeon_rs480_cp_status_arm;
+int radeon_rs480_status_census_arm;
+int radeon_rs480_status_census_records = 256;
+int radeon_rs480_status_census_read_order;
 #endif
 
 #if RADEON_MUTATE_DEV
@@ -220,6 +223,37 @@ MODULE_PARM_DESC(rs480_cp_status_arm,
 	"No writes, no offset selector, one register pair per arming."
 );
 module_param_named(rs480_cp_status_arm, radeon_rs480_cp_status_arm, int, 0644);
+
+MODULE_PARM_DESC(rs480_status_census_arm,
+	"Arm the paired RBBM/CP_STAT census debugfs node "
+	"radeon_rs480_paired_status_census. Default 0 (OFF); arm with the "
+	"exact token 0x43454E53 ('CENS'). The first read of an armed node "
+	"consumes the token atomically, takes the hardware lock once, reads "
+	"the RBBM_STATUS (0x0e40) / CP_STAT (0x07c0) pair "
+	"rs480_status_census_records times into a little-endian binary "
+	"census (transport ABI v1), and releases the lock before copying to "
+	"userspace. A private gate admits one live census; a disarmed, busy, "
+	"parked, or suspended capture writes a valid header with zero records "
+	"and reads no register. Raw words and CLOCK_MONOTONIC_RAW-class "
+	"timestamps only; field decoding lives in userspace analysis."
+);
+module_param_named(rs480_status_census_arm, radeon_rs480_status_census_arm, int, 0644);
+
+MODULE_PARM_DESC(rs480_status_census_records,
+	"Records the paired-status census captures per armed read. Default "
+	"256; clamped to 1..4096. Each record is one RBBM/CP_STAT read pair "
+	"with three timestamps; the whole run holds the hardware lock once."
+);
+module_param_named(rs480_status_census_records, radeon_rs480_status_census_records, int, 0644);
+
+MODULE_PARM_DESC(rs480_status_census_read_order,
+	"Read-order schedule for the paired-status census. Default 0 "
+	"(alternating: even records read RBBM then CP_STAT, odd records read "
+	"CP_STAT then RBBM). 1 AB-only, 2 BA-only, 3 AA calibration (RBBM "
+	"read twice), 4 BB calibration (CP_STAT read twice). An out-of-range "
+	"value falls back to alternating."
+);
+module_param_named(rs480_status_census_read_order, radeon_rs480_status_census_read_order, int, 0644);
 #endif
 
 #if RADEON_MUTATE_DEV
