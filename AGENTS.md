@@ -9,7 +9,7 @@ Every load-bearing rule for source commits is stated in this file, so a
 commit's governing rules are pinned by the commit that carries them rather
 than by another repository's `main`. The shared doctrine summarized here:
 prose is direct, declarative, indicative present tense in American English and
-plain ASCII, with no dash constructions in project-authored text; durable
+emoji-free, with no dash constructions in project-authored text; durable
 names come from mechanism or content, never chronology, actors, or process
 labels; a load-bearing claim binds to a named source at the highest available
 evidence rank (silicon evidence, then register documents, then kernel source,
