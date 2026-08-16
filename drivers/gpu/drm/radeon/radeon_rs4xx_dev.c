@@ -1783,6 +1783,56 @@ out_unlock:
 
 DEFINE_SHOW_ATTRIBUTE(rs480_hazard_read);
 
+/* One-shot RBBM/CP status pair reader.
+ *
+ * Exactly two plain 32-bit reads per arming: RBBM_STATUS (0x0e40), then
+ * CP_STAT (0x07c0), bracketed by three monotonic timestamps so the pair
+ * reads as two adjacent intervals, not a simultaneous snapshot.
+ * RBBM_STATUS sits on the promoted read-safe list (the exposure-map
+ * campaign observed it changing under draw on RS482); CP_STAT takes its
+ * first disciplined RS48x observation through this node, which is why
+ * the read order is fixed with the established register first.  The arm
+ * token is consumed atomically before the hardware lock, so a re-read,
+ * a concurrent open, or a seq_file re-show finds the node disarmed and
+ * performs no MMIO.  The output carries raw words and timing only;
+ * field decoding lives in the userspace analysis tooling.
+ */
+#define RS480_CP_STATUS_ARM_TOKEN 0x43505354	/* "CPST" */
+
+static int rs480_cp_status_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	u64 t0, t1, t2;
+	u32 rbbm, cp_stat;
+
+	rs480_debugfs_emit_schema(m);
+	if (cmpxchg(&radeon_rs480_cp_status_arm,
+		    RS480_CP_STATUS_ARM_TOKEN, 0) !=
+	    RS480_CP_STATUS_ARM_TOKEN) {
+		seq_printf(m,
+			   "cp status pair disarmed: set rs480_cp_status_arm=0x%08x (consumed per read)\n",
+			   RS480_CP_STATUS_ARM_TOKEN);
+		return 0;
+	}
+
+	if (rs480_debugfs_lock_hardware(m, rdev))
+		return 0;
+
+	t0 = ktime_get_raw_ns();
+	rbbm = RREG32(R_000E40_RBBM_STATUS);
+	t1 = ktime_get_raw_ns();
+	cp_stat = RREG32(R_0007C0_CP_STAT);
+	t2 = ktime_get_raw_ns();
+
+	radeon_device_unlock_hardware(rdev);
+
+	seq_printf(m,
+		   "reg 0x0e40 raw 0x%08x\nreg 0x07c0 raw 0x%08x\nt0_ns %llu\nt1_ns %llu\nt2_ns %llu\n",
+		   rbbm, cp_stat, t0, t1, t2);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(rs480_cp_status);
+
 #endif
 #if RADEON_MUTATE_DEV
 /* CP IB scratch-write baseline oracle.
@@ -2712,6 +2762,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		 */
 		debugfs_create_file("radeon_rs480_cp_me_ram_dump", 0400, root,
 				    rdev, &rs480_cp_me_ram_dump_fops);
+		/* One-shot RBBM/CP status pair: inert until
+		 * rs480_cp_status_arm carries the exact token, which the
+		 * read consumes atomically.
+		 */
+		debugfs_create_file("radeon_rs480_cp_status", 0400, root,
+				    rdev, &rs480_cp_status_fops);
 	}
 #endif
 #if RADEON_MUTATE_DEV
