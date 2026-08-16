@@ -31,4 +31,4 @@ Commit trailers use `Assisted-by:` naming the tools used. The harness default
 ## Response shape
 
 Responses report changed mechanism, evidence used, validation run, checks not
-run and why, and remaining risk, in plain ASCII mechanism prose.
+run and why, and remaining risk, in emoji-free mechanism prose.
