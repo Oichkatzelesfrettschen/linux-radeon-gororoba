@@ -148,14 +148,15 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "rs480_reset_hang_probe_show": (1, 0, 3),
     "rs480_safe_regs_show": (1, 0, 1),
     "rs480_sclk_cntl_show": (1, 0, 1),
+    "rs480_status_census_capture": (0, 1, 1),
     "rs480_uma_status_show": (1, 0, 1),
     "rs480_vertex_probe_show": (1, 0, 1),
     "rs480_wedged_3d_reset": (0, 2, 3),
 }
 RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
     "rs480_debugfs_lock_hardware": 19,
-    "radeon_device_lock_hardware": 6,
-    "radeon_device_unlock_hardware": 29,
+    "radeon_device_lock_hardware": 7,
+    "radeon_device_unlock_hardware": 30,
 }
 PROFILE_RANK = {
     "prod": 0,
@@ -256,10 +257,17 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
     }
 )
 RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 31
-RS4XX_DEBUGFS_NODE_COUNT = 32
+RS4XX_DEBUGFS_NODE_COUNT = 33
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
+}
+# Binary-transport nodes serve a fixed little-endian buffer through dedicated
+# file_operations and emit no output-schema line, so they are readable yet
+# stand outside the schema-node set the schema assertions govern.
+RS4XX_BINARY_DEBUGFS_NODES = frozenset({"radeon_rs480_paired_status_census"})
+RS4XX_BINARY_DEBUGFS_NODE_FOPS = {
+    "radeon_rs480_paired_status_census": "rs480_status_census_fops",
 }
 RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     "radeon_rs480_candidate_config_regs": "rs480_candidate_config_regs_fops",
@@ -1071,9 +1079,10 @@ def validate_rs4xx_output_schema_paths(
         if row["marker_type"] == "debugfs-file"
         and row["source_path"] == "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     }
-    readable_nodes = rs4xx_nodes - RS4XX_WRITE_ONLY_DEBUGFS_NODES
+    schema_nodes = (rs4xx_nodes - RS4XX_WRITE_ONLY_DEBUGFS_NODES
+                    - RS4XX_BINARY_DEBUGFS_NODES)
     require(
-        len(readable_nodes) == RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT,
+        len(schema_nodes) == RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT,
         "RS4xx readable debugfs node denominator differs",
     )
 
@@ -1091,6 +1100,7 @@ def validate_rs4xx_output_schema_paths(
     expected_all_node_fops = {
         **RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
         **RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS,
+        **RS4XX_BINARY_DEBUGFS_NODE_FOPS,
     }
     require(
         len(registered_node_fops) == len(registrations),
@@ -1101,14 +1111,24 @@ def validate_rs4xx_output_schema_paths(
         and registered_node_fops == expected_all_node_fops,
         "RS4xx debugfs node-to-fops map differs",
     )
-    readable_node_fops = {
+    schema_node_fops = {
         node: fops
         for node, fops in registered_node_fops.items()
         if node not in RS4XX_WRITE_ONLY_DEBUGFS_NODES
+        and node not in RS4XX_BINARY_DEBUGFS_NODES
     }
     require(
-        readable_node_fops == RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
+        schema_node_fops == RS4XX_OUTPUT_SCHEMA_NODE_FOPS,
         "RS4xx readable debugfs node-to-fops map differs",
+    )
+    binary_node_fops = {
+        node: fops
+        for node, fops in registered_node_fops.items()
+        if node in RS4XX_BINARY_DEBUGFS_NODES
+    }
+    require(
+        binary_node_fops == RS4XX_BINARY_DEBUGFS_NODE_FOPS,
+        "RS4xx binary debugfs node-to-fops map differs",
     )
     registered_node_modes = {
         match.group("node"): match.group("mode") for match in registrations
@@ -1129,7 +1149,7 @@ def validate_rs4xx_output_schema_paths(
     )
     require(
         rs4xx_nodes == set(expected_all_node_fops)
-        and readable_nodes == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS),
+        and schema_nodes == set(RS4XX_OUTPUT_SCHEMA_NODE_FOPS),
         "RS4xx debugfs manifest and fops maps differ",
     )
 
@@ -3315,8 +3335,8 @@ def self_test(root: Path) -> int:
     expected_counts = {
         "prod": (0, 0, 0),
         "observe-dev": (4, 2, 18),
-        "probe-dev": (11, 9, 25),
-        "mutate-dev": (20, 18, 33),
+        "probe-dev": (12, 12, 26),
+        "mutate-dev": (21, 21, 34),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3335,11 +3355,11 @@ def self_test(root: Path) -> int:
         ("observe-dev", "observe-dev"): (4, 2, 18),
         ("probe-dev", "off"): (0, 0, 0),
         ("probe-dev", "observe-dev"): (4, 2, 18),
-        ("probe-dev", "probe-dev"): (11, 9, 25),
+        ("probe-dev", "probe-dev"): (12, 12, 26),
         ("mutate-dev", "off"): (0, 0, 0),
         ("mutate-dev", "observe-dev"): (4, 2, 18),
-        ("mutate-dev", "probe-dev"): (11, 9, 25),
-        ("mutate-dev", "mutate-dev"): (20, 18, 33),
+        ("mutate-dev", "probe-dev"): (12, 12, 26),
+        ("mutate-dev", "mutate-dev"): (21, 21, 34),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)

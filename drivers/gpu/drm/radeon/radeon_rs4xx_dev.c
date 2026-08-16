@@ -1833,6 +1833,350 @@ static int rs480_cp_status_show(struct seq_file *m, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(rs480_cp_status);
 
+/* Paired RBBM_STATUS / CP_STAT census (transport ABI v1).
+ *
+ * The one-shot node above reads the pair once; this node reads it a
+ * bounded number of times into a single little-endian binary buffer so a
+ * userspace decoder can study the pair as a time series. The transport is
+ * the frozen rs482-paired-status-census-abi/1: a 96-byte header and a run
+ * of 48-byte records, every field an explicit __le member with
+ * reserved-zero padding, so the bytes carry no host-native layout. The
+ * kernel emits raw register words and three CLOCK_MONOTONIC_RAW-class
+ * timestamps per record and never a semantic field name; the register
+ * crosswalk that names CP_BUSY or VF_BUSY lives in the userspace tooling.
+ *
+ * Acquisition discipline: a dedicated file_operations serves the buffer,
+ * never seq_file, so text formatting never contaminates the timing and a
+ * partial read never re-enters the hardware. The full buffer is allocated
+ * at open before any hardware lock. The first read() captures exactly
+ * once under the hardware transaction lock, then the lock is released and
+ * simple_read_from_buffer() copies to userspace; a re-read or a resumed
+ * partial read serves the same captured bytes. A private gate mutex
+ * admits exactly one live census, so a second concurrent capture returns
+ * -EBUSY with the arm token untouched. The exact arm token is consumed by
+ * cmpxchg once per capture; a disarmed capture, parked hardware, or a
+ * suspended ASIC produces a structurally valid header with a partial
+ * capture_status and zero records, and reads no register.
+ *
+ * The pair is two adjacent read intervals, never a simultaneous snapshot:
+ * t0 before the first read, t1 between, t2 after the second, so pair skew
+ * is t2 - t0. In alternating mode an even record reads RBBM then CP_STAT
+ * (CP_FIRST clear) and an odd record reads CP_STAT then RBBM (CP_FIRST
+ * set), and the AA/BB calibration modes read one register twice to expose
+ * a read side effect; rbbm_status_raw and cp_stat_raw always carry the
+ * RBBM and CP_STAT word regardless of the order they were read in.
+ */
+#define RS480_STATUS_CENSUS_ARM_TOKEN 0x43454E53	/* "CENS" */
+#define RS480_STATUS_CENSUS_MAGIC 0x52533448		/* "RS4H" */
+#define RS480_STATUS_CENSUS_ABI_MAJOR 1
+#define RS480_STATUS_CENSUS_ABI_MINOR 0
+#define RS480_STATUS_CENSUS_HEADER_SIZE 96
+#define RS480_STATUS_CENSUS_RECORD_SIZE 48
+#define RS480_STATUS_CENSUS_MAX_RECORDS 4096
+#define RS480_STATUS_CENSUS_CLOCK_MONOTONIC_RAW 0
+#define RS480_STATUS_CENSUS_RECORD_FLAG_CP_FIRST 0x1
+
+/* capture_status: complete, or a partial reason that earns no verdict. */
+#define RS480_STATUS_CENSUS_COMPLETE 0
+#define RS480_STATUS_CENSUS_PARTIAL_SIGNAL 1
+#define RS480_STATUS_CENSUS_PARTIAL_DURATION 2
+#define RS480_STATUS_CENSUS_PARTIAL_DEVICE 3
+
+/* read_order_mode: alternation, or a single-register calibration block. */
+#define RS480_STATUS_CENSUS_ORDER_ALTERNATING 0
+#define RS480_STATUS_CENSUS_ORDER_AB_ONLY 1
+#define RS480_STATUS_CENSUS_ORDER_BA_ONLY 2
+#define RS480_STATUS_CENSUS_ORDER_AA 3
+#define RS480_STATUS_CENSUS_ORDER_BB 4
+
+struct rs480_status_census_header {
+	__le32 magic;
+	__le16 abi_major;
+	__le16 abi_minor;
+	__le32 header_size;
+	__le32 record_size;
+	__le32 requested_record_count;
+	__le32 completed_record_count;
+	__le32 capture_status;
+	__le32 clock_id;
+	__le32 register_0_offset;
+	__le32 register_1_offset;
+	__le64 capture_start_ns;
+	__le64 capture_end_ns;
+	__le16 pci_domain;
+	u8 pci_bus;
+	u8 pci_device;
+	u8 pci_function;
+	u8 asic_family;
+	__le16 asic_revision;
+	__le32 read_order_mode;
+	__le32 header_flags;
+	u8 reserved_zero[24];
+};
+
+struct rs480_status_census_record {
+	__le32 sequence;
+	__le32 flags;
+	__le64 t0_ns;
+	__le64 t1_ns;
+	__le64 t2_ns;
+	__le32 rbbm_status_raw;
+	__le32 cp_stat_raw;
+	u8 reserved_zero[8];
+};
+
+/* The ABI freezes both sizes and every field offset; a struct that drifts
+ * from the transport spec fails the build rather than shipping a decoder
+ * mismatch.
+ */
+static_assert(sizeof(struct rs480_status_census_header) ==
+	      RS480_STATUS_CENSUS_HEADER_SIZE);
+static_assert(sizeof(struct rs480_status_census_record) ==
+	      RS480_STATUS_CENSUS_RECORD_SIZE);
+static_assert(offsetof(struct rs480_status_census_header, magic) == 0);
+static_assert(offsetof(struct rs480_status_census_header, capture_start_ns) == 40);
+static_assert(offsetof(struct rs480_status_census_header, read_order_mode) == 64);
+static_assert(offsetof(struct rs480_status_census_header, reserved_zero) == 72);
+static_assert(offsetof(struct rs480_status_census_record, t0_ns) == 8);
+static_assert(offsetof(struct rs480_status_census_record, rbbm_status_raw) == 32);
+static_assert(offsetof(struct rs480_status_census_record, reserved_zero) == 40);
+
+/* One live census at a time across every open of this node. */
+static DEFINE_MUTEX(rs480_status_census_gate);
+
+struct rs480_status_census_capture {
+	struct radeon_device *rdev;
+	void *buffer;
+	size_t length;
+	u32 requested;
+	u32 read_order;
+	bool captured;
+	struct mutex read_lock;
+};
+
+/* An even record reads RBBM first; an odd record reads CP_STAT first;
+ * the calibration modes fix one order. Returns true when this record
+ * reads CP_STAT before RBBM (the CP_FIRST flag).
+ */
+static bool rs480_status_census_cp_first(u32 mode, u32 sequence)
+{
+	switch (mode) {
+	case RS480_STATUS_CENSUS_ORDER_BA_ONLY:
+		return true;
+	case RS480_STATUS_CENSUS_ORDER_ALTERNATING:
+		return (sequence & 1) != 0;
+	default:
+		/* AB_ONLY, AA, BB read RBBM first. */
+		return false;
+	}
+}
+
+/* Fill one record: two bracketed reads under the already-held hardware
+ * lock. AA reads RBBM twice and BB reads CP_STAT twice, so the semantic
+ * fields still carry RBBM in rbbm_status_raw and CP_STAT in cp_stat_raw
+ * where both are read, and a calibration block leaves the unread field's
+ * word as the value the other read observed.
+ */
+static void rs480_status_census_read_one(struct radeon_device *rdev, u32 mode,
+					 u32 sequence,
+					 struct rs480_status_census_record *rec)
+{
+	u64 t0, t1, t2;
+	u32 rbbm, cp_stat;
+	u32 flags = 0;
+	bool cp_first = rs480_status_census_cp_first(mode, sequence);
+
+	if (mode == RS480_STATUS_CENSUS_ORDER_AA) {
+		t0 = ktime_get_raw_ns();
+		rbbm = RREG32(R_000E40_RBBM_STATUS);
+		t1 = ktime_get_raw_ns();
+		cp_stat = RREG32(R_000E40_RBBM_STATUS);
+		t2 = ktime_get_raw_ns();
+		/* AA reads RBBM twice: the record's cp field mirrors the
+		 * second RBBM read so the decoder sees the read side effect.
+		 */
+	} else if (mode == RS480_STATUS_CENSUS_ORDER_BB) {
+		t0 = ktime_get_raw_ns();
+		cp_stat = RREG32(R_0007C0_CP_STAT);
+		t1 = ktime_get_raw_ns();
+		rbbm = RREG32(R_0007C0_CP_STAT);
+		t2 = ktime_get_raw_ns();
+		flags |= RS480_STATUS_CENSUS_RECORD_FLAG_CP_FIRST;
+	} else if (cp_first) {
+		t0 = ktime_get_raw_ns();
+		cp_stat = RREG32(R_0007C0_CP_STAT);
+		t1 = ktime_get_raw_ns();
+		rbbm = RREG32(R_000E40_RBBM_STATUS);
+		t2 = ktime_get_raw_ns();
+		flags |= RS480_STATUS_CENSUS_RECORD_FLAG_CP_FIRST;
+	} else {
+		t0 = ktime_get_raw_ns();
+		rbbm = RREG32(R_000E40_RBBM_STATUS);
+		t1 = ktime_get_raw_ns();
+		cp_stat = RREG32(R_0007C0_CP_STAT);
+		t2 = ktime_get_raw_ns();
+	}
+
+	rec->sequence = cpu_to_le32(sequence);
+	rec->flags = cpu_to_le32(flags);
+	rec->t0_ns = cpu_to_le64(t0);
+	rec->t1_ns = cpu_to_le64(t1);
+	rec->t2_ns = cpu_to_le64(t2);
+	rec->rbbm_status_raw = cpu_to_le32(rbbm);
+	rec->cp_stat_raw = cpu_to_le32(cp_stat);
+	memset(rec->reserved_zero, 0, sizeof(rec->reserved_zero));
+}
+
+/* Fill the header from the capture parameters and outcome. */
+static void rs480_status_census_fill_header(struct rs480_status_census_capture *cap,
+					    u32 completed, u32 capture_status,
+					    u64 start_ns, u64 end_ns)
+{
+	struct rs480_status_census_header *hdr = cap->buffer;
+	struct radeon_device *rdev = cap->rdev;
+	struct pci_dev *pdev = rdev->pdev;
+
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->magic = cpu_to_le32(RS480_STATUS_CENSUS_MAGIC);
+	hdr->abi_major = cpu_to_le16(RS480_STATUS_CENSUS_ABI_MAJOR);
+	hdr->abi_minor = cpu_to_le16(RS480_STATUS_CENSUS_ABI_MINOR);
+	hdr->header_size = cpu_to_le32(RS480_STATUS_CENSUS_HEADER_SIZE);
+	hdr->record_size = cpu_to_le32(RS480_STATUS_CENSUS_RECORD_SIZE);
+	hdr->requested_record_count = cpu_to_le32(cap->requested);
+	hdr->completed_record_count = cpu_to_le32(completed);
+	hdr->capture_status = cpu_to_le32(capture_status);
+	hdr->clock_id = cpu_to_le32(RS480_STATUS_CENSUS_CLOCK_MONOTONIC_RAW);
+	hdr->register_0_offset = cpu_to_le32(R_000E40_RBBM_STATUS);
+	hdr->register_1_offset = cpu_to_le32(R_0007C0_CP_STAT);
+	hdr->capture_start_ns = cpu_to_le64(start_ns);
+	hdr->capture_end_ns = cpu_to_le64(end_ns);
+	hdr->pci_domain = cpu_to_le16((u16)pci_domain_nr(pdev->bus));
+	hdr->pci_bus = pdev->bus->number;
+	hdr->pci_device = PCI_SLOT(pdev->devfn);
+	hdr->pci_function = PCI_FUNC(pdev->devfn);
+	hdr->asic_family = (u8)rdev->family;
+	hdr->asic_revision = cpu_to_le16((u16)pdev->revision);
+	hdr->read_order_mode = cpu_to_le32(cap->read_order);
+	hdr->header_flags = 0;
+}
+
+/* Capture exactly once. On the disarmed, busy, or unavailable paths the
+ * header is still structurally valid with zero records and a partial
+ * status, so a decoder reads it as an acquisition failure, not a verdict.
+ */
+static void rs480_status_census_capture(struct rs480_status_census_capture *cap)
+{
+	struct radeon_device *rdev = cap->rdev;
+	struct rs480_status_census_record *records =
+		cap->buffer + RS480_STATUS_CENSUS_HEADER_SIZE;
+	u64 start_ns, end_ns;
+	u32 i;
+
+	if (cmpxchg(&radeon_rs480_status_census_arm,
+		    RS480_STATUS_CENSUS_ARM_TOKEN, 0) !=
+	    RS480_STATUS_CENSUS_ARM_TOKEN) {
+		rs480_status_census_fill_header(cap, 0,
+			RS480_STATUS_CENSUS_PARTIAL_SIGNAL, 0, 0);
+		return;
+	}
+
+	if (!mutex_trylock(&rs480_status_census_gate)) {
+		/* Re-arm so the losing caller can retry once the live census
+		 * finishes; a busy gate is not a spent token.
+		 */
+		radeon_rs480_status_census_arm = RS480_STATUS_CENSUS_ARM_TOKEN;
+		rs480_status_census_fill_header(cap, 0,
+			RS480_STATUS_CENSUS_PARTIAL_DEVICE, 0, 0);
+		return;
+	}
+
+	if (radeon_device_lock_hardware(rdev)) {
+		mutex_unlock(&rs480_status_census_gate);
+		rs480_status_census_fill_header(cap, 0,
+			RS480_STATUS_CENSUS_PARTIAL_DEVICE, 0, 0);
+		return;
+	}
+
+	start_ns = ktime_get_raw_ns();
+	for (i = 0; i < cap->requested; i++)
+		rs480_status_census_read_one(rdev, cap->read_order, i,
+					     &records[i]);
+	end_ns = ktime_get_raw_ns();
+
+	radeon_device_unlock_hardware(rdev);
+	mutex_unlock(&rs480_status_census_gate);
+
+	rs480_status_census_fill_header(cap, cap->requested,
+		RS480_STATUS_CENSUS_COMPLETE, start_ns, end_ns);
+}
+
+static int rs480_status_census_open(struct inode *inode, struct file *file)
+{
+	struct radeon_device *rdev = inode->i_private;
+	struct rs480_status_census_capture *cap;
+	u32 requested;
+	u32 read_order;
+
+	requested = (u32)clamp(radeon_rs480_status_census_records, 1,
+			       RS480_STATUS_CENSUS_MAX_RECORDS);
+	read_order = (u32)radeon_rs480_status_census_read_order;
+	if (read_order > RS480_STATUS_CENSUS_ORDER_BB)
+		read_order = RS480_STATUS_CENSUS_ORDER_ALTERNATING;
+
+	cap = kzalloc(sizeof(*cap), GFP_KERNEL);
+	if (!cap)
+		return -ENOMEM;
+
+	cap->rdev = rdev;
+	cap->requested = requested;
+	cap->read_order = read_order;
+	cap->length = RS480_STATUS_CENSUS_HEADER_SIZE +
+		      (size_t)requested * RS480_STATUS_CENSUS_RECORD_SIZE;
+	cap->buffer = kzalloc(cap->length, GFP_KERNEL);
+	if (!cap->buffer) {
+		kfree(cap);
+		return -ENOMEM;
+	}
+	mutex_init(&cap->read_lock);
+	file->private_data = cap;
+	return 0;
+}
+
+static ssize_t rs480_status_census_read(struct file *file, char __user *buf,
+					size_t count, loff_t *ppos)
+{
+	struct rs480_status_census_capture *cap = file->private_data;
+	ssize_t ret;
+
+	mutex_lock(&cap->read_lock);
+	if (!cap->captured) {
+		rs480_status_census_capture(cap);
+		cap->captured = true;
+	}
+	ret = simple_read_from_buffer(buf, count, ppos, cap->buffer,
+				      cap->length);
+	mutex_unlock(&cap->read_lock);
+	return ret;
+}
+
+static int rs480_status_census_release(struct inode *inode, struct file *file)
+{
+	struct rs480_status_census_capture *cap = file->private_data;
+
+	mutex_destroy(&cap->read_lock);
+	kfree(cap->buffer);
+	kfree(cap);
+	return 0;
+}
+
+static const struct file_operations rs480_status_census_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs480_status_census_open,
+	.read    = rs480_status_census_read,
+	.llseek  = generic_file_llseek,
+	.release = rs480_status_census_release,
+};
+
 #endif
 #if RADEON_MUTATE_DEV
 /* CP IB scratch-write baseline oracle.
@@ -2768,6 +3112,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		 */
 		debugfs_create_file("radeon_rs480_cp_status", 0400, root,
 				    rdev, &rs480_cp_status_fops);
+		/* Paired RBBM/CP_STAT census: a per-open binary buffer,
+		 * inert until rs480_status_census_arm carries the exact
+		 * token, which the first read consumes atomically.
+		 */
+		debugfs_create_file("radeon_rs480_paired_status_census", 0400,
+				    root, rdev, &rs480_status_census_fops);
 	}
 #endif
 #if RADEON_MUTATE_DEV
