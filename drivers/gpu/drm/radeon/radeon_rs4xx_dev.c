@@ -2721,8 +2721,9 @@ DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_read);
  * or parameter memory), the VAP entries are ordered last, and the node is
  * disarmed by default (radeon_rs480_force_clock_3d_index == -1). */
 #define RS480_SCLK_CNTL2_PLL_INDEX 0x0000001Eu
-#define RS480_SCLK_3D_FORCE_ALL    ((1u << 21) | (1u << 27) | (1u << 28) | \
-				    (1u << 30))
+#define RS480_SCLK_FORCE_VAP       (1u << 21)
+#define RS480_SCLK_3D_FORCE_ALL    (RS480_SCLK_FORCE_VAP | (1u << 27) | \
+				    (1u << 28) | (1u << 30))
 #define RS480_SCLK2_3D_FORCE_ALL   ((1u << 13) | (1u << 14) | (1u << 15))
 
 struct rs480_force_clock_3d_reg {
@@ -3021,21 +3022,35 @@ DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_3d_read);
 /* VAP_CNTL_STATUS census under a verified forced-clock lease (transport
  * ABI rs482-vap-status-census/1).
  *
- * VAP_CNTL_STATUS 0x2140 reads back only while the 3D clock set is
- * forced, so this node wraps the whole capture in one transactional
- * lease: snapshot SCLK_CNTL and SCLK_CNTL2 through the PLL index
- * registers, write the 3D force masks, read both words back and verify
- * the forced bits, settle, read 0x2140 a bounded number of times with
- * per-read timestamp brackets, restore SCLK_CNTL2 then SCLK_CNTL, and
- * read both back and verify equality with the snapshot.  The lease runs
- * under rdev->pm.mutex so the power-management clock writer never
- * interleaves, and under the rs4xx hardware transaction lock so parked,
- * suspended, or reset-transition hardware is refused before any PLL
- * access.  A failed force verification takes no sample and a failed
- * restore verification poisons the capture: both publish a
- * health-check status that earns no register verdict, and the header
- * carries the original, forced, and restored clock words so the
- * decoder audits the transaction itself.
+ * VAP_CNTL_STATUS 0x2140 sits in the VAP clock domain, so this node
+ * wraps the whole capture in one transactional lease: snapshot
+ * SCLK_CNTL and SCLK_CNTL2 through the PLL index registers, write the
+ * 3D force masks, read both words back and verify the forced bits,
+ * settle, read 0x2140 a bounded number of times with per-read timestamp
+ * brackets, restore SCLK_CNTL2 then SCLK_CNTL, and read both back and
+ * verify equality with the snapshot.  The lease runs under
+ * rdev->pm.mutex so the power-management clock writer never interleaves,
+ * and under the rs4xx hardware transaction lock so parked, suspended,
+ * or reset-transition hardware is refused before any PLL access.
+ *
+ * The force gate covers FORCE_VAP, the sampled register's own domain.
+ * TCL, CBA, and GA sit downstream of VAP and feed no part of an MMIO
+ * status read, and 0x2140 has returned 0x00000100 through the plain
+ * candidate_vap path on two RS482 boots while SCLK_CNTL2 read
+ * 0x00000000, so those three bits are absent from the sampling
+ * precondition on evidence rather than by relaxation.  The header
+ * records the full SCLK_CNTL and SCLK_CNTL2 force observations as
+ * separate flags, which classify the capture's scope without gating it.
+ * On RS482 1002:5974 the BIOS leaves SCLK_CNTL at 0xfffffff9 with every
+ * FORCEON bit asserted at rest, so the gate is satisfied there before
+ * the lease writes anything and adds no local assurance; it discriminates
+ * on a device whose firmware gates 3D clocks dynamically.
+ *
+ * A failed force verification takes no sample and a failed restore
+ * verification poisons the capture: both publish a health-check status
+ * that earns no register verdict, and the header carries the original,
+ * forced, and restored clock words so the decoder audits the
+ * transaction itself.
  *
  * The transport follows the paired-status census discipline: a
  * dedicated file_operations, the full buffer allocated at open before
@@ -3049,7 +3064,7 @@ DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_3d_read);
 #define RS480_VAP_CENSUS_ARM_TOKEN 0x56415043	/* "VAPC" */
 #define RS480_VAP_CENSUS_MAGIC 0x52533456	/* "RS4V" */
 #define RS480_VAP_CENSUS_ABI_MAJOR 1
-#define RS480_VAP_CENSUS_ABI_MINOR 0
+#define RS480_VAP_CENSUS_ABI_MINOR 1
 #define RS480_VAP_CENSUS_HEADER_SIZE 128
 #define RS480_VAP_CENSUS_RECORD_SIZE 32
 #define RS480_VAP_CENSUS_MAX_RECORDS 4096
@@ -3069,8 +3084,22 @@ DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_3d_read);
  */
 #define RS480_VAP_CENSUS_HEALTH_RESTORE_FAILED 6
 
-#define RS480_VAP_CENSUS_VERIFY_FORCED 0x1
+/* ABI minor 0 alone sets VERIFY_FORCED_BOTH_HALVES, which asserted the
+ * whole 3D force set across both PLL words.  Minor 1 retires the bit and
+ * reports the three force observations separately, so a decoder reads the
+ * same bit position with one meaning per minor.
+ */
+#define RS480_VAP_CENSUS_VERIFY_FORCED_BOTH_HALVES 0x1
 #define RS480_VAP_CENSUS_VERIFY_RESTORED 0x2
+/* FORCE_VAP reads set: the sampled register's own clock domain is forced.
+ * This is the gate, because 0x2140 is a VAP-domain register.
+ */
+#define RS480_VAP_CENSUS_VERIFY_FORCED_SAMPLE_DOMAIN 0x4
+/* The remaining two are recorded observations that classify the capture's
+ * scope; neither gates the sample.
+ */
+#define RS480_VAP_CENSUS_VERIFY_FORCED_SCLK_3D_ALL 0x8
+#define RS480_VAP_CENSUS_VERIFY_FORCED_SCLK2_3D_ALL 0x10
 
 struct rs480_vap_census_header {
 	__le32 magic;
@@ -3238,14 +3267,25 @@ static int rs480_vap_census_capture(struct rs480_vap_census_capture *cap)
 		   clk.sclk2_orig | RS480_SCLK2_3D_FORCE_ALL);
 	clk.sclk_forced = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
 	clk.sclk2_forced = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
-	if ((clk.sclk_forced & RS480_SCLK_3D_FORCE_ALL) ==
-		    RS480_SCLK_3D_FORCE_ALL &&
-	    (clk.sclk2_forced & RS480_SCLK2_3D_FORCE_ALL) ==
-		    RS480_SCLK2_3D_FORCE_ALL) {
-		clk.verify_flags |= RS480_VAP_CENSUS_VERIFY_FORCED;
-	} else {
+	/* The gate covers the sampled register's own clock domain.  0x2140 is
+	 * VAP_CNTL_STATUS, so FORCE_VAP is the bit whose assertion makes the
+	 * sample read complete instead of stalling; the TCL, CBA, and GA
+	 * domains sit downstream of VAP and feed no part of this MMIO read.
+	 */
+	if (clk.sclk_forced & RS480_SCLK_FORCE_VAP)
+		clk.verify_flags |=
+			RS480_VAP_CENSUS_VERIFY_FORCED_SAMPLE_DOMAIN;
+	else
 		status = RS480_VAP_CENSUS_HEALTH_FORCE_FAILED;
-	}
+
+	if ((clk.sclk_forced & RS480_SCLK_3D_FORCE_ALL) ==
+	    RS480_SCLK_3D_FORCE_ALL)
+		clk.verify_flags |=
+			RS480_VAP_CENSUS_VERIFY_FORCED_SCLK_3D_ALL;
+	if ((clk.sclk2_forced & RS480_SCLK2_3D_FORCE_ALL) ==
+	    RS480_SCLK2_3D_FORCE_ALL)
+		clk.verify_flags |=
+			RS480_VAP_CENSUS_VERIFY_FORCED_SCLK2_3D_ALL;
 
 	if (status == RS480_VAP_CENSUS_COMPLETE) {
 		udelay(RS480_VAP_CENSUS_SETTLE_US);
