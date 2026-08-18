@@ -108,8 +108,8 @@ classes; a closed item names its proof, and an open item names its gate.
   `observe-dev`, `probe-dev`, and `mutate-dev` source projections. `all-dev`
   remains an alias for the mutation-capable ceiling. Module metadata binds the
   source commit, profile, feature-policy digest, and upstream base.
-  `policy/all-dev-interface-manifest.tsv` preserves all 21 development
-  capabilities through an exact inventory of 21 module parameters, 34 debugfs
+  `policy/all-dev-interface-manifest.tsv` preserves all 22 development
+  capabilities through an exact inventory of 23 module parameters, 35 debugfs
   files, and their source and generator markers. The module build gate verifies
   exact parameter, debugfs, linked-symbol, and generated-table projections.
   Production and all-development builds pass on 6.18 and 7.1. The intermediate
