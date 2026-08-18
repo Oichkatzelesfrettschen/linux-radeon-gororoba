@@ -154,9 +154,9 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "rs480_wedged_3d_reset": (0, 2, 3),
 }
 RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
-    "rs480_debugfs_lock_hardware": 19,
+    "rs480_debugfs_lock_hardware": 20,
     "radeon_device_lock_hardware": 8,
-    "radeon_device_unlock_hardware": 31,
+    "radeon_device_unlock_hardware": 32,
 }
 PROFILE_RANK = {
     "prod": 0,
@@ -249,6 +249,7 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_gated_read_show",
         "rs480_hazard_read_show",
         "rs480_pll_regs_show",
+        "rs480_pll_write_probe_show",
         "rs480_reset_hang_probe_show",
         "rs480_safe_regs_show",
         "rs480_sclk_cntl_show",
@@ -256,8 +257,8 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_vertex_probe_show",
     }
 )
-RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 31
-RS4XX_DEBUGFS_NODE_COUNT = 34
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 32
+RS4XX_DEBUGFS_NODE_COUNT = 35
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
@@ -306,6 +307,7 @@ RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     "radeon_rs480_gated_read": "rs480_gated_read_fops",
     "radeon_rs480_hazard_read": "rs480_hazard_read_fops",
     "radeon_rs480_pll_regs": "rs480_pll_regs_fops",
+    "radeon_rs480_pll_write_probe": "rs480_pll_write_probe_fops",
     "radeon_rs480_reset_hang_probe": "rs480_reset_hang_probe_fops",
     "radeon_rs480_safe_regs": "rs480_safe_regs_fops",
     "radeon_rs480_sclk_cntl": "rs480_sclk_cntl_fops",
