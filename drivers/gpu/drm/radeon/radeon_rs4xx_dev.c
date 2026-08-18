@@ -3477,6 +3477,94 @@ out_unlock:
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(rs480_gated_read);
+
+/* PLL write-path discriminator.
+ *
+ * The VAP census lease writes the 3D force masks to SCLK_CNTL (PLL 0x0d) and
+ * SCLK_CNTL2 (PLL 0x1e) and reads both back.  On RS482 (1002:5974) neither
+ * readback proves the write landed: SCLK_CNTL reads 0xfffffff9 at rest, so the
+ * lease reasserts bits the BIOS already holds set, and SCLK_CNTL2 reads
+ * 0x00000000 before and after its force write.  Three mechanisms produce that
+ * pair -- index 0x1e unimplemented, bits 13-15 tied off, or WREG32_PLL reaching
+ * no PLL register in this configuration -- and a write that changes no bit
+ * separates none of them.
+ *
+ * This node writes a bit that is currently SET and reads it back CLEAR, which
+ * the lease's own writes cannot do.  A readback carrying the cleared bit proves
+ * WREG32_PLL lands and refutes the third mechanism; a readback equal to the
+ * snapshot confirms it.
+ *
+ * FORCE_VIP (SCLK_CNTL bit 23) is the entry.  It reads set, and the video-input
+ * port drives nothing on this board, so gating its clock for the microseconds
+ * between the write and the restore reaches no consumer.  The clear bits in
+ * 0xfffffff9 are bits 1 and 2, the SCLK_SRC_SEL field, so a set-a-clear-bit
+ * probe at this index would switch the system clock source; the table holds no
+ * such entry.
+ *
+ * HAZARD: reset-less K8.  The probe touches the PLL index/data port under the
+ * hardware transaction lock and restores unconditionally, but a stall between
+ * the write and the restore leaves the register cleared and freezes both cores
+ * -- a physical power cycle.  The node is disarmed by default
+ * (radeon_rs480_pll_write_probe_index == -1).
+ */
+struct rs480_pll_write_probe_entry {
+	u8 index;
+	u32 clear_bit;
+	const char *name;
+	const char *bit_name;
+};
+
+static const struct rs480_pll_write_probe_entry
+rs480_pll_write_probe_list[] = {
+	{ RS480_SCLK_CNTL_PLL_INDEX, RS480_SCLK_FORCE_VIP,
+	  "SCLK_CNTL", "FORCE_VIP" },
+};
+
+static int rs480_pll_write_probe_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+	if (rs480_debugfs_lock_hardware(m, rdev))
+		return 0;
+	const struct rs480_pll_write_probe_entry *e;
+	u32 orig, cleared, restored;
+	int idx = radeon_rs480_pll_write_probe_index;
+
+	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_pll_write_probe_list)) {
+		seq_printf(m, "disarmed (radeon_rs480_pll_write_probe_index = %d): "
+			   "clears one set PLL bit, reads it back, and restores, to "
+			   "establish whether WREG32_PLL lands on this device.  Arm "
+			   "0..%d for an attended probe; a stall needs a physical "
+			   "power cycle.\n",
+			   idx, (int)ARRAY_SIZE(rs480_pll_write_probe_list) - 1);
+		goto out_unlock;
+	}
+	e = &rs480_pll_write_probe_list[idx];
+	radeon_dev_mark_mutation(rdev, "RS4xx PLL write-path probe");
+	orig = RREG32_PLL(e->index);
+	WREG32_PLL(e->index, orig & ~e->clear_bit);
+	/* Match the census settle so a slow PLL update is not read as a
+	 * write that never landed.
+	 */
+	udelay(RS480_VAP_CENSUS_SETTLE_US);
+	cleared = RREG32_PLL(e->index);
+	WREG32_PLL(e->index, orig);
+	restored = RREG32_PLL(e->index);
+	seq_printf(m,
+		   "index %d: %s (PLL 0x%02x) bit %s (0x%08x)\n"
+		   "  original = 0x%08x\n"
+		   "  cleared  = 0x%08x\n"
+		   "  restored = 0x%08x\n"
+		   "  bit_was_set = %d write_landed = %d restored_ok = %d\n",
+		   idx, e->name, e->index, e->bit_name, e->clear_bit,
+		   orig, cleared, restored,
+		   !!(orig & e->clear_bit),
+		   (orig & e->clear_bit) && !(cleared & e->clear_bit),
+		   restored == orig);
+out_unlock:
+	radeon_device_unlock_hardware(rdev);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(rs480_pll_write_probe);
 #endif
 
 static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
@@ -3610,6 +3698,11 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 				    &rs480_force_clock_3d_read_fops);
 		debugfs_create_file("radeon_rs480_gated_read", 0400, root,
 				    rdev, &rs480_gated_read_fops);
+		/* PLL write-path discriminator: inert until
+		 * rs480_pll_write_probe_index names a table entry.
+		 */
+		debugfs_create_file("radeon_rs480_pll_write_probe", 0400, root,
+				    rdev, &rs480_pll_write_probe_fops);
 		/* VAP_CNTL_STATUS census under a verified forced-clock
 		 * lease: inert until rs480_vap_census_arm carries the exact
 		 * token, which the first read consumes atomically.
