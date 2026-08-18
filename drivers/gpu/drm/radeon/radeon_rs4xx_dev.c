@@ -3018,6 +3018,364 @@ out_unlock:
 }
 DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_3d_read);
 
+/* VAP_CNTL_STATUS census under a verified forced-clock lease (transport
+ * ABI rs482-vap-status-census/1).
+ *
+ * VAP_CNTL_STATUS 0x2140 reads back only while the 3D clock set is
+ * forced, so this node wraps the whole capture in one transactional
+ * lease: snapshot SCLK_CNTL and SCLK_CNTL2 through the PLL index
+ * registers, write the 3D force masks, read both words back and verify
+ * the forced bits, settle, read 0x2140 a bounded number of times with
+ * per-read timestamp brackets, restore SCLK_CNTL2 then SCLK_CNTL, and
+ * read both back and verify equality with the snapshot.  The lease runs
+ * under rdev->pm.mutex so the power-management clock writer never
+ * interleaves, and under the rs4xx hardware transaction lock so parked,
+ * suspended, or reset-transition hardware is refused before any PLL
+ * access.  A failed force verification takes no sample and a failed
+ * restore verification poisons the capture: both publish a
+ * health-check status that earns no register verdict, and the header
+ * carries the original, forced, and restored clock words so the
+ * decoder audits the transaction itself.
+ *
+ * The transport follows the paired-status census discipline: a
+ * dedicated file_operations, the full buffer allocated at open before
+ * any lock, capture exactly once on first read(), every field an
+ * explicit little-endian member with reserved-zero padding, raw words
+ * and CLOCK_MONOTONIC_RAW timestamps only, and the private gate mutex
+ * tried before the arm token so a losing concurrent read returns
+ * -EBUSY with the token intact.  The exact arm token is consumed by
+ * cmpxchg once per capture.
+ */
+#define RS480_VAP_CENSUS_ARM_TOKEN 0x56415043	/* "VAPC" */
+#define RS480_VAP_CENSUS_MAGIC 0x52533456	/* "RS4V" */
+#define RS480_VAP_CENSUS_ABI_MAJOR 1
+#define RS480_VAP_CENSUS_ABI_MINOR 0
+#define RS480_VAP_CENSUS_HEADER_SIZE 128
+#define RS480_VAP_CENSUS_RECORD_SIZE 32
+#define RS480_VAP_CENSUS_MAX_RECORDS 4096
+#define RS480_VAP_CENSUS_CLOCK_MONOTONIC_RAW 0
+#define RS480_VAP_CENSUS_SETTLE_US 10
+#define RS480_VAP_CENSUS_DURATION_BUDGET_NS NSEC_PER_SEC
+
+#define RS480_VAP_CENSUS_COMPLETE 0
+#define RS480_VAP_CENSUS_PARTIAL_SIGNAL 1
+#define RS480_VAP_CENSUS_PARTIAL_DURATION 2
+#define RS480_VAP_CENSUS_PARTIAL_DEVICE 3
+#define RS480_VAP_CENSUS_PARTIAL_DISARMED 4
+/* Forced bits absent after the force write: no sample was taken. */
+#define RS480_VAP_CENSUS_HEALTH_FORCE_FAILED 5
+/* Restored words differ from the snapshot: samples exist but the boot's
+ * clock state is unverified, so the capture earns no verdict.
+ */
+#define RS480_VAP_CENSUS_HEALTH_RESTORE_FAILED 6
+
+#define RS480_VAP_CENSUS_VERIFY_FORCED 0x1
+#define RS480_VAP_CENSUS_VERIFY_RESTORED 0x2
+
+struct rs480_vap_census_header {
+	__le32 magic;
+	__le16 abi_major;
+	__le16 abi_minor;
+	__le32 header_size;
+	__le32 record_size;
+	__le32 requested_record_count;
+	__le32 completed_record_count;
+	__le32 capture_status;
+	__le32 clock_id;
+	__le32 register_0_offset;
+	__le32 register_1_offset;
+	__le64 capture_start_ns;
+	__le64 capture_end_ns;
+	__le16 pci_domain;
+	u8 pci_bus;
+	u8 pci_device;
+	u8 pci_function;
+	u8 asic_family;
+	__le16 asic_revision;
+	__le32 read_order_mode;
+	__le32 header_flags;
+	__le32 sclk_cntl_original;
+	__le32 sclk_cntl2_original;
+	__le32 sclk_cntl_forced_readback;
+	__le32 sclk_cntl2_forced_readback;
+	__le32 sclk_cntl_restored_readback;
+	__le32 sclk_cntl2_restored_readback;
+	__le32 settle_delay_us;
+	__le32 clock_verify_flags;
+	u8 reserved_zero[24];
+};
+
+struct rs480_vap_census_record {
+	__le32 sequence;
+	__le32 flags;
+	__le64 t0_ns;
+	__le64 t1_ns;
+	__le32 vap_cntl_status_raw;
+	u8 reserved_zero[4];
+};
+
+static_assert(sizeof(struct rs480_vap_census_header) ==
+	      RS480_VAP_CENSUS_HEADER_SIZE);
+static_assert(sizeof(struct rs480_vap_census_record) ==
+	      RS480_VAP_CENSUS_RECORD_SIZE);
+static_assert(offsetof(struct rs480_vap_census_header, magic) == 0);
+static_assert(offsetof(struct rs480_vap_census_header, capture_start_ns) == 40);
+static_assert(offsetof(struct rs480_vap_census_header, read_order_mode) == 64);
+static_assert(offsetof(struct rs480_vap_census_header, sclk_cntl_original) == 72);
+static_assert(offsetof(struct rs480_vap_census_header, clock_verify_flags) == 100);
+static_assert(offsetof(struct rs480_vap_census_header, reserved_zero) == 104);
+static_assert(offsetof(struct rs480_vap_census_record, t0_ns) == 8);
+static_assert(offsetof(struct rs480_vap_census_record, vap_cntl_status_raw) == 24);
+static_assert(offsetof(struct rs480_vap_census_record, reserved_zero) == 28);
+
+/* One live VAP census at a time across every open of this node. */
+static DEFINE_MUTEX(rs480_vap_census_gate);
+
+struct rs480_vap_census_capture {
+	struct radeon_device *rdev;
+	void *buffer;
+	size_t allocation_length;
+	size_t published_length;
+	u32 requested;
+	bool captured;
+	struct mutex read_lock;
+};
+
+struct rs480_vap_census_clock_words {
+	u32 sclk_orig;
+	u32 sclk2_orig;
+	u32 sclk_forced;
+	u32 sclk2_forced;
+	u32 sclk_restored;
+	u32 sclk2_restored;
+	u32 verify_flags;
+};
+
+static void rs480_vap_census_fill_header(struct rs480_vap_census_capture *cap,
+					 u32 completed, u32 capture_status,
+					 u64 start_ns, u64 end_ns,
+					 const struct rs480_vap_census_clock_words *clk)
+{
+	struct rs480_vap_census_header *hdr = cap->buffer;
+	struct radeon_device *rdev = cap->rdev;
+	struct pci_dev *pdev = rdev->pdev;
+
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->magic = cpu_to_le32(RS480_VAP_CENSUS_MAGIC);
+	hdr->abi_major = cpu_to_le16(RS480_VAP_CENSUS_ABI_MAJOR);
+	hdr->abi_minor = cpu_to_le16(RS480_VAP_CENSUS_ABI_MINOR);
+	hdr->header_size = cpu_to_le32(RS480_VAP_CENSUS_HEADER_SIZE);
+	hdr->record_size = cpu_to_le32(RS480_VAP_CENSUS_RECORD_SIZE);
+	hdr->requested_record_count = cpu_to_le32(cap->requested);
+	hdr->completed_record_count = cpu_to_le32(completed);
+	hdr->capture_status = cpu_to_le32(capture_status);
+	hdr->clock_id = cpu_to_le32(RS480_VAP_CENSUS_CLOCK_MONOTONIC_RAW);
+	hdr->register_0_offset = cpu_to_le32(0x2140);
+	hdr->register_1_offset = 0;
+	hdr->capture_start_ns = cpu_to_le64(start_ns);
+	hdr->capture_end_ns = cpu_to_le64(end_ns);
+	hdr->pci_domain = cpu_to_le16((u16)pci_domain_nr(pdev->bus));
+	hdr->pci_bus = pdev->bus->number;
+	hdr->pci_device = PCI_SLOT(pdev->devfn);
+	hdr->pci_function = PCI_FUNC(pdev->devfn);
+	hdr->asic_family = (u8)rdev->family;
+	hdr->asic_revision = cpu_to_le16((u16)pdev->revision);
+	hdr->read_order_mode = 0;
+	hdr->header_flags = 0;
+	if (clk) {
+		hdr->sclk_cntl_original = cpu_to_le32(clk->sclk_orig);
+		hdr->sclk_cntl2_original = cpu_to_le32(clk->sclk2_orig);
+		hdr->sclk_cntl_forced_readback = cpu_to_le32(clk->sclk_forced);
+		hdr->sclk_cntl2_forced_readback = cpu_to_le32(clk->sclk2_forced);
+		hdr->sclk_cntl_restored_readback = cpu_to_le32(clk->sclk_restored);
+		hdr->sclk_cntl2_restored_readback = cpu_to_le32(clk->sclk2_restored);
+		hdr->settle_delay_us = cpu_to_le32(RS480_VAP_CENSUS_SETTLE_US);
+		hdr->clock_verify_flags = cpu_to_le32(clk->verify_flags);
+	}
+}
+
+static int rs480_vap_census_capture(struct rs480_vap_census_capture *cap)
+{
+	struct radeon_device *rdev = cap->rdev;
+	struct rs480_vap_census_record *records =
+		cap->buffer + RS480_VAP_CENSUS_HEADER_SIZE;
+	struct rs480_vap_census_clock_words clk = { 0 };
+	u64 start_ns = 0, end_ns = 0;
+	u32 status = RS480_VAP_CENSUS_COMPLETE;
+	u32 completed = 0;
+	u32 i;
+
+	if (!mutex_trylock(&rs480_vap_census_gate))
+		return -EBUSY;
+
+	if (cmpxchg(&radeon_rs480_vap_census_arm,
+		    RS480_VAP_CENSUS_ARM_TOKEN, 0) !=
+	    RS480_VAP_CENSUS_ARM_TOKEN) {
+		mutex_unlock(&rs480_vap_census_gate);
+		rs480_vap_census_fill_header(cap, 0,
+			RS480_VAP_CENSUS_PARTIAL_DISARMED, 0, 0, NULL);
+		goto publish;
+	}
+
+	/* The lease excludes the power-management clock writer for its
+	 * whole force-sample-restore span.
+	 */
+	mutex_lock(&rdev->pm.mutex);
+	if (radeon_device_lock_hardware(rdev)) {
+		mutex_unlock(&rdev->pm.mutex);
+		mutex_unlock(&rs480_vap_census_gate);
+		rs480_vap_census_fill_header(cap, 0,
+			RS480_VAP_CENSUS_PARTIAL_DEVICE, 0, 0, NULL);
+		goto publish;
+	}
+
+	radeon_dev_mark_mutation(rdev, "RS4xx VAP status census");
+	clk.sclk_orig = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	clk.sclk2_orig = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX,
+		   clk.sclk_orig | RS480_SCLK_3D_FORCE_ALL);
+	WREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX,
+		   clk.sclk2_orig | RS480_SCLK2_3D_FORCE_ALL);
+	clk.sclk_forced = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	clk.sclk2_forced = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	if ((clk.sclk_forced & RS480_SCLK_3D_FORCE_ALL) ==
+		    RS480_SCLK_3D_FORCE_ALL &&
+	    (clk.sclk2_forced & RS480_SCLK2_3D_FORCE_ALL) ==
+		    RS480_SCLK2_3D_FORCE_ALL) {
+		clk.verify_flags |= RS480_VAP_CENSUS_VERIFY_FORCED;
+	} else {
+		status = RS480_VAP_CENSUS_HEALTH_FORCE_FAILED;
+	}
+
+	if (status == RS480_VAP_CENSUS_COMPLETE) {
+		udelay(RS480_VAP_CENSUS_SETTLE_US);
+		start_ns = ktime_get_raw_ns();
+		for (i = 0; i < cap->requested; i++) {
+			struct rs480_vap_census_record *rec = &records[i];
+			u64 t0, t1;
+			u32 value;
+
+			t0 = ktime_get_raw_ns();
+			value = RREG32(0x2140);
+			t1 = ktime_get_raw_ns();
+			rec->sequence = cpu_to_le32(i);
+			rec->flags = 0;
+			rec->t0_ns = cpu_to_le64(t0);
+			rec->t1_ns = cpu_to_le64(t1);
+			rec->vap_cntl_status_raw = cpu_to_le32(value);
+			memset(rec->reserved_zero, 0,
+			       sizeof(rec->reserved_zero));
+			completed = i + 1;
+			if (completed == cap->requested)
+				break;
+			if (fatal_signal_pending(current)) {
+				status = RS480_VAP_CENSUS_PARTIAL_SIGNAL;
+				break;
+			}
+			if (ktime_get_raw_ns() - start_ns >
+			    RS480_VAP_CENSUS_DURATION_BUDGET_NS) {
+				status = RS480_VAP_CENSUS_PARTIAL_DURATION;
+				break;
+			}
+		}
+		end_ns = ktime_get_raw_ns();
+	}
+
+	/* Restoration runs on every path that wrote the force masks,
+	 * including the failed force verification, in the CNTL2-first
+	 * order.
+	 */
+	WREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX, clk.sclk2_orig);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, clk.sclk_orig);
+	clk.sclk_restored = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	clk.sclk2_restored = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	if (clk.sclk_restored == clk.sclk_orig &&
+	    clk.sclk2_restored == clk.sclk2_orig)
+		clk.verify_flags |= RS480_VAP_CENSUS_VERIFY_RESTORED;
+	else if (status == RS480_VAP_CENSUS_COMPLETE ||
+		 status == RS480_VAP_CENSUS_PARTIAL_SIGNAL ||
+		 status == RS480_VAP_CENSUS_PARTIAL_DURATION)
+		status = RS480_VAP_CENSUS_HEALTH_RESTORE_FAILED;
+
+	radeon_device_unlock_hardware(rdev);
+	mutex_unlock(&rdev->pm.mutex);
+	mutex_unlock(&rs480_vap_census_gate);
+
+	rs480_vap_census_fill_header(cap, completed, status,
+				     start_ns, end_ns, &clk);
+
+publish:
+	cap->published_length = RS480_VAP_CENSUS_HEADER_SIZE +
+		(size_t)completed * RS480_VAP_CENSUS_RECORD_SIZE;
+	return 0;
+}
+
+static int rs480_vap_census_open(struct inode *inode, struct file *file)
+{
+	struct radeon_device *rdev = inode->i_private;
+	struct rs480_vap_census_capture *cap;
+	u32 requested;
+
+	requested = (u32)clamp(radeon_rs480_vap_census_records, 1,
+			       RS480_VAP_CENSUS_MAX_RECORDS);
+
+	cap = kzalloc(sizeof(*cap), GFP_KERNEL);
+	if (!cap)
+		return -ENOMEM;
+
+	cap->rdev = rdev;
+	cap->requested = requested;
+	cap->allocation_length = RS480_VAP_CENSUS_HEADER_SIZE +
+		(size_t)requested * RS480_VAP_CENSUS_RECORD_SIZE;
+	cap->buffer = kzalloc(cap->allocation_length, GFP_KERNEL);
+	if (!cap->buffer) {
+		kfree(cap);
+		return -ENOMEM;
+	}
+	mutex_init(&cap->read_lock);
+	file->private_data = cap;
+	return nonseekable_open(inode, file);
+}
+
+static ssize_t rs480_vap_census_read(struct file *file, char __user *buf,
+				     size_t count, loff_t *ppos)
+{
+	struct rs480_vap_census_capture *cap = file->private_data;
+	ssize_t ret;
+	int r;
+
+	mutex_lock(&cap->read_lock);
+	if (!cap->captured) {
+		r = rs480_vap_census_capture(cap);
+		if (r) {
+			mutex_unlock(&cap->read_lock);
+			return r;
+		}
+		cap->captured = true;
+	}
+	ret = simple_read_from_buffer(buf, count, ppos, cap->buffer,
+				      cap->published_length);
+	mutex_unlock(&cap->read_lock);
+	return ret;
+}
+
+static int rs480_vap_census_release(struct inode *inode, struct file *file)
+{
+	struct rs480_vap_census_capture *cap = file->private_data;
+
+	mutex_destroy(&cap->read_lock);
+	kfree(cap->buffer);
+	kfree(cap);
+	return 0;
+}
+
+static const struct file_operations rs480_vap_census_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs480_vap_census_open,
+	.read    = rs480_vap_census_read,
+	.release = rs480_vap_census_release,
+};
+
 /* Gated-state plain-read probe.  The force_clock_validated tier asserts a
  * register is safe to read ONLY with its domain SCLK_CNTL FORCE bit set; the
  * open question is whether a PLAIN read stalls when the clock is genuinely
@@ -3212,6 +3570,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 				    &rs480_force_clock_3d_read_fops);
 		debugfs_create_file("radeon_rs480_gated_read", 0400, root,
 				    rdev, &rs480_gated_read_fops);
+		/* VAP_CNTL_STATUS census under a verified forced-clock
+		 * lease: inert until rs480_vap_census_arm carries the exact
+		 * token, which the first read consumes atomically.
+		 */
+		debugfs_create_file("radeon_rs480_vap_status_census", 0400,
+				    root, rdev, &rs480_vap_census_fops);
 	}
 #endif
 #if RADEON_PROBE_DEV

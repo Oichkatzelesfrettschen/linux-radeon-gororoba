@@ -49,13 +49,16 @@ indexed-probes	module-parameter	rs480_frontier_index	drivers/gpu/drm/radeon/rade
 indexed-probes	module-parameter	rs480_vertex_index	drivers/gpu/drm/radeon/radeon_dev.c	M09
 indexed-probes	debugfs-file	radeon_rs480_frontier_probe	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M09
 indexed-probes	debugfs-file	radeon_rs480_vertex_probe	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M09
-force-clock	module-parameter	rs480_force_clock_index	drivers/gpu/drm/radeon/radeon_dev.c	M11
-force-clock	module-parameter	rs480_force_clock_3d_index	drivers/gpu/drm/radeon/radeon_dev.c	M11
-force-clock	module-parameter	rs480_gated_read_index	drivers/gpu/drm/radeon/radeon_dev.c	M11
-force-clock	debugfs-file	radeon_rs480_force_clock_read	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11
-force-clock	debugfs-file	radeon_rs480_force_clock_3d_read	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11
-force-clock	debugfs-file	radeon_rs480_gated_read	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11
+force-clock	module-parameter	rs480_force_clock_index	drivers/gpu/drm/radeon/radeon_dev.c	M11.force-clock
+force-clock	module-parameter	rs480_force_clock_3d_index	drivers/gpu/drm/radeon/radeon_dev.c	M11.force-clock
+force-clock	module-parameter	rs480_gated_read_index	drivers/gpu/drm/radeon/radeon_dev.c	M11.force-clock
+force-clock	debugfs-file	radeon_rs480_force_clock_read	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11.force-clock
+force-clock	debugfs-file	radeon_rs480_force_clock_3d_read	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11.force-clock
+force-clock	debugfs-file	radeon_rs480_gated_read	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11.force-clock
 r400-us-allowlist	module-parameter	rs480_r400_us_cs	drivers/gpu/drm/radeon/radeon_dev.c	M12
 r400-us-allowlist	generated-input	rs480 0x4f60	drivers/gpu/drm/radeon/reg_srcs/rs480	M12
 scratch-oracle	module-parameter	rs480_cp_ib_scratch_oracle	drivers/gpu/drm/radeon/radeon_dev.c	M15
 scratch-oracle	debugfs-file	radeon_rs480_cp_ib_scratch_oracle	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M15
+vap-status-census	module-parameter	rs480_vap_census_arm	drivers/gpu/drm/radeon/radeon_dev.c	M11.vap-census
+vap-status-census	module-parameter	rs480_vap_census_records	drivers/gpu/drm/radeon/radeon_dev.c	M11.vap-census
+vap-status-census	debugfs-file	radeon_rs480_vap_status_census	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11.vap-census
