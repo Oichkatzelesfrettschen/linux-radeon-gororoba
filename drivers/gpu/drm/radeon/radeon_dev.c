@@ -158,6 +158,7 @@ int radeon_rs480_cp_ib_scratch_oracle;
 int radeon_rs480_force_clock_index = -1;
 int radeon_rs480_force_clock_3d_index = -1;
 int radeon_rs480_gated_read_index = -1;
+int radeon_rs480_pll_write_probe_index = -1;
 int radeon_rs480_reset_hang_probe;
 int radeon_rs480_r400_us_cs;
 int radeon_rs480_vap_census_arm;
@@ -382,6 +383,13 @@ MODULE_PARM_DESC(rs480_gated_read_index,
 	"read stalls when the clock is gated.  A stall needs a physical power cycle.  "
 	"-1 (default) disarmed.");
 module_param_named(rs480_gated_read_index, radeon_rs480_gated_read_index, int, 0644);
+
+MODULE_PARM_DESC(rs480_pll_write_probe_index,
+	"RS480 PLL write-path probe (HAZARD): index into the set-bit table; clears "
+	"one PLL bit that reads set, reads it back, and restores, to establish "
+	"whether WREG32_PLL lands on this device.  A stall between the write and "
+	"the restore needs a physical power cycle.  -1 (default) disarmed.");
+module_param_named(rs480_pll_write_probe_index, radeon_rs480_pll_write_probe_index, int, 0644);
 #endif
 
 #if RADEON_PROBE_DEV

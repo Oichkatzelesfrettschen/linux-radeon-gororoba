@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 35 fork-added debugfs nodes and 23 module
+The development surface is 36 fork-added debugfs nodes and 24 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
@@ -53,6 +53,7 @@ columns record the gates beyond that shared guard.
 | radeon_rs480_frontier_probe, radeon_rs480_vertex_probe | 0400 | probe-dev | index selector (-1 sentinel) | none |
 | radeon_rs480_cp_me_oracle | 0400 | probe-dev | exact token 0x4f524331; IGP live-fire excluded | none |
 | radeon_rs480_force_clock_read, _force_clock_3d_read, _gated_read | 0400 | mutate-dev | index selector (-1 sentinel) | RS4xx force-clock read / force-clock 3D read / gated-state read |
+| radeon_rs480_pll_write_probe | 0400 | mutate-dev | index selector (-1 sentinel) | RS4xx PLL write-path probe |
 | radeon_rs480_cp_ib_scratch_oracle | 0400 | mutate-dev | rs480_cp_ib_scratch_oracle arm | RS4xx CP scratch oracle |
 | radeon_rs480_reset_hang_probe | 0400 | mutate-dev | exact WD3A or WD3B token; admitted frontend state; forced request under reset writer lock; parked check and RBBM sample under reset read lock | RS4xx reset hang probe |
 
@@ -105,7 +106,8 @@ The 17 parameters keep the three arming domains: booleans open at exactly 1
 `rs480_safe_regs`, `rs480_candidate_regs`, `rs480_cp_me_ram_dump`), index
 selectors use the -1 sentinel where any in-range nonnegative value selects
 (`rs480_force_clock_index`, `rs480_force_clock_3d_index`,
-`rs480_gated_read_index`, `rs480_frontier_index`, `rs480_vertex_index`,
+`rs480_gated_read_index`, `rs480_pll_write_probe_index`,
+`rs480_frontier_index`, `rs480_vertex_index`,
 `rs480_hazard_index`), and exact-token gates require their named constant
 (`rs480_cp_me_ram_inject`, `rs480_cp_me_oracle`,
 `rs480_reset_hang_probe`, `rs480_cp_ib_scratch_oracle`).
