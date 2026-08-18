@@ -98,6 +98,7 @@ extern int radeon_rs480_cp_ib_scratch_oracle;
 extern int radeon_rs480_force_clock_3d_index;
 extern int radeon_rs480_force_clock_index;
 extern int radeon_rs480_gated_read_index;
+extern int radeon_rs480_pll_write_probe_index;
 extern int radeon_rs480_r400_us_cs;
 extern int radeon_rs480_reset_hang_probe;
 extern int radeon_rs480_vap_census_arm;
