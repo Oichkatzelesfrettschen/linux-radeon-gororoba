@@ -155,8 +155,8 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
 }
 RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
     "rs480_debugfs_lock_hardware": 19,
-    "radeon_device_lock_hardware": 7,
-    "radeon_device_unlock_hardware": 30,
+    "radeon_device_lock_hardware": 8,
+    "radeon_device_unlock_hardware": 31,
 }
 PROFILE_RANK = {
     "prod": 0,
@@ -257,7 +257,7 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
     }
 )
 RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 31
-RS4XX_DEBUGFS_NODE_COUNT = 33
+RS4XX_DEBUGFS_NODE_COUNT = 34
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
@@ -265,9 +265,13 @@ RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
 # Binary-transport nodes serve a fixed little-endian buffer through dedicated
 # file_operations and emit no output-schema line, so they are readable yet
 # stand outside the schema-node set the schema assertions govern.
-RS4XX_BINARY_DEBUGFS_NODES = frozenset({"radeon_rs480_paired_status_census"})
+RS4XX_BINARY_DEBUGFS_NODES = frozenset({
+    "radeon_rs480_paired_status_census",
+    "radeon_rs480_vap_status_census",
+})
 RS4XX_BINARY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_paired_status_census": "rs480_status_census_fops",
+    "radeon_rs480_vap_status_census": "rs480_vap_census_fops",
 }
 RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     "radeon_rs480_candidate_config_regs": "rs480_candidate_config_regs_fops",
@@ -380,6 +384,13 @@ MUTATION_AUDIT_PATTERNS = {
         (
             "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
             r'radeon_dev_mark_mutation\(rdev, "RS4xx CP scratch oracle"\)',
+            1,
+        ),
+    ),
+    "vap-status-census": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx VAP status census"\)',
             1,
         ),
     ),
@@ -3336,7 +3347,7 @@ def self_test(root: Path) -> int:
         "prod": (0, 0, 0),
         "observe-dev": (4, 2, 18),
         "probe-dev": (12, 12, 26),
-        "mutate-dev": (21, 21, 34),
+        "mutate-dev": (22, 23, 35),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3359,7 +3370,7 @@ def self_test(root: Path) -> int:
         ("mutate-dev", "off"): (0, 0, 0),
         ("mutate-dev", "observe-dev"): (4, 2, 18),
         ("mutate-dev", "probe-dev"): (12, 12, 26),
-        ("mutate-dev", "mutate-dev"): (21, 21, 34),
+        ("mutate-dev", "mutate-dev"): (22, 23, 35),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)
