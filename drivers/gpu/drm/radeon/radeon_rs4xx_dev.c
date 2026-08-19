@@ -570,13 +570,8 @@ static const struct rs480_candidate_reg rs480_candidate_gb_reg_list[] = {
 	{ 0x4028, "R300_GB_Z_PEQ_CONFIG", 0 },
 };
 
-static const struct rs480_candidate_reg rs480_candidate_rb3d_reg_list[] = {
-	{ 0x4E4C, "R300_RB3D_DSTCACHE_CTLSTAT", 0 },
-};
-
 static const struct rs480_candidate_reg rs480_candidate_zb_reg_list[] = {
 	{ 0x4F14, "R300_ZB_ZTOP", 0 },
-	{ 0x4F18, "R300_ZB_ZCACHE_CTLSTAT", 0 },
 	{ 0x4F1C, "R300_ZB_BW_CNTL", 0 },
 	{ 0x4F30, "R300_ZB_ZMASK_OFFSET", 0 },
 	{ 0x4F34, "R300_ZB_ZMASK_PITCH", 0 },
@@ -692,14 +687,6 @@ static int rs480_candidate_gb_regs_show(struct seq_file *m, void *unused)
 }
 
 DEFINE_SHOW_ATTRIBUTE(rs480_candidate_gb_regs);
-static int rs480_candidate_rb3d_regs_show(struct seq_file *m, void *unused)
-{
-	return rs480_candidate_regs_emit(m, m->private,
-					 rs480_candidate_rb3d_reg_list,
-					 ARRAY_SIZE(rs480_candidate_rb3d_reg_list));
-}
-
-DEFINE_SHOW_ATTRIBUTE(rs480_candidate_rb3d_regs);
 static int rs480_candidate_zb_regs_show(struct seq_file *m, void *unused)
 {
 	return rs480_candidate_regs_emit(m, m->private,
@@ -708,6 +695,111 @@ static int rs480_candidate_zb_regs_show(struct seq_file *m, void *unused)
 }
 
 DEFINE_SHOW_ATTRIBUTE(rs480_candidate_zb_regs);
+
+#if RADEON_PROBE_DEV
+/*
+ * One-shot cache CTLSTAT readers.  RB3D_DSTCACHE_CTLSTAT (0x4E4C) and
+ * ZB_ZCACHE_CTLSTAT (0x4F18) are the 3D destination-cache and Z-cache
+ * flush controls, and the 3D pipe space at 0x4000 and above answers
+ * through the GA-domain register-bus client.  With VAP/GA latched busy
+ * that client never grants the readback, and a K8 MMIO read is a
+ * non-posted HyperTransport transaction the northbridge never times
+ * out, so the CPU stalls with no fault; RB3D_BUSY reads clear during
+ * exactly that wedge, which leaves RBBM_STATUS GUI_ACTIVE as the gate
+ * radeon_gpu_reset_internal already uses for its own 0x4E4C read.
+ * These registers therefore read at rest and hard-lock under a
+ * 3D-frontend wedge.
+ *
+ * Each register accordingly carries its own exact arm token, consumed
+ * atomically before the hardware lock, and its read is refused while
+ * GUI_ACTIVE stands.  A module-instance latch admits one cache-register
+ * debut per load, so a fault localizes to one offset: with the module
+ * loaded once per boot, 0x4E4C and 0x4F18 debut on separate boots, and
+ * a module reload resets the latch with the reload recorded in dmesg.
+ */
+#define RS480_RB3D_CACHE_ARM_TOKEN 0x52424443	/* "RBDC" */
+#define RS480_ZB_CACHE_ARM_TOKEN   0x5A424343	/* "ZBCC" */
+
+/* The latch is one slot at file scope: it holds the first cohort to read
+ * and refuses every later read, a repeat of the same register included.
+ * File scope makes it per module load rather than per device, so a box
+ * carrying two supported devices spends the load's one read on whichever
+ * device is armed first.
+ */
+enum rs480_cache_ctlstat_cohort {
+	RS480_CACHE_COHORT_NONE = 0,
+	RS480_CACHE_COHORT_RB3D = 1,
+	RS480_CACHE_COHORT_ZB = 2,
+};
+
+static atomic_t rs480_cache_ctlstat_cohort_latch =
+	ATOMIC_INIT(RS480_CACHE_COHORT_NONE);
+
+static int rs480_cache_ctlstat_emit(struct seq_file *m, int *arm, u32 token,
+				    int cohort, u32 offset, const char *name)
+{
+	struct radeon_device *rdev = m->private;
+	u64 t0, t1;
+	u32 rbbm, word;
+	int held;
+
+	rs480_debugfs_emit_schema(m);
+	if (cmpxchg(arm, (int)token, 0) != (int)token) {
+		seq_printf(m,
+			   "%s disarmed: set the exact arm token 0x%08x (consumed per read)\n",
+			   name, token);
+		return 0;
+	}
+	if (rs480_debugfs_lock_hardware(m, rdev))
+		return 0;
+	rbbm = RREG32(R_000E40_RBBM_STATUS);
+	if (G_000E40_GUI_ACTIVE(rbbm)) {
+		radeon_device_unlock_hardware(rdev);
+		seq_printf(m,
+			   "%s refused: RBBM_STATUS 0x%08x reports GUI_ACTIVE; the cache register debuts at idle\n",
+			   name, rbbm);
+		return 0;
+	}
+	held = atomic_cmpxchg(&rs480_cache_ctlstat_cohort_latch,
+			      RS480_CACHE_COHORT_NONE, cohort);
+	if (held != RS480_CACHE_COHORT_NONE) {
+		radeon_device_unlock_hardware(rdev);
+		seq_printf(m,
+			   "%s refused: cache cohort %d already read on this module instance; the latch is a single slot, so it admits one cache-register read per module load and refuses every later read including a repeat of the same register\n",
+			   name, held);
+		return 0;
+	}
+	t0 = ktime_get_raw_ns();
+	word = RREG32(offset);
+	t1 = ktime_get_raw_ns();
+	radeon_device_unlock_hardware(rdev);
+
+	seq_printf(m, "%s (0x%04x) = 0x%08x\n", name, offset, word);
+	seq_printf(m, "rbbm_status_before = 0x%08x\n", rbbm);
+	seq_printf(m, "t0_ns = %llu\nt1_ns = %llu\n", t0, t1);
+	return 0;
+}
+
+static int rs480_rb3d_dstcache_ctlstat_show(struct seq_file *m, void *unused)
+{
+	return rs480_cache_ctlstat_emit(m, &radeon_rs480_rb3d_cache_arm,
+					RS480_RB3D_CACHE_ARM_TOKEN,
+					RS480_CACHE_COHORT_RB3D, 0x4E4C,
+					"R300_RB3D_DSTCACHE_CTLSTAT");
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_rb3d_dstcache_ctlstat);
+
+static int rs480_zb_zcache_ctlstat_show(struct seq_file *m, void *unused)
+{
+	return rs480_cache_ctlstat_emit(m, &radeon_rs480_zb_cache_arm,
+					RS480_ZB_CACHE_ARM_TOKEN,
+					RS480_CACHE_COHORT_ZB, 0x4F18,
+					"R300_ZB_ZCACHE_CTLSTAT");
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_zb_zcache_ctlstat);
+#endif /* RADEON_PROBE_DEV */
 /*
  * COMBIOS firmware-READ candidate cohort.  These MMIO registers are the
  * read-modify-write targets the RS482 COMBIOS itself reads during ASIC_INIT
@@ -3931,8 +4023,6 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 			    &rs480_candidate_sc_regs_fops);
 	debugfs_create_file("radeon_rs480_candidate_gb_regs", 0400, root, rdev,
 			    &rs480_candidate_gb_regs_fops);
-	debugfs_create_file("radeon_rs480_candidate_rb3d_regs", 0400, root, rdev,
-			    &rs480_candidate_rb3d_regs_fops);
 	debugfs_create_file("radeon_rs480_candidate_zb_regs", 0400, root, rdev,
 			    &rs480_candidate_zb_regs_fops);
 	debugfs_create_file("radeon_rs480_candidate_z_regs", 0400, root, rdev,
@@ -3970,6 +4060,14 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		 */
 		debugfs_create_file("radeon_rs480_paired_status_census", 0400,
 				    root, rdev, &rs480_status_census_fops);
+		/* One-shot cache CTLSTAT debuts: each node is inert until its
+		 * exact arm token is set, and the module-instance latch holds
+		 * the two cache registers to separate boots.
+		 */
+		debugfs_create_file("radeon_rs480_rb3d_dstcache_ctlstat", 0400,
+				    root, rdev, &rs480_rb3d_dstcache_ctlstat_fops);
+		debugfs_create_file("radeon_rs480_zb_zcache_ctlstat", 0400,
+				    root, rdev, &rs480_zb_zcache_ctlstat_fops);
 	}
 #endif
 #if RADEON_MUTATE_DEV
