@@ -146,6 +146,8 @@ int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
 int radeon_rs480_hazard_readers_armed;
 int radeon_rs480_cp_status_arm;
+int radeon_rs480_rb3d_cache_arm;
+int radeon_rs480_zb_cache_arm;
 int radeon_rs480_status_census_arm;
 int radeon_rs480_status_census_records = 256;
 int radeon_rs480_status_census_read_order;
@@ -228,6 +230,26 @@ MODULE_PARM_DESC(rs480_cp_status_arm,
 	"No writes, no offset selector, one register pair per arming."
 );
 module_param_named(rs480_cp_status_arm, radeon_rs480_cp_status_arm, int, 0644);
+
+MODULE_PARM_DESC(rs480_rb3d_cache_arm,
+	"Arm the one-shot RB3D_DSTCACHE_CTLSTAT (0x4e4c) reader debugfs node "
+	"radeon_rs480_rb3d_dstcache_ctlstat. Default 0 (OFF); arm with the "
+	"exact token 0x52424443 ('RBDC'), a stray nonzero value does nothing. "
+	"The armed read consumes the token atomically, takes the hardware "
+	"lock, refuses while RBBM_STATUS reports GUI_ACTIVE, and performs "
+	"exactly one plain 32-bit read bracketed by two monotonic timestamps. "
+	"A module-instance latch admits one cache-register debut per load, so "
+	"0x4e4c and 0x4f18 debut on separate boots."
+);
+module_param_named(rs480_rb3d_cache_arm, radeon_rs480_rb3d_cache_arm, int, 0644);
+
+MODULE_PARM_DESC(rs480_zb_cache_arm,
+	"Arm the one-shot ZB_ZCACHE_CTLSTAT (0x4f18) reader debugfs node "
+	"radeon_rs480_zb_zcache_ctlstat. Default 0 (OFF); arm with the exact "
+	"token 0x5a424343 ('ZBCC'). The same one-read discipline and "
+	"module-instance latch as rs480_rb3d_cache_arm apply."
+);
+module_param_named(rs480_zb_cache_arm, radeon_rs480_zb_cache_arm, int, 0644);
 
 MODULE_PARM_DESC(rs480_status_census_arm,
 	"Arm the paired RBBM/CP_STAT census debugfs node "

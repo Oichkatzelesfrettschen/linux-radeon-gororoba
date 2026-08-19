@@ -137,6 +137,7 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "rs480_cp_me_oracle_show": (1, 0, 1),
     "rs480_cp_me_ram_inject_write": (0, 1, 2),
     "rs480_cp_me_ram_seq_show": (1, 0, 1),
+    "rs480_cache_ctlstat_emit": (1, 0, 3),
     "rs480_cp_status_show": (1, 0, 1),
     "rs480_debugfs_lock_hardware": (0, 1, 0),
     "rs480_force_clock_3d_read_show": (1, 0, 1),
@@ -155,9 +156,9 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "rs480_wedged_3d_reset": (0, 2, 3),
 }
 RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
-    "rs480_debugfs_lock_hardware": 20,
+    "rs480_debugfs_lock_hardware": 21,
     "radeon_device_lock_hardware": 9,
-    "radeon_device_unlock_hardware": 33,
+    "radeon_device_unlock_hardware": 36,
 }
 PROFILE_RANK = {
     "prod": 0,
@@ -234,7 +235,6 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_candidate_gart_status_regs_show",
         "rs480_candidate_gb_regs_show",
         "rs480_candidate_mc_benign_regs_show",
-        "rs480_candidate_rb3d_regs_show",
         "rs480_candidate_sc_regs_show",
         "rs480_candidate_vap_regs_show",
         "rs480_candidate_vip_straggler_regs_show",
@@ -251,15 +251,17 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_hazard_read_show",
         "rs480_pll_regs_show",
         "rs480_pll_write_probe_show",
+        "rs480_rb3d_dstcache_ctlstat_show",
         "rs480_reset_hang_probe_show",
         "rs480_safe_regs_show",
         "rs480_sclk_cntl_show",
         "rs480_uma_status_show",
         "rs480_vertex_probe_show",
+        "rs480_zb_zcache_ctlstat_show",
     }
 )
-RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 32
-RS4XX_DEBUGFS_NODE_COUNT = 36
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 33
+RS4XX_DEBUGFS_NODE_COUNT = 37
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
@@ -289,7 +291,6 @@ RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     ),
     "radeon_rs480_candidate_gb_regs": "rs480_candidate_gb_regs_fops",
     "radeon_rs480_candidate_mc_benign_regs": ("rs480_candidate_mc_benign_regs_fops"),
-    "radeon_rs480_candidate_rb3d_regs": "rs480_candidate_rb3d_regs_fops",
     "radeon_rs480_candidate_regs": "rs480_candidate_config_regs_fops",
     "radeon_rs480_candidate_sc_regs": "rs480_candidate_sc_regs_fops",
     "radeon_rs480_candidate_vap_regs": "rs480_candidate_vap_regs_fops",
@@ -302,6 +303,8 @@ RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     "radeon_rs480_cp_me_oracle": "rs480_cp_me_oracle_fops",
     "radeon_rs480_cp_me_ram_dump": "rs480_cp_me_ram_dump_fops",
     "radeon_rs480_cp_status": "rs480_cp_status_fops",
+    "radeon_rs480_rb3d_dstcache_ctlstat": "rs480_rb3d_dstcache_ctlstat_fops",
+    "radeon_rs480_zb_zcache_ctlstat": "rs480_zb_zcache_ctlstat_fops",
     "radeon_rs480_cp_me_ram_inject": "rs480_cp_me_ram_inject_fops",
     "radeon_rs480_force_clock_3d_read": "rs480_force_clock_3d_read_fops",
     "radeon_rs480_force_clock_read": "rs480_force_clock_read_fops",
@@ -1298,6 +1301,57 @@ def validate_rs4xx_output_schema_paths(
         "RS4xx candidate-register helper bypasses its schema route",
     )
 
+    cache_body = function_body(source, "rs480_cache_ctlstat_emit")
+    cache_schema = require_one_match(
+        cache_body,
+        r"\brs480_debugfs_emit_schema\(m\);",
+        "RS4xx cache-CTLSTAT schema route",
+    )
+    require_outer_function_match(
+        cache_body,
+        cache_schema,
+        "RS4xx cache-CTLSTAT schema route",
+    )
+    cache_prefix = strip_comments_and_literals(cache_body[: cache_schema.start()])
+    require(
+        output_call.search(cache_prefix) is None
+        and control_exit.search(cache_prefix) is None,
+        "RS4xx cache-CTLSTAT helper bypasses its schema route",
+    )
+    cache_arm = require_one_match(
+        cache_body,
+        r"\bif \(cmpxchg\(arm, \(int\)token, 0\) != \(int\)token\)",
+        "RS4xx cache-CTLSTAT arm consumption",
+    )
+    cache_lock = require_one_match(
+        cache_body,
+        r"\bif \(rs480_debugfs_lock_hardware\(m, rdev\)\)",
+        "RS4xx cache-CTLSTAT transaction route",
+    )
+    cache_idle = require_one_match(
+        cache_body,
+        r"\bif \(G_000E40_GUI_ACTIVE\(rbbm\)\)",
+        "RS4xx cache-CTLSTAT idle admission",
+    )
+    cache_cohort = require_one_match(
+        cache_body,
+        r"\batomic_cmpxchg\(&rs480_cache_ctlstat_cohort_latch,",
+        "RS4xx cache-CTLSTAT cohort latch",
+    )
+    cache_read = require_one_match(
+        cache_body,
+        r"\bword = RREG32\(offset\);",
+        "RS4xx cache-CTLSTAT register read",
+    )
+    require(
+        cache_schema.start() < cache_arm.start()
+        and cache_arm.start() < cache_lock.start()
+        and cache_lock.start() < cache_idle.start()
+        and cache_idle.start() < cache_cohort.start()
+        and cache_cohort.start() < cache_read.start(),
+        "RS4xx cache-CTLSTAT gate order differs",
+    )
+
     route_patterns = (
         (
             "direct schema emitter",
@@ -1315,6 +1369,13 @@ def validate_rs4xx_output_schema_paths(
             "candidate-register schema route",
             re.compile(
                 r"^\treturn\s+rs480_candidate_regs_emit\(\s*m\s*,",
+                re.MULTILINE,
+            ),
+        ),
+        (
+            "cache-CTLSTAT schema route",
+            re.compile(
+                r"^\treturn\s+rs480_cache_ctlstat_emit\(\s*m\s*,",
                 re.MULTILINE,
             ),
         ),
@@ -3357,9 +3418,9 @@ def self_test(root: Path) -> int:
 
     expected_counts = {
         "prod": (0, 0, 0),
-        "observe-dev": (4, 2, 18),
-        "probe-dev": (12, 12, 26),
-        "mutate-dev": (23, 26, 37),
+        "observe-dev": (4, 2, 17),
+        "probe-dev": (13, 14, 27),
+        "mutate-dev": (24, 28, 38),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3375,14 +3436,14 @@ def self_test(root: Path) -> int:
 
     runtime_counts = {
         ("observe-dev", "off"): (0, 0, 0),
-        ("observe-dev", "observe-dev"): (4, 2, 18),
+        ("observe-dev", "observe-dev"): (4, 2, 17),
         ("probe-dev", "off"): (0, 0, 0),
-        ("probe-dev", "observe-dev"): (4, 2, 18),
-        ("probe-dev", "probe-dev"): (12, 12, 26),
+        ("probe-dev", "observe-dev"): (4, 2, 17),
+        ("probe-dev", "probe-dev"): (13, 14, 27),
         ("mutate-dev", "off"): (0, 0, 0),
-        ("mutate-dev", "observe-dev"): (4, 2, 18),
-        ("mutate-dev", "probe-dev"): (12, 12, 26),
-        ("mutate-dev", "mutate-dev"): (23, 26, 37),
+        ("mutate-dev", "observe-dev"): (4, 2, 17),
+        ("mutate-dev", "probe-dev"): (13, 14, 27),
+        ("mutate-dev", "mutate-dev"): (24, 28, 38),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)
