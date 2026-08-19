@@ -700,13 +700,22 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_zb_regs);
 /*
  * One-shot cache CTLSTAT readers.  RB3D_DSTCACHE_CTLSTAT (0x4E4C) and
  * ZB_ZCACHE_CTLSTAT (0x4F18) are the 3D destination-cache and Z-cache
- * flush controls; an unguarded 0x4E4C read has crashed RS482 once, so
- * each register debuts through its own exact arm token, consumed
- * atomically before the hardware lock, with the read refused while
- * RBBM_STATUS reports GUI_ACTIVE.  A module-instance latch admits one
- * cache-register debut per load: with the module loaded once per boot,
- * 0x4E4C and 0x4F18 debut on separate boots, and a module reload resets
- * the latch with the reload recorded in dmesg.
+ * flush controls, and the 3D pipe space at 0x4000 and above answers
+ * through the GA-domain register-bus client.  With VAP/GA latched busy
+ * that client never grants the readback, and a K8 MMIO read is a
+ * non-posted HyperTransport transaction the northbridge never times
+ * out, so the CPU stalls with no fault; RB3D_BUSY reads clear during
+ * exactly that wedge, which leaves RBBM_STATUS GUI_ACTIVE as the gate
+ * radeon_gpu_reset_internal already uses for its own 0x4E4C read.
+ * These registers therefore read at rest and hard-lock under a
+ * 3D-frontend wedge.
+ *
+ * Each register accordingly carries its own exact arm token, consumed
+ * atomically before the hardware lock, and its read is refused while
+ * GUI_ACTIVE stands.  A module-instance latch admits one cache-register
+ * debut per load, so a fault localizes to one offset: with the module
+ * loaded once per boot, 0x4E4C and 0x4F18 debut on separate boots, and
+ * a module reload resets the latch with the reload recorded in dmesg.
  */
 #define RS480_RB3D_CACHE_ARM_TOKEN 0x52424443	/* "RBDC" */
 #define RS480_ZB_CACHE_ARM_TOKEN   0x5A424343	/* "ZBCC" */
