@@ -238,8 +238,9 @@ MODULE_PARM_DESC(rs480_rb3d_cache_arm,
 	"The armed read consumes the token atomically, takes the hardware "
 	"lock, refuses while RBBM_STATUS reports GUI_ACTIVE, and performs "
 	"exactly one plain 32-bit read bracketed by two monotonic timestamps. "
-	"A module-instance latch admits one cache-register debut per load, so "
-	"0x4e4c and 0x4f18 debut on separate boots."
+	"A single-slot module-instance latch admits one cache-register read per "
+	"load and refuses every later read, so 0x4e4c and 0x4f18 debut on "
+	"separate boots."
 );
 module_param_named(rs480_rb3d_cache_arm, radeon_rs480_rb3d_cache_arm, int, 0644);
 
@@ -247,7 +248,7 @@ MODULE_PARM_DESC(rs480_zb_cache_arm,
 	"Arm the one-shot ZB_ZCACHE_CTLSTAT (0x4f18) reader debugfs node "
 	"radeon_rs480_zb_zcache_ctlstat. Default 0 (OFF); arm with the exact "
 	"token 0x5a424343 ('ZBCC'). The same one-read discipline and "
-	"module-instance latch as rs480_rb3d_cache_arm apply."
+	"single-slot module-instance latch as rs480_rb3d_cache_arm apply."
 );
 module_param_named(rs480_zb_cache_arm, radeon_rs480_zb_cache_arm, int, 0644);
 

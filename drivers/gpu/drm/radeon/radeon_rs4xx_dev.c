@@ -720,6 +720,12 @@ DEFINE_SHOW_ATTRIBUTE(rs480_candidate_zb_regs);
 #define RS480_RB3D_CACHE_ARM_TOKEN 0x52424443	/* "RBDC" */
 #define RS480_ZB_CACHE_ARM_TOKEN   0x5A424343	/* "ZBCC" */
 
+/* The latch is one slot at file scope: it holds the first cohort to read
+ * and refuses every later read, a repeat of the same register included.
+ * File scope makes it per module load rather than per device, so a box
+ * carrying two supported devices spends the load's one read on whichever
+ * device is armed first.
+ */
 enum rs480_cache_ctlstat_cohort {
 	RS480_CACHE_COHORT_NONE = 0,
 	RS480_CACHE_COHORT_RB3D = 1,
@@ -759,7 +765,7 @@ static int rs480_cache_ctlstat_emit(struct seq_file *m, int *arm, u32 token,
 	if (held != RS480_CACHE_COHORT_NONE) {
 		radeon_device_unlock_hardware(rdev);
 		seq_printf(m,
-			   "%s refused: cache cohort %d already debuted on this module instance; one cache register per boot\n",
+			   "%s refused: cache cohort %d already read on this module instance; the latch is a single slot, so it admits one cache-register read per module load and refuses every later read including a repeat of the same register\n",
 			   name, held);
 		return 0;
 	}
