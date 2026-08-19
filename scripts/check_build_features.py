@@ -176,14 +176,15 @@ SPLIT_MECHANISMS = {
     "B11": {"production", "unsafe"},
     "M03": {"passive", "hazard"},
     "M10": {"pll", "first-read", "status-pair", "status-census"},
-    "M11": {"force-clock", "vap-census"},
+    "M11": {"force-clock", "vap-census", "vap-burst-census"},
 }
 SPLIT_TIERS = {
     "B11": {"production": "prod", "unsafe": "mutate-dev"},
     "M03": {"passive": "observe-dev", "hazard": "probe-dev"},
     "M10": {"pll": "probe-dev", "first-read": "probe-dev",
             "status-pair": "probe-dev", "status-census": "probe-dev"},
-    "M11": {"force-clock": "mutate-dev", "vap-census": "mutate-dev"},
+    "M11": {"force-clock": "mutate-dev", "vap-census": "mutate-dev",
+            "vap-burst-census": "mutate-dev"},
 }
 SPLIT_PLAN_PART = {"B11": "production", "M03": "hazard", "M10": "pll", "M11": "force-clock"}
 KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

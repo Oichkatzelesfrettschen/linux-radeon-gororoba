@@ -103,6 +103,8 @@ extern int radeon_rs480_r400_us_cs;
 extern int radeon_rs480_reset_hang_probe;
 extern int radeon_rs480_vap_census_arm;
 extern int radeon_rs480_vap_census_records;
+extern int radeon_rs480_vap_burst_census_arm;
+extern int radeon_rs480_vap_burst_census_words;
 
 void radeon_evergreen_dev_debugfs_register(struct drm_minor *minor);
 bool radeon_rs4xx_dev_apply_r400_us_reg_safe(struct radeon_device *rdev);

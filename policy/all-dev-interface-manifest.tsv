@@ -64,3 +64,6 @@ scratch-oracle	debugfs-file	radeon_rs480_cp_ib_scratch_oracle	drivers/gpu/drm/ra
 vap-status-census	module-parameter	rs480_vap_census_arm	drivers/gpu/drm/radeon/radeon_dev.c	M11.vap-census
 vap-status-census	module-parameter	rs480_vap_census_records	drivers/gpu/drm/radeon/radeon_dev.c	M11.vap-census
 vap-status-census	debugfs-file	radeon_rs480_vap_status_census	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11.vap-census
+vap-burst-census	module-parameter	rs480_vap_burst_census_arm	drivers/gpu/drm/radeon/radeon_dev.c	M11.vap-burst-census
+vap-burst-census	module-parameter	rs480_vap_burst_census_words	drivers/gpu/drm/radeon/radeon_dev.c	M11.vap-burst-census
+vap-burst-census	debugfs-file	radeon_rs480_vap_status_burst_census	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M11.vap-burst-census
