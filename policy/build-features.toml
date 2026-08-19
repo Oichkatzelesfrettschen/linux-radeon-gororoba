@@ -1459,3 +1459,44 @@ profile_exception = "none"
 exception_basis = "none"
 package_projection = "development"
 rollback = "select a lower profile or remove the development package"
+
+[[feature]]
+id = "vap-burst-census"
+setting = "vap-burst-census-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon_dev.c",
+  "drivers/gpu/drm/radeon/radeon_dev.h",
+  "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+]
+source_mechanisms = ["M11.vap-burst-census"]
+dependencies = ["rs4xx-debugfs"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, supported family, exact atomically consumed arm token, single-census gate shared with the record census, pm-mutex clock lease, hardware transaction admission, and verified SCLK force and restore readbacks"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "disarmed"
+arming_model = "exact-token"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M11"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "hardware-control-write"
+interface_class = "raw-hardware-writer"
+resource_bounds = "one clock lease per capture: bounded SCLK save, force, verify, settle, up to 16384 back-to-back VAP_CNTL_STATUS reads with one anchor timestamp per 256-word block into a fixed little-endian binary buffer, restore, verify"
+locking = "rdev->pm.mutex clock lease and device hardware transaction; the record census's private gate admits one live capture across both nodes and the arm token is consumed by cmpxchg before either lock"
+error_contract = "disarmed, busy, parked, or suspended captures write a valid header with zero words and touch no PLL register; a failed force verification samples nothing, a failed restore verification poisons the capture, and both publish health-check statuses that earn no register verdict while the header carries the original, forced, and restored clock words"
+production_promotion_condition = "no production promotion for a forced-clock register census"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
+tests = [
+  "normal: an armed read forces, verifies, samples the requested word count back-to-back with one anchor timestamp per 256-word block, restores, and verifies",
+  "boundary: a re-read serves the captured buffer and takes no second lease; a partial capture ends at a block boundary with matching anchor accounting",
+  "failure: parked hardware yields a partial header with zero words before any PLL access",
+  "adversarial: concurrent opens admit at most one clock lease per token across both census nodes",
+]

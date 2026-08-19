@@ -163,6 +163,8 @@ int radeon_rs480_reset_hang_probe;
 int radeon_rs480_r400_us_cs;
 int radeon_rs480_vap_census_arm;
 int radeon_rs480_vap_census_records = 256;
+int radeon_rs480_vap_burst_census_arm;
+int radeon_rs480_vap_burst_census_words = 4096;
 #endif
 
 #if RADEON_MUTATE_DEV
@@ -376,6 +378,23 @@ MODULE_PARM_DESC(rs480_vap_census_records,
 	"default 256), read into a little-endian binary buffer with per-read "
 	"timestamp brackets under one forced-clock lease.");
 module_param_named(rs480_vap_census_records, radeon_rs480_vap_census_records, int, 0644);
+
+MODULE_PARM_DESC(rs480_vap_burst_census_arm,
+	"RS480 VAP_CNTL_STATUS burst census arm (HAZARD): the debugfs node "
+	"radeon_rs480_vap_status_burst_census captures only while this equals "
+	"the exact token 0x56415042, which the first read consumes atomically.  "
+	"The capture forces the whole 3D clock set under a verified "
+	"force/restore lease serialized against power management and reads "
+	"0x2140 back-to-back with block-boundary anchor timestamps; a stalled "
+	"VAP read needs a physical power cycle.  0 (default) disarmed.");
+module_param_named(rs480_vap_burst_census_arm, radeon_rs480_vap_burst_census_arm, int, 0644);
+
+MODULE_PARM_DESC(rs480_vap_burst_census_words,
+	"RS480 VAP_CNTL_STATUS burst census word count per capture (1..16384, "
+	"default 4096), read back-to-back into a little-endian binary buffer "
+	"with one anchor timestamp per 256-word block under one forced-clock "
+	"lease.");
+module_param_named(rs480_vap_burst_census_words, radeon_rs480_vap_burst_census_words, int, 0644);
 
 MODULE_PARM_DESC(rs480_gated_read_index,
 	"RS480 gated-state plain-read probe (HAZARD): index into the inactive-DISP2 "

@@ -3416,6 +3416,322 @@ static const struct file_operations rs480_vap_census_fops = {
 	.release = rs480_vap_census_release,
 };
 
+/* VAP_CNTL_STATUS burst census: back-to-back reads under the same
+ * verified forced-clock lease as the record census (transport ABI
+ * rs482-vap-burst-census/1).
+ *
+ * The record census brackets every read with two CLOCK_MONOTONIC_RAW
+ * calls and checks the duration budget per record, so its grain is the
+ * clocksource read (~4.3 us per record on a K8/HPET host) rather than
+ * the MMIO read.  This node moves every clock call out of the inner
+ * loop: the body is raw __le32 words read back-to-back, and one anchor
+ * timestamp lands before each block of RS480_VAP_BURST_ANCHOR_INTERVAL
+ * words, so the grain floor is the MMIO read itself.  Word i's read
+ * interval is bounded by anchor[i / interval] and the next anchor
+ * (capture_end_ns for the last block); the decoder treats the timing
+ * as interval-censored at block granularity.
+ *
+ * Buffer layout is fixed at open so a partial capture moves nothing:
+ * header, then the anchor area sized for the requested word count
+ * (requested / interval + 1 slots, unused slots zero), then the word
+ * area.  published_length ends at the last completed word.  Signal
+ * and duration-budget checks run at anchor boundaries only, so an
+ * abort is quantized to one block.
+ *
+ * Lease, gating, arm-token consumption, health classification, and
+ * transport discipline are the record census's own: FORCE_VAP is the
+ * sample-domain gate, restoration is verified with the CNTL2-first
+ * order, the exact token 0x56415042 is consumed by cmpxchg once, and
+ * a losing concurrent open returns -EBUSY with the token intact.
+ */
+#define RS480_VAP_BURST_ARM_TOKEN 0x56415042	/* "VAPB" */
+#define RS480_VAP_BURST_MAGIC 0x52533457	/* "RS4W" */
+#define RS480_VAP_BURST_ABI_MAJOR 1
+#define RS480_VAP_BURST_ABI_MINOR 0
+#define RS480_VAP_BURST_HEADER_SIZE 128
+#define RS480_VAP_BURST_WORD_SIZE 4
+#define RS480_VAP_BURST_ANCHOR_INTERVAL 256
+#define RS480_VAP_BURST_MAX_WORDS 16384
+
+struct rs480_vap_burst_header {
+	__le32 magic;
+	__le16 abi_major;
+	__le16 abi_minor;
+	__le32 header_size;
+	__le32 word_size;
+	__le32 requested_word_count;
+	__le32 completed_word_count;
+	__le32 capture_status;
+	__le32 clock_id;
+	__le32 register_offset;
+	__le32 anchor_interval_words;
+	__le64 capture_start_ns;
+	__le64 capture_end_ns;
+	__le16 pci_domain;
+	u8 pci_bus;
+	u8 pci_device;
+	u8 pci_function;
+	u8 asic_family;
+	__le16 asic_revision;
+	__le32 anchor_count;
+	__le32 header_flags;
+	__le32 sclk_cntl_original;
+	__le32 sclk_cntl2_original;
+	__le32 sclk_cntl_forced_readback;
+	__le32 sclk_cntl2_forced_readback;
+	__le32 sclk_cntl_restored_readback;
+	__le32 sclk_cntl2_restored_readback;
+	__le32 settle_delay_us;
+	__le32 clock_verify_flags;
+	u8 reserved_zero[24];
+};
+
+static_assert(sizeof(struct rs480_vap_burst_header) ==
+	      RS480_VAP_BURST_HEADER_SIZE);
+static_assert(offsetof(struct rs480_vap_burst_header, capture_start_ns) == 40);
+static_assert(offsetof(struct rs480_vap_burst_header, pci_domain) == 56);
+static_assert(offsetof(struct rs480_vap_burst_header, anchor_count) == 64);
+static_assert(offsetof(struct rs480_vap_burst_header, sclk_cntl_original) == 72);
+static_assert(offsetof(struct rs480_vap_burst_header, clock_verify_flags) == 100);
+static_assert(offsetof(struct rs480_vap_burst_header, reserved_zero) == 104);
+
+struct rs480_vap_burst_capture {
+	struct radeon_device *rdev;
+	void *buffer;
+	size_t allocation_length;
+	size_t published_length;
+	u32 requested;
+	u32 anchor_slots;
+	bool captured;
+	struct mutex read_lock;
+};
+
+static void rs480_vap_burst_fill_header(struct rs480_vap_burst_capture *cap,
+					u32 completed, u32 anchors,
+					u32 capture_status,
+					u64 start_ns, u64 end_ns,
+					const struct rs480_vap_census_clock_words *clk)
+{
+	struct rs480_vap_burst_header *hdr = cap->buffer;
+	struct radeon_device *rdev = cap->rdev;
+	struct pci_dev *pdev = rdev->pdev;
+
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->magic = cpu_to_le32(RS480_VAP_BURST_MAGIC);
+	hdr->abi_major = cpu_to_le16(RS480_VAP_BURST_ABI_MAJOR);
+	hdr->abi_minor = cpu_to_le16(RS480_VAP_BURST_ABI_MINOR);
+	hdr->header_size = cpu_to_le32(RS480_VAP_BURST_HEADER_SIZE);
+	hdr->word_size = cpu_to_le32(RS480_VAP_BURST_WORD_SIZE);
+	hdr->requested_word_count = cpu_to_le32(cap->requested);
+	hdr->completed_word_count = cpu_to_le32(completed);
+	hdr->capture_status = cpu_to_le32(capture_status);
+	hdr->clock_id = cpu_to_le32(RS480_VAP_CENSUS_CLOCK_MONOTONIC_RAW);
+	hdr->register_offset = cpu_to_le32(0x2140);
+	hdr->anchor_interval_words =
+		cpu_to_le32(RS480_VAP_BURST_ANCHOR_INTERVAL);
+	hdr->capture_start_ns = cpu_to_le64(start_ns);
+	hdr->capture_end_ns = cpu_to_le64(end_ns);
+	hdr->pci_domain = cpu_to_le16((u16)pci_domain_nr(pdev->bus));
+	hdr->pci_bus = pdev->bus->number;
+	hdr->pci_device = PCI_SLOT(pdev->devfn);
+	hdr->pci_function = PCI_FUNC(pdev->devfn);
+	hdr->asic_family = (u8)rdev->family;
+	hdr->asic_revision = cpu_to_le16((u16)pdev->revision);
+	hdr->anchor_count = cpu_to_le32(anchors);
+	hdr->header_flags = 0;
+	if (clk) {
+		hdr->sclk_cntl_original = cpu_to_le32(clk->sclk_orig);
+		hdr->sclk_cntl2_original = cpu_to_le32(clk->sclk2_orig);
+		hdr->sclk_cntl_forced_readback = cpu_to_le32(clk->sclk_forced);
+		hdr->sclk_cntl2_forced_readback = cpu_to_le32(clk->sclk2_forced);
+		hdr->sclk_cntl_restored_readback = cpu_to_le32(clk->sclk_restored);
+		hdr->sclk_cntl2_restored_readback = cpu_to_le32(clk->sclk2_restored);
+		hdr->settle_delay_us = cpu_to_le32(RS480_VAP_CENSUS_SETTLE_US);
+		hdr->clock_verify_flags = cpu_to_le32(clk->verify_flags);
+	}
+}
+
+static int rs480_vap_burst_capture_run(struct rs480_vap_burst_capture *cap)
+{
+	struct radeon_device *rdev = cap->rdev;
+	__le64 *anchors = cap->buffer + RS480_VAP_BURST_HEADER_SIZE;
+	__le32 *words = cap->buffer + RS480_VAP_BURST_HEADER_SIZE +
+		(size_t)cap->anchor_slots * sizeof(__le64);
+	struct rs480_vap_census_clock_words clk = { 0 };
+	u64 start_ns = 0, end_ns = 0;
+	u32 status = RS480_VAP_CENSUS_COMPLETE;
+	u32 completed = 0;
+	u32 anchor_count = 0;
+
+	if (!mutex_trylock(&rs480_vap_census_gate))
+		return -EBUSY;
+
+	if (cmpxchg(&radeon_rs480_vap_burst_census_arm,
+		    RS480_VAP_BURST_ARM_TOKEN, 0) !=
+	    RS480_VAP_BURST_ARM_TOKEN) {
+		mutex_unlock(&rs480_vap_census_gate);
+		rs480_vap_burst_fill_header(cap, 0, 0,
+			RS480_VAP_CENSUS_PARTIAL_DISARMED, 0, 0, NULL);
+		goto publish;
+	}
+
+	mutex_lock(&rdev->pm.mutex);
+	if (radeon_device_lock_hardware(rdev)) {
+		mutex_unlock(&rdev->pm.mutex);
+		mutex_unlock(&rs480_vap_census_gate);
+		rs480_vap_burst_fill_header(cap, 0, 0,
+			RS480_VAP_CENSUS_PARTIAL_DEVICE, 0, 0, NULL);
+		goto publish;
+	}
+
+	radeon_dev_mark_mutation(rdev, "RS4xx VAP status burst census");
+	clk.sclk_orig = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	clk.sclk2_orig = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX,
+		   clk.sclk_orig | RS480_SCLK_3D_FORCE_ALL);
+	WREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX,
+		   clk.sclk2_orig | RS480_SCLK2_3D_FORCE_ALL);
+	clk.sclk_forced = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	clk.sclk2_forced = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	if (clk.sclk_forced & RS480_SCLK_FORCE_VAP)
+		clk.verify_flags |=
+			RS480_VAP_CENSUS_VERIFY_FORCED_SAMPLE_DOMAIN;
+	else
+		status = RS480_VAP_CENSUS_HEALTH_FORCE_FAILED;
+
+	if ((clk.sclk_forced & RS480_SCLK_3D_FORCE_ALL) ==
+	    RS480_SCLK_3D_FORCE_ALL)
+		clk.verify_flags |=
+			RS480_VAP_CENSUS_VERIFY_FORCED_SCLK_3D_ALL;
+	if ((clk.sclk2_forced & RS480_SCLK2_3D_FORCE_ALL) ==
+	    RS480_SCLK2_3D_FORCE_ALL)
+		clk.verify_flags |=
+			RS480_VAP_CENSUS_VERIFY_FORCED_SCLK2_3D_ALL;
+
+	if (status == RS480_VAP_CENSUS_COMPLETE) {
+		udelay(RS480_VAP_CENSUS_SETTLE_US);
+		start_ns = ktime_get_raw_ns();
+		while (completed < cap->requested) {
+			u32 chunk = min_t(u32, RS480_VAP_BURST_ANCHOR_INTERVAL,
+					  cap->requested - completed);
+			u32 j;
+
+			anchors[anchor_count++] =
+				cpu_to_le64(ktime_get_raw_ns());
+			for (j = 0; j < chunk; j++)
+				words[completed + j] =
+					cpu_to_le32(RREG32(0x2140));
+			completed += chunk;
+			if (completed == cap->requested)
+				break;
+			if (fatal_signal_pending(current)) {
+				status = RS480_VAP_CENSUS_PARTIAL_SIGNAL;
+				break;
+			}
+			if (ktime_get_raw_ns() - start_ns >
+			    RS480_VAP_CENSUS_DURATION_BUDGET_NS) {
+				status = RS480_VAP_CENSUS_PARTIAL_DURATION;
+				break;
+			}
+		}
+		end_ns = ktime_get_raw_ns();
+	}
+
+	WREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX, clk.sclk2_orig);
+	WREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX, clk.sclk_orig);
+	clk.sclk_restored = RREG32_PLL(RS480_SCLK_CNTL_PLL_INDEX);
+	clk.sclk2_restored = RREG32_PLL(RS480_SCLK_CNTL2_PLL_INDEX);
+	if (clk.sclk_restored == clk.sclk_orig &&
+	    clk.sclk2_restored == clk.sclk2_orig)
+		clk.verify_flags |= RS480_VAP_CENSUS_VERIFY_RESTORED;
+	else if (status == RS480_VAP_CENSUS_COMPLETE ||
+		 status == RS480_VAP_CENSUS_PARTIAL_SIGNAL ||
+		 status == RS480_VAP_CENSUS_PARTIAL_DURATION)
+		status = RS480_VAP_CENSUS_HEALTH_RESTORE_FAILED;
+
+	radeon_device_unlock_hardware(rdev);
+	mutex_unlock(&rdev->pm.mutex);
+	mutex_unlock(&rs480_vap_census_gate);
+
+	rs480_vap_burst_fill_header(cap, completed, anchor_count, status,
+				    start_ns, end_ns, &clk);
+
+publish:
+	cap->published_length = RS480_VAP_BURST_HEADER_SIZE +
+		(size_t)cap->anchor_slots * sizeof(__le64) +
+		(size_t)completed * RS480_VAP_BURST_WORD_SIZE;
+	return 0;
+}
+
+static int rs480_vap_burst_open(struct inode *inode, struct file *file)
+{
+	struct radeon_device *rdev = inode->i_private;
+	struct rs480_vap_burst_capture *cap;
+	u32 requested;
+
+	requested = (u32)clamp(radeon_rs480_vap_burst_census_words, 1,
+			       RS480_VAP_BURST_MAX_WORDS);
+
+	cap = kzalloc(sizeof(*cap), GFP_KERNEL);
+	if (!cap)
+		return -ENOMEM;
+
+	cap->rdev = rdev;
+	cap->requested = requested;
+	cap->anchor_slots =
+		requested / RS480_VAP_BURST_ANCHOR_INTERVAL + 1;
+	cap->allocation_length = RS480_VAP_BURST_HEADER_SIZE +
+		(size_t)cap->anchor_slots * sizeof(__le64) +
+		(size_t)requested * RS480_VAP_BURST_WORD_SIZE;
+	cap->buffer = kvzalloc(cap->allocation_length, GFP_KERNEL);
+	if (!cap->buffer) {
+		kfree(cap);
+		return -ENOMEM;
+	}
+	mutex_init(&cap->read_lock);
+	file->private_data = cap;
+	return nonseekable_open(inode, file);
+}
+
+static ssize_t rs480_vap_burst_read(struct file *file, char __user *buf,
+				    size_t count, loff_t *ppos)
+{
+	struct rs480_vap_burst_capture *cap = file->private_data;
+	ssize_t ret;
+	int r;
+
+	mutex_lock(&cap->read_lock);
+	if (!cap->captured) {
+		r = rs480_vap_burst_capture_run(cap);
+		if (r) {
+			mutex_unlock(&cap->read_lock);
+			return r;
+		}
+		cap->captured = true;
+	}
+	ret = simple_read_from_buffer(buf, count, ppos, cap->buffer,
+				      cap->published_length);
+	mutex_unlock(&cap->read_lock);
+	return ret;
+}
+
+static int rs480_vap_burst_release(struct inode *inode, struct file *file)
+{
+	struct rs480_vap_burst_capture *cap = file->private_data;
+
+	mutex_destroy(&cap->read_lock);
+	kvfree(cap->buffer);
+	kfree(cap);
+	return 0;
+}
+
+static const struct file_operations rs480_vap_burst_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs480_vap_burst_open,
+	.read    = rs480_vap_burst_read,
+	.release = rs480_vap_burst_release,
+};
+
 /* Gated-state plain-read probe.  The force_clock_validated tier asserts a
  * register is safe to read ONLY with its domain SCLK_CNTL FORCE bit set; the
  * open question is whether a PLAIN read stalls when the clock is genuinely
@@ -3709,6 +4025,12 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 		 */
 		debugfs_create_file("radeon_rs480_vap_status_census", 0400,
 				    root, rdev, &rs480_vap_census_fops);
+		/* Back-to-back VAP_CNTL_STATUS burst census with anchor
+		 * timestamps: inert until rs480_vap_burst_census_arm
+		 * carries its own exact token.
+		 */
+		debugfs_create_file("radeon_rs480_vap_status_burst_census",
+				    0400, root, rdev, &rs480_vap_burst_fops);
 	}
 #endif
 #if RADEON_PROBE_DEV
