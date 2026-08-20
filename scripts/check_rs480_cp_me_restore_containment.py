@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 33
+EXPECTED_BAD_COUNT = 46
 
 
 class ContractError(Exception):
@@ -77,7 +77,9 @@ def mask_comments_and_literals(source: str) -> str:
     return "".join(masked)
 
 
-def function_body(source: str, function_name: str) -> str:
+def function_body(
+    source: str, function_name: str, preserve_literals: bool = False
+) -> str:
     """Return one named C function through balanced brace matching."""
     masked = mask_comments_and_literals(source)
     signature = re.search(
@@ -95,6 +97,8 @@ def function_body(source: str, function_name: str) -> str:
         elif masked[position] == "}":
             depth -= 1
             if depth == 0:
+                if preserve_literals:
+                    return source[opening_brace + 1 : position]
                 return masked[opening_brace + 1 : position]
     raise ContractError(f"unterminated function: {function_name}")
 
@@ -145,6 +149,12 @@ def verify_contract(
         r"orig_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)\s*;",
         "original microword capture is incomplete or reordered",
     )
+    if not re.fullmatch(
+        r"\s*u32\s+orig_h\s*,\s*orig_l\s*,\s*csq\s*;\s*",
+        body[: original_capture.start()],
+        re.DOTALL,
+    ):
+        raise ContractError("CP ME write or control flow precedes original capture")
     queue_capture_disable = require_pattern(
         body,
         r"csq\s*=\s*RREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*\)\s*;\s*"
@@ -266,9 +276,23 @@ def verify_contract(
         raise ContractError("injection helper return denominator differs")
 
     handler = function_body(driver_source, "rs480_cp_me_ram_inject_write")
+    handler_source = function_body(
+        driver_source, "rs480_cp_me_ram_inject_write", preserve_literals=True
+    )
+    idle_gate = require_pattern(
+        handler,
+        r"ret\s*=\s*rs480_cp_me_ram_inject_wait_idle\s*\(\s*rdev\s*\)\s*;",
+        "write handler does not run the CP ME idle gate",
+    )
     idle_failure = require_pattern(
         handler,
-        r"if\s*\(\s*ret\s*\)\s*\{[^{}]*return\s+ret\s*;\s*\}",
+        r"if\s*\(\s*ret\s*\)\s*\{\s*"
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,[^;]*\)\s*;\s*"
+        r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
+        r"radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"dev_warn_ratelimited\s*\([^;]*\)\s*;\s*"
+        r"return\s+ret\s*;\s*\}",
         "write handler idle failure cleanup is absent",
     )
     mutation_mark = require_pattern(
@@ -276,6 +300,14 @@ def verify_contract(
         r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,[^;]*\)\s*;",
         "write handler does not record the admitted mutation",
     )
+    if idle_gate.start() >= idle_failure.start():
+        raise ContractError("CP ME idle gate does not precede its failure cleanup")
+    if handler[idle_gate.end() : idle_failure.start()].strip():
+        raise ContractError("control flow intervenes before CP ME idle failure cleanup")
+    if brace_depth_at(handler, idle_gate.start()) != 0:
+        raise ContractError("CP ME idle gate must remain top level")
+    if brace_depth_at(handler, idle_failure.start()) != 0:
+        raise ContractError("CP ME idle failure cleanup must remain top level")
     if idle_failure.start() >= mutation_mark.start():
         raise ContractError("idle failure cleanup does not precede the mutation marker")
     if handler[idle_failure.end() : mutation_mark.start()].strip():
@@ -295,19 +327,31 @@ def verify_contract(
         raise ContractError("injection helper call is conditional or reordered")
     if brace_depth_at(handler, injection_call.start()) != 0:
         raise ContractError("injection helper call must remain top level")
-    normal_cleanup = require_pattern(
-        handler[injection_call.end() :],
+    result_format = require_pattern(
+        handler_source,
         r"snprintf\s*\(\s*ctx->result\s*,\s*"
-        r"sizeof\s*\(\s*ctx->result\s*\)\s*,[^;]*\)\s*;\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*"
+        r'"addr=%04x wrote=%08x:%08x read=%08x:%08x write_ok=%d restored=%08x:%08x restore_ok=%d\\n"\s*,\s*'
+        r"addr\s*,\s*new_h\s*,\s*new_l\s*,\s*rb_h\s*,\s*rb_l\s*,\s*"
+        r"\(\s*rb_h\s*==\s*new_h\s*&&\s*rb_l\s*==\s*new_l\s*\)\s*,\s*"
+        r"rs_h\s*,\s*rs_l\s*,\s*\(\s*ret\s*!=\s*-EIO\s*\)\s*\)\s*;",
+        "write handler result omits requested or measured CP ME values",
+    )
+    normal_unlocks = require_pattern(
+        handler[result_format.end() :],
         r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
         r"radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;",
         "write handler does not format the result and release both locks",
     )
-    normal_cleanup_start = injection_call.end() + normal_cleanup.start()
-    normal_cleanup_end = injection_call.end() + normal_cleanup.end()
-    if handler[injection_call.end() : normal_cleanup_start].strip():
+    normal_unlocks_start = result_format.end() + normal_unlocks.start()
+    normal_cleanup_end = result_format.end() + normal_unlocks.end()
+    if handler[injection_call.end() : result_format.start()].strip():
         raise ContractError("control flow intervenes before post-injection cleanup")
-    if brace_depth_at(handler, normal_cleanup_start) != 0:
+    if handler[result_format.end() : normal_unlocks_start].strip():
+        raise ContractError("control flow intervenes before post-injection unlock")
+    if brace_depth_at(handler, result_format.start()) != 0:
+        raise ContractError("post-injection result formatting must remain top level")
+    if brace_depth_at(handler, normal_unlocks_start) != 0:
         raise ContractError("post-injection cleanup must remain top level")
     if re.search(
         r"(?:\(\s*)*\bret\b(?:\s*\))*\s*"
@@ -433,8 +477,19 @@ def selftest(repository: Path) -> int:
             "\tret = rs480_cp_me_ram_inject_one(rdev, addr, new_h, new_l,\n"
             "\t\t\t\t\t &rb_h, &rb_l, &rs_h, &rs_l);\n"
         )
+        idle_gate_block = "\tret = rs480_cp_me_ram_inject_wait_idle(rdev);\n"
+        idle_failure_unlock_block = (
+            "\t\tmutex_unlock(&ctx->lock);\n\t\tradeon_device_unlock_hardware(rdev);\n"
+        )
         mutation_mark_block = (
             '\tradeon_dev_mark_mutation(rdev, "RS4xx CP-ME RAM injection");\n'
+        )
+        result_format_block = (
+            "\tsnprintf(ctx->result, sizeof(ctx->result),\n"
+            '\t\t "addr=%04x wrote=%08x:%08x read=%08x:%08x write_ok=%d '
+            'restored=%08x:%08x restore_ok=%d\\n",\n'
+            "\t\t addr, new_h, new_l, rb_h, rb_l,\n"
+            "\t\t (rb_h == new_h && rb_l == new_l), rs_h, rs_l, (ret != -EIO));\n"
         )
         normal_unlock_block = (
             "\tmutex_unlock(&ctx->lock);\n\tradeon_device_unlock_hardware(rdev);\n"
@@ -660,6 +715,158 @@ def selftest(repository: Path) -> int:
                     queue_capture_disable,
                     queue_capture_disable + "\tif (new_h == 0)\n\t\treturn -EINVAL;\n",
                     "disabled queue early return",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME write precedes original capture",
+                replace_once(
+                    driver_source,
+                    original_capture_block,
+                    "\tWREG32(RADEON_CP_ME_RAM_DATAH, new_h);\n"
+                    + original_capture_block,
+                    "pre-capture CP ME write",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler skips the CP ME idle gate",
+                replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "CP ME idle gate invocation",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure leaves the context lock held",
+                replace_once(
+                    driver_source,
+                    idle_failure_unlock_block,
+                    idle_failure_unlock_block.replace(
+                        "\t\tmutex_unlock(&ctx->lock);\n", ""
+                    ),
+                    "idle failure context unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure leaves the hardware lock held",
+                replace_once(
+                    driver_source,
+                    idle_failure_unlock_block,
+                    idle_failure_unlock_block.replace(
+                        "\t\tradeon_device_unlock_hardware(rdev);\n", ""
+                    ),
+                    "idle failure hardware unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the requested CP ME address",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace(
+                        "addr, new_h, new_l", "0, new_h, new_l"
+                    ),
+                    "result format address",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the requested CP ME high half",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("addr, new_h, new_l", "addr, 0, new_l"),
+                    "result format requested high half",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the requested CP ME low half",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("addr, new_h, new_l", "addr, new_h, 0"),
+                    "result format requested low half",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the modified high-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rb_h, rb_l", "0, rb_l"),
+                    "result format modified high-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the modified low-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rb_h, rb_l", "rb_h, 0"),
+                    "result format modified low-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the modified microword status",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace(
+                        "(rb_h == new_h && rb_l == new_l)", "1"
+                    ),
+                    "result format modified microword status",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the restored high-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rs_h, rs_l", "0, rs_l"),
+                    "result format restored high-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the restored low-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rs_h, rs_l", "rs_h, 0"),
+                    "result format restored low-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the restore status",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("(ret != -EIO)", "1"),
+                    "result format restore status",
                 ),
                 feature_policy,
                 surface_audit,
