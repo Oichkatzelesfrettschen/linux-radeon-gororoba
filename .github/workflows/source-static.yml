@@ -236,8 +236,7 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/6.18.38-2-cachyos-lts.toml \
             --manifest ci/kernel-build-roots/6.18.38-2-cachyos-lts.manifest.tsv
-          timeout 300 sh scripts/with_build_slot.sh \
-            sh scripts/build_radeon_module.sh --self-test
+          timeout 300 sh scripts/build_radeon_module.sh --self-test
           timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --prod \
@@ -347,8 +346,7 @@ jobs:
             --root "$KERNEL_BUILD_ROOT" \
             --declaration ci/kernel-build-roots/7.1.4-1-cachyos.toml \
             --manifest ci/kernel-build-roots/7.1.4-1-cachyos.manifest.tsv
-          timeout 300 sh scripts/with_build_slot.sh \
-            sh scripts/build_radeon_module.sh --self-test
+          timeout 300 sh scripts/build_radeon_module.sh --self-test
           timeout 1800 sh scripts/with_build_slot.sh \
             sh scripts/build_radeon_module.sh \
               --prod \
