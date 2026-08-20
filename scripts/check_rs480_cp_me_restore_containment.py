@@ -104,6 +104,19 @@ def require_pattern(body: str, pattern: str, description: str) -> re.Match[str]:
     return match
 
 
+def brace_depth_at(body: str, position: int) -> int:
+    """Return the lexical brace depth before one masked source offset."""
+    depth = 0
+    for character in body[:position]:
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth < 0:
+                raise ContractError("function body closes before the checked statement")
+    return depth
+
+
 def feature_block(policy: str, feature_id: str) -> str:
     """Return one TOML feature block by its exact identifier."""
     for block in re.split(r"(?=^\[\[feature\]\]$)", policy, flags=re.MULTILINE):
@@ -131,7 +144,7 @@ def verify_contract(
     )
     restore_read = require_pattern(
         body,
-        r"\*restored_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)",
+        r"\*restored_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)\s*;",
         "restored microword readback is absent",
     )
     restore_mismatch = require_pattern(
@@ -144,7 +157,7 @@ def verify_contract(
     )
     queue_restore = require_pattern(
         body,
-        r"WREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*,\s*csq\s*\)",
+        r"WREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*,\s*csq\s*\)\s*;",
         "verified restore path does not restore CP queue control",
     )
     write_mismatch = require_pattern(
@@ -165,6 +178,19 @@ def verify_contract(
         raise ContractError(
             "CP queue restoration must follow exact original microword validation"
         )
+    top_level_statements = (
+        queue_disable,
+        restore_read,
+        restore_mismatch,
+        queue_restore,
+        write_mismatch,
+    )
+    if any(brace_depth_at(body, match.start()) != 0 for match in top_level_statements):
+        raise ContractError("CP restore containment statements must remain top level")
+    if body[restore_read.end() : restore_mismatch.start()].strip():
+        raise ContractError("control flow intervenes before restore validation")
+    if body[restore_mismatch.end() : queue_restore.start()].strip():
+        raise ContractError("control flow intervenes before safe queue restoration")
     if body.count("radeon_rs4xx_latch_parked_state(rdev);") != 1:
         raise ContractError("restore mismatch must have one parked state publication")
     if body.count("return -EIO;") != 1:
@@ -279,6 +305,28 @@ def selftest(repository: Path) -> int:
             (
                 "safe path queue restore removed",
                 without_queue_restore,
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "restore validation becomes unreachable",
+                replace_once(
+                    driver_source,
+                    mismatch_block,
+                    "\tif (false) {\n" + mismatch_block + "\t}\n",
+                    "unreachable restore validation",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "control flow bypasses restore validation",
+                replace_once(
+                    driver_source,
+                    mismatch_block,
+                    "\tgoto restore_queue;\n" + mismatch_block,
+                    "restore validation bypass",
+                ),
                 feature_policy,
                 surface_audit,
             ),
