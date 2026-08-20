@@ -9,7 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 84
+EXPECTED_BAD_COUNT = 89
 
 
 class ContractError(Exception):
@@ -403,7 +403,7 @@ def verify_contract(
     require_pattern(
         driver_code,
         r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ARM_TOKEN\s+"
-        r"0x494e4a31u\b",
+        r"0x494e4a31u[ \t]*(?:\n|\Z)",
         "CP ME arm token does not retain its nonzero declaration",
     )
     address_limit_definitions = re.findall(
@@ -414,7 +414,8 @@ def verify_contract(
         raise ContractError("CP ME address limit declaration denominator differs")
     require_pattern(
         driver_code,
-        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ADDR_LIMIT\s+0x100u\b",
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ADDR_LIMIT\s+"
+        r"0x100u[ \t]*(?:\n|\Z)",
         "CP ME address limit does not retain its overlay declaration",
     )
     parameter_definitions = list(
@@ -435,10 +436,26 @@ def verify_contract(
         r"radeon_rs480_cp_me_ram_inject\s*,\s*int\s*,\s*0644\s*\)\s*;",
         "CP ME arm parameter does not bind its declared module interface",
     )
+    require_pattern(
+        driver_code,
+        r"(?:^|\n)static\s+int\s+rs480_cp_me_ram_inject_one\s*\(\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*,\s*u32\s+addr\s*,\s*"
+        r"u32\s+new_h\s*,\s*u32\s+new_l\s*,\s*u32\s*\*\s*rb_h\s*,\s*"
+        r"u32\s*\*\s*rb_l\s*,\s*u32\s*\*\s*restored_h\s*,\s*"
+        r"u32\s*\*\s*restored_l\s*\)\s*\{",
+        "CP ME injection helper does not retain its parameter order",
+    )
 
     handler = function_body(driver_source, "rs480_cp_me_ram_inject_write")
     handler_source = function_body(
         driver_source, "rs480_cp_me_ram_inject_write", preserve_literals=True
+    )
+    require_pattern(
+        handler,
+        r"\A\s*struct\s+rs480_cp_me_inject_ctx\s*\*\s*ctx\s*=\s*"
+        r"file_inode\s*\(\s*file\s*\)\s*->\s*i_private\s*;\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*=\s*ctx\s*->\s*rdev\s*;",
+        "write handler does not derive its device context from debugfs private data",
     )
     descriptor_rejection = require_pattern(
         handler,
@@ -753,6 +770,25 @@ def verify_contract(
             "write handler must propagate the injection result exactly once"
         )
 
+    show_source = mask_comments_and_literals(
+        function_body(
+            driver_source, "rs480_cp_me_ram_inject_show", preserve_literals=True
+        ),
+        preserve_literals=True,
+    )
+    if not re.fullmatch(
+        r"\s*struct\s+rs480_cp_me_inject_ctx\s*\*\s*ctx\s*=\s*"
+        r"m\s*->\s*private\s*;\s*"
+        r"rs480_debugfs_emit_schema\s*\(\s*m\s*\)\s*;\s*"
+        r"mutex_lock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
+        r"seq_printf\s*\(\s*m\s*,\s*\"%s\"\s*,\s*ctx->result\s*\[\s*0\s*\]\s*\?\s*"
+        r"ctx->result\s*:\s*\"no inject performed\\n\"\s*\)\s*;\s*"
+        r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*return\s+0\s*;\s*",
+        show_source,
+        re.DOTALL,
+    ):
+        raise ContractError("CP ME result reader does not emit the recorded result")
+
     idle_helper = function_body(driver_source, "rs480_cp_me_ram_inject_wait_idle")
     if not re.fullmatch(
         r"\s*int\s+ret\s*=\s*0\s*;\s*"
@@ -935,6 +971,7 @@ def selftest(repository: Path) -> int:
         )
         arm_token_definition = "#define RS480_CP_ME_INJECT_ARM_TOKEN  0x494e4a31u"
         address_limit_definition = "#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x100u"
+        injection_helper_readback_parameters = "u32 *rb_h, u32 *rb_l,"
         module_parameter_declaration = "int radeon_rs480_cp_me_ram_inject;\n"
         error_contract_line = (
             'error_contract = "a restore mismatch keeps the command queue disabled, '
@@ -977,6 +1014,13 @@ def selftest(repository: Path) -> int:
         )
         successful_log_result = (
             '\t\tdev_info(rdev->dev, "rs480_cp_me_ram_inject: %s", ctx->result);\n'
+        )
+        write_context_declaration = (
+            "\tstruct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;\n"
+        )
+        show_result_block = (
+            '\tseq_printf(m, "%s", ctx->result[0] ?\n'
+            '\t\t   ctx->result : "no inject performed\\n");\n'
         )
         queue_restore = "\tWREG32(RADEON_CP_CSQ_CNTL, csq);\n"
         protected_restore = mismatch_block + "\n" + queue_restore
@@ -1688,6 +1732,17 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "CP ME arm token permits a trailing expression",
+                replace_once(
+                    driver_source,
+                    arm_token_definition,
+                    arm_token_definition + " - 0x494e4a31u",
+                    "CP ME arm token trailing expression",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "unknown token conditional selects a zero declaration",
                 replace_once(
                     driver_source,
@@ -1707,6 +1762,50 @@ def selftest(repository: Path) -> int:
                     address_limit_definition,
                     "#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x1000u",
                     "CP ME address limit declaration",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME address limit permits a trailing expression",
+                replace_once(
+                    driver_source,
+                    address_limit_definition,
+                    address_limit_definition + " + 0xf00u",
+                    "CP ME address limit trailing expression",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "injection helper swaps the readback parameter names",
+                replace_once(
+                    driver_source,
+                    injection_helper_readback_parameters,
+                    "u32 *rb_l, u32 *rb_h,",
+                    "CP ME injection helper readback parameter order",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler derives context from file private data",
+                replace_once(
+                    driver_source,
+                    write_context_declaration,
+                    "\tstruct rs480_cp_me_inject_ctx *ctx = file->private_data;\n",
+                    "CP ME write context declaration",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result reader omits the recorded injection result",
+                replace_once(
+                    driver_source,
+                    show_result_block,
+                    '\tseq_puts(m, "no inject performed\\n");\n',
+                    "CP ME result reader",
                 ),
                 feature_policy,
                 surface_audit,
