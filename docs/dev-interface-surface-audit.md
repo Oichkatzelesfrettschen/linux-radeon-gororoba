@@ -64,7 +64,7 @@ columns record the gates beyond that shared guard.
 | Node | Mode | Tier | Write contract | Mutation marker |
 | --- | --- | --- | --- | --- |
 | radeon_rs480_mc_flush | 0200 | mutate-dev | family check, exact command val == 1, radeon_dev_hardware_available (shutdown, suspended, parked), bounded 16-dword CP packet, nonseekable fd | RS4xx CP cache drain |
-| radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | one operation per fd (ppos consumed on admission), token 0x494e4a31 plus literal ARM keyword, surplus-rejecting shared parser rs480_cp_me_inject_parse, address bound 0x100, radeon_dev_hardware_available, idle gate, write-verify-restore | RS4xx CP-ME RAM injection |
+| radeon_rs480_cp_me_ram_inject | 0600 | mutate-dev | one operation per fd, token 0x494e4a31 plus literal ARM keyword, surplus-rejecting shared parser rs480_cp_me_inject_parse, address bound 0x100, radeon_dev_hardware_available, idle gate, restore validation before queue reenable, restore mismatch parks with the queue disabled | RS4xx CP-ME RAM injection |
 | radeon_force_pci_reset_safe | 0200 | mutate-dev | DRM primary minor root, exact CHIP_PALM registration and write guards, exact command 1 via sysfs_streq, one operation per fd, exclusive_lock writer, radeon_dev_hardware_available, exact palm_pci_reset_unsafe Boolean, bounded PCI configuration reset | Palm PCI config reset |
 
 Each write node opens through `nonseekable_open`, which clears `FMODE_LSEEK`

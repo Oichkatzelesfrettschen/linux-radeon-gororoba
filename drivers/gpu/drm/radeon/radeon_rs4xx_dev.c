@@ -1410,15 +1410,17 @@ static int rs480_cp_me_ram_inject_one(struct radeon_device *rdev, u32 addr,
 	*restored_h = RREG32(RADEON_CP_ME_RAM_DATAH);
 	*restored_l = RREG32(RADEON_CP_ME_RAM_DATAL);
 
+	/* A restore mismatch leaves modified microcode in the command processor.
+	 * Keep the command queue disabled and publish the parked state before
+	 * returning -EIO.  A verified restore permits the original queue state.
+	 * A later -ENXIO means the bounded write did not take. */
+	if (*restored_h != orig_h || *restored_l != orig_l) {
+		radeon_rs4xx_latch_parked_state(rdev);
+		return -EIO;
+	}
+
 	WREG32(RADEON_CP_CSQ_CNTL, csq);
 
-	/* -EIO is the dangerous outcome: the restore read-back does not match the
-	 * saved word, so the loaded microcode is left modified -- the caller must
-	 * see the failure, not a success return.  -ENXIO is the safe negative: the
-	 * word restored cleanly but the write never took (an address backed by ME
-	 * ROM rather than the writable R300_cp.bin overlay reads back != written). */
-	if (*restored_h != orig_h || *restored_l != orig_l)
-		return -EIO;
 	if (*rb_h != new_h || *rb_l != new_l)
 		return -ENXIO;
 	return 0;

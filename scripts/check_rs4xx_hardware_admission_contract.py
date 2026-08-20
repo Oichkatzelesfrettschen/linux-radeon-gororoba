@@ -9,10 +9,11 @@ they can allocate, bind, unbind, or retain TTM state after an outer entrypoint
 has admitted its work. Every operational caller rejects a failed begin,
 balances a successful begin with an end after its final hardware operation,
 and keeps the hardware operation after admission. The parked latch remains a
-terminal -EIO outcome at the central root. Four direct latch callers cover
+terminal -EIO outcome at the central root. Five direct latch callers cover
 teardown refusal, full parked-state publication, reset ring-restore failure,
-and RS400 initialization reset and startup failure. Four teardown refusal callers cover
-BO destruction, TTM backend unbind, TTM unpopulation, and GEM object release.
+RS400 initialization reset failure, and CP microengine restore failure. Four
+teardown refusal callers cover BO destruction, TTM backend unbind, TTM
+unpopulation, and GEM object release.
 The refusal wrapper latches before it records pending publication, and the
 publisher drains admitted transactions and readers before CPU-only cleanup.
 The work item coalesces a running publisher, and terminal quiescence disables
@@ -439,6 +440,11 @@ def expected_latch_call_sites() -> dict[tuple[Path, str, str], int]:
         (
             SUBTREE / "radeon_device.c",
             "radeon_gpu_reset_internal",
+            LATCH_PARKED,
+        ): 1,
+        (
+            SUBTREE / "radeon_rs4xx_dev.c",
+            "rs480_cp_me_ram_inject_one",
             LATCH_PARKED,
         ): 1,
         (SUBTREE / "rs400.c", "rs400_init", LATCH_PARKED): 1,
@@ -1323,6 +1329,13 @@ def check_contract(root: Path) -> None:
 
 
 FIXTURE_SOURCES = {
+    SUBTREE / "radeon_rs4xx_dev.c": """
+static int rs480_cp_me_ram_inject_one(struct radeon_device *rdev)
+{
+	radeon_rs4xx_latch_parked_state(rdev);
+	return -EIO;
+}
+""",
     SUBTREE / "radeon_device.c": """
 static int radeon_rs4xx_hardware_state_errno(int state)
 {
@@ -2495,6 +2508,12 @@ def selftest(root: Path) -> int:
             "\t\t\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\t\t\tgpu_parked = true;",
             "\t\t\tr = restore_result;\n\t\t\tgpu_parked = true;",
+        ),
+        (
+            "CP microengine restore parked latch removed",
+            SUBTREE / "radeon_rs4xx_dev.c",
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n",
+            "",
         ),
         (
             "RS400 initialization parked latch removed",

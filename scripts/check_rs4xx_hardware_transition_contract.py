@@ -43,6 +43,7 @@ SOURCE_FILES = (
     PCI_AUTHORITY,
     RADEON / "radeon.h",
     RADEON / "radeon_device.c",
+    RADEON / "radeon_rs4xx_dev.c",
     RADEON / "radeon_drv.c",
     RADEON / "radeon_kms.c",
     RADEON / "rs400.c",
