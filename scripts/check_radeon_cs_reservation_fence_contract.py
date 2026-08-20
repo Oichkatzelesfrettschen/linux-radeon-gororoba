@@ -156,6 +156,7 @@ SOURCE_FILES = (
     "drivers/gpu/drm/radeon/radeon_object.c",
     "drivers/gpu/drm/radeon/radeon_prime.c",
     "drivers/gpu/drm/radeon/radeon_ring.c",
+    "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
     "drivers/gpu/drm/radeon/radeon_sync.c",
     "drivers/gpu/drm/radeon/radeon_ttm.c",
     "drivers/gpu/drm/radeon/r300.c",

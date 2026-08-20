@@ -455,10 +455,17 @@ void radeon_rs4xx_latch_parked_state(struct radeon_device *rdev)
 void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)
 {
 	/* A void TTM callback cannot return an unbind failure to TTM. The
-	 * latch closes later hardware admission. The retained BO and TTM lists
-	 * keep the affected storage live while unload retains device ownership.
-	 * The process-context publisher queues when the caller has no active
-	 * transaction; a callback-owned transaction queues from its final release.
+	 * retained BO and TTM lists keep the affected storage live while unload
+	 * retains device ownership.
+	 */
+	radeon_rs4xx_latch_parked_publication(rdev);
+}
+
+void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)
+{
+	/* The latch closes later hardware admission. The process-context
+	 * publisher queues when the caller has no active transaction, while a
+	 * transaction owner queues the publisher from its final release.
 	 */
 	radeon_rs4xx_latch_parked_state(rdev);
 	atomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);

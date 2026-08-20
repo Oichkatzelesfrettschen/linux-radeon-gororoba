@@ -43,6 +43,7 @@ SOURCE_FILES = (
     PCI_AUTHORITY,
     RADEON / "radeon.h",
     RADEON / "radeon_device.c",
+    RADEON / "radeon_rs4xx_dev.c",
     RADEON / "radeon_drv.c",
     RADEON / "radeon_kms.c",
     RADEON / "rs400.c",
@@ -286,6 +287,7 @@ def load_policy(root: Path) -> list[dict[str, str]]:
                 or row["target"]
                 in {
                     "radeon_rs4xx_latch_parked_state",
+                    "radeon_rs4xx_latch_parked_publication",
                     "radeon_rs4xx_publish_parked_state",
                     "radeon_rs4xx_finish_terminal_shutdown",
                 },
@@ -578,15 +580,26 @@ def check_state_machine(root: Path) -> None:
         "parked latch fence wake is absent",
     )
 
-    latch_wrapper = function_source(
-        root, RADEON / "radeon_device.c", "radeon_rs4xx_latch_teardown_refusal"
+    publication_latch = function_source(
+        root, RADEON / "radeon_device.c", "radeon_rs4xx_latch_parked_publication"
     )
-    wrapper = re.sub(r"\s+", " ", latch_wrapper.masked_body).strip()
+    publication_body = re.sub(
+        r"\s+", " ", publication_latch.masked_body
+    ).strip()
     require(
-        wrapper == "radeon_rs4xx_latch_parked_state(rdev); "
+        publication_body == "radeon_rs4xx_latch_parked_state(rdev); "
         "atomic_xchg(&rdev->rs4xx_parked_publish_pending, 1); "
         "radeon_rs4xx_queue_parked_publish(rdev);",
-        "latch-only teardown refusal gained blocking cleanup",
+        "parked publication latch differs from its nonblocking queue contract",
+    )
+
+    teardown_wrapper = function_source(
+        root, RADEON / "radeon_device.c", "radeon_rs4xx_latch_teardown_refusal"
+    )
+    teardown_body = re.sub(r"\s+", " ", teardown_wrapper.masked_body).strip()
+    require(
+        teardown_body == "radeon_rs4xx_latch_parked_publication(rdev);",
+        "teardown refusal bypasses the nonblocking publication latch",
     )
 
     publisher = function_source(
@@ -1197,12 +1210,33 @@ def selftest(repository: Path) -> int:
             "",
         ),
         (
-            "teardown refusal gains full publisher cleanup",
+            "parked publication latch loses its pending request",
             RADEON / "radeon_device.c",
-            "radeon_rs4xx_latch_teardown_refusal",
+            "radeon_rs4xx_latch_parked_publication",
+            "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n",
+            "",
+        ),
+        (
+            "parked publication latch loses its queue request",
+            RADEON / "radeon_device.c",
+            "radeon_rs4xx_latch_parked_publication",
+            "\tradeon_rs4xx_queue_parked_publish(rdev);\n",
+            "",
+        ),
+        (
+            "parked publication latch gains blocking cleanup",
+            RADEON / "radeon_device.c",
+            "radeon_rs4xx_latch_parked_publication",
             "\tradeon_rs4xx_latch_parked_state(rdev);",
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\t(void)radeon_page_flip_quiesce(rdev);",
+        ),
+        (
+            "teardown refusal bypasses parked publication",
+            RADEON / "radeon_device.c",
+            "radeon_rs4xx_latch_teardown_refusal",
+            "\tradeon_rs4xx_latch_parked_publication(rdev);",
+            "\tradeon_rs4xx_latch_parked_state(rdev);",
         ),
         (
             "full publisher stops draining readers",

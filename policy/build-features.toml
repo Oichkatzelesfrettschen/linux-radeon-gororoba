@@ -1074,14 +1074,14 @@ scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
 side_effect_class = "microcode-write"
 interface_class = "raw-hardware-writer"
-resource_bounds = "finite write set with write, verify, and restore for each word"
+resource_bounds = "one bounded microword write, readback, original microword restore, restore validation, and command queue restoration only after exact equality"
 locking = "device hardware transaction, per-device mutation lock, and engine-idle gate"
-error_contract = "any gate, verify, or restore failure aborts and reports the exact stage"
+error_contract = "a restore mismatch keeps the command queue disabled, requests CPU-only parked publication, and returns -EIO; a verified restore permits the original queue state; a write mismatch after verified restore returns -ENXIO"
 tests = [
   "normal: exact token performs bounded write, verify, and restore",
   "boundary: final writable word restores its original value",
   "failure: non-idle engine returns before microcode access",
-  "adversarial: mismatched verify value forces restore and failure",
+  "adversarial: a restore mismatch parks the device before queue restoration",
 ]
 production_promotion_condition = "no production promotion for microcode injection"
 profile_exception = "none"

@@ -4,10 +4,10 @@ comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
 max_source_bytes = 7200000
-root_denominator_count = 129
-root_denominator_sha256 = "2a3c47dd45cfd6fdac67bb11350f9f1bb2df892ff4dc88c6d3e1268811eafbec"
+root_denominator_count = 130
+root_denominator_sha256 = "1529d8dcc7a81755a55455d06e5031287f79bcfd5af83df6204250f13ee20d3a"
 hazard_denominator_count = 33
-hazard_denominator_sha256 = "e64f5bc248a7022b115813b6fecf6478b7ca06ee3ff2cb41907ae56a48b36065"
+hazard_denominator_sha256 = "e241a84b26088ceaed3b5440bf2ae850fcaa09d97694b3a793ecd55e6769329c"
 binding_denominator_count = 70
 binding_denominator_sha256 = "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 
@@ -462,6 +462,7 @@ roots = [
   "radeon_rs4xx_hardware_transition_end",
   "radeon_rs4xx_queue_parked_publish",
   "radeon_rs4xx_latch_parked_state",
+  "radeon_rs4xx_latch_parked_publication",
   "radeon_rs4xx_latch_teardown_refusal",
   "radeon_rs4xx_parked_publish_work",
   "radeon_rs4xx_publish_parked_state",
@@ -693,11 +694,13 @@ guard_identifier_census = [
 evidence_rank = "kernel-source"
 
 [[hazard]]
-symbol = "radeon_rs4xx_latch_teardown_refusal"
+symbol = "radeon_rs4xx_latch_parked_publication"
 side_effect_class = "terminal-admission-latch-write"
 guard_identifier_census = [
   { owner = "radeon_rs4xx_latch_parked_state", identifiers = ["gpu_parked", "accel_working", "needs_reset", "ready", "wake_up_all"] },
-  { owner = "radeon_rs4xx_latch_teardown_refusal", identifiers = ["radeon_rs4xx_latch_parked_state", "rs4xx_parked_publish_pending", "radeon_rs4xx_queue_parked_publish"] },
+  { owner = "radeon_rs4xx_latch_parked_publication", identifiers = ["radeon_rs4xx_latch_parked_state", "rs4xx_parked_publish_pending", "radeon_rs4xx_queue_parked_publish"] },
+  { owner = "radeon_rs4xx_latch_teardown_refusal", identifiers = ["radeon_rs4xx_latch_parked_publication"] },
+  { owner = "rs480_cp_me_ram_inject_one", identifiers = ["restored_h", "restored_l", "orig_h", "orig_l", "radeon_rs4xx_latch_parked_publication"] },
 ]
 evidence_rank = "kernel-source"
 

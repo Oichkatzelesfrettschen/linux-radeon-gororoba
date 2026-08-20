@@ -145,22 +145,24 @@ sequence:
 owner, publishes the final state with release ordering, clears closing only for
 `RUNNING`, wakes waiters, and releases the transition mutex.
 
-`radeon_rs4xx_latch_teardown_refusal` is a terminal admission latch, not a
-lifecycle transition. It sets `gpu_parked`, clears acceleration and ring
-readiness, and closes every later reader or transaction admission. It does not
-retroactively drain an operation that already passed admission. Reset,
+`radeon_rs4xx_latch_parked_publication` closes terminal admission and requests
+CPU-only publication without blocking its caller. It sets `gpu_parked`, clears
+acceleration and ring readiness, and closes every later reader or transaction
+admission. It does not retroactively drain an operation that already passed
+admission. `radeon_rs4xx_latch_teardown_refusal` routes GART and TTM ownership
+failures through that mechanism, while a CP microengine restore mismatch keeps
+the command queue disabled before it requests the same publication. Reset,
 suspend, resume, and unload use the transition helpers when they require a
-drained hardware epoch. A GART or TTM invariant refusal in `RUNNING` retains
-the affected ownership and closes new admission; the source does not claim an
-instant drain for already admitted work on that latch-only path.
+drained hardware epoch.
 
-The latch publishes `rs4xx_parked_publish_pending` through a fully ordered
-exchange. The process-context worker clears pending before it drains the
-transaction and reader counters, performs CPU-only containment, clears running
-through a second fully ordered exchange, and executes one final queue check. A
-refusal concurrent with the worker either leaves pending set for that final
+The publication request sets `rs4xx_parked_publish_pending` through a fully
+ordered exchange. The process-context worker clears pending before it drains
+the transaction and reader counters, performs CPU-only containment, clears
+running through a second fully ordered exchange, and executes one final queue
+check. A concurrent request either leaves pending set for that final queue
 check or observes running clear and queues another worker. This ordering keeps
-a refusal from disappearing between the worker's last publication and return.
+a publication request from disappearing between the worker's last publication
+and return.
 
 `policy/rs4xx-hardware-transition-contract.tsv` declares every transition
 owner. `scripts/check_rs4xx_hardware_transition_contract.py` proves the exact

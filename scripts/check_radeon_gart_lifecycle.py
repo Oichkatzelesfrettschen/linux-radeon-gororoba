@@ -1874,10 +1874,20 @@ def check_terminal_ownership(root: Path) -> None:
             "return -EBUSY",
         ),
     )
-    latch = function(root, "radeon_device.c", "radeon_rs4xx_latch_teardown_refusal")
+    teardown_wrapper = function(
+        root, "radeon_device.c", "radeon_rs4xx_latch_teardown_refusal"
+    )
     require_exact_direct_statements(
-        "TTM failure latch and publisher queue sequence",
-        latch,
+        "TTM failure routes through the nonblocking publication latch",
+        teardown_wrapper,
+        ("radeon_rs4xx_latch_parked_publication(rdev);",),
+    )
+    publication_latch = function(
+        root, "radeon_device.c", "radeon_rs4xx_latch_parked_publication"
+    )
+    require_exact_direct_statements(
+        "parked publication latch queues deferred cleanup",
+        publication_latch,
         (
             "radeon_rs4xx_latch_parked_state(rdev);",
             "atomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);",
@@ -2752,8 +2762,8 @@ SOURCE_MUTATIONS = {
     ),
     "reader bypasses hardware transaction admission": (
         "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
-        "\tif (radeon_device_lock_hardware(rdev)) {\n\t\tseq_puts(m, \"metadata",
-        "\tif (false && radeon_device_lock_hardware(rdev)) {\n\t\tseq_puts(m, \"metadata",
+        '\tif (radeon_device_lock_hardware(rdev)) {\n\t\tseq_puts(m, "metadata',
+        '\tif (false && radeon_device_lock_hardware(rdev)) {\n\t\tseq_puts(m, "metadata',
     ),
     "TTM move drops reservation wait before bind": (
         "drivers/gpu/drm/radeon/radeon_ttm.c",
@@ -3089,7 +3099,19 @@ SOURCE_MUTATIONS = {
             "\tWRITE_ONCE(rdev->accel_working, false);\n"
         ),
     ),
-    "teardown refusal drops the process-context publisher": (
+    "parked publication latch loses its pending request": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
+            "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+        ),
+        (
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+        ),
+    ),
+    "parked publication latch loses its queue request": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         (
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
@@ -3100,6 +3122,25 @@ SOURCE_MUTATIONS = {
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
         ),
+    ),
+    "parked publication latch gains blocking cleanup": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
+            "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+        ),
+        (
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\t(void)radeon_page_flip_quiesce(rdev);\n"
+            "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
+            "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+        ),
+    ),
+    "teardown refusal bypasses parked publication": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tradeon_rs4xx_latch_parked_publication(rdev);",
+        "\tradeon_rs4xx_latch_parked_state(rdev);",
     ),
     "parked publication escapes the state lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
