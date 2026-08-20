@@ -9,15 +9,15 @@ import sys
 import tomllib
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 67
+EXPECTED_BAD_COUNT = 71
 
 
 class ContractError(Exception):
     """The CP microengine restore containment contract does not hold."""
 
 
-def mask_comments_and_literals(source: str) -> str:
-    """Replace comments and literals while preserving offsets and line endings."""
+def mask_comments_and_literals(source: str, preserve_literals: bool = False) -> str:
+    """Replace comments and optional literals while preserving offsets and lines."""
     masked = list(source)
     index = 0
     state = "code"
@@ -36,12 +36,14 @@ def mask_comments_and_literals(source: str) -> str:
                 state = "line-comment"
                 continue
             if current == '"':
-                masked[index] = " "
+                if not preserve_literals:
+                    masked[index] = " "
                 index += 1
                 state = "string"
                 continue
             if current == "'":
-                masked[index] = " "
+                if not preserve_literals:
+                    masked[index] = " "
                 index += 1
                 state = "character"
                 continue
@@ -61,21 +63,32 @@ def mask_comments_and_literals(source: str) -> str:
         elif state in {"string", "character"}:
             delimiter = '"' if state == "string" else "'"
             if current == "\\":
-                masked[index] = " "
-                if index + 1 < len(source):
-                    if source[index + 1] != "\n":
+                if not preserve_literals:
+                    masked[index] = " "
+                    if index + 1 < len(source) and source[index + 1] != "\n":
                         masked[index + 1] = " "
-                    index += 2
-                    continue
+                index += 2
+                continue
             if current == delimiter:
-                masked[index] = " "
+                if not preserve_literals:
+                    masked[index] = " "
                 state = "code"
-            elif current != "\n":
+            elif current != "\n" and not preserve_literals:
                 masked[index] = " "
         index += 1
     if state == "block-comment":
         raise ContractError("driver source ends inside a block comment")
     return "".join(masked)
+
+
+KNOWN_TRUE_PREPROCESSOR_EXPRESSIONS = frozenset(
+    {
+        "RADEON_MUTATE_DEV",
+        "RADEON_PROBE_DEV",
+        "defined(CONFIG_DEBUG_FS)",
+        "defined(CONFIG_X86)",
+    }
+)
 
 
 def is_zero_preprocessor_expression(expression: str) -> bool:
@@ -86,6 +99,15 @@ def is_zero_preprocessor_expression(expression: str) -> bool:
             expression,
         )
     )
+
+
+def preprocessor_condition(expression: str) -> bool | None:
+    """Resolve one supported #if expression or preserve an unknown branch."""
+    if is_zero_preprocessor_expression(expression):
+        return False
+    if expression.strip() in KNOWN_TRUE_PREPROCESSOR_EXPRESSIONS:
+        return True
+    return None
 
 
 def active_code_mask(source: str) -> str:
@@ -101,14 +123,15 @@ def active_code_mask(source: str) -> str:
             operation = directive.group(1)
             expression = directive.group(2)
             if operation in {"if", "ifdef", "ifndef"}:
-                condition = not (
-                    operation == "if" and is_zero_preprocessor_expression(expression)
+                condition = (
+                    preprocessor_condition(expression) if operation == "if" else None
                 )
                 stack.append(
                     {
                         "parent_active": active,
-                        "branch_taken": condition,
-                        "active": active and condition,
+                        "branch_taken": condition is True,
+                        "unknown_branch": condition is None,
+                        "active": active and condition is not False,
                     }
                 )
                 active = stack[-1]["active"]
@@ -116,17 +139,23 @@ def active_code_mask(source: str) -> str:
                 if not stack:
                     raise ContractError("unmatched #elif in driver source")
                 frame = stack[-1]
-                condition = not is_zero_preprocessor_expression(expression)
-                frame["active"] = (
-                    frame["parent_active"] and not frame["branch_taken"] and condition
-                )
-                frame["branch_taken"] = frame["branch_taken"] or condition
+                condition = preprocessor_condition(expression)
+                if frame["branch_taken"]:
+                    frame["active"] = False
+                elif frame["unknown_branch"] or condition is None:
+                    frame["unknown_branch"] = True
+                    frame["active"] = frame["parent_active"]
+                else:
+                    frame["active"] = frame["parent_active"] and condition
+                    frame["branch_taken"] = condition
                 active = frame["active"]
             elif operation == "else":
                 if not stack:
                     raise ContractError("unmatched #else in driver source")
                 frame = stack[-1]
-                frame["active"] = frame["parent_active"] and not frame["branch_taken"]
+                frame["active"] = frame["parent_active"] and (
+                    frame["unknown_branch"] or not frame["branch_taken"]
+                )
                 frame["branch_taken"] = True
                 active = frame["active"]
             else:
@@ -216,7 +245,10 @@ def feature_record(policy: str, feature_id: str) -> dict[str, object]:
 
 
 def verify_contract(
-    driver_source: str, feature_policy: str, surface_audit: str
+    driver_source: str,
+    parser_source: str,
+    feature_policy: str,
+    surface_audit: str,
 ) -> None:
     """Verify source ordering and its two declared policy projections."""
     body = function_body(driver_source, "rs480_cp_me_ram_inject_one")
@@ -409,6 +441,23 @@ def verify_contract(
         r"return\s+-ERANGE\s*;",
         "write handler does not retain the CP ME address limit",
     )
+    admission_chain = require_pattern(
+        handler,
+        r"if\s*\(\s*\*ppos\s*!=\s*0\s*\)\s*return\s+-ESPIPE\s*;\s*"
+        r"if\s*\(\s*radeon_rs480_cp_me_ram_inject\s*!=\s*"
+        r"RS480_CP_ME_INJECT_ARM_TOKEN\s*\)\s*return\s+-EACCES\s*;\s*"
+        r"if\s*\(\s*len\s*>=\s*sizeof\s*\(\s*kbuf\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;\s*"
+        r"if\s*\(\s*copy_from_user\s*\(\s*kbuf\s*,\s*ubuf\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EFAULT\s*;\s*"
+        r"kbuf\s*\[\s*len\s*\]\s*=\s*;\s*"
+        r"if\s*\(\s*!rs480_cp_me_inject_parse\s*\(\s*"
+        r"kbuf\s*,\s*&addr\s*,\s*&new_h\s*,\s*&new_l\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;\s*"
+        r"if\s*\(\s*addr\s*>=\s*RS480_CP_ME_INJECT_ADDR_LIMIT\s*\)\s*"
+        r"return\s+-ERANGE\s*;",
+        "write handler CP ME admission gates are conditional or reordered",
+    )
     hardware_lock = require_pattern(
         handler,
         r"ret\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;",
@@ -454,6 +503,13 @@ def verify_contract(
         brace_depth_at(handler, position) != 0 for position in acquisition_positions
     ):
         raise ContractError("CP ME lock acquisition must remain top level")
+    if re.search(
+        r"\b(?:if|switch|for|while|goto|return)\b",
+        handler[: descriptor_rejection.start()],
+    ):
+        raise ContractError("control flow precedes CP ME descriptor admission")
+    if admission_chain.start() != descriptor_rejection.start():
+        raise ContractError("CP ME descriptor admission is not unconditional")
     if (
         payload_terminator.start() != payload_terminator_source.start()
         or payload_terminator.end() != payload_terminator_source.end()
@@ -626,6 +682,39 @@ def verify_contract(
             "write handler must propagate the injection result exactly once"
         )
 
+    idle_helper = function_body(driver_source, "rs480_cp_me_ram_inject_wait_idle")
+    if not re.fullmatch(
+        r"\s*int\s+ret\s*=\s*0\s*;\s*"
+        r"mutex_lock\s*\(\s*&rdev->ring_lock\s*\)\s*;\s*"
+        r"if\s*\(\s*!rdev->ring\s*\[\s*RADEON_RING_TYPE_GFX_INDEX\s*\]"
+        r"\.ready\s*\)\s*\{\s*ret\s*=\s*-ENODEV\s*;\s*goto\s+out\s*;\s*\}\s*"
+        r"ret\s*=\s*radeon_fence_wait_empty\s*\(\s*"
+        r"rdev\s*,\s*RADEON_RING_TYPE_GFX_INDEX\s*\)\s*;\s*"
+        r"if\s*\(\s*ret\s*\)\s*goto\s+out\s*;\s*"
+        r"if\s*\(\s*r100_gui_wait_for_idle\s*\(\s*rdev\s*\)\s*\)\s*"
+        r"ret\s*=\s*-EBUSY\s*;\s*out\s*:\s*"
+        r"mutex_unlock\s*\(\s*&rdev->ring_lock\s*\)\s*;\s*"
+        r"return\s+ret\s*;\s*",
+        idle_helper,
+        re.DOTALL,
+    ):
+        raise ContractError("CP ME idle helper does not retain its failure containment")
+
+    parser_code = mask_comments_and_literals(parser_source, preserve_literals=True)
+    parser_body = function_body(
+        parser_code, "rs480_cp_me_inject_parse", preserve_literals=True
+    )
+    if not re.fullmatch(
+        r"\s*char\s+extra\s*;\s*"
+        r"return\s+sscanf\s*\(\s*kbuf\s*,\s*\"ARM %x %x %x %c\"\s*,\s*"
+        r"addr\s*,\s*new_h\s*,\s*new_l\s*,\s*&extra\s*\)\s*==\s*3\s*;\s*",
+        parser_body,
+        re.DOTALL,
+    ):
+        raise ContractError(
+            "CP ME command parser does not require one exact ARM payload"
+        )
+
     cp_me_policy = feature_record(feature_policy, "cp-me-write")
     error_contract = cp_me_policy.get("error_contract")
     if not isinstance(error_contract, str):
@@ -675,14 +764,16 @@ def replace_once(subject: str, old: str, new: str, description: str) -> str:
 
 def selftest(repository: Path) -> int:
     driver_path = repository / "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    parser_path = repository / "drivers/gpu/drm/radeon/rs480_cp_me_inject_parse.h"
     policy_path = repository / "policy/build-features.toml"
     audit_path = repository / "docs/dev-interface-surface-audit.md"
     driver_source = driver_path.read_text(encoding="utf-8")
+    parser_source = parser_path.read_text(encoding="utf-8")
     feature_policy = policy_path.read_text(encoding="utf-8")
     surface_audit = audit_path.read_text(encoding="utf-8")
 
     try:
-        verify_contract(driver_source, feature_policy, surface_audit)
+        verify_contract(driver_source, parser_source, feature_policy, surface_audit)
         print("selftest known-good accepted: restore mismatch containment")
 
         mismatch_block = (
@@ -729,6 +820,10 @@ def selftest(repository: Path) -> int:
             "\t\t\t\t\t &rb_h, &rb_l, &rs_h, &rs_l);\n"
         )
         idle_gate_block = "\tret = rs480_cp_me_ram_inject_wait_idle(rdev);\n"
+        idle_helper_return_block = (
+            "out:\n\tmutex_unlock(&rdev->ring_lock);\n\treturn ret;\n}\n\n"
+            "static int rs480_cp_me_ram_inject_one"
+        )
         hardware_lock_block = (
             "\tret = radeon_device_lock_hardware(rdev);\n\tif (ret)\n\t\treturn ret;\n"
         )
@@ -1370,12 +1465,49 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "unknown inactive handler decoy precedes an active idle-gate bypass",
+                "#if CODEX_UNDEFINED\n"
+                + driver_source
+                + "#else\n"
+                + replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "active idle gate bypass after unknown inactive decoy",
+                )
+                + "#endif\n",
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle helper converts failures to success",
+                replace_once(
+                    driver_source,
+                    idle_helper_return_block,
+                    idle_helper_return_block.replace("return ret;", "return 0;"),
+                    "CP ME idle helper failure return",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "write handler omits the CP ME arm token gate",
                 replace_once(
                     driver_source,
                     arming_token_block,
                     "",
                     "CP ME arm token gate",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler conditionally checks the CP ME arm token",
+                replace_once(
+                    driver_source,
+                    arming_token_block,
+                    "\tif (len == 0)\n" + arming_token_block,
+                    "conditional CP ME arm token gate",
                 ),
                 feature_policy,
                 surface_audit,
@@ -1578,13 +1710,41 @@ def selftest(repository: Path) -> int:
                 ),
             ),
         )
-        if len(mutations) != EXPECTED_BAD_COUNT:
+        parser_mutations = (
+            (
+                "CP ME parser accepts surplus command text",
+                replace_once(
+                    parser_source,
+                    "&extra) == 3;",
+                    "&extra) >= 3;",
+                    "CP ME parser surplus result",
+                ),
+            ),
+        )
+        if len(mutations) + len(parser_mutations) != EXPECTED_BAD_COUNT:
             raise ContractError("selftest mutation denominator differs")
         if len({mutation[0] for mutation in mutations}) != len(mutations):
             raise ContractError("selftest mutation labels repeat")
         for description, mutated_source, mutated_policy, mutated_audit in mutations:
             try:
-                verify_contract(mutated_source, mutated_policy, mutated_audit)
+                verify_contract(
+                    mutated_source,
+                    parser_source,
+                    mutated_policy,
+                    mutated_audit,
+                )
+            except ContractError:
+                print(f"selftest known-bad rejected: {description}")
+            else:
+                raise ContractError(f"selftest accepted: {description}")
+        for description, mutated_parser in parser_mutations:
+            try:
+                verify_contract(
+                    driver_source,
+                    mutated_parser,
+                    feature_policy,
+                    surface_audit,
+                )
             except ContractError:
                 print(f"selftest known-bad rejected: {description}")
             else:
@@ -1595,7 +1755,10 @@ def selftest(repository: Path) -> int:
         )
         return 1
 
-    print(f"selftest: 1 good and {len(mutations)} bad fixtures classified")
+    print(
+        f"selftest: 1 good and {len(mutations) + len(parser_mutations)} "
+        "bad fixtures classified"
+    )
     return 0
 
 
@@ -1616,6 +1779,9 @@ def main() -> int:
             (repository / "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c").read_text(
                 encoding="utf-8"
             ),
+            (
+                repository / "drivers/gpu/drm/radeon/rs480_cp_me_inject_parse.h"
+            ).read_text(encoding="utf-8"),
             (repository / "policy/build-features.toml").read_text(encoding="utf-8"),
             (repository / "docs/dev-interface-surface-audit.md").read_text(
                 encoding="utf-8"
