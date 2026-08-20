@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 46
+EXPECTED_BAD_COUNT = 53
 
 
 class ContractError(Exception):
@@ -279,11 +279,57 @@ def verify_contract(
     handler_source = function_body(
         driver_source, "rs480_cp_me_ram_inject_write", preserve_literals=True
     )
+    hardware_lock = require_pattern(
+        handler,
+        r"ret\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;",
+        "write handler does not acquire the Radeon hardware lock",
+    )
+    hardware_lock_failure = require_pattern(
+        handler,
+        r"if\s*\(\s*ret\s*\)\s*return\s+ret\s*;",
+        "write handler does not propagate Radeon hardware lock failure",
+    )
+    descriptor_consumed = require_pattern(
+        handler,
+        r"\*ppos\s*=\s*1\s*;",
+        "write handler does not consume the armed descriptor",
+    )
+    context_lock = require_pattern(
+        handler,
+        r"mutex_lock\s*\(\s*&ctx->lock\s*\)\s*;",
+        "write handler does not acquire its result lock",
+    )
     idle_gate = require_pattern(
         handler,
         r"ret\s*=\s*rs480_cp_me_ram_inject_wait_idle\s*\(\s*rdev\s*\)\s*;",
         "write handler does not run the CP ME idle gate",
     )
+    acquisition_positions = (
+        hardware_lock.start(),
+        hardware_lock_failure.start(),
+        descriptor_consumed.start(),
+        context_lock.start(),
+        idle_gate.start(),
+    )
+    if acquisition_positions != tuple(sorted(acquisition_positions)):
+        raise ContractError("CP ME lock acquisition does not precede the idle gate")
+    if any(
+        brace_depth_at(handler, position) != 0 for position in acquisition_positions
+    ):
+        raise ContractError("CP ME lock acquisition must remain top level")
+    for preceding, following, operation in (
+        (hardware_lock, hardware_lock_failure, "hardware lock failure"),
+        (hardware_lock_failure, descriptor_consumed, "descriptor consumption"),
+        (descriptor_consumed, context_lock, "result lock acquisition"),
+        (context_lock, idle_gate, "idle gate"),
+    ):
+        if handler[preceding.end() : following.start()].strip():
+            raise ContractError(f"control flow intervenes before CP ME {operation}")
+    if re.search(
+        r"\b(?:RREG32|WREG32|RREG32_MC|WREG32_MC)\s*\(",
+        handler[: idle_gate.start()],
+    ):
+        raise ContractError("CP ME register access precedes the idle gate")
     idle_failure = require_pattern(
         handler,
         r"if\s*\(\s*ret\s*\)\s*\{\s*"
@@ -294,6 +340,20 @@ def verify_contract(
         r"dev_warn_ratelimited\s*\([^;]*\)\s*;\s*"
         r"return\s+ret\s*;\s*\}",
         "write handler idle failure cleanup is absent",
+    )
+    idle_failure_format = require_pattern(
+        handler_source,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*"
+        r'"addr=%04x idle_gate=failed ret=%d\\n"\s*,\s*addr\s*,\s*ret\s*\)\s*;',
+        "write handler idle failure result omits its measured state",
+    )
+    idle_failure_format_code = require_pattern(
+        handler,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*,\s*"
+        r"addr\s*,\s*ret\s*\)\s*;",
+        "write handler idle failure result is not executable code",
     )
     mutation_mark = require_pattern(
         handler,
@@ -308,6 +368,18 @@ def verify_contract(
         raise ContractError("CP ME idle gate must remain top level")
     if brace_depth_at(handler, idle_failure.start()) != 0:
         raise ContractError("CP ME idle failure cleanup must remain top level")
+    if (
+        idle_failure_format.start() != idle_failure_format_code.start()
+        or idle_failure_format.end() != idle_failure_format_code.end()
+    ):
+        raise ContractError("write handler idle failure result is masked or relocated")
+    if not (
+        idle_failure.start()
+        <= idle_failure_format_code.start()
+        < idle_failure_format_code.end()
+        <= idle_failure.end()
+    ):
+        raise ContractError("write handler idle failure result escapes its cleanup")
     if idle_failure.start() >= mutation_mark.start():
         raise ContractError("idle failure cleanup does not precede the mutation marker")
     if handler[idle_failure.end() : mutation_mark.start()].strip():
@@ -337,6 +409,20 @@ def verify_contract(
         r"rs_h\s*,\s*rs_l\s*,\s*\(\s*ret\s*!=\s*-EIO\s*\)\s*\)\s*;",
         "write handler result omits requested or measured CP ME values",
     )
+    result_format_code = require_pattern(
+        handler,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*,\s*"
+        r"addr\s*,\s*new_h\s*,\s*new_l\s*,\s*rb_h\s*,\s*rb_l\s*,\s*"
+        r"\(\s*rb_h\s*==\s*new_h\s*&&\s*rb_l\s*==\s*new_l\s*\)\s*,\s*"
+        r"rs_h\s*,\s*rs_l\s*,\s*\(\s*ret\s*!=\s*-EIO\s*\)\s*\)\s*;",
+        "write handler result format is not executable code",
+    )
+    if (
+        result_format.start() != result_format_code.start()
+        or result_format.end() != result_format_code.end()
+    ):
+        raise ContractError("write handler result format is masked or relocated")
     normal_unlocks = require_pattern(
         handler[result_format.end() :],
         r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
@@ -345,11 +431,11 @@ def verify_contract(
     )
     normal_unlocks_start = result_format.end() + normal_unlocks.start()
     normal_cleanup_end = result_format.end() + normal_unlocks.end()
-    if handler[injection_call.end() : result_format.start()].strip():
+    if handler[injection_call.end() : result_format_code.start()].strip():
         raise ContractError("control flow intervenes before post-injection cleanup")
     if handler[result_format.end() : normal_unlocks_start].strip():
         raise ContractError("control flow intervenes before post-injection unlock")
-    if brace_depth_at(handler, result_format.start()) != 0:
+    if brace_depth_at(handler, result_format_code.start()) != 0:
         raise ContractError("post-injection result formatting must remain top level")
     if brace_depth_at(handler, normal_unlocks_start) != 0:
         raise ContractError("post-injection cleanup must remain top level")
@@ -478,6 +564,15 @@ def selftest(repository: Path) -> int:
             "\t\t\t\t\t &rb_h, &rb_l, &rs_h, &rs_l);\n"
         )
         idle_gate_block = "\tret = rs480_cp_me_ram_inject_wait_idle(rdev);\n"
+        hardware_lock_block = (
+            "\tret = radeon_device_lock_hardware(rdev);\n\tif (ret)\n\t\treturn ret;\n"
+        )
+        context_lock_block = "\tmutex_lock(&ctx->lock);\n"
+        context_lock_idle_gate_block = context_lock_block + idle_gate_block
+        idle_failure_result_block = (
+            "\t\tsnprintf(ctx->result, sizeof(ctx->result),\n"
+            '\t\t\t "addr=%04x idle_gate=failed ret=%d\\n", addr, ret);\n'
+        )
         idle_failure_unlock_block = (
             "\t\tmutex_unlock(&ctx->lock);\n\t\tradeon_device_unlock_hardware(rdev);\n"
         )
@@ -867,6 +962,85 @@ def selftest(repository: Path) -> int:
                     result_format_block,
                     result_format_block.replace("(ret != -EIO)", "1"),
                     "result format restore status",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "post-injection result format is comment only",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    "\t/*\n" + result_format_block + "\t */\n",
+                    "commented post-injection result format",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure result loses the requested address",
+                replace_once(
+                    driver_source,
+                    idle_failure_result_block,
+                    idle_failure_result_block.replace("addr, ret", "0, ret"),
+                    "idle failure result address",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure result reports a passed gate",
+                replace_once(
+                    driver_source,
+                    idle_failure_result_block,
+                    idle_failure_result_block.replace(
+                        "idle_gate=failed", "idle_gate=passed"
+                    ),
+                    "idle failure result disposition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure result loses the error result",
+                replace_once(
+                    driver_source,
+                    idle_failure_result_block,
+                    idle_failure_result_block.replace("addr, ret", "addr, 0"),
+                    "idle failure result error",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the Radeon hardware lock",
+                replace_once(
+                    driver_source,
+                    hardware_lock_block,
+                    "",
+                    "Radeon hardware lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the result lock",
+                replace_once(
+                    driver_source,
+                    context_lock_idle_gate_block,
+                    idle_gate_block,
+                    "result lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME register access precedes the idle gate",
+                replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tWREG32(RADEON_CP_ME_RAM_DATAH, new_h);\n" + idle_gate_block,
+                    "pre-idle CP ME register access",
                 ),
                 feature_policy,
                 surface_audit,
