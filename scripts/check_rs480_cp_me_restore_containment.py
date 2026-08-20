@@ -9,7 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 76
+EXPECTED_BAD_COUNT = 84
 
 
 class ContractError(Exception):
@@ -394,19 +394,39 @@ def verify_contract(
 
     driver_code = active_code_mask(driver_source)
     module_parameter_code = active_code_mask(module_parameter_source)
+    arm_token_definitions = re.findall(
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ARM_TOKEN\b[^\n]*",
+        driver_code,
+    )
+    if len(arm_token_definitions) != 1:
+        raise ContractError("CP ME arm token declaration denominator differs")
     require_pattern(
         driver_code,
         r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ARM_TOKEN\s+"
         r"0x494e4a31u\b",
         "CP ME arm token does not retain its nonzero declaration",
     )
-    if (
-        len(
-            re.findall(
-                r"\bint\s+radeon_rs480_cp_me_ram_inject\s*;", module_parameter_code
-            )
+    address_limit_definitions = re.findall(
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ADDR_LIMIT\b[^\n]*",
+        driver_code,
+    )
+    if len(address_limit_definitions) != 1:
+        raise ContractError("CP ME address limit declaration denominator differs")
+    require_pattern(
+        driver_code,
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ADDR_LIMIT\s+0x100u\b",
+        "CP ME address limit does not retain its overlay declaration",
+    )
+    parameter_definitions = list(
+        re.finditer(
+            r"\bint\s+radeon_rs480_cp_me_ram_inject\s*"
+            r"(?P<initializer>=\s*[^;]+)?\s*;",
+            module_parameter_code,
         )
-        != 1
+    )
+    if (
+        len(parameter_definitions) != 1
+        or parameter_definitions[0].group("initializer") is not None
     ):
         raise ContractError("CP ME arm parameter does not retain its zero default")
     require_pattern(
@@ -443,6 +463,18 @@ def verify_contract(
         r"return\s+-EFAULT\s*;",
         "write handler does not require a complete CP ME command copy",
     )
+    payload_nul_rejection = require_pattern(
+        handler,
+        r"if\s*\(\s*memchr\s*\(\s*kbuf\s*,\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler does not reject embedded NUL command bytes",
+    )
+    payload_nul_rejection_source = require_pattern(
+        handler_source,
+        r"if\s*\(\s*memchr\s*\(\s*kbuf\s*,\s*'\\0'\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler embedded NUL rejection is not executable code",
+    )
     payload_terminator = require_pattern(
         handler,
         r"kbuf\s*\[\s*len\s*\]\s*=\s*;",
@@ -477,6 +509,8 @@ def verify_contract(
         r"return\s+-EINVAL\s*;\s*"
         r"if\s*\(\s*copy_from_user\s*\(\s*kbuf\s*,\s*ubuf\s*,\s*len\s*\)\s*\)\s*"
         r"return\s+-EFAULT\s*;\s*"
+        r"if\s*\(\s*memchr\s*\(\s*kbuf\s*,\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;\s*"
         r"kbuf\s*\[\s*len\s*\]\s*=\s*;\s*"
         r"if\s*\(\s*!rs480_cp_me_inject_parse\s*\(\s*"
         r"kbuf\s*,\s*&addr\s*,\s*&new_h\s*,\s*&new_l\s*\)\s*\)\s*"
@@ -515,6 +549,7 @@ def verify_contract(
         arming_token.start(),
         payload_limit.start(),
         payload_copy.start(),
+        payload_nul_rejection.start(),
         payload_terminator.start(),
         parsed_command.start(),
         address_limit.start(),
@@ -538,7 +573,9 @@ def verify_contract(
     if admission_chain.start() != descriptor_rejection.start():
         raise ContractError("CP ME descriptor admission is not unconditional")
     if (
-        payload_terminator.start() != payload_terminator_source.start()
+        payload_nul_rejection.start() != payload_nul_rejection_source.start()
+        or payload_nul_rejection.end() != payload_nul_rejection_source.end()
+        or payload_terminator.start() != payload_terminator_source.start()
         or payload_terminator.end() != payload_terminator_source.end()
     ):
         raise ContractError(
@@ -552,7 +589,7 @@ def verify_contract(
     ):
         if handler[preceding.end() : following.start()].strip():
             raise ContractError(f"control flow intervenes before CP ME {operation}")
-    if re.search(r"\b(?:RREG32|WREG32|RREG32_MC|WREG32_MC)\s*\(", handler):
+    if re.search(r"\b[RW]REG\d*(?:_[A-Za-z0-9_]+)?\s*\(", handler):
         raise ContractError("write handler accesses CP ME registers directly")
     idle_failure = require_pattern(
         handler,
@@ -582,8 +619,14 @@ def verify_contract(
     )
     mutation_mark = require_pattern(
         handler,
-        r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,[^;]*\)\s*;",
+        r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,\s*\)\s*;",
         "write handler does not record the admitted mutation",
+    )
+    require_pattern(
+        handler_source,
+        r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,\s*"
+        r'"RS4xx CP-ME RAM injection"\s*\)\s*;',
+        "write handler mutation marker does not retain its declaration",
     )
     if idle_gate.start() >= idle_failure.start():
         raise ContractError("CP ME idle gate does not precede its failure cleanup")
@@ -674,10 +717,10 @@ def verify_contract(
     result_tail = require_pattern(
         handler[normal_cleanup_end:],
         r"if\s*\(\s*ret\s*==\s*-EIO\s*\)\s*"
-        r"dev_err_ratelimited\s*\([^;]*\)\s*;\s*"
+        r"dev_err_ratelimited\s*\(\s*rdev->dev\s*,\s*,\s*addr\s*\)\s*;\s*"
         r"else\s+if\s*\(\s*ret\s*==\s*-ENXIO\s*\)\s*"
-        r"dev_warn_ratelimited\s*\([^;]*\)\s*;\s*"
-        r"else\s*dev_info\s*\([^;]*\)\s*;\s*"
+        r"dev_warn_ratelimited\s*\(\s*rdev->dev\s*,\s*,\s*addr\s*\)\s*;\s*"
+        r"else\s*dev_info\s*\(\s*rdev->dev\s*,\s*,\s*ctx->result\s*\)\s*;\s*"
         r"return\s+ret\s*\?\s*ret\s*:\s*len\s*;",
         "write handler does not report and propagate the injection result",
     )
@@ -728,9 +771,16 @@ def verify_contract(
     ):
         raise ContractError("CP ME idle helper does not retain its failure containment")
 
-    parser_code = mask_comments_and_literals(parser_source, preserve_literals=True)
+    parser_code = active_code_mask(parser_source)
+    require_pattern(
+        parser_code,
+        r"static\s+inline\s+int\s+rs480_cp_me_inject_parse\s*\(\s*"
+        r"const\s+char\s*\*\s*kbuf\s*,\s*unsigned\s+int\s*\*\s*addr\s*,\s*"
+        r"unsigned\s+int\s*\*\s*new_h\s*,\s*unsigned\s+int\s*\*\s*new_l\s*\)\s*\{",
+        "CP ME command parser does not retain its parameter order",
+    )
     parser_body = function_body(
-        parser_code, "rs480_cp_me_inject_parse", preserve_literals=True
+        parser_source, "rs480_cp_me_inject_parse", preserve_literals=True
     )
     if not re.fullmatch(
         r"\s*char\s+extra\s*;\s*"
@@ -872,6 +922,9 @@ def selftest(repository: Path) -> int:
         payload_copy_block = (
             "\tif (copy_from_user(kbuf, ubuf, len))\n\t\treturn -EFAULT;\n"
         )
+        payload_nul_rejection_block = (
+            "\tif (memchr(kbuf, '\\0', len))\n\t\treturn -EINVAL;\n"
+        )
         payload_terminator_block = "\tkbuf[len] = '\\0';\n"
         parsed_command_block = (
             "\tif (!rs480_cp_me_inject_parse(kbuf, &addr, &new_h, &new_l))\n"
@@ -881,6 +934,7 @@ def selftest(repository: Path) -> int:
             "\tif (addr >= RS480_CP_ME_INJECT_ADDR_LIMIT)\n\t\treturn -ERANGE;\n"
         )
         arm_token_definition = "#define RS480_CP_ME_INJECT_ARM_TOKEN  0x494e4a31u"
+        address_limit_definition = "#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x100u"
         module_parameter_declaration = "int radeon_rs480_cp_me_ram_inject;\n"
         error_contract_line = (
             'error_contract = "a restore mismatch keeps the command queue disabled, '
@@ -917,6 +971,10 @@ def selftest(repository: Path) -> int:
             "\tmutex_unlock(&ctx->lock);\n\tradeon_device_unlock_hardware(rdev);\n"
         )
         idle_failure_log_result = "\t\t\t\t     addr, ret);\n"
+        restore_error_log_result = (
+            '"rs480_cp_me_ram_inject: restore mismatch at addr=%04x\\n",\n'
+            "\t\t\t\t    addr"
+        )
         successful_log_result = (
             '\t\tdev_info(rdev->dev, "rs480_cp_me_ram_inject: %s", ctx->result);\n'
         )
@@ -1377,6 +1435,18 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "CP ME read modify write precedes descriptor admission",
+                replace_once(
+                    driver_source,
+                    descriptor_rejection_block,
+                    "\tWREG32_P(RADEON_CP_ME_RAM_DATAH, 0, 0);\n"
+                    + descriptor_rejection_block,
+                    "pre-admission CP ME read modify write",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "idle failure logger writes a CP ME register",
                 replace_once(
                     driver_source,
@@ -1466,6 +1536,21 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "write handler mutation marker releases the hardware lock",
+                replace_once(
+                    driver_source,
+                    mutation_mark_block,
+                    mutation_mark_block.replace(
+                        'rdev, "RS4xx CP-ME RAM injection"',
+                        "rdev, (radeon_device_unlock_hardware(rdev), "
+                        '"RS4xx CP-ME RAM injection")',
+                    ),
+                    "mutation marker hardware unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "write handler conditionally releases the context lock",
                 replace_once(
                     driver_source,
@@ -1486,6 +1571,19 @@ def selftest(repository: Path) -> int:
                         "ctx->result", "(*ppos = 0, ctx->result)"
                     ),
                     "successful logger descriptor reset",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "restore mismatch logger acquires the hardware lock",
+                replace_once(
+                    driver_source,
+                    restore_error_log_result,
+                    restore_error_log_result.replace(
+                        "addr", "(radeon_device_lock_hardware(rdev), addr)"
+                    ),
+                    "restore mismatch logger hardware lock",
                 ),
                 feature_policy,
                 surface_audit,
@@ -1590,6 +1688,30 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "unknown token conditional selects a zero declaration",
+                replace_once(
+                    driver_source,
+                    arm_token_definition,
+                    "#if defined(UNSET)\n"
+                    + arm_token_definition
+                    + "\n#else\n#define RS480_CP_ME_INJECT_ARM_TOKEN  0u\n#endif",
+                    "unknown CP ME arm token conditional",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME address limit has a widened declaration",
+                replace_once(
+                    driver_source,
+                    address_limit_definition,
+                    "#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x1000u",
+                    "CP ME address limit declaration",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "write handler omits consumed descriptor rejection",
                 replace_once(
                     driver_source,
@@ -1629,6 +1751,17 @@ def selftest(repository: Path) -> int:
                     payload_copy_block,
                     "",
                     "CP ME command copy check",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler accepts an embedded NUL payload suffix",
+                replace_once(
+                    driver_source,
+                    payload_nul_rejection_block,
+                    "",
+                    "embedded NUL command rejection",
                 ),
                 feature_policy,
                 surface_audit,
@@ -1813,6 +1946,25 @@ def selftest(repository: Path) -> int:
                     "CP ME parser surplus result",
                 ),
             ),
+            (
+                "CP ME parser swaps the address and high word parameters",
+                replace_once(
+                    replace_once(
+                        replace_once(
+                            parser_source,
+                            "unsigned int *addr,",
+                            "unsigned int *parameter_swap,",
+                            "CP ME parser address parameter",
+                        ),
+                        "unsigned int *new_h,",
+                        "unsigned int *addr,",
+                        "CP ME parser high word parameter",
+                    ),
+                    "unsigned int *parameter_swap,",
+                    "unsigned int *new_h,",
+                    "CP ME parser parameter swap",
+                ),
+            ),
         )
         module_parameter_mutations = (
             (
@@ -1823,6 +1975,11 @@ def selftest(repository: Path) -> int:
                     "int radeon_rs480_cp_me_ram_inject = 0x494e4a31u;\n",
                     "CP ME arm parameter default",
                 ),
+            ),
+            (
+                "CP ME arm parameter has an additional initialized definition",
+                module_parameter_source
+                + "\nint radeon_rs480_cp_me_ram_inject = 0x494e4a31u;\n",
             ),
         )
         if (
