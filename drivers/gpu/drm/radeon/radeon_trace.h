@@ -17,14 +17,46 @@ TRACE_EVENT(radeon_bo_create,
 	    TP_ARGS(bo),
 	    TP_STRUCT__entry(
 			     __field(struct radeon_bo *, bo)
+			     __field(u64, debug_id)
 			     __field(u32, pages)
 			     ),
 
 	    TP_fast_assign(
 			   __entry->bo = bo;
+			   __entry->debug_id = bo->debug_id;
 			   __entry->pages = PFN_UP(bo->tbo.resource->size);
 			   ),
-	    TP_printk("bo=%p, pages=%u", __entry->bo, __entry->pages)
+	    TP_printk("bo=%p, debug_id=%llu, pages=%u", __entry->bo,
+		      __entry->debug_id, __entry->pages)
+);
+
+TRACE_EVENT(radeon_gem_busy,
+	    TP_PROTO(pid_t pid, u32 handle, struct radeon_bo *bo,
+		     u32 current_domain, int error),
+	    TP_ARGS(pid, handle, bo, current_domain, error),
+	    TP_STRUCT__entry(
+			     __field(pid_t, pid)
+			     __field(u32, handle)
+			     __field(u64, debug_id)
+			     __field(u64, size)
+			     __field(u32, initial_domain)
+			     __field(u32, current_domain)
+			     __field(int, error)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->pid = pid;
+			   __entry->handle = handle;
+			   __entry->debug_id = bo->debug_id;
+			   __entry->size = bo->tbo.base.size;
+			   __entry->initial_domain = bo->initial_domain;
+			   __entry->current_domain = current_domain;
+			   __entry->error = error;
+			   ),
+	    TP_printk("pid=%d, handle=%u, debug_id=%llu, size=%llu, initial_domain=0x%x, current_domain=0x%x, error=%d",
+		      __entry->pid, __entry->handle, __entry->debug_id,
+		      __entry->size, __entry->initial_domain,
+		      __entry->current_domain, __entry->error)
 );
 
 TRACE_EVENT(radeon_cs,

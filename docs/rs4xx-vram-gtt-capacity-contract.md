@@ -270,8 +270,11 @@ The minimum allocator capture uses these read-only query surfaces:
   usage.
 * `RADEON_INFO_NUM_BYTES_MOVED` reports the cumulative movement counter.
 * `radeon_vram_mm` and `radeon_gtt_mm` report TTM range-manager extents.
-* `radeon_gem_info` lists tracked BO sizes and realized VRAM, GTT, or CPU
-  placement under `gem.mutex`.
+* `radeon_gem_info` lists each tracked BO's per-device monotonic debug
+  identity, size, and realized VRAM, GTT, or CPU placement under `gem.mutex`.
+* `radeon_gem_busy` trace events bind the querying PID and GEM handle to the
+  same debug identity, BO size, initial domain, realized domain, and query
+  result before the lookup reference is released.
 
 These surfaces do not prove the firmware carveout, payload correctness,
 largest free extent across a concurrent mutation, or end-to-end performance.
@@ -321,7 +324,7 @@ largest aperture and the highest fill ratio never win by definition.
 The work proceeds through explicit gates:
 
 1. The source checker closes the 15 contract rows, four selector rows, ten
-   exclusion rows, ten coefficient rows, two lineage rows, 36 source
+   exclusion rows, ten coefficient rows, two lineage rows, 39 source
    functions, module request, two ioctl bindings, and eight register
    encodings.
 2. The capacity contract contributes exactly 73 partition bound roots, 13

@@ -283,6 +283,7 @@ int radeon_bo_create(struct radeon_device *rdev,
 	if (unlikely(r != 0))
 		goto out_transaction;
 	*bo_ptr = bo;
+	bo->debug_id = atomic64_inc_return(&rdev->gem.bo_debug_id);
 
 	trace_radeon_bo_create(bo);
 

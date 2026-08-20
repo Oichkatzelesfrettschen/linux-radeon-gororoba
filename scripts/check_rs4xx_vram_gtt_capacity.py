@@ -38,7 +38,7 @@ MAX_TSV_ROWS = 64
 MAX_TSV_LINE_BYTES = 16 * 1024
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_GIT_METADATA_BYTES = 64 * 1024
-EXPECTED_SELFTEST_BAD_COUNT = 56
+EXPECTED_SELFTEST_BAD_COUNT = 60
 
 EXPECTED_SELFTEST_ERRORS = {
     "missing-policy-row": "capacity policy denominator differs",
@@ -103,6 +103,10 @@ EXPECTED_SELFTEST_ERRORS = {
         "function radeon_check_arguments overrides protected macros"
     ),
     "changed-auto-default": "exact function token identity differs",
+    "nonmonotonic-bo-debug-identity": "exact function token identity differs",
+    "nonzero-bo-debug-identity-origin": "exact function token identity differs",
+    "missing-gem-busy-trace": "exact function token identity differs",
+    "debugfs-list-index-as-bo-identity": "exact function token identity differs",
     "inactive-good-active-bad-function": (
         "function radeon_gart_size_auto is enclosed by conditional preprocessing"
     ),
@@ -402,7 +406,7 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "RADEON_SINGLE_BO_GTT_CEILING": "39b7ea33d63e48c662daf4b8ffa939184f1bdf93703e300c343325468aeea065",
     "RADEON_PINNED_CAPACITY_ACCOUNTING": "790bcd2bd9d456bad44489953a5cbc0193632f933f053c12486eae52cb583767",
     "RADEON_CAPACITY_USAGE_AND_MOVE_COUNTERS": "93e3dbfa36827703d10a8a0695429ffdf16708faf569ba8ace111318c7035aef",
-    "RADEON_FRAGMENTATION_AND_PLACEMENT_DEBUGFS": "da4c776ebcdbf9cf32e754b33ab4a375116fba80945f34cf0349158ce8251c6d",
+    "RADEON_FRAGMENTATION_AND_PLACEMENT_DEBUGFS": "adb4408f143e66922569c6990db8dbd3e2b47ddf0003481b122a101651148913",
     "RS482_CAPACITY_OPTIMUM": "b4967c8835f9bd98f41e370bc264e5182708fd9769297805310ef303e525915f",
 }
 
@@ -473,6 +477,10 @@ EXPECTED_FUNCTION_SHA256 = {
     ): "c9508058e3fb3eb6600d893030bda618bad3870ab5161933c2f01049e5e883b0",
     (
         "radeon_object.c",
+        "radeon_bo_create",
+    ): "fa3810929b99cf1a83aa6be4ac6e8bd4fe45e81fc0b475672118b50654b1dd96",
+    (
+        "radeon_object.c",
         "radeon_ttm_placement_from_domain",
     ): "22bf293354a70e67e8ac423acb0e499a7f2683a8998bced9abf721b46f10af9b",
     (
@@ -493,6 +501,10 @@ EXPECTED_FUNCTION_SHA256 = {
     ): "f1714a34bffc347910f0d997ea4b36e411b8129cdad4df5134512e78deafa880",
     (
         "radeon_gem.c",
+        "radeon_gem_init",
+    ): "4d744dc4f6860a42b1b206aefaa04b2bc7e765ae47a6944ef2886fc3f48c084a",
+    (
+        "radeon_gem.c",
         "radeon_gem_object_create",
     ): "17693c70cd86042ee45274528d3c51753effde1fe17b919133eb2df3704e535c",
     (
@@ -501,8 +513,12 @@ EXPECTED_FUNCTION_SHA256 = {
     ): "99d784c93792e20a74d890c10decd3f5bed1de3c48e3b0e589df68d0449676b9",
     (
         "radeon_gem.c",
+        "radeon_gem_busy_ioctl",
+    ): "6c082b679f978d7bc8b98c279c8e34ae481811c5d189b396623527753940ae27",
+    (
+        "radeon_gem.c",
         "radeon_debugfs_gem_info_show",
-    ): "547888eb5d02f9f91583fffa58fcb594c133c0ba9291528189ce13034eb3125e",
+    ): "bbe792a61acefda04c295db552ea818f9b9e658ce918cb51fd7591ba36360bc9",
     (
         "radeon_kms.c",
         "radeon_info_ioctl",
@@ -880,7 +896,9 @@ def resolve_authority_commit(
     try:
         tag_object_text = tag_object.decode("utf-8").strip()
     except UnicodeDecodeError as error:
-        raise CapacityError("authority tag object identity is not UTF-8 text") from error
+        raise CapacityError(
+            "authority tag object identity is not UTF-8 text"
+        ) from error
     if tag_object_text != expected_tag_object:
         raise CapacityError("authority tag object identity differs")
     if git_output(repository, "cat-file", "-t", tag_object_text) != b"tag\n":
@@ -1884,6 +1902,81 @@ def run_capacity_mutation_matrix(
         )
     )
 
+    object_source = read_utf8_source(root / SUBTREE / "radeon_object.c")
+    nonmonotonic_bo_debug_identity = replace_once(
+        object_source,
+        "bo->debug_id = atomic64_inc_return(&rdev->gem.bo_debug_id);",
+        "bo->debug_id = atomic64_read(&rdev->gem.bo_debug_id);",
+        "nonmonotonic BO debug identity",
+    )
+    mutations.append(
+        (
+            "nonmonotonic-bo-debug-identity",
+            lambda: validate_function_source(
+                "radeon_object.c",
+                "radeon_bo_create",
+                nonmonotonic_bo_debug_identity,
+                EXPECTED_FUNCTION_SHA256[("radeon_object.c", "radeon_bo_create")],
+            ),
+        )
+    )
+
+    gem_source = read_utf8_source(root / SUBTREE / "radeon_gem.c")
+    nonzero_bo_debug_identity_origin = replace_once(
+        gem_source,
+        "atomic64_set(&rdev->gem.bo_debug_id, 0);",
+        "atomic64_set(&rdev->gem.bo_debug_id, 1);",
+        "nonzero BO debug identity origin",
+    )
+    mutations.append(
+        (
+            "nonzero-bo-debug-identity-origin",
+            lambda: validate_function_source(
+                "radeon_gem.c",
+                "radeon_gem_init",
+                nonzero_bo_debug_identity_origin,
+                EXPECTED_FUNCTION_SHA256[("radeon_gem.c", "radeon_gem_init")],
+            ),
+        )
+    )
+    missing_gem_busy_trace = replace_once(
+        gem_source,
+        "\ttrace_radeon_gem_busy(task_pid_nr(current), args->handle, robj,\n"
+        "\t\t\t      args->domain, r);\n",
+        "",
+        "missing GEM busy trace",
+    )
+    mutations.append(
+        (
+            "missing-gem-busy-trace",
+            lambda: validate_function_source(
+                "radeon_gem.c",
+                "radeon_gem_busy_ioctl",
+                missing_gem_busy_trace,
+                EXPECTED_FUNCTION_SHA256[("radeon_gem.c", "radeon_gem_busy_ioctl")],
+            ),
+        )
+    )
+    debugfs_list_index_as_bo_identity = replace_once(
+        gem_source,
+        "i, (unsigned long long)rbo->debug_id,",
+        "i, (unsigned long long)i,",
+        "debugfs list index as BO identity",
+    )
+    mutations.append(
+        (
+            "debugfs-list-index-as-bo-identity",
+            lambda: validate_function_source(
+                "radeon_gem.c",
+                "radeon_debugfs_gem_info_show",
+                debugfs_list_index_as_bo_identity,
+                EXPECTED_FUNCTION_SHA256[
+                    ("radeon_gem.c", "radeon_debugfs_gem_info_show")
+                ],
+            ),
+        )
+    )
+
     register_source = read_utf8_source(root / SUBTREE / "r500_reg.h")
     macro_match = re.search(
         r"(?m)^#\s*define\s+RS480_VA_SIZE_512MB\s+\(4 << 1\)\s*$",
@@ -2079,7 +2172,7 @@ def main() -> int:
             print(
                 "RS482 capacity contract: 15 rows, 4 configurations, "
                 "10 exclusions, 10 coefficients, 2 lineage rows, "
-                "36 source functions, 1 module declaration, "
+                "39 source functions, 1 module declaration, "
                 "2 ioctl bindings, 8 register encodings"
             )
     except CapacityError as error:

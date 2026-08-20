@@ -495,6 +495,7 @@ struct radeon_bo_va {
 struct radeon_bo {
 	/* Protected by gem.mutex */
 	struct list_head		list;
+	u64				debug_id;
 	struct list_head		rs4xx_retained_node;
 	bool				rs4xx_terminally_retained;
 	bool				rs4xx_lifetime_counted;
@@ -539,6 +540,7 @@ struct radeon_sa_manager {
 struct radeon_gem {
 	struct mutex		mutex;
 	struct list_head	objects;
+	atomic64_t		bo_debug_id;
 };
 
 extern const struct drm_gem_object_funcs radeon_gem_object_funcs;
