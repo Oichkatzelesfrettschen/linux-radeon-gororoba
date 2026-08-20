@@ -9,7 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 71
+EXPECTED_BAD_COUNT = 76
 
 
 class ContractError(Exception):
@@ -247,6 +247,7 @@ def feature_record(policy: str, feature_id: str) -> dict[str, object]:
 def verify_contract(
     driver_source: str,
     parser_source: str,
+    module_parameter_source: str,
     feature_policy: str,
     surface_audit: str,
 ) -> None:
@@ -391,6 +392,30 @@ def verify_contract(
     if len(re.findall(r"\breturn\b", body)) != 3:
         raise ContractError("injection helper return denominator differs")
 
+    driver_code = active_code_mask(driver_source)
+    module_parameter_code = active_code_mask(module_parameter_source)
+    require_pattern(
+        driver_code,
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ARM_TOKEN\s+"
+        r"0x494e4a31u\b",
+        "CP ME arm token does not retain its nonzero declaration",
+    )
+    if (
+        len(
+            re.findall(
+                r"\bint\s+radeon_rs480_cp_me_ram_inject\s*;", module_parameter_code
+            )
+        )
+        != 1
+    ):
+        raise ContractError("CP ME arm parameter does not retain its zero default")
+    require_pattern(
+        module_parameter_code,
+        r"module_param_named\s*\(\s*rs480_cp_me_ram_inject\s*,\s*"
+        r"radeon_rs480_cp_me_ram_inject\s*,\s*int\s*,\s*0644\s*\)\s*;",
+        "CP ME arm parameter does not bind its declared module interface",
+    )
+
     handler = function_body(driver_source, "rs480_cp_me_ram_inject_write")
     handler_source = function_body(
         driver_source, "rs480_cp_me_ram_inject_write", preserve_literals=True
@@ -438,7 +463,9 @@ def verify_contract(
     address_limit = require_pattern(
         handler,
         r"if\s*\(\s*addr\s*>=\s*RS480_CP_ME_INJECT_ADDR_LIMIT\s*\)\s*"
-        r"return\s+-ERANGE\s*;",
+        r"return\s+-ERANGE\s*;\s*"
+        r"ret\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"if\s*\(\s*ret\s*\)\s*return\s+ret\s*;",
         "write handler does not retain the CP ME address limit",
     )
     admission_chain = require_pattern(
@@ -534,7 +561,8 @@ def verify_contract(
         r"sizeof\s*\(\s*ctx->result\s*\)\s*,[^;]*\)\s*;\s*"
         r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
         r"radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
-        r"dev_warn_ratelimited\s*\([^;]*\)\s*;\s*"
+        r"dev_warn_ratelimited\s*\(\s*rdev->dev\s*,\s*,\s*"
+        r"addr\s*,\s*ret\s*\)\s*;\s*"
         r"return\s+ret\s*;\s*\}",
         "write handler idle failure cleanup is absent",
     )
@@ -732,9 +760,9 @@ def verify_contract(
         isinstance(policy_test, str) for policy_test in policy_tests
     ):
         raise ContractError("cp-me-write tests are not a string list")
-    if not any(
-        "restore mismatch parks the device before queue restoration" in policy_test
-        for policy_test in policy_tests
+    if (
+        "adversarial: a restore mismatch parks the device before queue restoration"
+        not in policy_tests
     ):
         raise ContractError("cp-me-write tests omit restore queue ordering")
 
@@ -765,15 +793,23 @@ def replace_once(subject: str, old: str, new: str, description: str) -> str:
 def selftest(repository: Path) -> int:
     driver_path = repository / "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
     parser_path = repository / "drivers/gpu/drm/radeon/rs480_cp_me_inject_parse.h"
+    module_parameter_path = repository / "drivers/gpu/drm/radeon/radeon_dev.c"
     policy_path = repository / "policy/build-features.toml"
     audit_path = repository / "docs/dev-interface-surface-audit.md"
     driver_source = driver_path.read_text(encoding="utf-8")
     parser_source = parser_path.read_text(encoding="utf-8")
+    module_parameter_source = module_parameter_path.read_text(encoding="utf-8")
     feature_policy = policy_path.read_text(encoding="utf-8")
     surface_audit = audit_path.read_text(encoding="utf-8")
 
     try:
-        verify_contract(driver_source, parser_source, feature_policy, surface_audit)
+        verify_contract(
+            driver_source,
+            parser_source,
+            module_parameter_source,
+            feature_policy,
+            surface_audit,
+        )
         print("selftest known-good accepted: restore mismatch containment")
 
         mismatch_block = (
@@ -844,11 +880,19 @@ def selftest(repository: Path) -> int:
         address_limit_block = (
             "\tif (addr >= RS480_CP_ME_INJECT_ADDR_LIMIT)\n\t\treturn -ERANGE;\n"
         )
+        arm_token_definition = "#define RS480_CP_ME_INJECT_ARM_TOKEN  0x494e4a31u"
+        module_parameter_declaration = "int radeon_rs480_cp_me_ram_inject;\n"
         error_contract_line = (
             'error_contract = "a restore mismatch keeps the command queue disabled, '
             "requests CPU-only parked publication, and returns -EIO; a verified restore "
             "permits the original queue state; a write mismatch after verified restore "
             'returns -ENXIO"\n'
+        )
+        normal_policy_test = (
+            "normal: exact token performs bounded write, verify, and restore"
+        )
+        adversarial_policy_test = (
+            "adversarial: a restore mismatch parks the device before queue restoration"
         )
         context_lock_block = "\tmutex_lock(&ctx->lock);\n"
         context_lock_idle_gate_block = context_lock_block + idle_gate_block
@@ -1344,6 +1388,17 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "idle failure logger acquires the context lock",
+                replace_once(
+                    driver_source,
+                    idle_failure_log_result,
+                    "\t\t\t\t     addr, (mutex_lock(&ctx->lock), ret));\n",
+                    "idle failure logger lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "write handler reports unconditional success",
                 replace_once(
                     driver_source,
@@ -1508,6 +1563,28 @@ def selftest(repository: Path) -> int:
                     arming_token_block,
                     "\tif (len == 0)\n" + arming_token_block,
                     "conditional CP ME arm token gate",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler returns before hardware lock acquisition",
+                replace_once(
+                    driver_source,
+                    address_limit_block,
+                    address_limit_block + "\tif (!new_h)\n\t\treturn len;\n",
+                    "early return before hardware lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME arm token has a zero declaration",
+                replace_once(
+                    driver_source,
+                    arm_token_definition,
+                    "#define RS480_CP_ME_INJECT_ARM_TOKEN  0u",
+                    "CP ME arm token declaration",
                 ),
                 feature_policy,
                 surface_audit,
@@ -1699,6 +1776,22 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "policy moves restore containment out of the adversarial test",
+                driver_source,
+                replace_once(
+                    replace_once(
+                        feature_policy,
+                        normal_policy_test,
+                        "normal: a restore mismatch parks the device before queue restoration",
+                        "normal CP ME test classification",
+                    ),
+                    adversarial_policy_test,
+                    "adversarial: exact token performs bounded write, verify, and restore",
+                    "adversarial CP ME test classification",
+                ),
+                surface_audit,
+            ),
+            (
                 "surface audit loses parked disposition",
                 driver_source,
                 feature_policy,
@@ -1721,7 +1814,21 @@ def selftest(repository: Path) -> int:
                 ),
             ),
         )
-        if len(mutations) + len(parser_mutations) != EXPECTED_BAD_COUNT:
+        module_parameter_mutations = (
+            (
+                "CP ME arm parameter starts armed",
+                replace_once(
+                    module_parameter_source,
+                    module_parameter_declaration,
+                    "int radeon_rs480_cp_me_ram_inject = 0x494e4a31u;\n",
+                    "CP ME arm parameter default",
+                ),
+            ),
+        )
+        if (
+            len(mutations) + len(parser_mutations) + len(module_parameter_mutations)
+            != EXPECTED_BAD_COUNT
+        ):
             raise ContractError("selftest mutation denominator differs")
         if len({mutation[0] for mutation in mutations}) != len(mutations):
             raise ContractError("selftest mutation labels repeat")
@@ -1730,6 +1837,7 @@ def selftest(repository: Path) -> int:
                 verify_contract(
                     mutated_source,
                     parser_source,
+                    module_parameter_source,
                     mutated_policy,
                     mutated_audit,
                 )
@@ -1742,6 +1850,20 @@ def selftest(repository: Path) -> int:
                 verify_contract(
                     driver_source,
                     mutated_parser,
+                    module_parameter_source,
+                    feature_policy,
+                    surface_audit,
+                )
+            except ContractError:
+                print(f"selftest known-bad rejected: {description}")
+            else:
+                raise ContractError(f"selftest accepted: {description}")
+        for description, mutated_module_parameter_source in module_parameter_mutations:
+            try:
+                verify_contract(
+                    driver_source,
+                    parser_source,
+                    mutated_module_parameter_source,
                     feature_policy,
                     surface_audit,
                 )
@@ -1756,7 +1878,7 @@ def selftest(repository: Path) -> int:
         return 1
 
     print(
-        f"selftest: 1 good and {len(mutations) + len(parser_mutations)} "
+        f"selftest: 1 good and {len(mutations) + len(parser_mutations) + len(module_parameter_mutations)} "
         "bad fixtures classified"
     )
     return 0
@@ -1782,6 +1904,9 @@ def main() -> int:
             (
                 repository / "drivers/gpu/drm/radeon/rs480_cp_me_inject_parse.h"
             ).read_text(encoding="utf-8"),
+            (repository / "drivers/gpu/drm/radeon/radeon_dev.c").read_text(
+                encoding="utf-8"
+            ),
             (repository / "policy/build-features.toml").read_text(encoding="utf-8"),
             (repository / "docs/dev-interface-surface-audit.md").read_text(
                 encoding="utf-8"
