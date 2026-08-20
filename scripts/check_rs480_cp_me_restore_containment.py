@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 53
+EXPECTED_BAD_COUNT = 56
 
 
 class ContractError(Exception):
@@ -77,18 +77,81 @@ def mask_comments_and_literals(source: str) -> str:
     return "".join(masked)
 
 
+def active_code_mask(source: str) -> str:
+    """Mask comments, literals, and branches disabled by an exact #if 0."""
+    masked = list(mask_comments_and_literals(source))
+    stack: list[dict[str, bool]] = []
+    offset = 0
+    active = True
+
+    for line in "".join(masked).splitlines(keepends=True):
+        directive = re.match(r"\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)", line)
+        if directive:
+            operation = directive.group(1)
+            expression = directive.group(2)
+            if operation in {"if", "ifdef", "ifndef"}:
+                condition = not (
+                    operation == "if" and re.fullmatch(r"\s*0\s*", expression)
+                )
+                stack.append(
+                    {
+                        "parent_active": active,
+                        "branch_taken": condition,
+                        "active": active and condition,
+                    }
+                )
+                active = stack[-1]["active"]
+            elif operation == "elif":
+                if not stack:
+                    raise ContractError("unmatched #elif in driver source")
+                frame = stack[-1]
+                condition = not re.fullmatch(r"\s*0\s*", expression)
+                frame["active"] = (
+                    frame["parent_active"] and not frame["branch_taken"] and condition
+                )
+                frame["branch_taken"] = frame["branch_taken"] or condition
+                active = frame["active"]
+            elif operation == "else":
+                if not stack:
+                    raise ContractError("unmatched #else in driver source")
+                frame = stack[-1]
+                frame["active"] = frame["parent_active"] and not frame["branch_taken"]
+                frame["branch_taken"] = True
+                active = frame["active"]
+            else:
+                if not stack:
+                    raise ContractError("unmatched #endif in driver source")
+                stack.pop()
+                active = stack[-1]["active"] if stack else True
+
+        if not active:
+            for position, character in enumerate(line, start=offset):
+                if character != "\n":
+                    masked[position] = " "
+        offset += len(line)
+
+    if stack:
+        raise ContractError("unterminated preprocessor conditional in driver source")
+    return "".join(masked)
+
+
 def function_body(
     source: str, function_name: str, preserve_literals: bool = False
 ) -> str:
     """Return one named C function through balanced brace matching."""
-    masked = mask_comments_and_literals(source)
-    signature = re.search(
-        rf"\b{re.escape(function_name)}\s*\([^;]*?\)\s*\{{",
-        masked,
-        re.DOTALL,
+    masked = active_code_mask(source)
+    signatures = list(
+        re.finditer(
+            rf"\b{re.escape(function_name)}\s*\([^;]*?\)\s*\{{",
+            masked,
+            re.DOTALL,
+        )
     )
-    if not signature:
+    if not signatures:
         raise ContractError(f"missing function: {function_name}")
+    if len(signatures) != 1:
+        raise ContractError(f"multiple active definitions: {function_name}")
+    signature = signatures[0]
     opening_brace = masked.find("{", signature.start())
     depth = 0
     for position in range(opening_brace, len(masked)):
@@ -325,11 +388,8 @@ def verify_contract(
     ):
         if handler[preceding.end() : following.start()].strip():
             raise ContractError(f"control flow intervenes before CP ME {operation}")
-    if re.search(
-        r"\b(?:RREG32|WREG32|RREG32_MC|WREG32_MC)\s*\(",
-        handler[: idle_gate.start()],
-    ):
-        raise ContractError("CP ME register access precedes the idle gate")
+    if re.search(r"\b(?:RREG32|WREG32|RREG32_MC|WREG32_MC)\s*\(", handler):
+        raise ContractError("write handler accesses CP ME registers directly")
     idle_failure = require_pattern(
         handler,
         r"if\s*\(\s*ret\s*\)\s*\{\s*"
@@ -468,6 +528,18 @@ def verify_contract(
         raise ContractError(
             "write handler must invoke the injection helper exactly once"
         )
+    position_updates = list(
+        re.finditer(
+            r"(?:\(\s*)?\*\s*ppos\s*(?:\)\s*)?"
+            r"(?:(?:<<|>>|[+\-*/%&^|])?=(?!=)|\+\+|--)|"
+            r"(?:\+\+|--)\s*(?:\(\s*)?\*\s*ppos(?:\s*\))?",
+            handler,
+        )
+    )
+    if len(position_updates) != 1:
+        raise ContractError("write handler must consume the descriptor exactly once")
+    if position_updates[0].start() != descriptor_consumed.start():
+        raise ContractError("write handler changes the consumed descriptor position")
     if len(re.findall(r"\breturn\s+ret\s*\?\s*ret\s*:\s*len\s*;", handler)) != 1:
         raise ContractError(
             "write handler must propagate the injection result exactly once"
@@ -588,6 +660,10 @@ def selftest(repository: Path) -> int:
         )
         normal_unlock_block = (
             "\tmutex_unlock(&ctx->lock);\n\tradeon_device_unlock_hardware(rdev);\n"
+        )
+        idle_failure_log_result = "\t\t\t\t     addr, ret);\n"
+        successful_log_result = (
+            '\t\tdev_info(rdev->dev, "rs480_cp_me_ram_inject: %s", ctx->result);\n'
         )
         queue_restore = "\tWREG32(RADEON_CP_CSQ_CNTL, csq);\n"
         protected_restore = mismatch_block + "\n" + queue_restore
@@ -1046,6 +1122,17 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "idle failure logger writes a CP ME register",
+                replace_once(
+                    driver_source,
+                    idle_failure_log_result,
+                    "\t\t\t\t     addr, (WREG32(RADEON_CP_ME_RAM_DATAH, new_h), ret));\n",
+                    "idle failure logger register access",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "write handler reports unconditional success",
                 replace_once(
                     driver_source,
@@ -1120,6 +1207,33 @@ def selftest(repository: Path) -> int:
                     "\tif (!ret)\n\t\tmutex_unlock(&ctx->lock);\n"
                     "\tradeon_device_unlock_hardware(rdev);\n",
                     "conditional post-injection unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "successful logger reopens the consumed descriptor",
+                replace_once(
+                    driver_source,
+                    successful_log_result,
+                    successful_log_result.replace(
+                        "ctx->result", "(*ppos = 0, ctx->result)"
+                    ),
+                    "successful logger descriptor reset",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "inactive handler decoy precedes an active idle-gate bypass",
+                "#if 0\n"
+                + driver_source
+                + "#endif\n"
+                + replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "active idle gate bypass after inactive decoy",
                 ),
                 feature_policy,
                 surface_audit,
