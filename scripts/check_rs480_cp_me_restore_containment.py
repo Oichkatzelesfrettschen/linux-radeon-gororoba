@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
-EXPECTED_BAD_COUNT = 56
+EXPECTED_BAD_COUNT = 67
 
 
 class ContractError(Exception):
@@ -77,8 +78,18 @@ def mask_comments_and_literals(source: str) -> str:
     return "".join(masked)
 
 
+def is_zero_preprocessor_expression(expression: str) -> bool:
+    """Return whether one limited preprocessor expression is an integer zero."""
+    return bool(
+        re.fullmatch(
+            r"\s*(?:\(\s*)*(?:0+|0[xX]0+|0[bB]0+)[uUlL]*(?:\s*\))*\s*",
+            expression,
+        )
+    )
+
+
 def active_code_mask(source: str) -> str:
-    """Mask comments, literals, and branches disabled by an exact #if 0."""
+    """Mask comments, literals, and branches disabled by a zero-valued #if."""
     masked = list(mask_comments_and_literals(source))
     stack: list[dict[str, bool]] = []
     offset = 0
@@ -91,7 +102,7 @@ def active_code_mask(source: str) -> str:
             expression = directive.group(2)
             if operation in {"if", "ifdef", "ifndef"}:
                 condition = not (
-                    operation == "if" and re.fullmatch(r"\s*0\s*", expression)
+                    operation == "if" and is_zero_preprocessor_expression(expression)
                 )
                 stack.append(
                     {
@@ -105,7 +116,7 @@ def active_code_mask(source: str) -> str:
                 if not stack:
                     raise ContractError("unmatched #elif in driver source")
                 frame = stack[-1]
-                condition = not re.fullmatch(r"\s*0\s*", expression)
+                condition = not is_zero_preprocessor_expression(expression)
                 frame["active"] = (
                     frame["parent_active"] and not frame["branch_taken"] and condition
                 )
@@ -186,12 +197,22 @@ def brace_depth_at(body: str, position: int) -> int:
     return depth
 
 
-def feature_block(policy: str, feature_id: str) -> str:
-    """Return one TOML feature block by its exact identifier."""
-    for block in re.split(r"(?=^\[\[feature\]\]$)", policy, flags=re.MULTILINE):
-        if re.search(rf'^id = "{re.escape(feature_id)}"$', block, re.MULTILINE):
-            return block
-    raise ContractError(f"missing build feature: {feature_id}")
+def feature_record(policy: str, feature_id: str) -> dict[str, object]:
+    """Return one parsed TOML feature record by its exact identifier."""
+    try:
+        records = tomllib.loads(policy).get("feature")
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(f"invalid build feature policy: {error}") from error
+    if not isinstance(records, list):
+        raise ContractError("build feature policy has no feature records")
+    matching_records = [
+        record
+        for record in records
+        if isinstance(record, dict) and record.get("id") == feature_id
+    ]
+    if len(matching_records) != 1:
+        raise ContractError(f"build feature record denominator differs: {feature_id}")
+    return matching_records[0]
 
 
 def verify_contract(
@@ -342,6 +363,52 @@ def verify_contract(
     handler_source = function_body(
         driver_source, "rs480_cp_me_ram_inject_write", preserve_literals=True
     )
+    descriptor_rejection = require_pattern(
+        handler,
+        r"if\s*\(\s*\*ppos\s*!=\s*0\s*\)\s*return\s+-ESPIPE\s*;",
+        "write handler does not reject a consumed descriptor",
+    )
+    arming_token = require_pattern(
+        handler,
+        r"if\s*\(\s*radeon_rs480_cp_me_ram_inject\s*!=\s*"
+        r"RS480_CP_ME_INJECT_ARM_TOKEN\s*\)\s*return\s+-EACCES\s*;",
+        "write handler does not require the CP ME arm token",
+    )
+    payload_limit = require_pattern(
+        handler,
+        r"if\s*\(\s*len\s*>=\s*sizeof\s*\(\s*kbuf\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler does not bound the CP ME command payload",
+    )
+    payload_copy = require_pattern(
+        handler,
+        r"if\s*\(\s*copy_from_user\s*\(\s*kbuf\s*,\s*ubuf\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EFAULT\s*;",
+        "write handler does not require a complete CP ME command copy",
+    )
+    payload_terminator = require_pattern(
+        handler,
+        r"kbuf\s*\[\s*len\s*\]\s*=\s*;",
+        "write handler does not terminate the CP ME command payload",
+    )
+    payload_terminator_source = require_pattern(
+        handler_source,
+        r"kbuf\s*\[\s*len\s*\]\s*=\s*'\\0'\s*;",
+        "write handler CP ME command terminator is not executable code",
+    )
+    parsed_command = require_pattern(
+        handler,
+        r"if\s*\(\s*!rs480_cp_me_inject_parse\s*\(\s*"
+        r"kbuf\s*,\s*&addr\s*,\s*&new_h\s*,\s*&new_l\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler does not parse the complete CP ME command",
+    )
+    address_limit = require_pattern(
+        handler,
+        r"if\s*\(\s*addr\s*>=\s*RS480_CP_ME_INJECT_ADDR_LIMIT\s*\)\s*"
+        r"return\s+-ERANGE\s*;",
+        "write handler does not retain the CP ME address limit",
+    )
     hardware_lock = require_pattern(
         handler,
         r"ret\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;",
@@ -368,6 +435,13 @@ def verify_contract(
         "write handler does not run the CP ME idle gate",
     )
     acquisition_positions = (
+        descriptor_rejection.start(),
+        arming_token.start(),
+        payload_limit.start(),
+        payload_copy.start(),
+        payload_terminator.start(),
+        parsed_command.start(),
+        address_limit.start(),
         hardware_lock.start(),
         hardware_lock_failure.start(),
         descriptor_consumed.start(),
@@ -380,6 +454,13 @@ def verify_contract(
         brace_depth_at(handler, position) != 0 for position in acquisition_positions
     ):
         raise ContractError("CP ME lock acquisition must remain top level")
+    if (
+        payload_terminator.start() != payload_terminator_source.start()
+        or payload_terminator.end() != payload_terminator_source.end()
+    ):
+        raise ContractError(
+            "write handler CP ME command terminator is masked or relocated"
+        )
     for preceding, following, operation in (
         (hardware_lock, hardware_lock_failure, "hardware lock failure"),
         (hardware_lock_failure, descriptor_consumed, "descriptor consumption"),
@@ -545,16 +626,28 @@ def verify_contract(
             "write handler must propagate the injection result exactly once"
         )
 
-    cp_me_policy = feature_block(feature_policy, "cp-me-write")
-    required_policy_phrases = (
+    cp_me_policy = feature_record(feature_policy, "cp-me-write")
+    error_contract = cp_me_policy.get("error_contract")
+    if not isinstance(error_contract, str):
+        raise ContractError("cp-me-write error contract is not a string")
+    required_error_contract_phrases = (
         "restore mismatch keeps the command queue disabled",
         "requests CPU-only parked publication",
         "verified restore permits the original queue state",
-        "restore mismatch parks the device before queue restoration",
     )
-    for phrase in required_policy_phrases:
-        if phrase not in cp_me_policy:
-            raise ContractError(f"cp-me-write policy omits: {phrase}")
+    for phrase in required_error_contract_phrases:
+        if phrase not in error_contract:
+            raise ContractError(f"cp-me-write error contract omits: {phrase}")
+    policy_tests = cp_me_policy.get("tests")
+    if not isinstance(policy_tests, list) or not all(
+        isinstance(policy_test, str) for policy_test in policy_tests
+    ):
+        raise ContractError("cp-me-write tests are not a string list")
+    if not any(
+        "restore mismatch parks the device before queue restoration" in policy_test
+        for policy_test in policy_tests
+    ):
+        raise ContractError("cp-me-write tests omit restore queue ordering")
 
     audit_line = next(
         (
@@ -638,6 +731,29 @@ def selftest(repository: Path) -> int:
         idle_gate_block = "\tret = rs480_cp_me_ram_inject_wait_idle(rdev);\n"
         hardware_lock_block = (
             "\tret = radeon_device_lock_hardware(rdev);\n\tif (ret)\n\t\treturn ret;\n"
+        )
+        descriptor_rejection_block = "\tif (*ppos != 0)\n\t\treturn -ESPIPE;\n"
+        arming_token_block = (
+            "\tif (radeon_rs480_cp_me_ram_inject != "
+            "RS480_CP_ME_INJECT_ARM_TOKEN)\n\t\treturn -EACCES;\n"
+        )
+        payload_limit_block = "\tif (len >= sizeof(kbuf))\n\t\treturn -EINVAL;\n"
+        payload_copy_block = (
+            "\tif (copy_from_user(kbuf, ubuf, len))\n\t\treturn -EFAULT;\n"
+        )
+        payload_terminator_block = "\tkbuf[len] = '\\0';\n"
+        parsed_command_block = (
+            "\tif (!rs480_cp_me_inject_parse(kbuf, &addr, &new_h, &new_l))\n"
+            "\t\treturn -EINVAL;\n"
+        )
+        address_limit_block = (
+            "\tif (addr >= RS480_CP_ME_INJECT_ADDR_LIMIT)\n\t\treturn -ERANGE;\n"
+        )
+        error_contract_line = (
+            'error_contract = "a restore mismatch keeps the command queue disabled, '
+            "requests CPU-only parked publication, and returns -EIO; a verified restore "
+            "permits the original queue state; a write mismatch after verified restore "
+            'returns -ENXIO"\n'
         )
         context_lock_block = "\tmutex_lock(&ctx->lock);\n"
         context_lock_idle_gate_block = context_lock_block + idle_gate_block
@@ -1239,6 +1355,120 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "zero-suffixed inactive handler decoy precedes an active idle-gate bypass",
+                "#if 0U\n"
+                + driver_source
+                + "#else\n"
+                + replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "active idle gate bypass after zero-suffixed inactive decoy",
+                )
+                + "#endif\n",
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME arm token gate",
+                replace_once(
+                    driver_source,
+                    arming_token_block,
+                    "",
+                    "CP ME arm token gate",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits consumed descriptor rejection",
+                replace_once(
+                    driver_source,
+                    descriptor_rejection_block,
+                    "",
+                    "consumed descriptor rejection",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command payload bound",
+                replace_once(
+                    driver_source,
+                    payload_limit_block,
+                    "",
+                    "CP ME command payload bound",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler weakens the CP ME command payload bound",
+                replace_once(
+                    driver_source,
+                    payload_limit_block,
+                    payload_limit_block.replace("len >=", "len >"),
+                    "CP ME command payload bound comparison",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command copy check",
+                replace_once(
+                    driver_source,
+                    payload_copy_block,
+                    "",
+                    "CP ME command copy check",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command terminator",
+                replace_once(
+                    driver_source,
+                    payload_terminator_block,
+                    "",
+                    "CP ME command terminator",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command parser",
+                replace_once(
+                    driver_source,
+                    parsed_command_block,
+                    "",
+                    "CP ME command parser",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME address limit",
+                replace_once(
+                    driver_source,
+                    address_limit_block,
+                    "",
+                    "CP ME address limit",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler weakens the CP ME address limit",
+                replace_once(
+                    driver_source,
+                    address_limit_block,
+                    address_limit_block.replace("addr >=", "addr >"),
+                    "CP ME address limit comparison",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "injection helper adds an undeclared error return",
                 replace_once(
                     driver_source,
@@ -1318,6 +1548,21 @@ def selftest(repository: Path) -> int:
                     "restore mismatch keeps the command queue disabled",
                     "restore mismatch reports an error",
                     "policy queue containment",
+                ),
+                surface_audit,
+            ),
+            (
+                "policy comment supplies the disabled queue claim",
+                driver_source,
+                replace_once(
+                    feature_policy,
+                    error_contract_line,
+                    "# restore mismatch keeps the command queue disabled\n"
+                    + error_contract_line.replace(
+                        "restore mismatch keeps the command queue disabled",
+                        "restore mismatch reports an error",
+                    ),
+                    "commented disabled queue claim",
                 ),
                 surface_audit,
             ),
