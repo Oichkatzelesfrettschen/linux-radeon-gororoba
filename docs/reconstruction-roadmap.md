@@ -53,9 +53,13 @@ classes; a closed item names its proof, and an open item names its gate.
 - Per-commit reconstruction validation executes plans, checkers, build
   harnesses, and policy from the protected base SHA:
   `.github/workflows/reconstruction-history.yml`.
-- A repository-scoped read-only deploy key materializes the pinned private
-  packaging input in a credential-bearing setup job. Source builds receive
-  only the sanitized, hash-verified oracle artifact.
+- Each protected-base planning or prefix-build job uses a repository-scoped
+  read-only deploy key to materialize the pinned private packaging input. The
+  job verifies the seven input hashes, removes the private checkout, and then
+  validates from its runner-local oracle directory without trusting an
+  interjob artifact transfer. `scripts/check_reconstruction_oracle_workflow.py`
+  proves that both jobs retain that sequence and rejects a lost pin, transfer,
+  or cleanup boundary.
 - B14 and M24 regenerate every safe-register target from source. The ten
   outputs shipped by the legacy payload must match its pinned size and
   SHA-256 identities: `scripts/check_generated_register_outputs.py`.
