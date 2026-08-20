@@ -88,19 +88,19 @@ CANONICAL_CSCOPE_SOURCE_ROOT = (
 )
 MAX_SOURCE_FILES = 256
 MAX_SOURCE_BYTES = 7_200_000
-EXPECTED_ROOT_DENOMINATOR_COUNT = 129
+EXPECTED_ROOT_DENOMINATOR_COUNT = 130
 EXPECTED_ROOT_DENOMINATOR_SHA256 = (
-    "2a3c47dd45cfd6fdac67bb11350f9f1bb2df892ff4dc88c6d3e1268811eafbec"
+    "1529d8dcc7a81755a55455d06e5031287f79bcfd5af83df6204250f13ee20d3a"
 )
 EXPECTED_HAZARD_DENOMINATOR_COUNT = 33
 EXPECTED_HAZARD_DENOMINATOR_SHA256 = (
-    "e64f5bc248a7022b115813b6fecf6478b7ca06ee3ff2cb41907ae56a48b36065"
+    "e241a84b26088ceaed3b5440bf2ae850fcaa09d97694b3a793ecd55e6769329c"
 )
 EXPECTED_BINDING_DENOMINATOR_COUNT = 70
 EXPECTED_BINDING_DENOMINATOR_SHA256 = (
     "4576cfbf1d5f924c58ab0167dc9f8f02df0622b949dfbd5ca13be625ff14389c"
 )
-EXPECTED_SELFTEST_VERDICT_COUNT = 255
+EXPECTED_SELFTEST_VERDICT_COUNT = 258
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ANALYSIS_ROWS = 1_000_000
 MAX_TOOLCHAIN_PREFIX_ENTRIES = 8_192
@@ -11499,7 +11499,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     expected_source_commands = expected_command_records(policy, [entry], set())
     check(
         "source command contract closes the analyzer command denominator",
-        len(expected_source_commands) == 418,
+        len(expected_source_commands) == 421,
     )
     expected_kernel_commands = expected_command_records(
         policy,
@@ -11511,7 +11511,7 @@ def self_test(repository: Path, policy_path: Path) -> int:
     ]
     check(
         "kernel command contract pins host make, shell, and LLVM prefix",
-        len(expected_kernel_commands) == 438
+        len(expected_kernel_commands) == 441
         and len(expected_make_commands) == 12
         and all(
             (arguments := json.loads(row[6]))[0] == "/usr/bin/make"
@@ -12662,6 +12662,22 @@ def self_test(repository: Path, policy_path: Path) -> int:
                 "radeon_fbdev.c",
             ),
         )
+        rejects(
+            "live hazard census rejects a removed parked publication request",
+            lambda: verify_mutated_live_hazard_identifiers(
+                "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n",
+                "",
+                "radeon_device.c",
+            ),
+        )
+        rejects(
+            "live hazard census rejects a downgraded CP restore route",
+            lambda: verify_mutated_live_hazard_identifiers(
+                "\t\tradeon_rs4xx_latch_parked_publication(rdev);",
+                "\t\tradeon_rs4xx_latch_parked_state(rdev);",
+                "radeon_rs4xx_dev.c",
+            ),
+        )
 
         def verify_mutated_live_bindings(
             original: str,
@@ -13047,6 +13063,22 @@ def self_test(repository: Path, policy_path: Path) -> int:
             "policy rejects a missing capacity root",
             "root denominator count differs",
             lambda: load_policy(missing_capacity_root),
+        )
+
+        missing_publication_root = temp / "missing-publication-root.toml"
+        publication_root_row = '  "radeon_rs4xx_latch_parked_publication",\n'
+        require(
+            live_policy.count(publication_root_row) == 1,
+            "parked publication root mutation anchor differs",
+        )
+        write_text(
+            missing_publication_root,
+            live_policy.replace(publication_root_row, "", 1),
+        )
+        rejects_with(
+            "policy rejects a missing parked publication root",
+            "root denominator count differs",
+            lambda: load_policy(missing_publication_root),
         )
 
         moved_capacity_root = temp / "moved-capacity-root.toml"
