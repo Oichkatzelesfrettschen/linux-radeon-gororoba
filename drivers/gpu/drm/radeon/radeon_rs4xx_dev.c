@@ -1411,11 +1411,11 @@ static int rs480_cp_me_ram_inject_one(struct radeon_device *rdev, u32 addr,
 	*restored_l = RREG32(RADEON_CP_ME_RAM_DATAL);
 
 	/* A restore mismatch leaves modified microcode in the command processor.
-	 * Keep the command queue disabled and publish the parked state before
-	 * returning -EIO.  A verified restore permits the original queue state.
-	 * A later -ENXIO means the bounded write did not take. */
+	 * Keep the command queue disabled and request CPU-only parked publication
+	 * before returning -EIO. A verified restore permits the original queue
+	 * state. A later -ENXIO means the bounded write did not take. */
 	if (*restored_h != orig_h || *restored_l != orig_l) {
-		radeon_rs4xx_latch_parked_state(rdev);
+		radeon_rs4xx_latch_parked_publication(rdev);
 		return -EIO;
 	}
 

@@ -9,13 +9,14 @@ they can allocate, bind, unbind, or retain TTM state after an outer entrypoint
 has admitted its work. Every operational caller rejects a failed begin,
 balances a successful begin with an end after its final hardware operation,
 and keeps the hardware operation after admission. The parked latch remains a
-terminal -EIO outcome at the central root. Five direct latch callers cover
-teardown refusal, full parked-state publication, reset ring-restore failure,
-RS400 initialization reset failure, and CP microengine restore failure. Four
-teardown refusal callers cover BO destruction, TTM backend unbind, TTM
-unpopulation, and GEM object release.
-The refusal wrapper latches before it records pending publication, and the
-publisher drains admitted transactions and readers before CPU-only cleanup.
+terminal -EIO outcome at the central root. Four direct state-latch callers
+cover the publication request helper, full parked-state publication, reset
+ring-restore failure, and RS400 initialization reset failure. Two direct
+publication-latch callers cover teardown refusal and CP microengine restore
+failure. Four teardown refusal callers cover BO destruction, TTM backend
+unbind, TTM unpopulation, and GEM object release. The publication helper
+latches before it records pending publication, and the publisher drains
+admitted transactions and readers before CPU-only cleanup.
 The work item coalesces a running publisher, and terminal quiescence disables
 the work item before its lifetime flag closes. The display modeset keeps its
 terminal no-op behavior.
@@ -48,6 +49,7 @@ ACCESS_WAIT_BEGIN = "radeon_rs4xx_hardware_access_wait_begin"
 INTERNAL_ACCESS_BEGIN = "__radeon_rs4xx_hardware_access_begin"
 INTERNAL_ACCESS_END = "__radeon_rs4xx_hardware_access_end"
 LATCH_PARKED = "radeon_rs4xx_latch_parked_state"
+PUBLICATION_LATCH = "radeon_rs4xx_latch_parked_publication"
 PUBLISH_PARKED = "radeon_rs4xx_publish_parked_state"
 QUEUE_PARKED = "radeon_rs4xx_queue_parked_publish"
 PUBLISH_WORK = "radeon_rs4xx_parked_publish_work"
@@ -429,7 +431,7 @@ def expected_latch_call_sites() -> dict[tuple[Path, str, str], int]:
     return {
         (
             SUBTREE / "radeon_device.c",
-            "radeon_rs4xx_latch_teardown_refusal",
+            PUBLICATION_LATCH,
             LATCH_PARKED,
         ): 1,
         (
@@ -442,12 +444,24 @@ def expected_latch_call_sites() -> dict[tuple[Path, str, str], int]:
             "radeon_gpu_reset_internal",
             LATCH_PARKED,
         ): 1,
+        (SUBTREE / "rs400.c", "rs400_init", LATCH_PARKED): 1,
+    }
+
+
+def expected_publication_latch_call_sites() -> dict[tuple[Path, str, str], int]:
+    """Return the exact parked-publication request denominator."""
+
+    return {
+        (
+            SUBTREE / "radeon_device.c",
+            "radeon_rs4xx_latch_teardown_refusal",
+            PUBLICATION_LATCH,
+        ): 1,
         (
             SUBTREE / "radeon_rs4xx_dev.c",
             "rs480_cp_me_ram_inject_one",
-            LATCH_PARKED,
+            PUBLICATION_LATCH,
         ): 1,
-        (SUBTREE / "rs400.c", "rs400_init", LATCH_PARKED): 1,
     }
 
 
@@ -562,6 +576,35 @@ def check_refusal_latch_call_denominator(root: Path) -> None:
             )
         raise GuardError(
             "teardown refusal latch call denominator differs: " + "; ".join(details)
+        )
+
+
+def check_publication_latch_call_denominator(root: Path) -> None:
+    """Reject missing, extra, or multiply counted publication-latch calls."""
+
+    expected = expected_publication_latch_call_sites()
+    actual: dict[tuple[Path, str, str], int] = {}
+    for function in source_functions(root):
+        count = len(call_positions(function, PUBLICATION_LATCH))
+        if count:
+            actual[(function.path, function.name, PUBLICATION_LATCH)] = count
+    if actual != expected:
+        missing = sorted(set(expected) - set(actual), key=str)
+        extra = sorted(set(actual) - set(expected), key=str)
+        changed = sorted(
+            key for key in set(expected) & set(actual) if expected[key] != actual[key]
+        )
+        details = []
+        if missing:
+            details.append(f"missing {missing}")
+        if extra:
+            details.append(f"extra {extra}")
+        if changed:
+            details.append(
+                "counts " + str([(key, expected[key], actual[key]) for key in changed])
+            )
+        raise GuardError(
+            "parked-publication call denominator differs: " + "; ".join(details)
         )
 
 
@@ -1170,36 +1213,45 @@ def check_async_publisher(root: Path) -> None:
     """Prove refusal publication, work coalescing, and work lifetime ordering."""
 
     queue = get_function(root, SUBTREE / "radeon_device.c", QUEUE_PARKED)
+    publication_latch = get_function(
+        root, SUBTREE / "radeon_device.c", PUBLICATION_LATCH
+    )
     refusal = get_function(root, SUBTREE / "radeon_device.c", REFUSAL_LATCH)
     worker = get_function(root, SUBTREE / "radeon_device.c", PUBLISH_WORK)
     terminal = get_function(root, SUBTREE / "radeon_device.c", TERMINAL_QUIESCE)
     initialize = get_function(root, SUBTREE / "radeon_device.c", "radeon_device_init")
 
-    refusal_text = body_text(refusal)
-    refusal_markers = (
+    publication_text = body_text(publication_latch)
+    publication_markers = (
         f"{LATCH_PARKED} ( rdev ) ;",
         "atomic_xchg ( & rdev -> rs4xx_parked_publish_pending , 1 ) ;",
         f"{QUEUE_PARKED} ( rdev ) ;",
     )
-    refusal_positions = tuple(refusal_text.find(marker) for marker in refusal_markers)
-    if any(position < 0 for position in refusal_positions):
-        raise GuardError("teardown refusal: latch, pending state, or queue is absent")
-    if refusal_positions != tuple(sorted(refusal_positions)):
+    publication_positions = tuple(
+        publication_text.find(marker) for marker in publication_markers
+    )
+    if any(position < 0 for position in publication_positions):
+        raise GuardError("parked publication: latch, pending state, or queue is absent")
+    if publication_positions != tuple(sorted(publication_positions)):
         raise GuardError(
-            "teardown refusal: latch, pending state, and queue order differs"
+            "parked publication: latch, pending state, and queue order differs"
         )
-    if refusal_text.count(f"{LATCH_PARKED} ( rdev ) ;") != 1:
-        raise GuardError("teardown refusal: parked latch count differs")
-    if refusal_text != (
+    if publication_text.count(f"{LATCH_PARKED} ( rdev ) ;") != 1:
+        raise GuardError("parked publication: state-latch count differs")
+    if publication_text != (
         f"{LATCH_PARKED} ( rdev ) ; "
         "atomic_xchg ( & rdev -> rs4xx_parked_publish_pending , 1 ) ; "
         f"{QUEUE_PARKED} ( rdev ) ;"
     ):
         raise GuardError(
-            "teardown refusal: callback performs work beyond publication request"
+            "parked publication: helper performs work beyond its nonblocking request"
         )
-    if PUBLISH_PARKED in refusal_text:
-        raise GuardError("teardown refusal: callback invokes the blocking publisher")
+    if PUBLISH_PARKED in publication_text:
+        raise GuardError("parked publication: helper invokes the blocking publisher")
+
+    refusal_text = body_text(refusal)
+    if refusal_text != f"{PUBLICATION_LATCH} ( rdev ) ;":
+        raise GuardError("teardown refusal: wrapper bypasses parked publication")
 
     queue_text = body_text(queue)
     require_pattern(
@@ -1308,6 +1360,7 @@ def check_contract(root: Path) -> None:
 
     check_call_denominator(root)
     check_latch_call_denominator(root)
+    check_publication_latch_call_denominator(root)
     check_refusal_latch_call_denominator(root)
     check_reader_call_denominator(root)
     for spec in ROOTS:
@@ -1332,7 +1385,7 @@ FIXTURE_SOURCES = {
     SUBTREE / "radeon_rs4xx_dev.c": """
 static int rs480_cp_me_ram_inject_one(struct radeon_device *rdev)
 {
-	radeon_rs4xx_latch_parked_state(rdev);
+	radeon_rs4xx_latch_parked_publication(rdev);
 	return -EIO;
 }
 """,
@@ -1485,11 +1538,15 @@ void radeon_rs4xx_latch_parked_state(struct radeon_device *rdev)
 \tif (READ_ONCE(rdev->rs4xx_fence_work_initialized))
 \t\twake_up_all(&rdev->fence_queue);
 }
-void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)
+void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)
 {
 \tradeon_rs4xx_latch_parked_state(rdev);
 \tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);
 \tradeon_rs4xx_queue_parked_publish(rdev);
+}
+void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)
+{
+\tradeon_rs4xx_latch_parked_publication(rdev);
 }
 static void radeon_rs4xx_queue_parked_publish(struct radeon_device *rdev)
 {
@@ -2340,15 +2397,15 @@ def selftest(root: Path) -> int:
             "\twake_up_all(&rdev->rs4xx_hardware_wait);",
         ),
         (
-            "teardown latch conditionalized",
+            "publication latch conditionalized",
             SUBTREE / "radeon_device.c",
-            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)\n"
             "{\n"
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
             "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
             "}",
-            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)\n"
             "{\n"
             "\tif (!READ_ONCE(rdev->gpu_parked))\n"
             "\t\tradeon_rs4xx_latch_parked_state(rdev);\n"
@@ -2357,15 +2414,15 @@ def selftest(root: Path) -> int:
             "}",
         ),
         (
-            "teardown latch wrapper gains a blocking suffix",
+            "publication latch gains a blocking suffix",
             SUBTREE / "radeon_device.c",
-            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)\n"
             "{\n"
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
             "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
             "}",
-            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)\n"
             "{\n"
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
@@ -2376,17 +2433,29 @@ def selftest(root: Path) -> int:
         (
             "pending publication precedes parked latch",
             SUBTREE / "radeon_device.c",
-            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)\n"
             "{\n"
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
             "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
             "}",
-            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev)\n"
             "{\n"
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n"
             "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "\tradeon_rs4xx_queue_parked_publish(rdev);\n"
+            "}",
+        ),
+        (
+            "teardown refusal bypasses publication latch",
+            SUBTREE / "radeon_device.c",
+            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "{\n"
+            "\tradeon_rs4xx_latch_parked_publication(rdev);\n"
+            "}",
+            "void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev)\n"
+            "{\n"
+            "\tradeon_rs4xx_latch_parked_state(rdev);\n"
             "}",
         ),
         (
@@ -2426,7 +2495,7 @@ def selftest(root: Path) -> int:
             "",
         ),
         (
-            "refusal request loses ordered publication",
+            "publication request loses ordered publication",
             SUBTREE / "radeon_device.c",
             "\tatomic_xchg(&rdev->rs4xx_parked_publish_pending, 1);\n",
             "\tatomic_set(&rdev->rs4xx_parked_publish_pending, 1);\n",
@@ -2494,6 +2563,16 @@ def selftest(root: Path) -> int:
             "static int radeon_gpu_reset_internal(struct radeon_device *rdev)",
         ),
         (
+            "unexpected direct publication latch caller",
+            SUBTREE / "radeon_device.c",
+            "static int radeon_gpu_reset_internal(struct radeon_device *rdev)",
+            "static void extra_publication_latch(struct radeon_device *rdev)\n"
+            "{\n"
+            "\tradeon_rs4xx_latch_parked_publication(rdev);\n"
+            "}\n"
+            "static int radeon_gpu_reset_internal(struct radeon_device *rdev)",
+        ),
+        (
             "unexpected teardown refusal latch caller",
             SUBTREE / "radeon_ttm.c",
             "\t\tradeon_rs4xx_latch_teardown_refusal(rdev);\n\t\treturn r;",
@@ -2510,9 +2589,9 @@ def selftest(root: Path) -> int:
             "\t\t\tr = restore_result;\n\t\t\tgpu_parked = true;",
         ),
         (
-            "CP microengine restore parked latch removed",
+            "CP microengine restore publication latch removed",
             SUBTREE / "radeon_rs4xx_dev.c",
-            "\tradeon_rs4xx_latch_parked_state(rdev);\n",
+            "\tradeon_rs4xx_latch_parked_publication(rdev);\n",
             "",
         ),
         (

@@ -1076,7 +1076,7 @@ side_effect_class = "microcode-write"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one bounded microword write, readback, original microword restore, restore validation, and command queue restoration only after exact equality"
 locking = "device hardware transaction, per-device mutation lock, and engine-idle gate"
-error_contract = "a restore mismatch keeps the command queue disabled, publishes the parked state, and returns -EIO; a verified restore permits the original queue state; a write mismatch after verified restore returns -ENXIO"
+error_contract = "a restore mismatch keeps the command queue disabled, requests CPU-only parked publication, and returns -EIO; a verified restore permits the original queue state; a write mismatch after verified restore returns -ENXIO"
 tests = [
   "normal: exact token performs bounded write, verify, and restore",
   "boundary: final writable word restores its original value",

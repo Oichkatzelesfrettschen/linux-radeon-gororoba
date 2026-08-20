@@ -462,6 +462,7 @@ roots = [
   "radeon_rs4xx_hardware_transition_end",
   "radeon_rs4xx_queue_parked_publish",
   "radeon_rs4xx_latch_parked_state",
+  "radeon_rs4xx_latch_parked_publication",
   "radeon_rs4xx_latch_teardown_refusal",
   "radeon_rs4xx_parked_publish_work",
   "radeon_rs4xx_publish_parked_state",

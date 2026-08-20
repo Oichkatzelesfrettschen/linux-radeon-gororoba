@@ -2655,6 +2655,7 @@ void radeon_rs4xx_hardware_transition_end(
 	struct radeon_device *rdev,
 	enum radeon_rs4xx_hardware_state final_state);
 void radeon_rs4xx_latch_parked_state(struct radeon_device *rdev);
+void radeon_rs4xx_latch_parked_publication(struct radeon_device *rdev);
 void radeon_rs4xx_latch_teardown_refusal(struct radeon_device *rdev);
 int radeon_rs4xx_gart_teardown_wait(struct radeon_device *rdev);
 void radeon_rs4xx_publish_parked_state(struct radeon_device *rdev);

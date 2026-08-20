@@ -136,24 +136,41 @@ def verify_contract(
             "CP queue control must have one disable and one restore write"
         )
 
-    queue_disable = require_pattern(
+    original_capture = require_pattern(
         body,
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_RADDR\s*,\s*addr\s*\)\s*;\s*"
+        r"orig_h\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAH\s*\)\s*;\s*"
+        r"orig_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)\s*;",
+        "original microword capture is incomplete or reordered",
+    )
+    queue_capture_disable = require_pattern(
+        body,
+        r"csq\s*=\s*RREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*\)\s*;\s*"
         r"WREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*,\s*"
         r"RADEON_CSQ_PRIDIS_INDDIS\s*\)",
-        "CP queue disable write is absent",
+        "CP queue control capture must immediately precede the disable write",
     )
-    restore_read = require_pattern(
+    restore_writes = require_pattern(
         body,
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_ADDR\s*,\s*addr\s*\)\s*;\s*"
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_DATAH\s*,\s*orig_h\s*\)\s*;\s*"
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*,\s*orig_l\s*\)\s*;",
+        "original microword restore writes are incomplete or reordered",
+    )
+    restore_readbacks = require_pattern(
+        body,
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_RADDR\s*,\s*addr\s*\)\s*;\s*"
+        r"\*restored_h\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAH\s*\)\s*;\s*"
         r"\*restored_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)\s*;",
-        "restored microword readback is absent",
+        "restored microword hardware readbacks are incomplete or reordered",
     )
     restore_mismatch = require_pattern(
         body,
         r"if\s*\(\s*\*restored_h\s*!=\s*orig_h\s*\|\|\s*"
         r"\*restored_l\s*!=\s*orig_l\s*\)\s*\{\s*"
-        r"radeon_rs4xx_latch_parked_state\s*\(\s*rdev\s*\)\s*;\s*"
+        r"radeon_rs4xx_latch_parked_publication\s*\(\s*rdev\s*\)\s*;\s*"
         r"return\s+-EIO\s*;\s*\}",
-        "restore mismatch must latch the parked state and return -EIO",
+        "restore mismatch must request parked publication and return -EIO",
     )
     queue_restore = require_pattern(
         body,
@@ -168,8 +185,10 @@ def verify_contract(
     )
 
     ordered_positions = (
-        queue_disable.start(),
-        restore_read.start(),
+        original_capture.start(),
+        queue_capture_disable.start(),
+        restore_writes.start(),
+        restore_readbacks.start(),
         restore_mismatch.start(),
         queue_restore.start(),
         write_mismatch.start(),
@@ -179,27 +198,29 @@ def verify_contract(
             "CP queue restoration must follow exact original microword validation"
         )
     top_level_statements = (
-        queue_disable,
-        restore_read,
+        original_capture,
+        queue_capture_disable,
+        restore_writes,
+        restore_readbacks,
         restore_mismatch,
         queue_restore,
         write_mismatch,
     )
     if any(brace_depth_at(body, match.start()) != 0 for match in top_level_statements):
         raise ContractError("CP restore containment statements must remain top level")
-    if body[restore_read.end() : restore_mismatch.start()].strip():
+    if body[restore_readbacks.end() : restore_mismatch.start()].strip():
         raise ContractError("control flow intervenes before restore validation")
     if body[restore_mismatch.end() : queue_restore.start()].strip():
         raise ContractError("control flow intervenes before safe queue restoration")
-    if body.count("radeon_rs4xx_latch_parked_state(rdev);") != 1:
-        raise ContractError("restore mismatch must have one parked state publication")
+    if body.count("radeon_rs4xx_latch_parked_publication(rdev);") != 1:
+        raise ContractError("restore mismatch must have one parked publication request")
     if body.count("return -EIO;") != 1:
         raise ContractError("restore mismatch must have one exact -EIO return")
 
     cp_me_policy = feature_block(feature_policy, "cp-me-write")
     required_policy_phrases = (
         "restore mismatch keeps the command queue disabled",
-        "publishes the parked state",
+        "requests CPU-only parked publication",
         "verified restore permits the original queue state",
         "restore mismatch parks the device before queue restoration",
     )
@@ -219,7 +240,7 @@ def verify_contract(
         raise ContractError("development interface audit omits the CP injection node")
     for phrase in (
         "restore validation before queue reenable",
-        "restore mismatch parks with the queue disabled",
+        "restore mismatch requests parked publication with the queue disabled",
     ):
         if phrase not in audit_line:
             raise ContractError(f"development interface audit omits: {phrase}")
@@ -245,9 +266,31 @@ def selftest(repository: Path) -> int:
 
         mismatch_block = (
             "\tif (*restored_h != orig_h || *restored_l != orig_l) {\n"
-            "\t\tradeon_rs4xx_latch_parked_state(rdev);\n"
+            "\t\tradeon_rs4xx_latch_parked_publication(rdev);\n"
             "\t\treturn -EIO;\n"
             "\t}\n"
+        )
+        original_capture_block = (
+            "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
+            "\torig_h = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
+            "\torig_l = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
+        )
+        queue_capture_disable = (
+            "\tcsq = RREG32(RADEON_CP_CSQ_CNTL);\n"
+            "\tWREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);\n"
+        )
+        queue_disable = (
+            "\tWREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);\n"
+        )
+        restore_write_block = (
+            "\tWREG32(RADEON_CP_ME_RAM_ADDR, addr);\n"
+            "\tWREG32(RADEON_CP_ME_RAM_DATAH, orig_h);\n"
+            "\tWREG32(RADEON_CP_ME_RAM_DATAL, orig_l);\n"
+        )
+        restore_readback_block = (
+            "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
+            "\t*restored_h = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
+            "\t*restored_l = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
         )
         queue_restore = "\tWREG32(RADEON_CP_CSQ_CNTL, csq);\n"
         protected_restore = mismatch_block + "\n" + queue_restore
@@ -273,9 +316,127 @@ def selftest(repository: Path) -> int:
                 "parked publication removed",
                 replace_once(
                     driver_source,
-                    "\t\tradeon_rs4xx_latch_parked_state(rdev);\n",
+                    "\t\tradeon_rs4xx_latch_parked_publication(rdev);\n",
                     "",
                     "parked publication",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "parked publication downgraded to admission latch",
+                replace_once(
+                    driver_source,
+                    "\t\tradeon_rs4xx_latch_parked_publication(rdev);\n",
+                    "\t\tradeon_rs4xx_latch_parked_state(rdev);\n",
+                    "parked publication request",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "original high half synthesized",
+                replace_once(
+                    driver_source,
+                    original_capture_block,
+                    original_capture_block.replace(
+                        "orig_h = RREG32(RADEON_CP_ME_RAM_DATAH);",
+                        "orig_h = new_h;",
+                    ),
+                    "original high-half capture",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "original low half synthesized",
+                replace_once(
+                    driver_source,
+                    original_capture_block,
+                    original_capture_block.replace(
+                        "orig_l = RREG32(RADEON_CP_ME_RAM_DATAL);",
+                        "orig_l = new_l;",
+                    ),
+                    "original low-half capture",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "original high-half restore omitted",
+                replace_once(
+                    driver_source,
+                    restore_write_block,
+                    restore_write_block.replace(
+                        "\tWREG32(RADEON_CP_ME_RAM_DATAH, orig_h);\n", ""
+                    ),
+                    "original high-half restore",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "original low-half restore omitted",
+                replace_once(
+                    driver_source,
+                    restore_write_block,
+                    restore_write_block.replace(
+                        "\tWREG32(RADEON_CP_ME_RAM_DATAL, orig_l);\n", ""
+                    ),
+                    "original low-half restore",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "restored high-half readback synthesized",
+                replace_once(
+                    driver_source,
+                    restore_readback_block,
+                    restore_readback_block.replace(
+                        "*restored_h = RREG32(RADEON_CP_ME_RAM_DATAH);",
+                        "*restored_h = orig_h;",
+                    ),
+                    "restored high-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "restored low-half readback synthesized",
+                replace_once(
+                    driver_source,
+                    restore_readback_block,
+                    restore_readback_block.replace(
+                        "*restored_l = RREG32(RADEON_CP_ME_RAM_DATAL);",
+                        "*restored_l = orig_l;",
+                    ),
+                    "restored low-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "queue control capture synthesized",
+                replace_once(
+                    driver_source,
+                    queue_capture_disable,
+                    queue_capture_disable.replace(
+                        "csq = RREG32(RADEON_CP_CSQ_CNTL);",
+                        "csq = 0;",
+                    ),
+                    "queue control capture",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "queue control capture follows disable",
+                replace_once(
+                    driver_source,
+                    queue_capture_disable,
+                    queue_disable + "\tcsq = RREG32(RADEON_CP_CSQ_CNTL);\n",
+                    "late queue control capture",
                 ),
                 feature_policy,
                 surface_audit,
@@ -347,7 +508,7 @@ def selftest(repository: Path) -> int:
                 feature_policy,
                 replace_once(
                     surface_audit,
-                    "restore mismatch parks with the queue disabled",
+                    "restore mismatch requests parked publication with the queue disabled",
                     "restore mismatch reports failure",
                     "surface parked disposition",
                 ),
