@@ -13,7 +13,7 @@ The 6.18.38 root uses Clang and LLD 22.1.6. The 7.1.4 root uses Clang and LLD
 `PATH` and its `usr/lib` in `LD_LIBRARY_PATH`. The module harness rejects every
 warning, including a compiler version mismatch.
 
-The source map lanes use the root owned prefixes under
+The `steinmarder-r300` source map lanes use the root owned prefixes under
 `/opt/gororoba/toolchains`. Each schema 2 declaration binds a 19 row semantic
 execution closure and a separate full prefix manifest with 7,174 descendants.
 The producer verifies the exact tree, ownership, modes, effective runner

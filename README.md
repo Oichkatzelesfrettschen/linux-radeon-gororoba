@@ -91,102 +91,26 @@ tracked file is a build output.
 
 ## Radeon driver source map
 
-`scripts/capture_radeon_driver_source_map.py` exports a named commit through
-Git, applies the tracked source closure, and writes a sealed deterministic
-source intelligence bundle outside the repository. The bundle retains all 222
-source inputs, the complete C and header denominator, Git object proofs, GNU
-Global definitions and references with stable database dumps, ctags, the
-portable cscope cross reference, GNU cflow indexes, partitioned cflow trees,
-declared and extracted callback bindings, bounded queries, contextual path
-witnesses, complexity measurements, coefficient vectors, linked profile
-modules, canonical profile symbol deltas, command metadata, analyzer
-diagnostics, and a complete SHA-256 ledger. The directory remains an ordinary
-mutable filesystem object. The verifier detects changes through an independently
-derived file denominator, the ledger, and offline artifact replay.
+`steinmarder-r300` owns the source-intelligence capture at
+`tools/source-analysis/`. The instrument exports a named commit of this
+repository through Git, applies the tracked source closure, and seals a bundle
+carrying Git object proofs, GNU Global definitions and references, ctags, a
+portable cscope cross reference, GNU cflow indexes and partitioned call trees,
+declared and extracted callback bindings, contextual path witnesses, complexity
+and coefficient vectors, optional preprocessed kernel lanes, and a complete
+SHA-256 ledger. That repository owns retained result bundles and their seal
+contract, so it owns the instrument that produces them and the narrative
+contract that bounds their claims.
 
-The optional kernel roots add preprocessed views for every declared kernel and
-profile lane. Each root requires a matching toolchain bin directory. The
-parent LLVM prefix has a tracked manifest for all 7,174 descendants, including
-355 directories, 6,792 regular files, 27 symlinks, and the 295 entry Clang
-resource tree. Before execution, the capture verifies the exact path set,
-content identities, symlink resolution, ownership, effective writability,
-special mode bits, and extended attributes. The 19 row semantic execution
-closure then binds all nine LLVM commands, eight local libraries, and two
-support targets to that finite tree.
-
-Kbuild runs through `/usr/bin/make`, an absolute `LLVM` bin prefix,
-`/usr/bin/sh`, and `PATH=/usr/bin:/bin`. The capture retains that command and
-environment denominator, compiles the module, emits the selected translation
-units, and normalizes temporary, toolchain, and kernel root paths. A second
-tree scan compares against the same in-memory entries admitted before the
-build. This contract identifies the LLVM prefix. It does not trace every host
-helper process that Kbuild starts.
+The capture reads this repository and never writes to it. It takes the checkout
+as an explicit root, so a source commit here is measured rather than assumed:
 
 ```sh
-source_commit=$(git rev-parse HEAD)
-output="/var/tmp/linux-radeon-gororoba-source-intelligence/radeon-driver-source-map-control-admission/${source_commit}"
-python3 scripts/capture_radeon_driver_source_map.py \
-  --treeish "$source_commit" \
-  --output "$output" \
-  --kernel-build-root /opt/gororoba/kernel-builds/6.18.38-2-cachyos-lts \
-  --kernel-build-root /opt/gororoba/kernel-builds/7.1.4-1-cachyos \
-  --kernel-toolchain-bin \
-    6.18.38-2-cachyos-lts=/opt/gororoba/toolchains/llvm-22.1.6/usr/bin \
-  --kernel-toolchain-bin \
-    7.1.4-1-cachyos=/opt/gororoba/toolchains/llvm-22.1.8/usr/bin
-python3 scripts/capture_radeon_driver_source_map.py \
-  --verify "$output" \
-  --require-all-kernel-lanes
+make source-analysis-selftest RADEON_SOURCE_REPOSITORY=<this checkout>
 ```
 
-The union of `radeon-driver-lexical-map.tsv`,
-`radeon-driver-declared-bindings.tsv`, and `analysis/call-candidates.tsv` is a
-candidate research graph. It never proves runtime reachability, build-profile
-inclusion, preprocessor activation, callback invocation, framework ordering,
-hardware behavior, or completeness of indirect bindings. Preprocessed views
-resolve named build lanes without changing that boundary. Contextual path
-witnesses preserve ordered source edges, required conditions, and typed
-callback or debugfs event joins without collapsing registration time into later
-dispatch. `analysis/hazard-guard-identifier-census.tsv` records guard tokens.
-The retained source-map policy records separate effect token censuses, and the
-verifier replays them without relabeling them as guards. Both surfaces remain
-lexical censuses. The mutation calibrated semantic checkers own their declared
-primary source contracts. The reset checkers pin exact lexical intervals,
-reject a finite opaque control set, and assume other intervening calls return.
-They do not prove a compiler control flow graph, included header macro state,
-or runtime execution.
-
-The RS482 VRAM and GTT capacity contract contributes 73 partition bound roots,
-13 exact hazards, 55 exact declared bindings, and six contextual witnesses.
-The integrated Radeon policy closes 129 roots, 33 hazards, 70 bindings, and
-eight witnesses. The added failed-reset graph covers terminal state
-publication, hardware-access admission, retained GART and TTM ownership, PCI
-runtime and system resume rollback, system power callbacks, switcheroo state,
-failed RS400 startup refusal, and deferred debugfs registration. Previously sealed
-source-map bundles retain their historical denominators and do not acquire
-these rows retroactively.
-
-`docs/radeon-driver-source-intelligence.md` defines the artifact architecture,
-the complete reference attestation, its four retained path witnesses, the
-current eight-witness topology, the coefficient derivations, the trust
-boundaries, and the next verification gates.
-
-Two captures compare through normalized tables rather than analyzer database
-bytes:
-
-```sh
-python3 scripts/capture_radeon_driver_source_map.py \
-  --compare "$left_capture" "$right_capture" \
-  --output "$comparison_output"
-```
-
-A source delta uses captures with the same producer commit, policy hashes,
-analyzer identities, kernel roots, and toolchain closures. The comparison
-command verifies each input and seals its normalized output, but it does not
-yet enforce or record that matched-generation precondition. The reference
-comparison in `docs/radeon-driver-source-intelligence.md` proves the input
-identities independently. The retained native bundle and admitted recapture
-supply the same-source producer control.
+`steinmarder-r300 tools/source-analysis/source-analysis-provenance.tsv` pins
+each migrated file to its commit here by source and landed SHA-256.
 
 ## Build profiles
 

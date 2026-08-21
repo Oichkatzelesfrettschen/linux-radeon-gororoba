@@ -99,8 +99,9 @@ prevents a contiguous extent.
 
 ## Structural source path
 
-The source-map policy treats this graph as lexical and structural evidence. It
-does not claim runtime reachability or a completed callback invocation.
+The `steinmarder-r300` source-map policy treats this graph as lexical and
+structural evidence. It does not claim runtime reachability or a completed
+callback invocation.
 
 ```text
 radeon_driver_load_kms
@@ -142,8 +143,8 @@ The retained source-only capture for commit `c4f4177` closes 73 roots, 219
 raw cscope queries, 1,053 parsed cscope rows, 246 commands, 55 declared
 bindings, 13 hazards, six contextual witnesses, and 15,643 call candidates.
 Its driver tree remains
-`6fd8d3c6ec245c31f195ef86c15fadf5e206642d`. The source-intelligence contract
-records its complete path and hashes. This capture has no kernel lanes and
+`6fd8d3c6ec245c31f195ef86c15fadf5e206642d`. The `steinmarder-r300` source-intelligence
+contract records its complete path and hashes. This capture has no kernel lanes and
 does not change any runtime or silicon status.
 
 ## Finite selector denominator
