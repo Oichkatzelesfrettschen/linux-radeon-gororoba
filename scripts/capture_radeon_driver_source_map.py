@@ -13202,6 +13202,15 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: regular_tree_files(symlink_tree, "symlink fixture"),
         )
 
+        producer_repository = producer_root()
+        producer_live_commit = str(
+            git_output(producer_repository, "rev-parse", "HEAD^{commit}")
+        ).strip()
+        producer_live_tree = str(
+            git_output(
+                producer_repository, "rev-parse", f"{producer_live_commit}^{{tree}}"
+            )
+        ).strip()
         producer_proof_root = temp / "producer-proof"
         producer_fixture_paths = {
             "AGENTS.md": "producer/AGENTS.md",
@@ -13209,9 +13218,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
         }
         for repository_path, retained_path in producer_fixture_paths.items():
             content = git_output(
-                repository,
+                producer_repository,
                 "show",
-                f"{live_commit}:{repository_path}",
+                f"{producer_live_commit}:{repository_path}",
                 text=False,
             )
             assert isinstance(content, bytes)
@@ -13219,9 +13228,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
             write_bytes(target, content)
             mode_line = str(
                 git_output(
-                    repository,
+                    producer_repository,
                     "ls-tree",
-                    live_commit,
+                    producer_live_commit,
                     "--",
                     repository_path,
                 )
@@ -13229,9 +13238,9 @@ def self_test(repository: Path, policy_path: Path) -> int:
             target.chmod(0o755 if mode_line.startswith("100755 ") else 0o644)
         write_git_file_proof(
             producer_proof_root / "metadata/proof",
-            repository,
-            live_commit,
-            live_tree,
+            producer_repository,
+            producer_live_commit,
+            producer_live_tree,
             set(producer_fixture_paths),
         )
         accepts(
@@ -13239,8 +13248,8 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: verify_git_file_proof(
                 producer_proof_root,
                 producer_proof_root / "metadata/proof",
-                live_commit,
-                live_tree,
+                producer_live_commit,
+                producer_live_tree,
                 producer_fixture_paths,
                 "producer fixture proof",
             ),
@@ -13251,8 +13260,8 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: verify_git_file_proof(
                 producer_proof_root,
                 producer_proof_root / "metadata/proof",
-                live_commit,
-                live_tree,
+                producer_live_commit,
+                producer_live_tree,
                 producer_fixture_paths,
                 "producer fixture proof",
             ),
@@ -13266,8 +13275,8 @@ def self_test(repository: Path, policy_path: Path) -> int:
             lambda: verify_git_file_proof(
                 producer_proof_root,
                 producer_proof_root / "metadata/proof",
-                live_commit,
-                live_tree,
+                producer_live_commit,
+                producer_live_tree,
                 producer_fixture_paths,
                 "producer fixture proof",
             ),
