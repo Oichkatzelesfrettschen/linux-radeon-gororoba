@@ -1,5 +1,5 @@
-schema = 2
-capture_schema = "gororoba-radeon-driver-source-map-v2"
+schema = 3
+capture_schema = "gororoba-radeon-driver-source-map-v3"
 comparison_schema = "gororoba-radeon-driver-source-map-comparison-v3"
 source_root = "drivers/gpu/drm/radeon"
 max_source_files = 256
@@ -40,6 +40,16 @@ optional_tools = [
   "doxygen",
   "tree-sitter",
 ]
+
+# Where the instrument's own files sit inside the producer repository. A sealed
+# bundle records this layout, so a verifier reconstructs the retained producer
+# denominator from the bundle rather than from the constants of whichever
+# instrument runs the verification.
+[producer]
+agents_path = "AGENTS.md"
+script_path = "scripts/capture_radeon_driver_source_map.py"
+policy_path = "policy/radeon-driver-source-map.toml"
+admission_contract_path = "scripts/check_rs4xx_hardware_admission_contract.py"
 
 [tool.gnu_global]
 version = "6.6.15"
