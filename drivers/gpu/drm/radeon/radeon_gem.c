@@ -37,6 +37,7 @@
 
 #include "radeon.h"
 #include "radeon_prime.h"
+#include "radeon_trace.h"
 
 struct dma_buf *radeon_gem_prime_export(struct drm_gem_object *gobj,
 					int flags);
@@ -252,6 +253,7 @@ static int radeon_gem_set_domain(struct drm_gem_object *gobj,
 int radeon_gem_init(struct radeon_device *rdev)
 {
 	INIT_LIST_HEAD(&rdev->gem.objects);
+	atomic64_set(&rdev->gem.bo_debug_id, 0);
 	return 0;
 }
 
@@ -614,6 +616,8 @@ int radeon_gem_busy_ioctl(struct drm_device *dev, void *data,
 
 	cur_placement = READ_ONCE(robj->tbo.resource->mem_type);
 	args->domain = radeon_mem_type_to_domain(cur_placement);
+	trace_radeon_gem_busy(task_pid_nr(current), args->handle, robj,
+			      args->domain, r);
 	drm_gem_object_put(gobj);
 	return r;
 }
@@ -1025,9 +1029,12 @@ static int radeon_debugfs_gem_info_show(struct seq_file *m, void *unused)
 				break;
 			}
 		}
-		seq_printf(m, "bo[0x%08x] %8ldkB %8ldMB %s pid %8ld\n",
-			   i, radeon_bo_size(rbo) >> 10, radeon_bo_size(rbo) >> 20,
-			   placement, (unsigned long)rbo->pid);
+		seq_printf(m,
+			   "bo[0x%08x] id %llu %8ldkB %8ldMB %s pid %8ld\n",
+			   i, (unsigned long long)rbo->debug_id,
+			   radeon_bo_size(rbo) >> 10,
+			   radeon_bo_size(rbo) >> 20, placement,
+			   (unsigned long)rbo->pid);
 		i++;
 	}
 	mutex_unlock(&rdev->gem.mutex);
