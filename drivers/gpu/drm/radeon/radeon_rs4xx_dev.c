@@ -1448,6 +1448,8 @@ static ssize_t rs480_cp_me_ram_inject_write(struct file *file,
 		return -EINVAL;
 	if (copy_from_user(kbuf, ubuf, len))
 		return -EFAULT;
+	if (memchr(kbuf, '\0', len))
+		return -EINVAL;
 	kbuf[len] = '\0';
 
 	/* "ARM <addr> <datah> <datal>" exactly -- the ARM keyword is the

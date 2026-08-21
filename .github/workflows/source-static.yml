@@ -517,6 +517,10 @@ jobs:
         run: python3 scripts/materialize_reconstruction_prefixes.py
       - name: migration input calibration
         run: python3 scripts/materialize_migration_input.py --self-test
+      - name: reconstruction oracle workflow calibration
+        run: python3 scripts/check_reconstruction_oracle_workflow.py --self-test
+      - name: reconstruction oracle workflow
+        run: python3 scripts/check_reconstruction_oracle_workflow.py
       - name: reconstruction history calibration
         run: python3 scripts/check_reconstruction_history.py --self-test
       - name: generated register output calibration

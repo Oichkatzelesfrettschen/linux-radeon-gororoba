@@ -17,6 +17,7 @@ import argparse
 import csv
 import fnmatch
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -34,13 +35,12 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-import check_rs4xx_hardware_admission_contract as parked_admission
-
-
-CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
+CAPTURE_SCHEMA_V2 = "gororoba-radeon-driver-source-map-v2"
+CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v3"
+RETAINED_CAPTURE_SCHEMAS = frozenset((CAPTURE_SCHEMA_V2, CAPTURE_SCHEMA))
 COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
-CURRENT_POLICY_SCHEMA = 2
-RETAINED_POLICY_SCHEMAS = frozenset((1, CURRENT_POLICY_SCHEMA))
+CURRENT_POLICY_SCHEMA = 3
+RETAINED_POLICY_SCHEMAS = frozenset((1, 2, CURRENT_POLICY_SCHEMA))
 CURRENT_COMPARISON_SCHEMAS = frozenset((COMPARISON_SCHEMA,))
 RETAINED_CAPTURE_COMPARISON_SCHEMAS = frozenset(
     (
@@ -79,8 +79,13 @@ PROFILE_SYMBOL_DELTA_MEMBER_COLUMNS = (
 )
 HASH_LEDGER = "capture-hashes.sha256"
 POLICY_PATH = Path("policy/radeon-driver-source-map.toml")
+RETAINED_POLICY_BUNDLE_PATH = Path("policy/radeon-driver-source-map.toml")
+SOURCE_INPUT_PREFIX = "source-input"
 SCRIPT_PATH = Path("scripts/capture_radeon_driver_source_map.py")
 KERNEL_ROOT_VALIDATOR_PATH = Path("scripts/check_kernel_build_root.py")
+ADMISSION_CONTRACT_PATH = Path("scripts/check_rs4xx_hardware_admission_contract.py")
+ADMISSION_CONTRACT_BASENAME = ADMISSION_CONTRACT_PATH.name
+INSTRUMENT_DIRECTORY = Path(__file__).resolve().parent
 CANONICAL_SOURCE_ROOT = "drivers/gpu/drm/radeon"
 CANONICAL_ANALYZER_SOURCE_ROOT = "/tmp/gororoba-radeon-driver-source-map-input"
 CANONICAL_CSCOPE_SOURCE_ROOT = (
@@ -310,6 +315,7 @@ DECIMAL = re.compile(r"^[0-9]+$")
 UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 C_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MECHANISM_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+BOUNDED_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 MODULE_SYMBOL_LINE = re.compile(
     r"^(?P<name>\S+) (?P<type>[A-Za-z?]) "
     r"(?P<address>[0-9a-f]+) (?P<size>[0-9a-f]+)$"
@@ -517,6 +523,32 @@ class ToolchainPrefixEntry:
     resolved_sha256: str
 
 
+def bounded_relative_path(value: str) -> bool:
+    """Accept a repository-relative POSIX path with no root or dot segment."""
+
+    if not value or value.startswith("/") or value.endswith("/"):
+        return False
+    return all(
+        part not in {"", ".", ".."} and BOUNDED_PATH_COMPONENT.fullmatch(part)
+        for part in value.split("/")
+    )
+
+
+@dataclass(frozen=True)
+class ProducerLayout:
+    """Where the instrument's own files sit inside the producer repository.
+
+    A bundle records this layout so a verifier reconstructs the retained
+    producer denominator from the bundle rather than from the constants of
+    whichever instrument happens to run the verification.
+    """
+
+    agents_path: str
+    script_path: str
+    policy_path: str
+    admission_contract_path: str
+
+
 @dataclass(frozen=True)
 class Policy:
     policy_schema: int
@@ -540,6 +572,7 @@ class Policy:
     translation_units: tuple[str, ...]
     kernel_lanes: tuple[KernelLane, ...]
     admission_contract: AdmissionContract | None
+    producer: ProducerLayout | None
     partitions: tuple[Partition, ...]
     hazards: tuple[Hazard, ...]
     bindings: tuple[Binding, ...]
@@ -1295,11 +1328,46 @@ def validate_required_path_witnesses(
     )
 
 
+_ADMISSION_CONTRACT_MODULE: Any = None
+
+
+def admission_contract_module() -> Any:
+    """Return the hardware-admission checker that states the call denominator.
+
+    The checker travels with this instrument rather than with the measured
+    source, because `--verify` replays the denominator against a sealed bundle
+    that carries no source repository. Loading it from an explicit path under
+    the instrument's own root binds that dependency to the producer tree
+    instead of to the interpreter's module search path, which resolves against
+    the working directory a caller happens to start from.
+    """
+
+    global _ADMISSION_CONTRACT_MODULE
+    if _ADMISSION_CONTRACT_MODULE is None:
+        path = INSTRUMENT_DIRECTORY / ADMISSION_CONTRACT_BASENAME
+        spec = importlib.util.spec_from_file_location(
+            "radeon_source_map_admission_contract", path
+        )
+        require(
+            spec is not None and spec.loader is not None,
+            f"admission contract module is unreadable: {path}",
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # `dataclasses` resolves a field type through `sys.modules[cls.__module__]`,
+        # so the module answers to its own name before its body defines a
+        # dataclass.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _ADMISSION_CONTRACT_MODULE = module
+    return _ADMISSION_CONTRACT_MODULE
+
+
 def canonical_admission_contract() -> AdmissionContract:
     """Return the transaction caller and call-site denominator."""
 
     operational_callers = tuple(
-        f"{root.path.as_posix()}:{root.function}" for root in parked_admission.ROOTS
+        f"{root.path.as_posix()}:{root.function}" for root in admission_contract_module().ROOTS
     )
     call_sites = tuple(
         AdmissionCallSite(
@@ -1309,7 +1377,7 @@ def canonical_admission_contract() -> AdmissionContract:
             expected_calls,
         )
         for (path, function, callee), expected_calls in sorted(
-            parked_admission.expected_call_sites().items(),
+            admission_contract_module().expected_call_sites().items(),
             key=lambda item: tuple(str(part) for part in item[0]),
         )
     )
@@ -1411,9 +1479,10 @@ def verify_admission_contract_source(
 
     if policy.admission_contract is None:
         return
+    admission = admission_contract_module()
     try:
-        parked_admission.check_call_denominator(source_root)
-    except parked_admission.GuardError as exc:
+        admission.check_call_denominator(source_root)
+    except admission.GuardError as exc:
         raise SourceMapError(
             f"source-map admission denominator differs: {exc}"
         ) from exc
@@ -1427,9 +1496,9 @@ def verify_declared_hazard_guard_identifiers(
 
     functions_by_name: defaultdict[
         str,
-        list[parked_admission.SourceFunction],
+        list[Any],
     ] = defaultdict(list)
-    for function in parked_admission.source_functions(source_root):
+    for function in admission_contract_module().source_functions(source_root):
         functions_by_name[function.name].append(function)
     for hazard in policy.hazards:
         for census in hazard.guard_identifier_census:
@@ -1440,7 +1509,7 @@ def verify_declared_hazard_guard_identifiers(
                 f"{census.owner} resolves to {len(candidates)} source functions",
             )
             missing_identifiers = missing_code_identifiers(
-                parked_admission.body_text(candidates[0]),
+                admission_contract_module().body_text(candidates[0]),
                 census.identifiers,
             )
             require(
@@ -1455,6 +1524,7 @@ def load_policy(
     *,
     accepted_policy_schemas: frozenset[int] = frozenset((CURRENT_POLICY_SCHEMA,)),
     accepted_comparison_schemas: frozenset[str] = CURRENT_COMPARISON_SCHEMAS,
+    accepted_capture_schemas: frozenset[str] = frozenset((CAPTURE_SCHEMA,)),
 ) -> Policy:
     try:
         content = path.read_bytes()
@@ -1482,13 +1552,14 @@ def load_policy(
         "callback_extractor",
         "preprocessor",
         "admission_contract",
+        "producer",
         "partition",
         "hazard",
         "binding",
         "path_witness",
         "bounded_query",
     }
-    if policy_schema == CURRENT_POLICY_SCHEMA:
+    if policy_schema >= 2:
         top_keys.update(
             {
                 "root_denominator_count",
@@ -1503,7 +1574,7 @@ def load_policy(
     capture_schema = string_value(data, "capture_schema", "policy")
     comparison_schema = string_value(data, "comparison_schema", "policy")
     require(
-        capture_schema == CAPTURE_SCHEMA,
+        capture_schema in accepted_capture_schemas,
         "policy capture schema differs from the producer",
     )
     require(
@@ -1525,7 +1596,7 @@ def load_policy(
         max_source_bytes == MAX_SOURCE_BYTES,
         "max_source_bytes differs from the verifier ceiling",
     )
-    if policy_schema == CURRENT_POLICY_SCHEMA:
+    if policy_schema >= 2:
         require(
             data.get("root_denominator_count") == EXPECTED_ROOT_DENOMINATOR_COUNT,
             "root denominator count declaration differs",
@@ -1732,6 +1803,42 @@ def load_policy(
         )
         admission_contract = None
 
+    raw_producer = data.get("producer")
+    if raw_producer is not None:
+        require(isinstance(raw_producer, dict), "producer must be a table")
+        reject_unknown(
+            raw_producer,
+            {
+                "agents_path",
+                "script_path",
+                "policy_path",
+                "admission_contract_path",
+            },
+            "producer",
+        )
+        producer = ProducerLayout(
+            string_value(raw_producer, "agents_path", "producer"),
+            string_value(raw_producer, "script_path", "producer"),
+            string_value(raw_producer, "policy_path", "producer"),
+            string_value(raw_producer, "admission_contract_path", "producer"),
+        )
+        for field in (
+            producer.agents_path,
+            producer.script_path,
+            producer.policy_path,
+            producer.admission_contract_path,
+        ):
+            require(
+                bounded_relative_path(field),
+                f"producer path is not a bounded relative path: {field}",
+            )
+    else:
+        require(
+            capture_schema != CAPTURE_SCHEMA,
+            "current capture policy omits the producer layout",
+        )
+        producer = None
+
     partitions: list[Partition] = []
     for index, item in enumerate(data.get("partition", [])):
         label = f"partition[{index}]"
@@ -1758,7 +1865,7 @@ def load_policy(
         all(C_IDENTIFIER.fullmatch(root) for root in roots),
         "a root symbol is not a C identifier",
     )
-    if policy_schema == CURRENT_POLICY_SCHEMA:
+    if policy_schema >= 2:
         require(
             len(roots) == EXPECTED_ROOT_DENOMINATOR_COUNT,
             "root denominator count differs",
@@ -1778,7 +1885,7 @@ def load_policy(
             "guard_identifier_census",
             "evidence_rank",
         }
-        if policy_schema == CURRENT_POLICY_SCHEMA:
+        if policy_schema >= 2:
             hazard_keys.add("effect_identifier_census")
         reject_unknown(item, hazard_keys, label)
         symbol = string_value(item, "symbol", label)
@@ -1804,7 +1911,7 @@ def load_policy(
     require(
         len({item.symbol for item in hazards}) == len(hazards), "hazard symbol repeats"
     )
-    if policy_schema == CURRENT_POLICY_SCHEMA:
+    if policy_schema >= 2:
         require(
             len(hazards) == EXPECTED_HAZARD_DENOMINATOR_COUNT,
             "hazard denominator count differs",
@@ -1886,7 +1993,7 @@ def load_policy(
     )
     binding_edges = {(item.kind, item.caller, item.callee) for item in bindings}
     require(len(binding_edges) == len(bindings), "declared binding edge repeats")
-    if policy_schema == CURRENT_POLICY_SCHEMA:
+    if policy_schema >= 2:
         require(
             len(bindings) == EXPECTED_BINDING_DENOMINATOR_COUNT,
             "binding denominator count differs",
@@ -2008,7 +2115,7 @@ def load_policy(
         len({item.name for item in path_witnesses}) == len(path_witnesses),
         "path witness name repeats",
     )
-    if policy_schema == CURRENT_POLICY_SCHEMA:
+    if policy_schema >= 2:
         validate_required_path_witnesses(path_witnesses)
 
     bounded_queries: list[BoundedQuery] = []
@@ -2114,6 +2221,7 @@ def load_policy(
         translation_units,
         tuple(kernel_lanes),
         admission_contract,
+        producer,
         tuple(partitions),
         tuple(hazards),
         tuple(bindings),
@@ -2133,6 +2241,22 @@ def git_output(repository: Path, *args: str, text: bool = True) -> str | bytes:
     stderr = result.stderr if text else result.stderr.decode("utf-8", errors="replace")
     require(result.returncode == 0, f"git {' '.join(args)} failed: {stderr.strip()}")
     return result.stdout
+
+
+_PRODUCER_ROOT: Path | None = None
+
+
+def producer_root() -> Path:
+    """Return the repository root that holds this instrument.
+
+    The instrument's directory depth inside its repository is not fixed, so the
+    root comes from Git rather than from a parent count.
+    """
+
+    global _PRODUCER_ROOT
+    if _PRODUCER_ROOT is None:
+        _PRODUCER_ROOT = resolve_repository(INSTRUMENT_DIRECTORY)
+    return _PRODUCER_ROOT
 
 
 def resolve_repository(path: Path) -> Path:
@@ -2591,39 +2715,91 @@ def verify_git_file_proof(
 
 
 def producer_input_paths(policy: Policy) -> dict[str, str]:
-    repository_paths = {
-        "AGENTS.md",
-        POLICY_PATH.as_posix(),
-        SCRIPT_PATH.as_posix(),
-        KERNEL_ROOT_VALIDATOR_PATH.as_posix(),
-    }
-    for lane in policy.kernel_lanes:
-        repository_paths.update(
-            {
-                lane.declaration,
-                lane.manifest,
-                lane.toolchain_declaration,
-                lane.toolchain_manifest,
-                lane.toolchain_prefix_manifest,
-            }
+    """Return producer repository paths keyed to the bundle path that holds them.
+
+    Schema v2 proved the kernel-lane declarations and the kernel-root validator
+    against the measured repository under the producer proof, because one
+    repository held both the instrument and the source. Schema v3 keeps only
+    the instrument's own files here and reads their layout from the policy the
+    bundle retains, so a verifier reconstructs this denominator from the bundle
+    rather than from its own constants.
+    """
+
+    if policy.capture_schema == CAPTURE_SCHEMA_V2:
+        repository_paths = {
+            "AGENTS.md",
+            POLICY_PATH.as_posix(),
+            SCRIPT_PATH.as_posix(),
+            KERNEL_ROOT_VALIDATOR_PATH.as_posix(),
+        }
+        for lane in policy.kernel_lanes:
+            repository_paths.update(
+                {
+                    lane.declaration,
+                    lane.manifest,
+                    lane.toolchain_declaration,
+                    lane.toolchain_manifest,
+                    lane.toolchain_prefix_manifest,
+                }
+            )
+        policy_repository_path = POLICY_PATH.as_posix()
+    else:
+        require(
+            policy.producer is not None,
+            "capture policy omits the producer layout",
         )
+        assert policy.producer is not None
+        repository_paths = {
+            policy.producer.agents_path,
+            policy.producer.policy_path,
+            policy.producer.script_path,
+            policy.producer.admission_contract_path,
+        }
+        policy_repository_path = policy.producer.policy_path
     return {
         repository_path: (
-            POLICY_PATH.as_posix()
-            if repository_path == POLICY_PATH.as_posix()
+            RETAINED_POLICY_BUNDLE_PATH.as_posix()
+            if repository_path == policy_repository_path
             else f"producer/{repository_path}"
         )
         for repository_path in sorted(repository_paths)
     }
 
 
-def source_input_paths() -> dict[str, str]:
-    paths = (
-        "UPSTREAM_BASE.toml",
-        "source-closure.toml",
-        "policy/build-features.toml",
-    )
-    return {path: path for path in paths}
+def retained_lane_path(policy: Policy, repository_path: str) -> str:
+    """Return the bundle path of a measured-repository input for this schema."""
+
+    if policy.capture_schema == CAPTURE_SCHEMA_V2:
+        return f"producer/{repository_path}"
+    return f"{SOURCE_INPUT_PREFIX}/{repository_path}"
+
+
+def source_input_paths(policy: Policy) -> dict[str, str]:
+    """Return measured repository paths a bundle retains at the source commit."""
+
+    paths = {
+        path: path
+        for path in (
+            "UPSTREAM_BASE.toml",
+            "source-closure.toml",
+            "policy/build-features.toml",
+        )
+    }
+    if policy.capture_schema != CAPTURE_SCHEMA_V2:
+        measured = {KERNEL_ROOT_VALIDATOR_PATH.as_posix()}
+        for lane in policy.kernel_lanes:
+            measured.update(
+                {
+                    lane.declaration,
+                    lane.manifest,
+                    lane.toolchain_declaration,
+                    lane.toolchain_manifest,
+                    lane.toolchain_prefix_manifest,
+                }
+            )
+        for path in sorted(measured):
+            paths[path] = f"{SOURCE_INPUT_PREFIX}/{path}"
+    return paths
 
 
 def retain_producer_inputs(
@@ -2633,7 +2809,7 @@ def retain_producer_inputs(
 ) -> dict[str, str]:
     retained_paths = producer_input_paths(policy)
     for repository_path, retained_path in retained_paths.items():
-        if retained_path == POLICY_PATH.as_posix():
+        if retained_path == RETAINED_POLICY_BUNDLE_PATH.as_posix():
             continue
         source = repository / repository_path
         require(
@@ -8110,7 +8286,7 @@ def expected_capture_files(
         "metadata/tool-versions.tsv",
         "metadata/toolchain-runtime-libraries.tsv",
         "policy/build-features.toml",
-        POLICY_PATH.as_posix(),
+        RETAINED_POLICY_BUNDLE_PATH.as_posix(),
         "preprocessed/preprocessor-inputs.tsv",
         "preprocessed/preprocessor-lanes.tsv",
         "queries/cscope-root-symbols.tsv",
@@ -8119,6 +8295,7 @@ def expected_capture_files(
     }
     expected.update(f"source/{entry.path}" for entry in source_entries)
     expected.update(producer_input_paths(policy).values())
+    expected.update(source_input_paths(policy).values())
     expected.update(
         f"metadata/git-source-proof/{filename}"
         for filename in {"commit.bin"}
@@ -8141,7 +8318,7 @@ def expected_capture_files(
     )
     add_file_proof(
         "metadata/git-source-input-proof",
-        source_input_paths(),
+        source_input_paths(policy),
     )
     for row in command_rows:
         require(len(row) == 8, "command row width differs in capture denominator")
@@ -8268,7 +8445,7 @@ def verify_no_host_path_leaks(
         "UPSTREAM_BASE.toml",
         "source-closure.toml",
         "policy/build-features.toml",
-        POLICY_PATH.as_posix(),
+        RETAINED_POLICY_BUNDLE_PATH.as_posix(),
     }
     runtime_library_paths: set[str] = set()
     runtime_table = root / "metadata/toolchain-runtime-libraries.tsv"
@@ -8330,7 +8507,11 @@ def verify_no_host_path_leaks(
         relative = Path(relative_text)
         if relative_text in trusted_inputs:
             continue
-        if relative.parts and relative.parts[0] in {"source", "producer"}:
+        if relative.parts and relative.parts[0] in {
+            "source",
+            "producer",
+            SOURCE_INPUT_PREFIX,
+        }:
             continue
         if relative.parts[:2] in {
             ("metadata", "git-source-proof"),
@@ -8419,7 +8600,10 @@ def verify_capture(
     require(
         set(manifest) == required_manifest, "capture manifest keys differ from schema"
     )
-    require(manifest["schema"] == CAPTURE_SCHEMA, "capture manifest schema differs")
+    require(
+        manifest["schema"] in RETAINED_CAPTURE_SCHEMAS,
+        "capture manifest schema is outside the retained set",
+    )
     require(
         manifest["git_object_format"] == "sha1", "capture Git object format differs"
     )
@@ -8476,9 +8660,10 @@ def verify_capture(
         "capture preprocessor lanes are invalid",
     )
 
-    policy_path = root / POLICY_PATH
+    policy_path = root / RETAINED_POLICY_BUNDLE_PATH
     require(
-        POLICY_PATH.as_posix() in capture_files, "retained source-map policy is absent"
+        RETAINED_POLICY_BUNDLE_PATH.as_posix() in capture_files,
+        "retained source-map policy is absent",
     )
     policy_content = read_bounded_file(
         policy_path,
@@ -8493,6 +8678,7 @@ def verify_capture(
         policy_path,
         accepted_policy_schemas=RETAINED_POLICY_SCHEMAS,
         accepted_comparison_schemas=RETAINED_CAPTURE_COMPARISON_SCHEMAS,
+        accepted_capture_schemas=RETAINED_CAPTURE_SCHEMAS,
     )
     require(
         policy.capture_schema == manifest["schema"], "retained policy schema differs"
@@ -8631,7 +8817,7 @@ def verify_capture(
         root / "metadata/git-source-input-proof",
         manifest["source_commit"],
         manifest["source_tree"],
-        source_input_paths(),
+        source_input_paths(policy),
         "retained source input Git proof",
     )
     require(
@@ -9512,9 +9698,9 @@ def verify_capture(
         lane = policy_lanes[release]
         require(
             (kernel_root_evidence / f"{release}.toml").read_bytes()
-            == (root / f"producer/{lane.declaration}").read_bytes()
+            == (root / retained_lane_path(policy, lane.declaration)).read_bytes()
             and (kernel_root_evidence / f"{release}.manifest.tsv").read_bytes()
-            == (root / f"producer/{lane.manifest}").read_bytes(),
+            == (root / retained_lane_path(policy, lane.manifest)).read_bytes(),
             f"retained kernel root evidence differs from producer proof: {release}",
         )
     closure_root = root / "metadata/kernel-toolchain-closures"
@@ -9538,11 +9724,11 @@ def verify_capture(
         lane = policy_lanes[release]
         require(
             (closure_root / f"{release}.toml").read_bytes()
-            == (root / f"producer/{lane.toolchain_declaration}").read_bytes()
+            == (root / retained_lane_path(policy, lane.toolchain_declaration)).read_bytes()
             and (closure_root / f"{release}.manifest.tsv").read_bytes()
-            == (root / f"producer/{lane.toolchain_manifest}").read_bytes()
+            == (root / retained_lane_path(policy, lane.toolchain_manifest)).read_bytes()
             and (closure_root / f"{release}.prefix-tree.tsv").read_bytes()
-            == (root / f"producer/{lane.toolchain_prefix_manifest}").read_bytes(),
+            == (root / retained_lane_path(policy, lane.toolchain_prefix_manifest)).read_bytes(),
             f"retained toolchain closure differs from producer proof: {release}",
         )
         (
@@ -9764,21 +9950,41 @@ def capture_source_map(
     require(not output.exists(), f"capture output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     policy_absolute = (
-        policy_path if policy_path.is_absolute() else repository / policy_path
+        policy_path if policy_path.is_absolute() else producer_root() / policy_path
     )
     policy_absolute = policy_absolute.resolve()
     require(
-        repository_contains(repository, policy_absolute),
-        "source-map policy is outside the repository",
+        repository_contains(producer_root(), policy_absolute),
+        "source-map policy is outside the producer tree",
     )
     policy = load_policy(policy_absolute)
+    producer_repository = producer_root()
+    if policy.producer is not None:
+        require(
+            (producer_repository / policy.producer.script_path).resolve()
+            == Path(__file__).resolve(),
+            "policy producer script path does not name the running instrument",
+        )
+        require(
+            (producer_repository / policy.producer.policy_path).resolve()
+            == policy_absolute,
+            "policy producer policy path does not name the loaded policy",
+        )
 
     git_object_format = str(
         git_output(repository, "rev-parse", "--show-object-format")
     ).strip()
     require(git_object_format == "sha1", "repository Git object format is not SHA-1")
-    producer_commit = str(git_output(repository, "rev-parse", "HEAD^{commit}")).strip()
-    producer_tree = str(git_output(repository, "rev-parse", "HEAD^{tree}")).strip()
+    producer_format = str(
+        git_output(producer_repository, "rev-parse", "--show-object-format")
+    ).strip()
+    require(producer_format == "sha1", "producer Git object format is not SHA-1")
+    producer_commit = str(
+        git_output(producer_repository, "rev-parse", "HEAD^{commit}")
+    ).strip()
+    producer_tree = str(
+        git_output(producer_repository, "rev-parse", "HEAD^{tree}")
+    ).strip()
     source_commit = str(
         git_output(repository, "rev-parse", f"{treeish}^{{commit}}")
     ).strip()
@@ -9802,23 +10008,42 @@ def capture_source_map(
         "Git identity is malformed",
     )
     tracked_status = str(
-        git_output(repository, "status", "--porcelain", "--untracked-files=no")
+        git_output(producer_repository, "status", "--porcelain", "--untracked-files=no")
     )
     require(not tracked_status, "producer checkout has tracked changes")
     for path in producer_input_paths(policy):
         tracked = subprocess.run(
-            ["git", "-C", str(repository), "cat-file", "-e", f"HEAD:{path}"],
+            ["git", "-C", str(producer_repository), "cat-file", "-e", f"HEAD:{path}"],
             check=False,
             capture_output=True,
         )
         require(tracked.returncode == 0, f"producer commit does not carry {path}")
+    for path in source_input_paths(policy):
+        tracked = subprocess.run(
+            ["git", "-C", str(repository), "cat-file", "-e", f"{source_commit}:{path}"],
+            check=False,
+            capture_output=True,
+        )
+        require(tracked.returncode == 0, f"source commit does not carry {path}")
 
     stage = Path(tempfile.mkdtemp(prefix=".radeon-source-map-", dir=output.parent))
     try:
-        retained_policy = stage / POLICY_PATH
+        retained_policy = stage / RETAINED_POLICY_BUNDLE_PATH
         retained_policy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(policy_absolute, retained_policy)
-        retained_producer_paths = retain_producer_inputs(stage, repository, policy)
+        retained_producer_paths = retain_producer_inputs(
+            stage, producer_repository, policy
+        )
+        for source_path, retained_path in source_input_paths(policy).items():
+            if retained_path in {
+                "UPSTREAM_BASE.toml",
+                "source-closure.toml",
+                "policy/build-features.toml",
+            }:
+                continue
+            content = git_output(repository, "show", f"{source_commit}:{source_path}", text=False)
+            assert isinstance(content, bytes)
+            write_bytes(stage / retained_path, content)
         closure = load_source_closure(repository, source_commit, policy.source_root)
         write_bytes(stage / "source-closure.toml", closure)
         feature_policy, _feature_data = parse_top_level_toml(
@@ -9838,7 +10063,7 @@ def capture_source_map(
 
         write_git_file_proof(
             stage / "metadata/git-producer-proof",
-            repository,
+            producer_repository,
             producer_commit,
             producer_tree,
             set(retained_producer_paths),
@@ -9848,7 +10073,7 @@ def capture_source_map(
             repository,
             source_commit,
             source_tree,
-            set(source_input_paths()),
+            set(source_input_paths(policy)),
         )
 
         source_root = stage / "source"
@@ -9961,7 +10186,7 @@ def capture_source_map(
                 repository, source_commit
             ),
             "producer_commit_timestamp_utc": commit_timestamp_utc(
-                repository,
+                producer_repository,
                 producer_commit,
             ),
             "policy_sha256": sha256_file(retained_policy),
@@ -13232,10 +13457,10 @@ def self_test(repository: Path, policy_path: Path) -> int:
             )
 
         wrong_schema = temp / "wrong-schema.toml"
-        write_text(wrong_schema, live_policy.replace("schema = 2", "schema = 3", 1))
+        write_text(wrong_schema, live_policy.replace("schema = 3", "schema = 4", 1))
         rejects("policy rejects a foreign schema", lambda: load_policy(wrong_schema))
 
-        legacy_policy = live_policy.replace("schema = 2", "schema = 1", 1)
+        legacy_policy = live_policy.replace("schema = 3", "schema = 1", 1)
         for key in (
             "root_denominator_count",
             "root_denominator_sha256",
@@ -14074,7 +14299,9 @@ def main() -> int:
             parser.error("--self-test accepts only --repository and --policy")
         repository = resolve_repository(args.repository)
         policy_path = (
-            args.policy if args.policy.is_absolute() else repository / args.policy
+            args.policy
+            if args.policy.is_absolute()
+            else producer_root() / args.policy
         )
         return self_test(repository, policy_path)
     if args.verify:
