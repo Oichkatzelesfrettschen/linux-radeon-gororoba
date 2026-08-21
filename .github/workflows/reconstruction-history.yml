@@ -10,54 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  trusted-oracle:
-    runs-on: [self-hosted, linux, cachyos, workstation-host]
-    timeout-minutes: 20
-    steps:
-      - name: Check out trusted control
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: control
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-
-      - name: Check out pinned packaging input
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: Oichkatzelesfrettschen/radeon-custom
-          ref: 210e2b06c0266e316f08eb0b2b3e9832884c43de
-          path: packaging
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-          ssh-key: ${{ secrets.RADEON_CUSTOM_READ_DEPLOY_KEY }}
-
-      - name: Materialize sanitized migration input
-        run: |
-          python3 control/scripts/materialize_migration_input.py \
-            --control-root control \
-            --packaging-root packaging \
-            --output "$RUNNER_TEMP/reconstruction-oracle"
-
-      - name: Upload sanitized migration input
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: reconstruction-oracle-${{ github.event.pull_request.base.sha }}
-          path: ${{ runner.temp }}/reconstruction-oracle
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Discard private-repository checkout
-        if: always()
-        run: |
-          packaging_path="$GITHUB_WORKSPACE/packaging"
-          [ "$packaging_path" = "$GITHUB_WORKSPACE/packaging" ] || exit 1
-          rm -rf -- "$packaging_path"
-
   history-plan:
-    needs: trusted-oracle
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 20
     outputs:
@@ -81,11 +34,30 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Download sanitized migration input
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - name: Check out pinned packaging input
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: reconstruction-oracle-${{ github.event.pull_request.base.sha }}
-          path: migration
+          repository: Oichkatzelesfrettschen/radeon-custom
+          ref: 210e2b06c0266e316f08eb0b2b3e9832884c43de
+          path: packaging
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+          ssh-key: ${{ secrets.RADEON_CUSTOM_READ_DEPLOY_KEY }}
+
+      - name: Materialize hash-verified migration input
+        run: |
+          python3 control/scripts/materialize_migration_input.py \
+            --control-root control \
+            --packaging-root packaging \
+            --output "$RUNNER_TEMP/reconstruction-oracle"
+
+      - name: Discard private-repository checkout
+        if: always()
+        run: |
+          packaging_path="$GITHUB_WORKSPACE/packaging"
+          [ "$packaging_path" = "$GITHUB_WORKSPACE/packaging" ] || exit 1
+          rm -rf -- "$packaging_path"
 
       - name: Calibrate trusted history checker
         run: python3 control/scripts/check_reconstruction_history.py --self-test
@@ -100,7 +72,7 @@ jobs:
           python3 control/scripts/check_reconstruction_history.py \
             --repository subject \
             --control-root control \
-            --oracle-root migration \
+            --oracle-root "$RUNNER_TEMP/reconstruction-oracle" \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
             --prepare \
@@ -108,7 +80,7 @@ jobs:
             "$@"
 
   history-build:
-    needs: [trusted-oracle, history-plan]
+    needs: history-plan
     if: needs.history-plan.outputs.matrix != '[]'
     runs-on: [self-hosted, linux, cachyos, workstation-host]
     timeout-minutes: 45
@@ -136,11 +108,30 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Download sanitized migration input
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - name: Check out pinned packaging input
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: reconstruction-oracle-${{ github.event.pull_request.base.sha }}
-          path: migration
+          repository: Oichkatzelesfrettschen/radeon-custom
+          ref: 210e2b06c0266e316f08eb0b2b3e9832884c43de
+          path: packaging
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+          ssh-key: ${{ secrets.RADEON_CUSTOM_READ_DEPLOY_KEY }}
+
+      - name: Materialize hash-verified migration input
+        run: |
+          python3 control/scripts/materialize_migration_input.py \
+            --control-root control \
+            --packaging-root packaging \
+            --output "$RUNNER_TEMP/reconstruction-oracle"
+
+      - name: Discard private-repository checkout
+        if: always()
+        run: |
+          packaging_path="$GITHUB_WORKSPACE/packaging"
+          [ "$packaging_path" = "$GITHUB_WORKSPACE/packaging" ] || exit 1
+          rm -rf -- "$packaging_path"
 
       - name: Prepare immutable log path
         run: mkdir -p "$RUNNER_TEMP/logs/${{ matrix.reconstruction_id }}"
@@ -161,7 +152,7 @@ jobs:
           python3 control/scripts/check_reconstruction_history.py \
             --repository subject \
             --control-root control \
-            --oracle-root migration \
+            --oracle-root "$RUNNER_TEMP/reconstruction-oracle" \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
             --reconstruction-id "${{ matrix.reconstruction_id }}" \
