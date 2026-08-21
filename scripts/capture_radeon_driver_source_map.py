@@ -17,6 +17,7 @@ import argparse
 import csv
 import fnmatch
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -33,9 +34,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest import mock
-
-import check_rs4xx_hardware_admission_contract as parked_admission
-
 
 CAPTURE_SCHEMA = "gororoba-radeon-driver-source-map-v2"
 COMPARISON_SCHEMA = "gororoba-radeon-driver-source-map-comparison-v3"
@@ -81,6 +79,8 @@ HASH_LEDGER = "capture-hashes.sha256"
 POLICY_PATH = Path("policy/radeon-driver-source-map.toml")
 SCRIPT_PATH = Path("scripts/capture_radeon_driver_source_map.py")
 KERNEL_ROOT_VALIDATOR_PATH = Path("scripts/check_kernel_build_root.py")
+ADMISSION_CONTRACT_PATH = Path("scripts/check_rs4xx_hardware_admission_contract.py")
+PRODUCER_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_SOURCE_ROOT = "drivers/gpu/drm/radeon"
 CANONICAL_ANALYZER_SOURCE_ROOT = "/tmp/gororoba-radeon-driver-source-map-input"
 CANONICAL_CSCOPE_SOURCE_ROOT = (
@@ -1295,11 +1295,46 @@ def validate_required_path_witnesses(
     )
 
 
+_ADMISSION_CONTRACT_MODULE: Any = None
+
+
+def admission_contract_module() -> Any:
+    """Return the hardware-admission checker that states the call denominator.
+
+    The checker travels with this instrument rather than with the measured
+    source, because `--verify` replays the denominator against a sealed bundle
+    that carries no source repository. Loading it from an explicit path under
+    the instrument's own root binds that dependency to the producer tree
+    instead of to the interpreter's module search path, which resolves against
+    the working directory a caller happens to start from.
+    """
+
+    global _ADMISSION_CONTRACT_MODULE
+    if _ADMISSION_CONTRACT_MODULE is None:
+        path = PRODUCER_ROOT / ADMISSION_CONTRACT_PATH
+        spec = importlib.util.spec_from_file_location(
+            "radeon_source_map_admission_contract", path
+        )
+        require(
+            spec is not None and spec.loader is not None,
+            f"admission contract module is unreadable: {path}",
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # `dataclasses` resolves a field type through `sys.modules[cls.__module__]`,
+        # so the module answers to its own name before its body defines a
+        # dataclass.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _ADMISSION_CONTRACT_MODULE = module
+    return _ADMISSION_CONTRACT_MODULE
+
+
 def canonical_admission_contract() -> AdmissionContract:
     """Return the transaction caller and call-site denominator."""
 
     operational_callers = tuple(
-        f"{root.path.as_posix()}:{root.function}" for root in parked_admission.ROOTS
+        f"{root.path.as_posix()}:{root.function}" for root in admission_contract_module().ROOTS
     )
     call_sites = tuple(
         AdmissionCallSite(
@@ -1309,7 +1344,7 @@ def canonical_admission_contract() -> AdmissionContract:
             expected_calls,
         )
         for (path, function, callee), expected_calls in sorted(
-            parked_admission.expected_call_sites().items(),
+            admission_contract_module().expected_call_sites().items(),
             key=lambda item: tuple(str(part) for part in item[0]),
         )
     )
@@ -1411,9 +1446,10 @@ def verify_admission_contract_source(
 
     if policy.admission_contract is None:
         return
+    admission = admission_contract_module()
     try:
-        parked_admission.check_call_denominator(source_root)
-    except parked_admission.GuardError as exc:
+        admission.check_call_denominator(source_root)
+    except admission.GuardError as exc:
         raise SourceMapError(
             f"source-map admission denominator differs: {exc}"
         ) from exc
@@ -1427,9 +1463,9 @@ def verify_declared_hazard_guard_identifiers(
 
     functions_by_name: defaultdict[
         str,
-        list[parked_admission.SourceFunction],
+        list[Any],
     ] = defaultdict(list)
-    for function in parked_admission.source_functions(source_root):
+    for function in admission_contract_module().source_functions(source_root):
         functions_by_name[function.name].append(function)
     for hazard in policy.hazards:
         for census in hazard.guard_identifier_census:
@@ -1440,7 +1476,7 @@ def verify_declared_hazard_guard_identifiers(
                 f"{census.owner} resolves to {len(candidates)} source functions",
             )
             missing_identifiers = missing_code_identifiers(
-                parked_admission.body_text(candidates[0]),
+                admission_contract_module().body_text(candidates[0]),
                 census.identifiers,
             )
             require(
@@ -9764,12 +9800,12 @@ def capture_source_map(
     require(not output.exists(), f"capture output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     policy_absolute = (
-        policy_path if policy_path.is_absolute() else repository / policy_path
+        policy_path if policy_path.is_absolute() else PRODUCER_ROOT / policy_path
     )
     policy_absolute = policy_absolute.resolve()
     require(
-        repository_contains(repository, policy_absolute),
-        "source-map policy is outside the repository",
+        repository_contains(PRODUCER_ROOT, policy_absolute),
+        "source-map policy is outside the producer tree",
     )
     policy = load_policy(policy_absolute)
 
@@ -14074,7 +14110,7 @@ def main() -> int:
             parser.error("--self-test accepts only --repository and --policy")
         repository = resolve_repository(args.repository)
         policy_path = (
-            args.policy if args.policy.is_absolute() else repository / args.policy
+            args.policy if args.policy.is_absolute() else PRODUCER_ROOT / args.policy
         )
         return self_test(repository, policy_path)
     if args.verify:
