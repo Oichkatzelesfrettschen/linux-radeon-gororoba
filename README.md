@@ -31,14 +31,15 @@ Packaging targets Arch and CachyOS alone.
 `radeon-unified-0.3-pkgrel91-source-equivalent` onward. `radeon-custom` owns
 the source pin, package, DKMS lifecycle, and deployment policy.
 
-The active `radeon-custom` recipe is 0.8-1. It pins the signed
-`radeon-unified-0.8-profiled-source` tag object
-`c3745d24ea7481ec56c5c0b1aa397be4b8788b72`, peeled source commit
-`2433cbd69cd99d1dd002447bb4d481ed66141562`, and driver tree
-`e3432f8dda41e2fcb93fad23a0f3825541c15e93`. Its package gates build and
+The active `radeon-custom` recipe is 0.8.9-2. It pins the signed
+`radeon-unified-0.8.9-profiled-source` tag object
+`3bf1c5b3cc4b5247d99f737189a5739d70faacb0`, peeled source commit
+`164167950d0f749468474536dd76045fddedc8b7`, driver tree
+`a50c8ce2bc6c7645c7fe658470f67dbe2e93c31f`, and policy tree
+`572a400c7aafe735805bb17c279503280ada573f`. Its package gates build and
 verify the split package set, and its target kernel gate compiles the verified
-production package on RS482. The repository carries no 0.8-1 signed release
-attestation or loaded module identity, so 0.8-1 remains package and target
+production package on RS482. The repository carries no 0.8.9-2 signed release
+attestation or loaded module identity, so 0.8.9-2 remains package and target
 compile evidence rather than loaded deployment authority.
 
 The live RS482 target records installed production and board policy package
