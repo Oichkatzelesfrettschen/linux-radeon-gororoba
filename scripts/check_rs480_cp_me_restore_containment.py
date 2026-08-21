@@ -6,15 +6,18 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
+
+EXPECTED_BAD_COUNT = 89
 
 
 class ContractError(Exception):
     """The CP microengine restore containment contract does not hold."""
 
 
-def mask_comments_and_literals(source: str) -> str:
-    """Replace comments and literals while preserving offsets and line endings."""
+def mask_comments_and_literals(source: str, preserve_literals: bool = False) -> str:
+    """Replace comments and optional literals while preserving offsets and lines."""
     masked = list(source)
     index = 0
     state = "code"
@@ -33,12 +36,14 @@ def mask_comments_and_literals(source: str) -> str:
                 state = "line-comment"
                 continue
             if current == '"':
-                masked[index] = " "
+                if not preserve_literals:
+                    masked[index] = " "
                 index += 1
                 state = "string"
                 continue
             if current == "'":
-                masked[index] = " "
+                if not preserve_literals:
+                    masked[index] = " "
                 index += 1
                 state = "character"
                 continue
@@ -58,16 +63,17 @@ def mask_comments_and_literals(source: str) -> str:
         elif state in {"string", "character"}:
             delimiter = '"' if state == "string" else "'"
             if current == "\\":
-                masked[index] = " "
-                if index + 1 < len(source):
-                    if source[index + 1] != "\n":
+                if not preserve_literals:
+                    masked[index] = " "
+                    if index + 1 < len(source) and source[index + 1] != "\n":
                         masked[index + 1] = " "
-                    index += 2
-                    continue
+                index += 2
+                continue
             if current == delimiter:
-                masked[index] = " "
+                if not preserve_literals:
+                    masked[index] = " "
                 state = "code"
-            elif current != "\n":
+            elif current != "\n" and not preserve_literals:
                 masked[index] = " "
         index += 1
     if state == "block-comment":
@@ -75,16 +81,117 @@ def mask_comments_and_literals(source: str) -> str:
     return "".join(masked)
 
 
-def function_body(source: str, function_name: str) -> str:
-    """Return one named C function through balanced brace matching."""
-    masked = mask_comments_and_literals(source)
-    signature = re.search(
-        rf"\b{re.escape(function_name)}\s*\([^;]*?\)\s*\{{",
-        masked,
-        re.DOTALL,
+KNOWN_TRUE_PREPROCESSOR_EXPRESSIONS = frozenset(
+    {
+        "RADEON_MUTATE_DEV",
+        "RADEON_PROBE_DEV",
+        "defined(CONFIG_DEBUG_FS)",
+        "defined(CONFIG_X86)",
+    }
+)
+
+
+def is_zero_preprocessor_expression(expression: str) -> bool:
+    """Return whether one limited preprocessor expression is an integer zero."""
+    return bool(
+        re.fullmatch(
+            r"\s*(?:\(\s*)*(?:0+|0[xX]0+|0[bB]0+)[uUlL]*(?:\s*\))*\s*",
+            expression,
+        )
     )
-    if not signature:
+
+
+def preprocessor_condition(expression: str) -> bool | None:
+    """Resolve one supported #if expression or preserve an unknown branch."""
+    if is_zero_preprocessor_expression(expression):
+        return False
+    if expression.strip() in KNOWN_TRUE_PREPROCESSOR_EXPRESSIONS:
+        return True
+    return None
+
+
+def active_code_mask(source: str) -> str:
+    """Mask comments, literals, and branches disabled by a zero-valued #if."""
+    masked = list(mask_comments_and_literals(source))
+    stack: list[dict[str, bool]] = []
+    offset = 0
+    active = True
+
+    for line in "".join(masked).splitlines(keepends=True):
+        directive = re.match(r"\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)", line)
+        if directive:
+            operation = directive.group(1)
+            expression = directive.group(2)
+            if operation in {"if", "ifdef", "ifndef"}:
+                condition = (
+                    preprocessor_condition(expression) if operation == "if" else None
+                )
+                stack.append(
+                    {
+                        "parent_active": active,
+                        "branch_taken": condition is True,
+                        "unknown_branch": condition is None,
+                        "active": active and condition is not False,
+                    }
+                )
+                active = stack[-1]["active"]
+            elif operation == "elif":
+                if not stack:
+                    raise ContractError("unmatched #elif in driver source")
+                frame = stack[-1]
+                condition = preprocessor_condition(expression)
+                if frame["branch_taken"]:
+                    frame["active"] = False
+                elif frame["unknown_branch"] or condition is None:
+                    frame["unknown_branch"] = True
+                    frame["active"] = frame["parent_active"]
+                else:
+                    frame["active"] = frame["parent_active"] and condition
+                    frame["branch_taken"] = condition
+                active = frame["active"]
+            elif operation == "else":
+                if not stack:
+                    raise ContractError("unmatched #else in driver source")
+                frame = stack[-1]
+                frame["active"] = frame["parent_active"] and (
+                    frame["unknown_branch"] or not frame["branch_taken"]
+                )
+                frame["branch_taken"] = True
+                active = frame["active"]
+            else:
+                if not stack:
+                    raise ContractError("unmatched #endif in driver source")
+                stack.pop()
+                active = stack[-1]["active"] if stack else True
+
+        if not active:
+            for position, character in enumerate(line, start=offset):
+                if character != "\n":
+                    masked[position] = " "
+        offset += len(line)
+
+    if stack:
+        raise ContractError("unterminated preprocessor conditional in driver source")
+    return "".join(masked)
+
+
+def function_body(
+    source: str, function_name: str, preserve_literals: bool = False
+) -> str:
+    """Return one named C function through balanced brace matching."""
+    masked = active_code_mask(source)
+    signatures = list(
+        re.finditer(
+            rf"\b{re.escape(function_name)}\s*\([^;]*?\)\s*\{{",
+            masked,
+            re.DOTALL,
+        )
+    )
+    if not signatures:
         raise ContractError(f"missing function: {function_name}")
+    if len(signatures) != 1:
+        raise ContractError(f"multiple active definitions: {function_name}")
+    signature = signatures[0]
     opening_brace = masked.find("{", signature.start())
     depth = 0
     for position in range(opening_brace, len(masked)):
@@ -93,6 +200,8 @@ def function_body(source: str, function_name: str) -> str:
         elif masked[position] == "}":
             depth -= 1
             if depth == 0:
+                if preserve_literals:
+                    return source[opening_brace + 1 : position]
                 return masked[opening_brace + 1 : position]
     raise ContractError(f"unterminated function: {function_name}")
 
@@ -117,16 +226,30 @@ def brace_depth_at(body: str, position: int) -> int:
     return depth
 
 
-def feature_block(policy: str, feature_id: str) -> str:
-    """Return one TOML feature block by its exact identifier."""
-    for block in re.split(r"(?=^\[\[feature\]\]$)", policy, flags=re.MULTILINE):
-        if re.search(rf'^id = "{re.escape(feature_id)}"$', block, re.MULTILINE):
-            return block
-    raise ContractError(f"missing build feature: {feature_id}")
+def feature_record(policy: str, feature_id: str) -> dict[str, object]:
+    """Return one parsed TOML feature record by its exact identifier."""
+    try:
+        records = tomllib.loads(policy).get("feature")
+    except tomllib.TOMLDecodeError as error:
+        raise ContractError(f"invalid build feature policy: {error}") from error
+    if not isinstance(records, list):
+        raise ContractError("build feature policy has no feature records")
+    matching_records = [
+        record
+        for record in records
+        if isinstance(record, dict) and record.get("id") == feature_id
+    ]
+    if len(matching_records) != 1:
+        raise ContractError(f"build feature record denominator differs: {feature_id}")
+    return matching_records[0]
 
 
 def verify_contract(
-    driver_source: str, feature_policy: str, surface_audit: str
+    driver_source: str,
+    parser_source: str,
+    module_parameter_source: str,
+    feature_policy: str,
+    surface_audit: str,
 ) -> None:
     """Verify source ordering and its two declared policy projections."""
     body = function_body(driver_source, "rs480_cp_me_ram_inject_one")
@@ -143,12 +266,32 @@ def verify_contract(
         r"orig_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)\s*;",
         "original microword capture is incomplete or reordered",
     )
+    if not re.fullmatch(
+        r"\s*u32\s+orig_h\s*,\s*orig_l\s*,\s*csq\s*;\s*",
+        body[: original_capture.start()],
+        re.DOTALL,
+    ):
+        raise ContractError("CP ME write or control flow precedes original capture")
     queue_capture_disable = require_pattern(
         body,
         r"csq\s*=\s*RREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*\)\s*;\s*"
         r"WREG32\s*\(\s*RADEON_CP_CSQ_CNTL\s*,\s*"
-        r"RADEON_CSQ_PRIDIS_INDDIS\s*\)",
+        r"RADEON_CSQ_PRIDIS_INDDIS\s*\)\s*;",
         "CP queue control capture must immediately precede the disable write",
+    )
+    injection_writes = require_pattern(
+        body,
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_ADDR\s*,\s*addr\s*\)\s*;\s*"
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_DATAH\s*,\s*new_h\s*\)\s*;\s*"
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*,\s*new_l\s*\)\s*;",
+        "modified microword writes are incomplete or reordered",
+    )
+    injection_readbacks = require_pattern(
+        body,
+        r"WREG32\s*\(\s*RADEON_CP_ME_RAM_RADDR\s*,\s*addr\s*\)\s*;\s*"
+        r"\*rb_h\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAH\s*\)\s*;\s*"
+        r"\*rb_l\s*=\s*RREG32\s*\(\s*RADEON_CP_ME_RAM_DATAL\s*\)\s*;",
+        "modified microword hardware readbacks are incomplete or reordered",
     )
     restore_writes = require_pattern(
         body,
@@ -183,15 +326,23 @@ def verify_contract(
         r"\*rb_l\s*!=\s*new_l\s*\)\s*return\s+-ENXIO\s*;",
         "bounded write mismatch contract is absent",
     )
+    successful_return = require_pattern(
+        body,
+        r"return\s+0\s*;",
+        "verified write and restore path does not return success",
+    )
 
     ordered_positions = (
         original_capture.start(),
         queue_capture_disable.start(),
+        injection_writes.start(),
+        injection_readbacks.start(),
         restore_writes.start(),
         restore_readbacks.start(),
         restore_mismatch.start(),
         queue_restore.start(),
         write_mismatch.start(),
+        successful_return.start(),
     )
     if ordered_positions != tuple(sorted(ordered_positions)):
         raise ContractError(
@@ -200,33 +351,506 @@ def verify_contract(
     top_level_statements = (
         original_capture,
         queue_capture_disable,
+        injection_writes,
+        injection_readbacks,
         restore_writes,
         restore_readbacks,
         restore_mismatch,
         queue_restore,
         write_mismatch,
+        successful_return,
     )
     if any(brace_depth_at(body, match.start()) != 0 for match in top_level_statements):
         raise ContractError("CP restore containment statements must remain top level")
-    if body[restore_readbacks.end() : restore_mismatch.start()].strip():
-        raise ContractError("control flow intervenes before restore validation")
-    if body[restore_mismatch.end() : queue_restore.start()].strip():
-        raise ContractError("control flow intervenes before safe queue restoration")
+    if body[original_capture.end() : queue_capture_disable.start()].strip():
+        raise ContractError("original microword changes before queue disable")
+    disabled_intervals = (
+        (queue_capture_disable, injection_writes, "modified microword write"),
+        (injection_writes, injection_readbacks, "modified microword readback"),
+        (injection_readbacks, restore_writes, "original microword restore"),
+        (restore_writes, restore_readbacks, "restored microword readback"),
+        (restore_readbacks, restore_mismatch, "restore validation"),
+        (restore_mismatch, queue_restore, "safe queue restoration"),
+    )
+    for preceding, following, operation in disabled_intervals:
+        if body[preceding.end() : following.start()].strip():
+            raise ContractError(
+                f"control flow intervenes before {operation} while the queue is disabled"
+            )
+    if body[queue_restore.end() : write_mismatch.start()].strip():
+        raise ContractError(
+            "control flow intervenes before modified microword validation"
+        )
+    if body[write_mismatch.end() : successful_return.start()].strip():
+        raise ContractError("control flow intervenes before the successful result")
+    if body[successful_return.end() :].strip():
+        raise ContractError("injection helper success is not the final statement")
     if body.count("radeon_rs4xx_latch_parked_publication(rdev);") != 1:
         raise ContractError("restore mismatch must have one parked publication request")
     if body.count("return -EIO;") != 1:
         raise ContractError("restore mismatch must have one exact -EIO return")
+    if len(re.findall(r"\breturn\b", body)) != 3:
+        raise ContractError("injection helper return denominator differs")
 
-    cp_me_policy = feature_block(feature_policy, "cp-me-write")
-    required_policy_phrases = (
+    driver_code = active_code_mask(driver_source)
+    module_parameter_code = active_code_mask(module_parameter_source)
+    arm_token_definitions = re.findall(
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ARM_TOKEN\b[^\n]*",
+        driver_code,
+    )
+    if len(arm_token_definitions) != 1:
+        raise ContractError("CP ME arm token declaration denominator differs")
+    require_pattern(
+        driver_code,
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ARM_TOKEN\s+"
+        r"0x494e4a31u[ \t]*(?:\n|\Z)",
+        "CP ME arm token does not retain its nonzero declaration",
+    )
+    address_limit_definitions = re.findall(
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ADDR_LIMIT\b[^\n]*",
+        driver_code,
+    )
+    if len(address_limit_definitions) != 1:
+        raise ContractError("CP ME address limit declaration denominator differs")
+    require_pattern(
+        driver_code,
+        r"(?:^|\n)\s*#\s*define\s+RS480_CP_ME_INJECT_ADDR_LIMIT\s+"
+        r"0x100u[ \t]*(?:\n|\Z)",
+        "CP ME address limit does not retain its overlay declaration",
+    )
+    parameter_definitions = list(
+        re.finditer(
+            r"\bint\s+radeon_rs480_cp_me_ram_inject\s*"
+            r"(?P<initializer>=\s*[^;]+)?\s*;",
+            module_parameter_code,
+        )
+    )
+    if (
+        len(parameter_definitions) != 1
+        or parameter_definitions[0].group("initializer") is not None
+    ):
+        raise ContractError("CP ME arm parameter does not retain its zero default")
+    require_pattern(
+        module_parameter_code,
+        r"module_param_named\s*\(\s*rs480_cp_me_ram_inject\s*,\s*"
+        r"radeon_rs480_cp_me_ram_inject\s*,\s*int\s*,\s*0644\s*\)\s*;",
+        "CP ME arm parameter does not bind its declared module interface",
+    )
+    require_pattern(
+        driver_code,
+        r"(?:^|\n)static\s+int\s+rs480_cp_me_ram_inject_one\s*\(\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*,\s*u32\s+addr\s*,\s*"
+        r"u32\s+new_h\s*,\s*u32\s+new_l\s*,\s*u32\s*\*\s*rb_h\s*,\s*"
+        r"u32\s*\*\s*rb_l\s*,\s*u32\s*\*\s*restored_h\s*,\s*"
+        r"u32\s*\*\s*restored_l\s*\)\s*\{",
+        "CP ME injection helper does not retain its parameter order",
+    )
+
+    handler = function_body(driver_source, "rs480_cp_me_ram_inject_write")
+    handler_source = function_body(
+        driver_source, "rs480_cp_me_ram_inject_write", preserve_literals=True
+    )
+    require_pattern(
+        handler,
+        r"\A\s*struct\s+rs480_cp_me_inject_ctx\s*\*\s*ctx\s*=\s*"
+        r"file_inode\s*\(\s*file\s*\)\s*->\s*i_private\s*;\s*"
+        r"struct\s+radeon_device\s*\*\s*rdev\s*=\s*ctx\s*->\s*rdev\s*;",
+        "write handler does not derive its device context from debugfs private data",
+    )
+    descriptor_rejection = require_pattern(
+        handler,
+        r"if\s*\(\s*\*ppos\s*!=\s*0\s*\)\s*return\s+-ESPIPE\s*;",
+        "write handler does not reject a consumed descriptor",
+    )
+    arming_token = require_pattern(
+        handler,
+        r"if\s*\(\s*radeon_rs480_cp_me_ram_inject\s*!=\s*"
+        r"RS480_CP_ME_INJECT_ARM_TOKEN\s*\)\s*return\s+-EACCES\s*;",
+        "write handler does not require the CP ME arm token",
+    )
+    payload_limit = require_pattern(
+        handler,
+        r"if\s*\(\s*len\s*>=\s*sizeof\s*\(\s*kbuf\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler does not bound the CP ME command payload",
+    )
+    payload_copy = require_pattern(
+        handler,
+        r"if\s*\(\s*copy_from_user\s*\(\s*kbuf\s*,\s*ubuf\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EFAULT\s*;",
+        "write handler does not require a complete CP ME command copy",
+    )
+    payload_nul_rejection = require_pattern(
+        handler,
+        r"if\s*\(\s*memchr\s*\(\s*kbuf\s*,\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler does not reject embedded NUL command bytes",
+    )
+    payload_nul_rejection_source = require_pattern(
+        handler_source,
+        r"if\s*\(\s*memchr\s*\(\s*kbuf\s*,\s*'\\0'\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler embedded NUL rejection is not executable code",
+    )
+    payload_terminator = require_pattern(
+        handler,
+        r"kbuf\s*\[\s*len\s*\]\s*=\s*;",
+        "write handler does not terminate the CP ME command payload",
+    )
+    payload_terminator_source = require_pattern(
+        handler_source,
+        r"kbuf\s*\[\s*len\s*\]\s*=\s*'\\0'\s*;",
+        "write handler CP ME command terminator is not executable code",
+    )
+    parsed_command = require_pattern(
+        handler,
+        r"if\s*\(\s*!rs480_cp_me_inject_parse\s*\(\s*"
+        r"kbuf\s*,\s*&addr\s*,\s*&new_h\s*,\s*&new_l\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;",
+        "write handler does not parse the complete CP ME command",
+    )
+    address_limit = require_pattern(
+        handler,
+        r"if\s*\(\s*addr\s*>=\s*RS480_CP_ME_INJECT_ADDR_LIMIT\s*\)\s*"
+        r"return\s+-ERANGE\s*;\s*"
+        r"ret\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"if\s*\(\s*ret\s*\)\s*return\s+ret\s*;",
+        "write handler does not retain the CP ME address limit",
+    )
+    admission_chain = require_pattern(
+        handler,
+        r"if\s*\(\s*\*ppos\s*!=\s*0\s*\)\s*return\s+-ESPIPE\s*;\s*"
+        r"if\s*\(\s*radeon_rs480_cp_me_ram_inject\s*!=\s*"
+        r"RS480_CP_ME_INJECT_ARM_TOKEN\s*\)\s*return\s+-EACCES\s*;\s*"
+        r"if\s*\(\s*len\s*>=\s*sizeof\s*\(\s*kbuf\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;\s*"
+        r"if\s*\(\s*copy_from_user\s*\(\s*kbuf\s*,\s*ubuf\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EFAULT\s*;\s*"
+        r"if\s*\(\s*memchr\s*\(\s*kbuf\s*,\s*,\s*len\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;\s*"
+        r"kbuf\s*\[\s*len\s*\]\s*=\s*;\s*"
+        r"if\s*\(\s*!rs480_cp_me_inject_parse\s*\(\s*"
+        r"kbuf\s*,\s*&addr\s*,\s*&new_h\s*,\s*&new_l\s*\)\s*\)\s*"
+        r"return\s+-EINVAL\s*;\s*"
+        r"if\s*\(\s*addr\s*>=\s*RS480_CP_ME_INJECT_ADDR_LIMIT\s*\)\s*"
+        r"return\s+-ERANGE\s*;",
+        "write handler CP ME admission gates are conditional or reordered",
+    )
+    hardware_lock = require_pattern(
+        handler,
+        r"ret\s*=\s*radeon_device_lock_hardware\s*\(\s*rdev\s*\)\s*;",
+        "write handler does not acquire the Radeon hardware lock",
+    )
+    hardware_lock_failure = require_pattern(
+        handler,
+        r"if\s*\(\s*ret\s*\)\s*return\s+ret\s*;",
+        "write handler does not propagate Radeon hardware lock failure",
+    )
+    descriptor_consumed = require_pattern(
+        handler,
+        r"\*ppos\s*=\s*1\s*;",
+        "write handler does not consume the armed descriptor",
+    )
+    context_lock = require_pattern(
+        handler,
+        r"mutex_lock\s*\(\s*&ctx->lock\s*\)\s*;",
+        "write handler does not acquire its result lock",
+    )
+    idle_gate = require_pattern(
+        handler,
+        r"ret\s*=\s*rs480_cp_me_ram_inject_wait_idle\s*\(\s*rdev\s*\)\s*;",
+        "write handler does not run the CP ME idle gate",
+    )
+    acquisition_positions = (
+        descriptor_rejection.start(),
+        arming_token.start(),
+        payload_limit.start(),
+        payload_copy.start(),
+        payload_nul_rejection.start(),
+        payload_terminator.start(),
+        parsed_command.start(),
+        address_limit.start(),
+        hardware_lock.start(),
+        hardware_lock_failure.start(),
+        descriptor_consumed.start(),
+        context_lock.start(),
+        idle_gate.start(),
+    )
+    if acquisition_positions != tuple(sorted(acquisition_positions)):
+        raise ContractError("CP ME lock acquisition does not precede the idle gate")
+    if any(
+        brace_depth_at(handler, position) != 0 for position in acquisition_positions
+    ):
+        raise ContractError("CP ME lock acquisition must remain top level")
+    if re.search(
+        r"\b(?:if|switch|for|while|goto|return)\b",
+        handler[: descriptor_rejection.start()],
+    ):
+        raise ContractError("control flow precedes CP ME descriptor admission")
+    if admission_chain.start() != descriptor_rejection.start():
+        raise ContractError("CP ME descriptor admission is not unconditional")
+    if (
+        payload_nul_rejection.start() != payload_nul_rejection_source.start()
+        or payload_nul_rejection.end() != payload_nul_rejection_source.end()
+        or payload_terminator.start() != payload_terminator_source.start()
+        or payload_terminator.end() != payload_terminator_source.end()
+    ):
+        raise ContractError(
+            "write handler CP ME command terminator is masked or relocated"
+        )
+    for preceding, following, operation in (
+        (hardware_lock, hardware_lock_failure, "hardware lock failure"),
+        (hardware_lock_failure, descriptor_consumed, "descriptor consumption"),
+        (descriptor_consumed, context_lock, "result lock acquisition"),
+        (context_lock, idle_gate, "idle gate"),
+    ):
+        if handler[preceding.end() : following.start()].strip():
+            raise ContractError(f"control flow intervenes before CP ME {operation}")
+    if re.search(r"\b[RW]REG\d*(?:_[A-Za-z0-9_]+)?\s*\(", handler):
+        raise ContractError("write handler accesses CP ME registers directly")
+    idle_failure = require_pattern(
+        handler,
+        r"if\s*\(\s*ret\s*\)\s*\{\s*"
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,[^;]*\)\s*;\s*"
+        r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
+        r"radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;\s*"
+        r"dev_warn_ratelimited\s*\(\s*rdev->dev\s*,\s*,\s*"
+        r"addr\s*,\s*ret\s*\)\s*;\s*"
+        r"return\s+ret\s*;\s*\}",
+        "write handler idle failure cleanup is absent",
+    )
+    idle_failure_format = require_pattern(
+        handler_source,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*"
+        r'"addr=%04x idle_gate=failed ret=%d\\n"\s*,\s*addr\s*,\s*ret\s*\)\s*;',
+        "write handler idle failure result omits its measured state",
+    )
+    idle_failure_format_code = require_pattern(
+        handler,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*,\s*"
+        r"addr\s*,\s*ret\s*\)\s*;",
+        "write handler idle failure result is not executable code",
+    )
+    mutation_mark = require_pattern(
+        handler,
+        r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,\s*\)\s*;",
+        "write handler does not record the admitted mutation",
+    )
+    require_pattern(
+        handler_source,
+        r"radeon_dev_mark_mutation\s*\(\s*rdev\s*,\s*"
+        r'"RS4xx CP-ME RAM injection"\s*\)\s*;',
+        "write handler mutation marker does not retain its declaration",
+    )
+    if idle_gate.start() >= idle_failure.start():
+        raise ContractError("CP ME idle gate does not precede its failure cleanup")
+    if handler[idle_gate.end() : idle_failure.start()].strip():
+        raise ContractError("control flow intervenes before CP ME idle failure cleanup")
+    if brace_depth_at(handler, idle_gate.start()) != 0:
+        raise ContractError("CP ME idle gate must remain top level")
+    if brace_depth_at(handler, idle_failure.start()) != 0:
+        raise ContractError("CP ME idle failure cleanup must remain top level")
+    if (
+        idle_failure_format.start() != idle_failure_format_code.start()
+        or idle_failure_format.end() != idle_failure_format_code.end()
+    ):
+        raise ContractError("write handler idle failure result is masked or relocated")
+    if not (
+        idle_failure.start()
+        <= idle_failure_format_code.start()
+        < idle_failure_format_code.end()
+        <= idle_failure.end()
+    ):
+        raise ContractError("write handler idle failure result escapes its cleanup")
+    if idle_failure.start() >= mutation_mark.start():
+        raise ContractError("idle failure cleanup does not precede the mutation marker")
+    if handler[idle_failure.end() : mutation_mark.start()].strip():
+        raise ContractError("mutation marker is conditional or reordered")
+    if brace_depth_at(handler, mutation_mark.start()) != 0:
+        raise ContractError("mutation marker must remain top level")
+    injection_call = require_pattern(
+        handler,
+        r"ret\s*=\s*rs480_cp_me_ram_inject_one\s*\(\s*"
+        r"rdev\s*,\s*addr\s*,\s*new_h\s*,\s*new_l\s*,\s*"
+        r"&rb_h\s*,\s*&rb_l\s*,\s*&rs_h\s*,\s*&rs_l\s*\)\s*;",
+        "write handler does not capture the injection result",
+    )
+    if mutation_mark.start() >= injection_call.start():
+        raise ContractError("write handler mutation marker does not precede injection")
+    if handler[mutation_mark.end() : injection_call.start()].strip():
+        raise ContractError("injection helper call is conditional or reordered")
+    if brace_depth_at(handler, injection_call.start()) != 0:
+        raise ContractError("injection helper call must remain top level")
+    result_format = require_pattern(
+        handler_source,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*"
+        r'"addr=%04x wrote=%08x:%08x read=%08x:%08x write_ok=%d restored=%08x:%08x restore_ok=%d\\n"\s*,\s*'
+        r"addr\s*,\s*new_h\s*,\s*new_l\s*,\s*rb_h\s*,\s*rb_l\s*,\s*"
+        r"\(\s*rb_h\s*==\s*new_h\s*&&\s*rb_l\s*==\s*new_l\s*\)\s*,\s*"
+        r"rs_h\s*,\s*rs_l\s*,\s*\(\s*ret\s*!=\s*-EIO\s*\)\s*\)\s*;",
+        "write handler result omits requested or measured CP ME values",
+    )
+    result_format_code = require_pattern(
+        handler,
+        r"snprintf\s*\(\s*ctx->result\s*,\s*"
+        r"sizeof\s*\(\s*ctx->result\s*\)\s*,\s*,\s*"
+        r"addr\s*,\s*new_h\s*,\s*new_l\s*,\s*rb_h\s*,\s*rb_l\s*,\s*"
+        r"\(\s*rb_h\s*==\s*new_h\s*&&\s*rb_l\s*==\s*new_l\s*\)\s*,\s*"
+        r"rs_h\s*,\s*rs_l\s*,\s*\(\s*ret\s*!=\s*-EIO\s*\)\s*\)\s*;",
+        "write handler result format is not executable code",
+    )
+    if (
+        result_format.start() != result_format_code.start()
+        or result_format.end() != result_format_code.end()
+    ):
+        raise ContractError("write handler result format is masked or relocated")
+    normal_unlocks = require_pattern(
+        handler[result_format.end() :],
+        r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
+        r"radeon_device_unlock_hardware\s*\(\s*rdev\s*\)\s*;",
+        "write handler does not format the result and release both locks",
+    )
+    normal_unlocks_start = result_format.end() + normal_unlocks.start()
+    normal_cleanup_end = result_format.end() + normal_unlocks.end()
+    if handler[injection_call.end() : result_format_code.start()].strip():
+        raise ContractError("control flow intervenes before post-injection cleanup")
+    if handler[result_format.end() : normal_unlocks_start].strip():
+        raise ContractError("control flow intervenes before post-injection unlock")
+    if brace_depth_at(handler, result_format_code.start()) != 0:
+        raise ContractError("post-injection result formatting must remain top level")
+    if brace_depth_at(handler, normal_unlocks_start) != 0:
+        raise ContractError("post-injection cleanup must remain top level")
+    if re.search(
+        r"(?:\(\s*)*\bret\b(?:\s*\))*\s*"
+        r"(?:(?:<<|>>|[+\-*/%&^|])?=(?!=)|\+\+|--)|"
+        r"(?:\+\+|--)\s*(?:\(\s*)*\bret\b(?:\s*\))*",
+        handler[injection_call.end() :],
+    ):
+        raise ContractError("write handler overwrites the injection result")
+    result_tail = require_pattern(
+        handler[normal_cleanup_end:],
+        r"if\s*\(\s*ret\s*==\s*-EIO\s*\)\s*"
+        r"dev_err_ratelimited\s*\(\s*rdev->dev\s*,\s*,\s*addr\s*\)\s*;\s*"
+        r"else\s+if\s*\(\s*ret\s*==\s*-ENXIO\s*\)\s*"
+        r"dev_warn_ratelimited\s*\(\s*rdev->dev\s*,\s*,\s*addr\s*\)\s*;\s*"
+        r"else\s*dev_info\s*\(\s*rdev->dev\s*,\s*,\s*ctx->result\s*\)\s*;\s*"
+        r"return\s+ret\s*\?\s*ret\s*:\s*len\s*;",
+        "write handler does not report and propagate the injection result",
+    )
+    result_tail_start = normal_cleanup_end + result_tail.start()
+    result_tail_end = normal_cleanup_end + result_tail.end()
+    if handler[normal_cleanup_end:result_tail_start].strip():
+        raise ContractError("control flow intervenes before injection result handling")
+    if handler[result_tail_end:].strip():
+        raise ContractError(
+            "write handler return propagation is not the final statement"
+        )
+    if len(re.findall(r"\brs480_cp_me_ram_inject_one\s*\(", handler)) != 1:
+        raise ContractError(
+            "write handler must invoke the injection helper exactly once"
+        )
+    position_updates = list(
+        re.finditer(
+            r"(?:\(\s*)?\*\s*ppos\s*(?:\)\s*)?"
+            r"(?:(?:<<|>>|[+\-*/%&^|])?=(?!=)|\+\+|--)|"
+            r"(?:\+\+|--)\s*(?:\(\s*)?\*\s*ppos(?:\s*\))?",
+            handler,
+        )
+    )
+    if len(position_updates) != 1:
+        raise ContractError("write handler must consume the descriptor exactly once")
+    if position_updates[0].start() != descriptor_consumed.start():
+        raise ContractError("write handler changes the consumed descriptor position")
+    if len(re.findall(r"\breturn\s+ret\s*\?\s*ret\s*:\s*len\s*;", handler)) != 1:
+        raise ContractError(
+            "write handler must propagate the injection result exactly once"
+        )
+
+    show_source = mask_comments_and_literals(
+        function_body(
+            driver_source, "rs480_cp_me_ram_inject_show", preserve_literals=True
+        ),
+        preserve_literals=True,
+    )
+    if not re.fullmatch(
+        r"\s*struct\s+rs480_cp_me_inject_ctx\s*\*\s*ctx\s*=\s*"
+        r"m\s*->\s*private\s*;\s*"
+        r"rs480_debugfs_emit_schema\s*\(\s*m\s*\)\s*;\s*"
+        r"mutex_lock\s*\(\s*&ctx->lock\s*\)\s*;\s*"
+        r"seq_printf\s*\(\s*m\s*,\s*\"%s\"\s*,\s*ctx->result\s*\[\s*0\s*\]\s*\?\s*"
+        r"ctx->result\s*:\s*\"no inject performed\\n\"\s*\)\s*;\s*"
+        r"mutex_unlock\s*\(\s*&ctx->lock\s*\)\s*;\s*return\s+0\s*;\s*",
+        show_source,
+        re.DOTALL,
+    ):
+        raise ContractError("CP ME result reader does not emit the recorded result")
+
+    idle_helper = function_body(driver_source, "rs480_cp_me_ram_inject_wait_idle")
+    if not re.fullmatch(
+        r"\s*int\s+ret\s*=\s*0\s*;\s*"
+        r"mutex_lock\s*\(\s*&rdev->ring_lock\s*\)\s*;\s*"
+        r"if\s*\(\s*!rdev->ring\s*\[\s*RADEON_RING_TYPE_GFX_INDEX\s*\]"
+        r"\.ready\s*\)\s*\{\s*ret\s*=\s*-ENODEV\s*;\s*goto\s+out\s*;\s*\}\s*"
+        r"ret\s*=\s*radeon_fence_wait_empty\s*\(\s*"
+        r"rdev\s*,\s*RADEON_RING_TYPE_GFX_INDEX\s*\)\s*;\s*"
+        r"if\s*\(\s*ret\s*\)\s*goto\s+out\s*;\s*"
+        r"if\s*\(\s*r100_gui_wait_for_idle\s*\(\s*rdev\s*\)\s*\)\s*"
+        r"ret\s*=\s*-EBUSY\s*;\s*out\s*:\s*"
+        r"mutex_unlock\s*\(\s*&rdev->ring_lock\s*\)\s*;\s*"
+        r"return\s+ret\s*;\s*",
+        idle_helper,
+        re.DOTALL,
+    ):
+        raise ContractError("CP ME idle helper does not retain its failure containment")
+
+    parser_code = active_code_mask(parser_source)
+    require_pattern(
+        parser_code,
+        r"static\s+inline\s+int\s+rs480_cp_me_inject_parse\s*\(\s*"
+        r"const\s+char\s*\*\s*kbuf\s*,\s*unsigned\s+int\s*\*\s*addr\s*,\s*"
+        r"unsigned\s+int\s*\*\s*new_h\s*,\s*unsigned\s+int\s*\*\s*new_l\s*\)\s*\{",
+        "CP ME command parser does not retain its parameter order",
+    )
+    parser_body = function_body(
+        parser_source, "rs480_cp_me_inject_parse", preserve_literals=True
+    )
+    if not re.fullmatch(
+        r"\s*char\s+extra\s*;\s*"
+        r"return\s+sscanf\s*\(\s*kbuf\s*,\s*\"ARM %x %x %x %c\"\s*,\s*"
+        r"addr\s*,\s*new_h\s*,\s*new_l\s*,\s*&extra\s*\)\s*==\s*3\s*;\s*",
+        parser_body,
+        re.DOTALL,
+    ):
+        raise ContractError(
+            "CP ME command parser does not require one exact ARM payload"
+        )
+
+    cp_me_policy = feature_record(feature_policy, "cp-me-write")
+    error_contract = cp_me_policy.get("error_contract")
+    if not isinstance(error_contract, str):
+        raise ContractError("cp-me-write error contract is not a string")
+    required_error_contract_phrases = (
         "restore mismatch keeps the command queue disabled",
         "requests CPU-only parked publication",
         "verified restore permits the original queue state",
-        "restore mismatch parks the device before queue restoration",
     )
-    for phrase in required_policy_phrases:
-        if phrase not in cp_me_policy:
-            raise ContractError(f"cp-me-write policy omits: {phrase}")
+    for phrase in required_error_contract_phrases:
+        if phrase not in error_contract:
+            raise ContractError(f"cp-me-write error contract omits: {phrase}")
+    policy_tests = cp_me_policy.get("tests")
+    if not isinstance(policy_tests, list) or not all(
+        isinstance(policy_test, str) for policy_test in policy_tests
+    ):
+        raise ContractError("cp-me-write tests are not a string list")
+    if (
+        "adversarial: a restore mismatch parks the device before queue restoration"
+        not in policy_tests
+    ):
+        raise ContractError("cp-me-write tests omit restore queue ordering")
 
     audit_line = next(
         (
@@ -254,14 +878,24 @@ def replace_once(subject: str, old: str, new: str, description: str) -> str:
 
 def selftest(repository: Path) -> int:
     driver_path = repository / "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c"
+    parser_path = repository / "drivers/gpu/drm/radeon/rs480_cp_me_inject_parse.h"
+    module_parameter_path = repository / "drivers/gpu/drm/radeon/radeon_dev.c"
     policy_path = repository / "policy/build-features.toml"
     audit_path = repository / "docs/dev-interface-surface-audit.md"
     driver_source = driver_path.read_text(encoding="utf-8")
+    parser_source = parser_path.read_text(encoding="utf-8")
+    module_parameter_source = module_parameter_path.read_text(encoding="utf-8")
     feature_policy = policy_path.read_text(encoding="utf-8")
     surface_audit = audit_path.read_text(encoding="utf-8")
 
     try:
-        verify_contract(driver_source, feature_policy, surface_audit)
+        verify_contract(
+            driver_source,
+            parser_source,
+            module_parameter_source,
+            feature_policy,
+            surface_audit,
+        )
         print("selftest known-good accepted: restore mismatch containment")
 
         mismatch_block = (
@@ -279,8 +913,16 @@ def selftest(repository: Path) -> int:
             "\tcsq = RREG32(RADEON_CP_CSQ_CNTL);\n"
             "\tWREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);\n"
         )
-        queue_disable = (
-            "\tWREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);\n"
+        queue_disable = "\tWREG32(RADEON_CP_CSQ_CNTL, RADEON_CSQ_PRIDIS_INDDIS);\n"
+        injection_write_block = (
+            "\tWREG32(RADEON_CP_ME_RAM_ADDR, addr);\n"
+            "\tWREG32(RADEON_CP_ME_RAM_DATAH, new_h);\n"
+            "\tWREG32(RADEON_CP_ME_RAM_DATAL, new_l);\n"
+        )
+        injection_readback_block = (
+            "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
+            "\t*rb_h = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
+            "\t*rb_l = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
         )
         restore_write_block = (
             "\tWREG32(RADEON_CP_ME_RAM_ADDR, addr);\n"
@@ -291,6 +933,94 @@ def selftest(repository: Path) -> int:
             "\tWREG32(RADEON_CP_ME_RAM_RADDR, addr);\n"
             "\t*restored_h = RREG32(RADEON_CP_ME_RAM_DATAH);\n"
             "\t*restored_l = RREG32(RADEON_CP_ME_RAM_DATAL);\n"
+        )
+        write_result_block = (
+            "\tif (*rb_h != new_h || *rb_l != new_l)\n\t\treturn -ENXIO;\n\treturn 0;\n"
+        )
+        injection_call_block = (
+            "\tret = rs480_cp_me_ram_inject_one(rdev, addr, new_h, new_l,\n"
+            "\t\t\t\t\t &rb_h, &rb_l, &rs_h, &rs_l);\n"
+        )
+        idle_gate_block = "\tret = rs480_cp_me_ram_inject_wait_idle(rdev);\n"
+        idle_helper_return_block = (
+            "out:\n\tmutex_unlock(&rdev->ring_lock);\n\treturn ret;\n}\n\n"
+            "static int rs480_cp_me_ram_inject_one"
+        )
+        hardware_lock_block = (
+            "\tret = radeon_device_lock_hardware(rdev);\n\tif (ret)\n\t\treturn ret;\n"
+        )
+        descriptor_rejection_block = "\tif (*ppos != 0)\n\t\treturn -ESPIPE;\n"
+        arming_token_block = (
+            "\tif (radeon_rs480_cp_me_ram_inject != "
+            "RS480_CP_ME_INJECT_ARM_TOKEN)\n\t\treturn -EACCES;\n"
+        )
+        payload_limit_block = "\tif (len >= sizeof(kbuf))\n\t\treturn -EINVAL;\n"
+        payload_copy_block = (
+            "\tif (copy_from_user(kbuf, ubuf, len))\n\t\treturn -EFAULT;\n"
+        )
+        payload_nul_rejection_block = (
+            "\tif (memchr(kbuf, '\\0', len))\n\t\treturn -EINVAL;\n"
+        )
+        payload_terminator_block = "\tkbuf[len] = '\\0';\n"
+        parsed_command_block = (
+            "\tif (!rs480_cp_me_inject_parse(kbuf, &addr, &new_h, &new_l))\n"
+            "\t\treturn -EINVAL;\n"
+        )
+        address_limit_block = (
+            "\tif (addr >= RS480_CP_ME_INJECT_ADDR_LIMIT)\n\t\treturn -ERANGE;\n"
+        )
+        arm_token_definition = "#define RS480_CP_ME_INJECT_ARM_TOKEN  0x494e4a31u"
+        address_limit_definition = "#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x100u"
+        injection_helper_readback_parameters = "u32 *rb_h, u32 *rb_l,"
+        module_parameter_declaration = "int radeon_rs480_cp_me_ram_inject;\n"
+        error_contract_line = (
+            'error_contract = "a restore mismatch keeps the command queue disabled, '
+            "requests CPU-only parked publication, and returns -EIO; a verified restore "
+            "permits the original queue state; a write mismatch after verified restore "
+            'returns -ENXIO"\n'
+        )
+        normal_policy_test = (
+            "normal: exact token performs bounded write, verify, and restore"
+        )
+        adversarial_policy_test = (
+            "adversarial: a restore mismatch parks the device before queue restoration"
+        )
+        context_lock_block = "\tmutex_lock(&ctx->lock);\n"
+        context_lock_idle_gate_block = context_lock_block + idle_gate_block
+        idle_failure_result_block = (
+            "\t\tsnprintf(ctx->result, sizeof(ctx->result),\n"
+            '\t\t\t "addr=%04x idle_gate=failed ret=%d\\n", addr, ret);\n'
+        )
+        idle_failure_unlock_block = (
+            "\t\tmutex_unlock(&ctx->lock);\n\t\tradeon_device_unlock_hardware(rdev);\n"
+        )
+        mutation_mark_block = (
+            '\tradeon_dev_mark_mutation(rdev, "RS4xx CP-ME RAM injection");\n'
+        )
+        result_format_block = (
+            "\tsnprintf(ctx->result, sizeof(ctx->result),\n"
+            '\t\t "addr=%04x wrote=%08x:%08x read=%08x:%08x write_ok=%d '
+            'restored=%08x:%08x restore_ok=%d\\n",\n'
+            "\t\t addr, new_h, new_l, rb_h, rb_l,\n"
+            "\t\t (rb_h == new_h && rb_l == new_l), rs_h, rs_l, (ret != -EIO));\n"
+        )
+        normal_unlock_block = (
+            "\tmutex_unlock(&ctx->lock);\n\tradeon_device_unlock_hardware(rdev);\n"
+        )
+        idle_failure_log_result = "\t\t\t\t     addr, ret);\n"
+        restore_error_log_result = (
+            '"rs480_cp_me_ram_inject: restore mismatch at addr=%04x\\n",\n'
+            "\t\t\t\t    addr"
+        )
+        successful_log_result = (
+            '\t\tdev_info(rdev->dev, "rs480_cp_me_ram_inject: %s", ctx->result);\n'
+        )
+        write_context_declaration = (
+            "\tstruct rs480_cp_me_inject_ctx *ctx = file_inode(file)->i_private;\n"
+        )
+        show_result_block = (
+            '\tseq_printf(m, "%s", ctx->result[0] ?\n'
+            '\t\t   ctx->result : "no inject performed\\n");\n'
         )
         queue_restore = "\tWREG32(RADEON_CP_CSQ_CNTL, csq);\n"
         protected_restore = mismatch_block + "\n" + queue_restore
@@ -358,6 +1088,17 @@ def selftest(repository: Path) -> int:
                         "orig_l = new_l;",
                     ),
                     "original low-half capture",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "captured microword overwritten before queue disable",
+                replace_once(
+                    driver_source,
+                    original_capture_block,
+                    original_capture_block + "\torig_h = new_h;\n\torig_l = new_l;\n",
+                    "captured microword overwrite",
                 ),
                 feature_policy,
                 surface_audit,
@@ -442,6 +1183,755 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "modified high-half write omitted",
+                replace_once(
+                    driver_source,
+                    injection_write_block,
+                    injection_write_block.replace(
+                        "\tWREG32(RADEON_CP_ME_RAM_DATAH, new_h);\n", ""
+                    ),
+                    "modified high-half write",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "modified low-half write omitted",
+                replace_once(
+                    driver_source,
+                    injection_write_block,
+                    injection_write_block.replace(
+                        "\tWREG32(RADEON_CP_ME_RAM_DATAL, new_l);\n", ""
+                    ),
+                    "modified low-half write",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "modified high-half readback synthesized",
+                replace_once(
+                    driver_source,
+                    injection_readback_block,
+                    injection_readback_block.replace(
+                        "*rb_h = RREG32(RADEON_CP_ME_RAM_DATAH);",
+                        "*rb_h = new_h;",
+                    ),
+                    "modified high-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "modified low-half readback synthesized",
+                replace_once(
+                    driver_source,
+                    injection_readback_block,
+                    injection_readback_block.replace(
+                        "*rb_l = RREG32(RADEON_CP_ME_RAM_DATAL);",
+                        "*rb_l = new_l;",
+                    ),
+                    "modified low-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "early return while command queue is disabled",
+                replace_once(
+                    driver_source,
+                    queue_capture_disable,
+                    queue_capture_disable + "\tif (new_h == 0)\n\t\treturn -EINVAL;\n",
+                    "disabled queue early return",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME write precedes original capture",
+                replace_once(
+                    driver_source,
+                    original_capture_block,
+                    "\tWREG32(RADEON_CP_ME_RAM_DATAH, new_h);\n"
+                    + original_capture_block,
+                    "pre-capture CP ME write",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler skips the CP ME idle gate",
+                replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "CP ME idle gate invocation",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure leaves the context lock held",
+                replace_once(
+                    driver_source,
+                    idle_failure_unlock_block,
+                    idle_failure_unlock_block.replace(
+                        "\t\tmutex_unlock(&ctx->lock);\n", ""
+                    ),
+                    "idle failure context unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure leaves the hardware lock held",
+                replace_once(
+                    driver_source,
+                    idle_failure_unlock_block,
+                    idle_failure_unlock_block.replace(
+                        "\t\tradeon_device_unlock_hardware(rdev);\n", ""
+                    ),
+                    "idle failure hardware unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the requested CP ME address",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace(
+                        "addr, new_h, new_l", "0, new_h, new_l"
+                    ),
+                    "result format address",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the requested CP ME high half",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("addr, new_h, new_l", "addr, 0, new_l"),
+                    "result format requested high half",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the requested CP ME low half",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("addr, new_h, new_l", "addr, new_h, 0"),
+                    "result format requested low half",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the modified high-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rb_h, rb_l", "0, rb_l"),
+                    "result format modified high-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the modified low-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rb_h, rb_l", "rb_h, 0"),
+                    "result format modified low-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the modified microword status",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace(
+                        "(rb_h == new_h && rb_l == new_l)", "1"
+                    ),
+                    "result format modified microword status",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the restored high-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rs_h, rs_l", "0, rs_l"),
+                    "result format restored high-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the restored low-half readback",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("rs_h, rs_l", "rs_h, 0"),
+                    "result format restored low-half readback",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result format loses the restore status",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    result_format_block.replace("(ret != -EIO)", "1"),
+                    "result format restore status",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "post-injection result format is comment only",
+                replace_once(
+                    driver_source,
+                    result_format_block,
+                    "\t/*\n" + result_format_block + "\t */\n",
+                    "commented post-injection result format",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure result loses the requested address",
+                replace_once(
+                    driver_source,
+                    idle_failure_result_block,
+                    idle_failure_result_block.replace("addr, ret", "0, ret"),
+                    "idle failure result address",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure result reports a passed gate",
+                replace_once(
+                    driver_source,
+                    idle_failure_result_block,
+                    idle_failure_result_block.replace(
+                        "idle_gate=failed", "idle_gate=passed"
+                    ),
+                    "idle failure result disposition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure result loses the error result",
+                replace_once(
+                    driver_source,
+                    idle_failure_result_block,
+                    idle_failure_result_block.replace("addr, ret", "addr, 0"),
+                    "idle failure result error",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the Radeon hardware lock",
+                replace_once(
+                    driver_source,
+                    hardware_lock_block,
+                    "",
+                    "Radeon hardware lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the result lock",
+                replace_once(
+                    driver_source,
+                    context_lock_idle_gate_block,
+                    idle_gate_block,
+                    "result lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME register access precedes the idle gate",
+                replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tWREG32(RADEON_CP_ME_RAM_DATAH, new_h);\n" + idle_gate_block,
+                    "pre-idle CP ME register access",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME read modify write precedes descriptor admission",
+                replace_once(
+                    driver_source,
+                    descriptor_rejection_block,
+                    "\tWREG32_P(RADEON_CP_ME_RAM_DATAH, 0, 0);\n"
+                    + descriptor_rejection_block,
+                    "pre-admission CP ME read modify write",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure logger writes a CP ME register",
+                replace_once(
+                    driver_source,
+                    idle_failure_log_result,
+                    "\t\t\t\t     addr, (WREG32(RADEON_CP_ME_RAM_DATAH, new_h), ret));\n",
+                    "idle failure logger register access",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle failure logger acquires the context lock",
+                replace_once(
+                    driver_source,
+                    idle_failure_log_result,
+                    "\t\t\t\t     addr, (mutex_lock(&ctx->lock), ret));\n",
+                    "idle failure logger lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler reports unconditional success",
+                replace_once(
+                    driver_source,
+                    "\treturn ret ? ret : len;\n",
+                    "\treturn len;\n",
+                    "write handler result propagation",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler clears the injection failure",
+                replace_once(
+                    driver_source,
+                    injection_call_block,
+                    injection_call_block + "\tret = 0;\n",
+                    "write handler result overwrite",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler compound clears the injection failure",
+                replace_once(
+                    driver_source,
+                    injection_call_block,
+                    injection_call_block + "\tret &= 0;\n",
+                    "write handler compound result overwrite",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler parenthesized assignment clears the injection failure",
+                replace_once(
+                    driver_source,
+                    "(ret != -EIO));\n",
+                    "((ret) = 0, ret != -EIO));\n",
+                    "write handler parenthesized result overwrite",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler conditionally invokes the injection helper",
+                replace_once(
+                    driver_source,
+                    injection_call_block,
+                    "\tif (new_h)\n\t" + injection_call_block,
+                    "conditional injection helper call",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler conditionally records the mutation",
+                replace_once(
+                    driver_source,
+                    mutation_mark_block,
+                    "\tif (new_h)\n\t\tradeon_dev_mark_mutation("
+                    'rdev, "RS4xx CP-ME RAM injection");\n',
+                    "conditional mutation marker",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler mutation marker releases the hardware lock",
+                replace_once(
+                    driver_source,
+                    mutation_mark_block,
+                    mutation_mark_block.replace(
+                        'rdev, "RS4xx CP-ME RAM injection"',
+                        "rdev, (radeon_device_unlock_hardware(rdev), "
+                        '"RS4xx CP-ME RAM injection")',
+                    ),
+                    "mutation marker hardware unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler conditionally releases the context lock",
+                replace_once(
+                    driver_source,
+                    normal_unlock_block,
+                    "\tif (!ret)\n\t\tmutex_unlock(&ctx->lock);\n"
+                    "\tradeon_device_unlock_hardware(rdev);\n",
+                    "conditional post-injection unlock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "successful logger reopens the consumed descriptor",
+                replace_once(
+                    driver_source,
+                    successful_log_result,
+                    successful_log_result.replace(
+                        "ctx->result", "(*ppos = 0, ctx->result)"
+                    ),
+                    "successful logger descriptor reset",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "restore mismatch logger acquires the hardware lock",
+                replace_once(
+                    driver_source,
+                    restore_error_log_result,
+                    restore_error_log_result.replace(
+                        "addr", "(radeon_device_lock_hardware(rdev), addr)"
+                    ),
+                    "restore mismatch logger hardware lock",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "inactive handler decoy precedes an active idle-gate bypass",
+                "#if 0\n"
+                + driver_source
+                + "#endif\n"
+                + replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "active idle gate bypass after inactive decoy",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "zero-suffixed inactive handler decoy precedes an active idle-gate bypass",
+                "#if 0U\n"
+                + driver_source
+                + "#else\n"
+                + replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "active idle gate bypass after zero-suffixed inactive decoy",
+                )
+                + "#endif\n",
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "unknown inactive handler decoy precedes an active idle-gate bypass",
+                "#if CODEX_UNDEFINED\n"
+                + driver_source
+                + "#else\n"
+                + replace_once(
+                    driver_source,
+                    idle_gate_block,
+                    "\tret = 0;\n",
+                    "active idle gate bypass after unknown inactive decoy",
+                )
+                + "#endif\n",
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "idle helper converts failures to success",
+                replace_once(
+                    driver_source,
+                    idle_helper_return_block,
+                    idle_helper_return_block.replace("return ret;", "return 0;"),
+                    "CP ME idle helper failure return",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME arm token gate",
+                replace_once(
+                    driver_source,
+                    arming_token_block,
+                    "",
+                    "CP ME arm token gate",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler conditionally checks the CP ME arm token",
+                replace_once(
+                    driver_source,
+                    arming_token_block,
+                    "\tif (len == 0)\n" + arming_token_block,
+                    "conditional CP ME arm token gate",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler returns before hardware lock acquisition",
+                replace_once(
+                    driver_source,
+                    address_limit_block,
+                    address_limit_block + "\tif (!new_h)\n\t\treturn len;\n",
+                    "early return before hardware lock acquisition",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME arm token has a zero declaration",
+                replace_once(
+                    driver_source,
+                    arm_token_definition,
+                    "#define RS480_CP_ME_INJECT_ARM_TOKEN  0u",
+                    "CP ME arm token declaration",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME arm token permits a trailing expression",
+                replace_once(
+                    driver_source,
+                    arm_token_definition,
+                    arm_token_definition + " - 0x494e4a31u",
+                    "CP ME arm token trailing expression",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "unknown token conditional selects a zero declaration",
+                replace_once(
+                    driver_source,
+                    arm_token_definition,
+                    "#if defined(UNSET)\n"
+                    + arm_token_definition
+                    + "\n#else\n#define RS480_CP_ME_INJECT_ARM_TOKEN  0u\n#endif",
+                    "unknown CP ME arm token conditional",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME address limit has a widened declaration",
+                replace_once(
+                    driver_source,
+                    address_limit_definition,
+                    "#define RS480_CP_ME_INJECT_ADDR_LIMIT 0x1000u",
+                    "CP ME address limit declaration",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "CP ME address limit permits a trailing expression",
+                replace_once(
+                    driver_source,
+                    address_limit_definition,
+                    address_limit_definition + " + 0xf00u",
+                    "CP ME address limit trailing expression",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "injection helper swaps the readback parameter names",
+                replace_once(
+                    driver_source,
+                    injection_helper_readback_parameters,
+                    "u32 *rb_l, u32 *rb_h,",
+                    "CP ME injection helper readback parameter order",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler derives context from file private data",
+                replace_once(
+                    driver_source,
+                    write_context_declaration,
+                    "\tstruct rs480_cp_me_inject_ctx *ctx = file->private_data;\n",
+                    "CP ME write context declaration",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "result reader omits the recorded injection result",
+                replace_once(
+                    driver_source,
+                    show_result_block,
+                    '\tseq_puts(m, "no inject performed\\n");\n',
+                    "CP ME result reader",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits consumed descriptor rejection",
+                replace_once(
+                    driver_source,
+                    descriptor_rejection_block,
+                    "",
+                    "consumed descriptor rejection",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command payload bound",
+                replace_once(
+                    driver_source,
+                    payload_limit_block,
+                    "",
+                    "CP ME command payload bound",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler weakens the CP ME command payload bound",
+                replace_once(
+                    driver_source,
+                    payload_limit_block,
+                    payload_limit_block.replace("len >=", "len >"),
+                    "CP ME command payload bound comparison",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command copy check",
+                replace_once(
+                    driver_source,
+                    payload_copy_block,
+                    "",
+                    "CP ME command copy check",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler accepts an embedded NUL payload suffix",
+                replace_once(
+                    driver_source,
+                    payload_nul_rejection_block,
+                    "",
+                    "embedded NUL command rejection",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command terminator",
+                replace_once(
+                    driver_source,
+                    payload_terminator_block,
+                    "",
+                    "CP ME command terminator",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME command parser",
+                replace_once(
+                    driver_source,
+                    parsed_command_block,
+                    "",
+                    "CP ME command parser",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler omits the CP ME address limit",
+                replace_once(
+                    driver_source,
+                    address_limit_block,
+                    "",
+                    "CP ME address limit",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "write handler weakens the CP ME address limit",
+                replace_once(
+                    driver_source,
+                    address_limit_block,
+                    address_limit_block.replace("addr >=", "addr >"),
+                    "CP ME address limit comparison",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "injection helper adds an undeclared error return",
+                replace_once(
+                    driver_source,
+                    "\tu32 orig_h, orig_l, csq;\n",
+                    "\tu32 orig_h, orig_l, csq;\n\n\tif (!addr)\n\t\treturn -EINVAL;\n",
+                    "undeclared injection helper return",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
+                "verified write path loses success result",
+                replace_once(
+                    driver_source,
+                    write_result_block,
+                    write_result_block.replace("\treturn 0;\n", "\treturn -EINVAL;\n"),
+                    "successful injection result",
+                ),
+                feature_policy,
+                surface_audit,
+            ),
+            (
                 "restore failure errno changed",
                 replace_once(
                     driver_source,
@@ -503,6 +1993,37 @@ def selftest(repository: Path) -> int:
                 surface_audit,
             ),
             (
+                "policy comment supplies the disabled queue claim",
+                driver_source,
+                replace_once(
+                    feature_policy,
+                    error_contract_line,
+                    "# restore mismatch keeps the command queue disabled\n"
+                    + error_contract_line.replace(
+                        "restore mismatch keeps the command queue disabled",
+                        "restore mismatch reports an error",
+                    ),
+                    "commented disabled queue claim",
+                ),
+                surface_audit,
+            ),
+            (
+                "policy moves restore containment out of the adversarial test",
+                driver_source,
+                replace_once(
+                    replace_once(
+                        feature_policy,
+                        normal_policy_test,
+                        "normal: a restore mismatch parks the device before queue restoration",
+                        "normal CP ME test classification",
+                    ),
+                    adversarial_policy_test,
+                    "adversarial: exact token performs bounded write, verify, and restore",
+                    "adversarial CP ME test classification",
+                ),
+                surface_audit,
+            ),
+            (
                 "surface audit loses parked disposition",
                 driver_source,
                 feature_policy,
@@ -514,9 +2035,94 @@ def selftest(repository: Path) -> int:
                 ),
             ),
         )
+        parser_mutations = (
+            (
+                "CP ME parser accepts surplus command text",
+                replace_once(
+                    parser_source,
+                    "&extra) == 3;",
+                    "&extra) >= 3;",
+                    "CP ME parser surplus result",
+                ),
+            ),
+            (
+                "CP ME parser swaps the address and high word parameters",
+                replace_once(
+                    replace_once(
+                        replace_once(
+                            parser_source,
+                            "unsigned int *addr,",
+                            "unsigned int *parameter_swap,",
+                            "CP ME parser address parameter",
+                        ),
+                        "unsigned int *new_h,",
+                        "unsigned int *addr,",
+                        "CP ME parser high word parameter",
+                    ),
+                    "unsigned int *parameter_swap,",
+                    "unsigned int *new_h,",
+                    "CP ME parser parameter swap",
+                ),
+            ),
+        )
+        module_parameter_mutations = (
+            (
+                "CP ME arm parameter starts armed",
+                replace_once(
+                    module_parameter_source,
+                    module_parameter_declaration,
+                    "int radeon_rs480_cp_me_ram_inject = 0x494e4a31u;\n",
+                    "CP ME arm parameter default",
+                ),
+            ),
+            (
+                "CP ME arm parameter has an additional initialized definition",
+                module_parameter_source
+                + "\nint radeon_rs480_cp_me_ram_inject = 0x494e4a31u;\n",
+            ),
+        )
+        if (
+            len(mutations) + len(parser_mutations) + len(module_parameter_mutations)
+            != EXPECTED_BAD_COUNT
+        ):
+            raise ContractError("selftest mutation denominator differs")
+        if len({mutation[0] for mutation in mutations}) != len(mutations):
+            raise ContractError("selftest mutation labels repeat")
         for description, mutated_source, mutated_policy, mutated_audit in mutations:
             try:
-                verify_contract(mutated_source, mutated_policy, mutated_audit)
+                verify_contract(
+                    mutated_source,
+                    parser_source,
+                    module_parameter_source,
+                    mutated_policy,
+                    mutated_audit,
+                )
+            except ContractError:
+                print(f"selftest known-bad rejected: {description}")
+            else:
+                raise ContractError(f"selftest accepted: {description}")
+        for description, mutated_parser in parser_mutations:
+            try:
+                verify_contract(
+                    driver_source,
+                    mutated_parser,
+                    module_parameter_source,
+                    feature_policy,
+                    surface_audit,
+                )
+            except ContractError:
+                print(f"selftest known-bad rejected: {description}")
+            else:
+                raise ContractError(f"selftest accepted: {description}")
+        for description, mutated_module_parameter_source in module_parameter_mutations:
+            try:
+                verify_contract(
+                    driver_source,
+                    parser_source,
+                    mutated_module_parameter_source,
+                    feature_policy,
+                    surface_audit,
+                )
             except ContractError:
                 print(f"selftest known-bad rejected: {description}")
             else:
@@ -527,7 +2133,10 @@ def selftest(repository: Path) -> int:
         )
         return 1
 
-    print(f"selftest: 1 good and {len(mutations)} bad fixtures classified")
+    print(
+        f"selftest: 1 good and {len(mutations) + len(parser_mutations) + len(module_parameter_mutations)} "
+        "bad fixtures classified"
+    )
     return 0
 
 
@@ -546,6 +2155,12 @@ def main() -> int:
     try:
         verify_contract(
             (repository / "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c").read_text(
+                encoding="utf-8"
+            ),
+            (
+                repository / "drivers/gpu/drm/radeon/rs480_cp_me_inject_parse.h"
+            ).read_text(encoding="utf-8"),
+            (repository / "drivers/gpu/drm/radeon/radeon_dev.c").read_text(
                 encoding="utf-8"
             ),
             (repository / "policy/build-features.toml").read_text(encoding="utf-8"),
