@@ -10,7 +10,10 @@ classes; a closed item names its proof, and an open item names its gate.
 - Upstream base pinned by peeled commit and subtree tree object:
   `UPSTREAM_BASE.toml` (v6.18 base and the v7.1 mainline target).
 - Driver subtree imported from the pinned base with a committed pristine
-  manifest and import calibration in CI: `docs/legacy-base-source-manifest.tsv`.
+  manifest and import calibration in CI:
+  `migration/input/legacy-base-source-manifest.tsv`, materialized from
+  `radeon-custom docs/legacy-base-source-manifest.tsv` and pinned by content
+  hash in `docs/reconstruction-input-inventory.tsv`.
 - Base-delta classification of every divergence from the imported legacy base
   remains frozen in `migration/input/base-delta-map.tsv`.
 - Post-tag source changes carry their upstream-backport, version-compat,
@@ -25,8 +28,8 @@ classes; a closed item names its proof, and an open item names its gate.
   walk exposed engine-divergent placement. Both engines now produce
   identical trees. Findings: `radeon-custom docs/legacy-patch-context-drift.tsv`.
 - Payload and oracle manifests versioned by revision:
-  `legacy-payload-0.3-90-default-fuzz-manifest.tsv` and the
-  `migration-oracle-0.3-91-exact-context-*` pair in radeon-custom.
+  `radeon-custom docs/legacy-payload-0.3-90-default-fuzz-manifest.tsv` and the
+  `radeon-custom docs/migration-oracle-0.3-91-exact-context-*` pair.
 - Git-tree bonded per-patch transition ledger, dual-engine, identical-tree
   requirement on both-accept, final tree byte-identical to the migration
   oracle: `radeon-custom docs/legacy-patch-transitions.tsv`, reproduced in
@@ -128,6 +131,40 @@ classes; a closed item names its proof, and an open item names its gate.
 - RAD-06 source changes remain separate reviewed work.
 
 ## Open, outside the tag ordering
+
+- Source-intelligence capture ownership moves to `steinmarder-r300`, which owns
+  retained result bundles and their seal contract. The instrument
+  `scripts/capture_radeon_driver_source_map.py`, its policy input
+  `policy/radeon-driver-source-map.toml`, and its narrative
+  `docs/radeon-driver-source-intelligence.md` relocate to
+  `steinmarder-r300 tools/source-analysis/`, the path that repository's
+  `.gitignore` already names for a source-intelligence probe. The move requires
+  a producer and source repository split inside the instrument, because the
+  capture resolves its policy path, its own retained script bytes, and its
+  producer Git proof against the single `--repository` root, and because it
+  imports `check_rs4xx_hardware_admission_contract` from its own directory
+  while `--verify` needs that contract with no source repository present. The
+  gate is a capture-schema revision that records producer identity separately
+  from measured source identity and keeps the retained schema verifiable, a
+  green 258-verdict calibration, and a bundle produced by the relocated
+  instrument whose normalized tables match the sealed control at source commit
+  `73e9a093caf2cda0e7e1b703c903a19cf8c53ba0`.
+- `.github/workflows/source-static.yml` drops the `source-map-kernel-lanes` job
+  and the two capture steps in `lint` when the instrument relocates. The active
+  ruleset requires the `source-map-kernel-lanes` status, so that branch
+  protection entry retires in the same change; otherwise a merge waits on a
+  check no workflow produces.
+- Evidence-consuming harnesses await the same boundary decision.
+  `scripts/run_r300_cs_track_controls.sh` and
+  `scripts/rad06_corpus_reason_census.sh` each take a retained bundle or corpus
+  root as an argument, no CI job here invokes them, and their inputs live in
+  `steinmarder-r300`. `scripts/radeon_deployment_preflight.sh` reads a live host
+  and matches the deployment and hazard preflight authority `radeon-custom`
+  states. The mutation-calibrated harnesses stay: CI invokes
+  `scripts/run_r300_cs_grammar_correspondence.sh` and
+  `scripts/run_r300_cs_runform_calibration.sh` as source gates, and each
+  `scripts/calibrate_*.c` program compiles a kernel decision function from this
+  tree.
 
 - Attended audit of the retained `r300-kmsg-snapshot` sudo grant on the
   target host: executable root-owned, unwritable by the runner, accepting no
