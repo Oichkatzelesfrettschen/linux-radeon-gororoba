@@ -80,6 +80,13 @@ PROFILE_SYMBOL_DELTA_MEMBER_COLUMNS = (
 HASH_LEDGER = "capture-hashes.sha256"
 POLICY_PATH = Path("policy/radeon-driver-source-map.toml")
 RETAINED_POLICY_BUNDLE_PATH = Path("policy/radeon-driver-source-map.toml")
+# The producer layout schema v2 bundles were sealed under. These are historical
+# facts about those bundles rather than the current instrument's layout, so
+# they stay frozen while the producer paths above follow the instrument.
+V2_PRODUCER_AGENTS_PATH = "AGENTS.md"
+V2_PRODUCER_POLICY_PATH = "policy/radeon-driver-source-map.toml"
+V2_PRODUCER_SCRIPT_PATH = "scripts/capture_radeon_driver_source_map.py"
+V2_KERNEL_ROOT_VALIDATOR_PATH = "scripts/check_kernel_build_root.py"
 SOURCE_INPUT_PREFIX = "source-input"
 SCRIPT_PATH = Path("scripts/capture_radeon_driver_source_map.py")
 KERNEL_ROOT_VALIDATOR_PATH = Path("scripts/check_kernel_build_root.py")
@@ -2727,10 +2734,10 @@ def producer_input_paths(policy: Policy) -> dict[str, str]:
 
     if policy.capture_schema == CAPTURE_SCHEMA_V2:
         repository_paths = {
-            "AGENTS.md",
-            POLICY_PATH.as_posix(),
-            SCRIPT_PATH.as_posix(),
-            KERNEL_ROOT_VALIDATOR_PATH.as_posix(),
+            V2_PRODUCER_AGENTS_PATH,
+            V2_PRODUCER_POLICY_PATH,
+            V2_PRODUCER_SCRIPT_PATH,
+            V2_KERNEL_ROOT_VALIDATOR_PATH,
         }
         for lane in policy.kernel_lanes:
             repository_paths.update(
@@ -2742,7 +2749,7 @@ def producer_input_paths(policy: Policy) -> dict[str, str]:
                     lane.toolchain_prefix_manifest,
                 }
             )
-        policy_repository_path = POLICY_PATH.as_posix()
+        policy_repository_path = V2_PRODUCER_POLICY_PATH
     else:
         require(
             policy.producer is not None,
