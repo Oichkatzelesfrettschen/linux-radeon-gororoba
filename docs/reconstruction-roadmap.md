@@ -128,6 +128,28 @@ classes; a closed item names its proof, and an open item names its gate.
   remain authoritative. The first mutation-capable operation that passes its
   final gate logs once per device and adds `TAINT_USER`.
 
+- Source-intelligence capture ownership moved to `steinmarder-r300`, which owns
+  retained result bundles and their seal contract. The instrument, its policy
+  input, and its narrative contract live at
+  `steinmarder-r300 tools/source-analysis/`, the path that repository's
+  `.gitignore` already named for a source-intelligence probe, and
+  `source-analysis-provenance.tsv` there pins each file to its commit here by
+  source and landed SHA-256. Capture schema v3 records producer identity apart
+  from measured source identity: producer inputs are proved against the
+  producer commit, while the kernel-root validator and the ten kernel-lane
+  manifests join the source-input proof under a `source-input/` prefix. Policy
+  schema 3 carries the producer layout inside the retained policy, so a
+  verifier reconstructs the producer denominator from the bundle. The relocated
+  instrument captures this repository and verifies the result, and the schema
+  v2 control sealed at source commit
+  `73e9a093caf2cda0e7e1b703c903a19cf8c53ba0` still verifies from it with both
+  kernel lanes required.
+- `.github/workflows/source-static.yml` no longer carries the
+  `source-map-kernel-lanes` job or the two capture steps in `lint`. The
+  `protected-main-pr-only` ruleset still lists `source-map-kernel-lanes` as a
+  required status, and no workflow produces it, so that entry retires before a
+  pull request can merge.
+
 ## Open, after the equivalence tag
 
 - Production and development packaging must select deterministic build
@@ -136,28 +158,6 @@ classes; a closed item names its proof, and an open item names its gate.
 
 ## Open, outside the tag ordering
 
-- Source-intelligence capture ownership moves to `steinmarder-r300`, which owns
-  retained result bundles and their seal contract. The instrument
-  `scripts/capture_radeon_driver_source_map.py`, its policy input
-  `policy/radeon-driver-source-map.toml`, and its narrative
-  `docs/radeon-driver-source-intelligence.md` relocate to
-  `steinmarder-r300 tools/source-analysis/`, the path that repository's
-  `.gitignore` already names for a source-intelligence probe. The move requires
-  a producer and source repository split inside the instrument, because the
-  capture resolves its policy path, its own retained script bytes, and its
-  producer Git proof against the single `--repository` root, and because it
-  imports `check_rs4xx_hardware_admission_contract` from its own directory
-  while `--verify` needs that contract with no source repository present. The
-  gate is a capture-schema revision that records producer identity separately
-  from measured source identity and keeps the retained schema verifiable, a
-  green 258-verdict calibration, and a bundle produced by the relocated
-  instrument whose normalized tables match the sealed control at source commit
-  `73e9a093caf2cda0e7e1b703c903a19cf8c53ba0`.
-- `.github/workflows/source-static.yml` drops the `source-map-kernel-lanes` job
-  and the two capture steps in `lint` when the instrument relocates. The active
-  ruleset requires the `source-map-kernel-lanes` status, so that branch
-  protection entry retires in the same change; otherwise a merge waits on a
-  check no workflow produces.
 - Evidence-consuming harnesses await the same boundary decision.
   `scripts/run_r300_cs_track_controls.sh` and
   `scripts/rad06_corpus_reason_census.sh` each take a retained bundle or corpus

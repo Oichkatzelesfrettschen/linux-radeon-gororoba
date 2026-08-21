@@ -393,8 +393,8 @@ and terminal records remain available without an MMIO claim.
 
 ## Source intelligence and verification
 
-`policy/radeon-driver-source-map.toml` declares the
-`rs4xx-hardware-admission` partition. The capture includes GNU cflow, cscope,
+`steinmarder-r300 tools/source-analysis/radeon-driver-source-map.toml`
+declares the `rs4xx-hardware-admission` partition. The capture includes GNU cflow, cscope,
 Universal Ctags and readtags, GNU Global, lizard, SCC, declared callback edges,
 contextual path witnesses, and Graphviz input. The capture labels its graph as
 a research candidate. Lexical and declared edges do not prove runtime
@@ -426,7 +426,6 @@ python3 scripts/check_rs4xx_hardware_admission_contract.py --selftest
 python3 scripts/check_rs4xx_hardware_admission_contract.py
 python3 scripts/check_radeon_debugfs_registration.py --selftest
 python3 scripts/check_radeon_debugfs_registration.py
-python3 scripts/capture_radeon_driver_source_map.py --self-test
 python3 scripts/check_build_features.py --self-test
 python3 scripts/check_build_features.py
 python3 scripts/check_all_dev_interfaces.py --self-test
