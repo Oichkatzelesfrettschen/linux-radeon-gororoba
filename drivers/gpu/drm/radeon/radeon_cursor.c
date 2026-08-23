@@ -326,18 +326,22 @@ int radeon_crtc_cursor_set2(struct drm_crtc *crtc,
 
 	/* Both BO reservations precede hardware admission. A reset closes the
 	 * admission epoch without waiting on a cursor path blocked on either BO.
+	 * The path pins and unpins; it attaches no fence to either reservation
+	 * object, so it takes the lock alone. drm_exec_prepare_obj also
+	 * reserves fence slots, and dma_resv_reserve_fences rejects a request
+	 * for zero of them.
 	 */
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
 			      DRM_EXEC_IGNORE_DUPLICATES, 0);
 	drm_exec_until_all_locked(&exec) {
 		if (old_obj) {
-			ret = drm_exec_prepare_obj(&exec, old_obj, 0);
+			ret = drm_exec_lock_obj(&exec, old_obj);
 			drm_exec_retry_on_contention(&exec);
 			if (ret && ret != -EALREADY)
 				goto out_exec;
 		}
 		if (obj) {
-			ret = drm_exec_prepare_obj(&exec, obj, 0);
+			ret = drm_exec_lock_obj(&exec, obj);
 			drm_exec_retry_on_contention(&exec);
 			if (ret && ret != -EALREADY)
 				goto out_exec;
