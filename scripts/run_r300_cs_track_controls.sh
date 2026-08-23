@@ -120,11 +120,40 @@ expect reject "color buffer one byte too small" \
     "${tool}" --set-bo-size "1=16383" "${bundle}" "${ib}"
 expect accept "color buffer exactly large enough" \
     "${tool}" --set-bo-size "1=16384" "${bundle}" "${ib}"
-# A vertex buffer one byte too small for esize * (nverts - 1) * 4.
+# A vertex buffer one byte too small for esize * max_indx * 4, the bound
+# r100_cs_track_check applies to each array: esize is the 3D_LOAD_VBPNTR
+# stride in dwords and max_indx the VAP_VF_MAX_VTX_INDX payload, both read
+# from the stream so a cell with a wider record keeps its controls.
+vertex_bound=$(python3 - "$ib" <<'PY'
+import struct, sys
+data = open(sys.argv[1], 'rb').read()
+words = struct.unpack('<%dI' % (len(data) // 4), data)
+esize = None
+max_indx = None
+i = 0
+while i < len(words):
+    header = words[i]
+    ptype = (header >> 30) & 3
+    count = (header >> 16) & 0x3FFF
+    if ptype == 0:
+        base = (header & 0x1FFF) << 2
+        one_reg = (header >> 15) & 1
+        for k in range(count + 1):
+            here = base if one_reg else base + 4 * k
+            if here == 0x2134:
+                max_indx = words[i + 1 + k]
+    elif ptype == 3 and (header & 0xFF00) == 0x2F00:
+        esize = (words[i + 2] >> 8) & 0xFF
+    i += count + 2
+if esize is None or max_indx is None:
+    sys.exit(1)
+print(esize * max_indx * 4)
+PY
+)
 expect reject "vertex buffer one byte too small" \
-    "${tool}" --set-bo-size "0=31" "${bundle}" "${ib}"
+    "${tool}" --set-bo-size "0=$((vertex_bound - 1))" "${bundle}" "${ib}"
 expect accept "vertex buffer exactly large enough" \
-    "${tool}" --set-bo-size "0=32" "${bundle}" "${ib}"
+    "${tool}" --set-bo-size "0=${vertex_bound}" "${bundle}" "${ib}"
 # A vertex width below what the output format requires.
 expect reject "VAP_VTX_SIZE below the output width" \
     "${tool}" --set-vtx-size 3 "${bundle}" "${ib}"
