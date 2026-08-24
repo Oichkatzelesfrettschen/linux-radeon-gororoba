@@ -375,7 +375,9 @@ jobs:
           persist-credentials: false
           clean: true
       - name: shellcheck
-        run: shellcheck -S error scripts/*.sh
+        run: shellcheck -S warning scripts/*.sh
+      - name: deployment identity preflight calibration
+        run: sh scripts/radeon_deployment_preflight.sh --self-test
       - name: ruff
         run: ruff check scripts/
       - name: build-relevance classifier calibration

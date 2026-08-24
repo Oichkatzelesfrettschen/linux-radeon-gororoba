@@ -219,7 +219,7 @@ else
   KB="/lib/modules/$(uname -r)/build"
 fi
 [ -d "$KB" ] || { echo "no kernel build dir at $KB" >&2; exit 2; }
-KB=$(CDPATH= cd -- "$KB" && pwd -P)
+KB=$(CDPATH='' cd -- "$KB" && pwd -P)
 for required in \
   Makefile \
   Module.symvers \
