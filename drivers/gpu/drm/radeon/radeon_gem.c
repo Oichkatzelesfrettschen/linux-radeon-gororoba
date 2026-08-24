@@ -160,6 +160,7 @@ int radeon_gem_object_create(struct radeon_device *rdev, unsigned long size,
 				struct drm_gem_object **obj)
 {
 	struct radeon_bo *robj;
+	bool repacked = false;
 	unsigned long max_size;
 	int r;
 
@@ -192,6 +193,25 @@ retry:
 			if (initial_domain == RADEON_GEM_DOMAIN_VRAM) {
 				initial_domain |= RADEON_GEM_DOMAIN_GTT;
 				goto retry;
+			}
+			/* A GTT request refused for want of room can still
+			 * face an aperture whose free pages exceed the
+			 * request, because the range manager fits best and a
+			 * buffer object never spans holes.  Repacking the
+			 * aperture rewrites GART entries and copies no
+			 * payload, so one repack costs less than the refusal
+			 * it replaces.  One attempt per allocation bounds the
+			 * work, and a repack that readmits nothing leaves the
+			 * original refusal standing.
+			 */
+			if (r == -ENOMEM && !repacked &&
+			    (initial_domain & RADEON_GEM_DOMAIN_GTT)) {
+				struct radeon_gtt_compaction report;
+
+				repacked = true;
+				if (radeon_gtt_compact(rdev, &report) == 0 &&
+				    report.readmitted != 0)
+					goto retry;
 			}
 			DRM_ERROR("Failed to allocate GEM object (%ld, %d, %u, %d)\n",
 				  size, initial_domain, alignment, r);
