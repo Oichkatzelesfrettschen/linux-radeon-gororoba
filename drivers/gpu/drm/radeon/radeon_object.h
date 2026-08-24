@@ -147,6 +147,15 @@ extern int radeon_bo_pin(struct radeon_bo *bo, u32 domain, u64 *gpu_addr);
 extern int radeon_bo_pin_restricted(struct radeon_bo *bo, u32 domain,
 				    u64 max_offset, u64 *gpu_addr);
 extern void radeon_bo_unpin(struct radeon_bo *bo);
+/* GTT requests at or below this size insert from the top of the aperture
+ * (TTM_PL_FLAG_TOPDOWN maps to DRM_MM_INSERT_HIGH in ttm_range_man_alloc),
+ * so the numerous small objects pack against the top while wide requests
+ * cut from the bottom and the middle of the aperture keeps its holes wide.
+ * The boundary is a placement heuristic, not a measured optimum; the
+ * measured optimum belongs to the capacity campaign.
+ */
+#define RADEON_GTT_TOPDOWN_LIMIT (512ul << 10)
+
 /* Counts from one aperture repack.  candidates are the movable objects found,
  * evacuated left the aperture, readmitted returned to it, skipped never left,
  * and stranded left and did not return.
