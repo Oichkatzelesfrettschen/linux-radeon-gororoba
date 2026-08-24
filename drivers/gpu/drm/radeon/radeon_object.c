@@ -157,7 +157,15 @@ void radeon_ttm_placement_from_domain(struct radeon_bo *rbo, u32 domain)
 	if (domain & RADEON_GEM_DOMAIN_GTT) {
 		rbo->placements[c].fpfn = 0;
 		rbo->placements[c].mem_type = TTM_PL_TT;
-		rbo->placements[c++].flags = 0;
+		/* Size-segregated insertion: small objects take the top of
+		 * the aperture and wide requests cut from the bottom, so a
+		 * churn of small objects does not perforate the extent a
+		 * wide request needs.  The repack readmission re-derives
+		 * this placement because it validates through here.
+		 */
+		rbo->placements[c++].flags =
+			radeon_bo_size(rbo) <= RADEON_GTT_TOPDOWN_LIMIT ?
+			TTM_PL_FLAG_TOPDOWN : 0;
 	}
 
 	if (domain & RADEON_GEM_DOMAIN_CPU) {
