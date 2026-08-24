@@ -422,6 +422,144 @@ void radeon_bo_unpin(struct radeon_bo *bo)
 	}
 }
 
+/* Repack the GTT aperture so its free space becomes one extent.
+ *
+ * radeon_bo_move takes ttm_bo_move_null on both the TT to SYSTEM and the
+ * SYSTEM to TT transition, so relocating a buffer object inside the aperture
+ * rewrites GART entries and copies no payload.  The range manager inserts with
+ * DRM_MM_INSERT_BEST and allocates from the bottom of the smallest hole that
+ * fits, so a buffer object never spans holes and a hole narrower than the
+ * request is unusable.  Releasing scattered objects therefore leaves aggregate
+ * free space that no single allocation can reach, and the entry rewrite is what
+ * makes that reachable again.
+ *
+ * Evacuating every movable object first and re-admitting them largest first
+ * gives the manager a single hole to cut from, so the survivors pack against
+ * the pinned prefix and the remaining free space ends up in one extent.
+ *
+ * A pinned object holds a hardware address that the ring, the writeback buffer,
+ * or the indirect buffer pool reads, so it never moves.  An object with an
+ * unsignaled fence is still readable by the GPU at its current address, so it
+ * is skipped rather than waited on: the caller is recovering address space, not
+ * quiescing the device.
+ */
+static bool radeon_bo_gtt_movable(struct radeon_bo *bo)
+{
+	if (READ_ONCE(bo->rs4xx_terminally_retained))
+		return false;
+	if (!bo->tbo.resource || bo->tbo.resource->mem_type != TTM_PL_TT)
+		return false;
+	if (bo->tbo.pin_count)
+		return false;
+	return dma_resv_test_signaled(bo->tbo.base.resv, DMA_RESV_USAGE_BOOKKEEP);
+}
+
+static int radeon_bo_move_domain(struct radeon_bo *bo, u32 domain)
+{
+	struct ttm_operation_ctx ctx = { false, false };
+
+	radeon_ttm_placement_from_domain(bo, domain);
+	return ttm_bo_validate(&bo->tbo, &bo->placement, &ctx);
+}
+
+int radeon_gtt_compact(struct radeon_device *rdev,
+		       struct radeon_gtt_compaction *report)
+{
+	struct radeon_bo **batch;
+	struct radeon_bo *bo;
+	unsigned int count = 0;
+	unsigned int capacity = 0;
+	unsigned int i;
+	unsigned int j;
+	int r;
+
+	memset(report, 0, sizeof(*report));
+
+	mutex_lock(&rdev->gem.mutex);
+	list_for_each_entry(bo, &rdev->gem.objects, list)
+		capacity++;
+	mutex_unlock(&rdev->gem.mutex);
+	if (capacity == 0)
+		return 0;
+
+	batch = kcalloc(capacity, sizeof(*batch), GFP_KERNEL);
+	if (!batch)
+		return -ENOMEM;
+
+	/* The reference taken here keeps each candidate alive after the list
+	 * mutex is dropped, because validating an object sleeps and must not
+	 * run under that mutex.
+	 */
+	mutex_lock(&rdev->gem.mutex);
+	list_for_each_entry(bo, &rdev->gem.objects, list) {
+		if (count == capacity)
+			break;
+		if (!radeon_bo_gtt_movable(bo))
+			continue;
+		batch[count++] = bo;
+		drm_gem_object_get(&bo->tbo.base);
+	}
+	mutex_unlock(&rdev->gem.mutex);
+
+	report->candidates = count;
+
+	/* Descending size, so the re-admission cuts the widest requests from
+	 * the empty arena first and leaves the narrow ones to fill the tail.
+	 */
+	for (i = 1; i < count; i++) {
+		struct radeon_bo *held = batch[i];
+		u64 size = radeon_bo_size(held);
+
+		for (j = i; j > 0 && radeon_bo_size(batch[j - 1]) < size; j--)
+			batch[j] = batch[j - 1];
+		batch[j] = held;
+	}
+
+	for (i = 0; i < count; i++) {
+		bo = batch[i];
+		r = radeon_bo_reserve(bo, false);
+		if (r) {
+			report->skipped++;
+			continue;
+		}
+		if (!radeon_bo_gtt_movable(bo)) {
+			radeon_bo_unreserve(bo);
+			report->skipped++;
+			continue;
+		}
+		r = radeon_bo_move_domain(bo, RADEON_GEM_DOMAIN_CPU);
+		radeon_bo_unreserve(bo);
+		if (r)
+			report->skipped++;
+		else
+			report->evacuated++;
+	}
+
+	for (i = 0; i < count; i++) {
+		bo = batch[i];
+		r = radeon_bo_reserve(bo, false);
+		if (r) {
+			report->stranded++;
+			continue;
+		}
+		r = radeon_bo_move_domain(bo, RADEON_GEM_DOMAIN_GTT);
+		radeon_bo_unreserve(bo);
+		if (r)
+			report->stranded++;
+		else
+			report->readmitted++;
+	}
+
+	for (i = 0; i < count; i++)
+		drm_gem_object_put(&batch[i]->tbo.base);
+	kfree(batch);
+
+	/* A stranded object left the aperture and did not return, so it now
+	 * lives in system memory and the next validate has to place it.
+	 */
+	return report->stranded ? -EBUSY : 0;
+}
+
 int radeon_bo_evict_vram(struct radeon_device *rdev)
 {
 	struct ttm_device *bdev = &rdev->mman.bdev;

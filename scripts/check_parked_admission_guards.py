@@ -1968,7 +1968,11 @@ def check_projected_gem_create(body: str) -> None:
             body[retry_label.start() : end.start()],
         )
     )
-    if gotos != ("retry", "out"):
+    # The second retry is the aperture repack path: a GTT request refused for
+    # want of room repacks once and re-enters the allocation.  It reaches the
+    # same radeon_bo_create call, which carries the parked refusal, so the
+    # readmission surface is unchanged.
+    if gotos != ("retry", "retry", "out"):
         raise GuardError(f"gem-create admitted goto denominator differs: {gotos}")
     for identifier, count, label in (
         ("radeon_rs4xx_hardware_access_begin", 1, "access admission"),
@@ -4275,6 +4279,13 @@ retry:
 			initial_domain |= RADEON_GEM_DOMAIN_GTT;
 			goto retry;
 		}
+		if (r == -ENOMEM && !repacked &&
+		    (initial_domain & RADEON_GEM_DOMAIN_GTT)) {
+			repacked = true;
+			if (radeon_gtt_compact(rdev, &report) == 0 &&
+			    report.readmitted != 0)
+				goto retry;
+		}
 		goto out;
 	}
 out:
@@ -4313,6 +4324,11 @@ PROJECTED_GEM_MUTATIONS = {
     "unexpected admitted goto": PROJECTED_GEM_FIXTURE.replace(
         "\t\tgoto out;",
         "\t\tgoto retry;",
+        1,
+    ),
+    "repack retry removed": PROJECTED_GEM_FIXTURE.replace(
+        "\t\t\t\tgoto retry;\n\t\t}\n\t\tgoto out;",
+        "\t\t\t\tr = 0;\n\t\t}\n\t\tgoto out;",
         1,
     ),
     "extra access admission": PROJECTED_GEM_FIXTURE.replace(

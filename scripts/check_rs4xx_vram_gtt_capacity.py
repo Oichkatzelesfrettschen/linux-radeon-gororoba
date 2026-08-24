@@ -506,7 +506,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_gem.c",
         "radeon_gem_object_create",
-    ): "17693c70cd86042ee45274528d3c51753effde1fe17b919133eb2df3704e535c",
+    ): "78d567fa22154a4b1c6f76adce9cc638aa197c23b6c89504e4886c4f5e4df0f5",
     (
         "radeon_gem.c",
         "radeon_gem_info_ioctl",

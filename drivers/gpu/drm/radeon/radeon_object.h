@@ -147,6 +147,20 @@ extern int radeon_bo_pin(struct radeon_bo *bo, u32 domain, u64 *gpu_addr);
 extern int radeon_bo_pin_restricted(struct radeon_bo *bo, u32 domain,
 				    u64 max_offset, u64 *gpu_addr);
 extern void radeon_bo_unpin(struct radeon_bo *bo);
+/* Counts from one aperture repack.  candidates are the movable objects found,
+ * evacuated left the aperture, readmitted returned to it, skipped never left,
+ * and stranded left and did not return.
+ */
+struct radeon_gtt_compaction {
+	unsigned int candidates;
+	unsigned int evacuated;
+	unsigned int readmitted;
+	unsigned int skipped;
+	unsigned int stranded;
+};
+
+extern int radeon_gtt_compact(struct radeon_device *rdev,
+			      struct radeon_gtt_compaction *report);
 extern int radeon_bo_evict_vram(struct radeon_device *rdev);
 extern void radeon_bo_force_delete(struct radeon_device *rdev);
 extern int radeon_rs4xx_retain_bo(struct radeon_bo *bo);
