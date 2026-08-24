@@ -221,6 +221,20 @@ validate_report() {
     [ "${blocking}" -eq 0 ]
 }
 
+netconsole_console_active() {
+    consoles_path=$1
+
+    [ -r "${consoles_path}" ] || return 1
+    awk '
+        $1 ~ /^netcon[0-9]+$/ && $0 ~ /\(E[[:space:]]/ {
+            active = 1
+        }
+        END {
+            exit active ? 0 : 1
+        }
+    ' "${consoles_path}"
+}
+
 write_good_report() {
     good_commit=1111111111111111111111111111111111111111
     good_tree=2222222222222222222222222222222222222222
@@ -279,6 +293,25 @@ self_test() {
     trap 'rm -rf -- "${self_test_root}"' EXIT HUP INT TERM
     good_report="${self_test_root}/good.report"
     mutant_report="${self_test_root}/mutant.report"
+    active_consoles="${self_test_root}/active-consoles"
+    inactive_consoles="${self_test_root}/inactive-consoles"
+    missing_consoles="${self_test_root}/missing-consoles"
+    printf '%s\n' 'netcon0              -W- (E  Np  ) 0:0' >"${active_consoles}"
+    printf '%s\n' 'netcon0              -W- (   Np  ) 0:0' >"${inactive_consoles}"
+
+    if ! netconsole_console_active "${active_consoles}"; then
+        echo "deployment preflight self test: active netconsole console rejected" >&2
+        exit 1
+    fi
+    if netconsole_console_active "${inactive_consoles}"; then
+        echo "deployment preflight self test: inactive netconsole console accepted" >&2
+        exit 1
+    fi
+    if netconsole_console_active "${missing_consoles}"; then
+        echo "deployment preflight self test: missing netconsole console accepted" >&2
+        exit 1
+    fi
+
     write_good_report "${good_report}"
 
     report_file=${good_report}
@@ -577,7 +610,7 @@ else
     emit evidence_dir unreadable
 fi
 
-if [ -r /proc/net/netconsole ] && [ -r "${journal_file}" ] &&
+if netconsole_console_active /proc/consoles && [ -r "${journal_file}" ] &&
     grep -q 'netconsole: network logging started' "${journal_file}"; then
     emit offbox_logging netconsole
 elif [ -r /proc/cmdline ] &&
