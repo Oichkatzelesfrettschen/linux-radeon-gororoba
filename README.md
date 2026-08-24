@@ -63,6 +63,36 @@ device bundle remains the last parked behavior silicon verdict. The signed
 Source commits after the 0.8 pin remain unshipped until `radeon-custom`
 advances its source pin and records a new release and loaded module identity.
 
+## Deployment identity preflight
+
+`scripts/radeon_deployment_preflight.sh` qualifies an attended RS482 evidence
+directory before a hardware run:
+
+```sh
+sh scripts/radeon_deployment_preflight.sh SOURCE_TREE EVIDENCE_DIR
+```
+
+A `CLEAR` verdict requires a clean source tree. The source commit, Radeon
+subtree, build feature policy digest, and upstream base must equal the metadata
+inside the installed module. The installed module srcversion must equal the
+running module srcversion, and its vermagic must name the running kernel. The
+RS482 device, module parameters, current boot journal, process wait channels,
+fresh evidence directory, and active off host logging route must also be
+observable and clear. An unavailable fact, malformed identity, mismatch, prior
+attempt, reset, lockup, parked signature, or Radeon fence waiter produces
+`BLOCKED`.
+
+The mutation calibration verifies the verdict boundary offline:
+
+```sh
+sh scripts/radeon_deployment_preflight.sh --self-test
+```
+
+The preflight reads host state and proves deployment identity and collection
+readiness. It does not load the module, submit GPU work, prove runtime
+reachability, or establish a silicon verdict. Retained hardware results and
+their promotion rules remain in `steinmarder-r300`.
+
 The retained parked-device silicon verdict covers the older 0.6-1 module. An
 attended RS482 park latched `gpu_parked`; fresh native GEM creates, USERPTR
 creation, and foreign PRIME import each returned -EIO with `radeon_bo_create`
