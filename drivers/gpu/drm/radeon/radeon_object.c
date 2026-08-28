@@ -32,6 +32,7 @@
 
 #include <linux/io.h>
 #include <linux/list.h>
+#include <linux/list_sort.h>
 #include <linux/slab.h>
 
 #include <drm/drm_cache.h>
@@ -430,36 +431,48 @@ void radeon_bo_unpin(struct radeon_bo *bo)
 	}
 }
 
-/* Repack the GTT aperture so its free space becomes one extent.
- *
- * radeon_bo_move takes ttm_bo_move_null on both the TT to SYSTEM and the
- * SYSTEM to TT transition, so relocating a buffer object inside the aperture
- * rewrites GART entries and copies no payload.  The range manager inserts with
- * DRM_MM_INSERT_BEST and allocates from the bottom of the smallest hole that
- * fits, so a buffer object never spans holes and a hole narrower than the
- * request is unusable.  Releasing scattered objects therefore leaves aggregate
- * free space that no single allocation can reach, and the entry rewrite is what
- * makes that reachable again.
- *
- * Evacuating every movable object first and re-admitting them largest first
- * gives the manager a single hole to cut from, so the survivors pack against
- * the pinned prefix and the remaining free space ends up in one extent.
- *
- * A pinned object holds a hardware address that the ring, the writeback buffer,
- * or the indirect buffer pool reads, so it never moves.  An object with an
- * unsignaled fence is still readable by the GPU at its current address, so it
- * is skipped rather than waited on: the caller is recovering address space, not
- * quiescing the device.
+/* Repack the GTT aperture so its free space becomes one extent.  TTM
+ * validation can sleep, so the list lock protects discovery only and each
+ * buffer object is checked under its own reservation before it enters the
+ * batch.  Re-admission considers only objects that left the aperture during
+ * this invocation; a new fence, pin, or placement change leaves that object in
+ * its safe post-evacuation placement instead of waiting on unrelated work.
  */
-static bool radeon_bo_gtt_movable(struct radeon_bo *bo)
+struct radeon_gtt_compaction_candidate {
+	struct list_head node;
+	struct radeon_bo *bo;
+	bool evacuated;
+};
+
+static bool radeon_bo_gtt_state_allowed(struct radeon_bo *bo, u32 mem_type)
 {
 	if (READ_ONCE(bo->rs4xx_terminally_retained))
 		return false;
-	if (!bo->tbo.resource || bo->tbo.resource->mem_type != TTM_PL_TT)
+	if (!bo->tbo.resource || bo->tbo.resource->mem_type != mem_type)
 		return false;
 	if (bo->tbo.pin_count)
 		return false;
 	return dma_resv_test_signaled(bo->tbo.base.resv, DMA_RESV_USAGE_BOOKKEEP);
+}
+
+static int radeon_gtt_compaction_candidate_cmp(void *priv,
+						const struct list_head *a,
+						const struct list_head *b)
+{
+	const struct radeon_gtt_compaction_candidate *ca =
+		list_entry(a, struct radeon_gtt_compaction_candidate, node);
+	const struct radeon_gtt_compaction_candidate *cb =
+		list_entry(b, struct radeon_gtt_compaction_candidate, node);
+	(void)priv;
+
+	/* Stronger alignment first limits padding before lower-alignment objects;
+	 * size then keeps the largest request at the front of each alignment tier.
+	 */
+	if (ca->bo->tbo.page_alignment != cb->bo->tbo.page_alignment)
+		return ca->bo->tbo.page_alignment < cb->bo->tbo.page_alignment ? 1 : -1;
+	if (ca->bo->tbo.base.size != cb->bo->tbo.base.size)
+		return ca->bo->tbo.base.size < cb->bo->tbo.base.size ? 1 : -1;
+	return 0;
 }
 
 static int radeon_bo_move_domain(struct radeon_bo *bo, u32 domain)
@@ -473,12 +486,13 @@ static int radeon_bo_move_domain(struct radeon_bo *bo, u32 domain)
 int radeon_gtt_compact(struct radeon_device *rdev,
 		       struct radeon_gtt_compaction *report)
 {
-	struct radeon_bo **batch;
+	struct radeon_gtt_compaction_candidate *batch;
 	struct radeon_bo *bo;
+	LIST_HEAD(candidates);
 	unsigned int count = 0;
 	unsigned int capacity = 0;
 	unsigned int i;
-	unsigned int j;
+	struct radeon_gtt_compaction_candidate *candidate;
 	int r;
 
 	memset(report, 0, sizeof(*report));
@@ -494,43 +508,50 @@ int radeon_gtt_compact(struct radeon_device *rdev,
 	if (!batch)
 		return -ENOMEM;
 
-	/* The reference taken here keeps each candidate alive after the list
-	 * mutex is dropped, because validating an object sleeps and must not
-	 * run under that mutex.
+	/* The reference taken here keeps each object alive after the list mutex is
+	 * dropped, because reservation and validation sleep and must not run under
+	 * that mutex.  The per-object reservation below makes resource, pin, and
+	 * fence inspection atomic with eligibility admission.
 	 */
 	mutex_lock(&rdev->gem.mutex);
 	list_for_each_entry(bo, &rdev->gem.objects, list) {
 		if (count == capacity)
 			break;
-		if (!radeon_bo_gtt_movable(bo))
-			continue;
-		batch[count++] = bo;
+		batch[count].bo = bo;
+		batch[count].evacuated = false;
+		INIT_LIST_HEAD(&batch[count].node);
 		drm_gem_object_get(&bo->tbo.base);
+		count++;
 	}
 	mutex_unlock(&rdev->gem.mutex);
 
-	report->candidates = count;
-
-	/* Descending size, so the re-admission cuts the widest requests from
-	 * the empty arena first and leaves the narrow ones to fill the tail.
-	 */
-	for (i = 1; i < count; i++) {
-		struct radeon_bo *held = batch[i];
-		u64 size = radeon_bo_size(held);
-
-		for (j = i; j > 0 && radeon_bo_size(batch[j - 1]) < size; j--)
-			batch[j] = batch[j - 1];
-		batch[j] = held;
-	}
-
 	for (i = 0; i < count; i++) {
-		bo = batch[i];
+		candidate = &batch[i];
+		bo = candidate->bo;
 		r = radeon_bo_reserve(bo, false);
 		if (r) {
 			report->skipped++;
 			continue;
 		}
-		if (!radeon_bo_gtt_movable(bo)) {
+		if (radeon_bo_gtt_state_allowed(bo, TTM_PL_TT)) {
+			list_add_tail(&candidate->node, &candidates);
+			report->candidates++;
+		} else {
+			report->skipped++;
+		}
+		radeon_bo_unreserve(bo);
+	}
+
+	list_sort(NULL, &candidates, radeon_gtt_compaction_candidate_cmp);
+
+	list_for_each_entry(candidate, &candidates, node) {
+		bo = candidate->bo;
+		r = radeon_bo_reserve(bo, false);
+		if (r) {
+			report->skipped++;
+			continue;
+		}
+		if (!radeon_bo_gtt_state_allowed(bo, TTM_PL_TT)) {
 			radeon_bo_unreserve(bo);
 			report->skipped++;
 			continue;
@@ -539,14 +560,23 @@ int radeon_gtt_compact(struct radeon_device *rdev,
 		radeon_bo_unreserve(bo);
 		if (r)
 			report->skipped++;
-		else
+		else {
+			candidate->evacuated = true;
 			report->evacuated++;
+		}
 	}
 
-	for (i = 0; i < count; i++) {
-		bo = batch[i];
+	list_for_each_entry(candidate, &candidates, node) {
+		if (!candidate->evacuated)
+			continue;
+		bo = candidate->bo;
 		r = radeon_bo_reserve(bo, false);
 		if (r) {
+			report->stranded++;
+			continue;
+		}
+		if (!radeon_bo_gtt_state_allowed(bo, TTM_PL_SYSTEM)) {
+			radeon_bo_unreserve(bo);
 			report->stranded++;
 			continue;
 		}
@@ -559,7 +589,7 @@ int radeon_gtt_compact(struct radeon_device *rdev,
 	}
 
 	for (i = 0; i < count; i++)
-		drm_gem_object_put(&batch[i]->tbo.base);
+		drm_gem_object_put(&batch[i].bo->tbo.base);
 	kfree(batch);
 
 	/* A stranded object left the aperture and did not return, so it now
