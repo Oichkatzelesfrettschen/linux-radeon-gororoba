@@ -1349,8 +1349,9 @@ fail:
  * The width decision itself lives in r300_tcl_bypass_vtx_check.h, a pure
  * function shared verbatim with the userspace calibration harness
  * scripts/calibrate_r300_tcl_bypass_vtx_check.c, which pins the scope
- * boundary: position present and nothing beyond it, texcoord component
- * counts 0 to 4, no undecoded bits, no PRIM_WALK 3 immediate draw. */
+ * boundary: position present, COLOR_0 optionally present, no other
+ * FMT0 bit, texcoord component counts 0 to 4, no undecoded bits, no
+ * PRIM_WALK 3 immediate draw. */
 static int r300_cs_tcl_bypass_vtx_output_check(struct radeon_cs_parser *p,
 					       struct r100_cs_track *track)
 {

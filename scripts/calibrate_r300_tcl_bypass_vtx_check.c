@@ -113,7 +113,31 @@ static struct r300_tcl_bypass_vtx_inputs float2_tuple(void)
 	return in;
 }
 
-#define NCASES 31
+/* Position plus COLOR_0: two identity FLOAT_4 elements, DST_VEC 0 for
+ * position and DST_VEC 2 for COLOR_0, anchored by the retained RS482
+ * direct GA Flat capture (VAP_OUT_VTX_FMT_0 = 0x3, VTX_SIZE 8).
+ */
+static struct r300_tcl_bypass_vtx_inputs color0_tuple(void)
+{
+	struct r300_tcl_bypass_vtx_inputs in;
+
+	memset(&in, 0, sizeof(in));
+	in.tcl_bypass_seen = 1;
+	in.fmt0_seen = 1;
+	in.fmt1_seen = 1;
+	in.vtx_size_seen = 1;
+	in.fmt0 = POS | COLOR_PRESENT;
+	in.fmt1 = 0;
+	in.vtx_size = 8;
+	in.psc_cntl[0] = cntl_half(FLOAT_4, 0, 0) |
+			 (cntl_half(FLOAT_4, 2, 1) << 16);
+	in.psc_ext[0] = IDENT | (IDENT << 16);
+	in.psc_cntl_seen_mask = 0x1;
+	in.psc_ext_seen_mask = 0x1;
+	return in;
+}
+
+#define NCASES 38
 static struct calib_case cases[NCASES];
 
 static void build_cases(void)
@@ -165,9 +189,70 @@ static void build_cases(void)
 	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
 
 	c = &cases[n++];
-	c->name = "color present";
+	c->name = "color present, texcoord tuple underdelivers required 16";
 	c->in = pinned();
 	c->in.fmt0 = POS | COLOR_PRESENT;
+	c->expected = R300_TCL_BYPASS_VTX_REJECT;
+	c->expected_required = 16;
+
+	c = &cases[n++];
+	c->name = "color0 tuple exact: pos+color0 required 8 supplied 8";
+	c->in = color0_tuple();
+	c->expected = R300_TCL_BYPASS_VTX_PASS;
+	c->expected_required = 8;
+
+	c = &cases[n++];
+	c->name = "color0 tuple underdelivery: required 8 supplied 7";
+	c->in = color0_tuple();
+	c->in.vtx_size = 7;
+	c->expected = R300_TCL_BYPASS_VTX_REJECT;
+	c->expected_required = 8;
+
+	c = &cases[n++];
+	c->name = "color0 plus one texcoord2: required 10 supplied 10";
+	c->in = color0_tuple();
+	c->in.fmt1 = 2u;
+	c->in.psc_cntl[0] = cntl_half(FLOAT_4, 0, 0) |
+			    (cntl_half(FLOAT_4, 2, 0) << 16);
+	c->in.psc_cntl[1] = cntl_half(FLOAT_2, 6, 1);
+	c->in.psc_ext[1] = IDENT;
+	c->in.psc_cntl_seen_mask = 0x3;
+	c->in.psc_ext_seen_mask = 0x3;
+	c->in.vtx_size = 10;
+	c->expected = R300_TCL_BYPASS_VTX_PASS;
+	c->expected_required = 10;
+
+	c = &cases[n++];
+	c->name = "color0 plus one texcoord2: required 10 supplied 9";
+	c->in = color0_tuple();
+	c->in.fmt1 = 2u;
+	c->in.psc_cntl[0] = cntl_half(FLOAT_4, 0, 0) |
+			    (cntl_half(FLOAT_4, 2, 0) << 16);
+	c->in.psc_cntl[1] = cntl_half(FLOAT_2, 6, 1);
+	c->in.psc_ext[1] = IDENT;
+	c->in.psc_cntl_seen_mask = 0x3;
+	c->in.psc_ext_seen_mask = 0x3;
+	c->in.vtx_size = 9;
+	c->expected = R300_TCL_BYPASS_VTX_REJECT;
+	c->expected_required = 10;
+
+	c = &cases[n++];
+	c->name = "COLOR_1 beyond modeled FMT0 bits";
+	c->in = pinned();
+	c->in.fmt0 = POS | (1u << 2);
+	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
+
+	c = &cases[n++];
+	c->name = "color0 tuple PSC word unwritten";
+	c->in = color0_tuple();
+	c->in.psc_cntl_seen_mask = 0;
+	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
+
+	c = &cases[n++];
+	c->name = "color0 tuple duplicate destination vector";
+	c->in = color0_tuple();
+	c->in.psc_cntl[0] = cntl_half(FLOAT_4, 0, 0) |
+			    (cntl_half(FLOAT_4, 0, 1) << 16);
 	c->expected = R300_TCL_BYPASS_VTX_DECLINE;
 
 	c = &cases[n++];
@@ -399,6 +484,102 @@ tcl_bypass_vtx_check_identity_assumption(
 	return R300_TCL_BYPASS_VTX_PASS;
 }
 
+/* Known-bad shape: the width baseline omits COLOR_0's four-dword
+ * contribution, so a COLOR_0 tuple is judged by the position-only
+ * floor -- the miscount the COLOR_0 width addition exists to
+ * prevent. */
+static enum r300_tcl_bypass_vtx_verdict
+tcl_bypass_vtx_check_color0_width_miss(
+	const struct r300_tcl_bypass_vtx_inputs *in)
+{
+	unsigned int required = 4;
+	unsigned int delivered = 0;
+	unsigned int fetch = 0;
+	unsigned int dst_vec_mask = 0;
+	unsigned int comp_cnt;
+	unsigned int identity_only = 1;
+	unsigned int widths_known = 1;
+	unsigned int last_seen = 0;
+	unsigned int e, i;
+
+	if (!in->tcl_bypass_seen || !in->fmt0_seen || !in->fmt1_seen ||
+	    !in->vtx_size_seen)
+		return R300_TCL_BYPASS_VTX_DECLINE;
+	if (in->prim_walk == 3)
+		return R300_TCL_BYPASS_VTX_DECLINE;
+	if (!(in->fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT))
+		return R300_TCL_BYPASS_VTX_DECLINE;
+	if (in->fmt0 & ~(R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT |
+			 R300_VAP_OUTPUT_VTX_FMT_0__COLOR_PRESENT))
+		return R300_TCL_BYPASS_VTX_DECLINE;
+	if (in->fmt1 & ~0x00FFFFFFUL)
+		return R300_TCL_BYPASS_VTX_DECLINE;
+	/* Known-bad: the COLOR_0 +4 addition is missing here. */
+	for (i = 0; i < 8; i++) {
+		comp_cnt = (in->fmt1 >> (3 * i)) & 0x7;
+		if (comp_cnt > 4)
+			return R300_TCL_BYPASS_VTX_DECLINE;
+		required += comp_cnt;
+	}
+	for (e = 0; e < 16; e++) {
+		unsigned int word = e / 2;
+		unsigned int cntl_half_v, sel_half, data_type, dst_vec;
+
+		if (!(in->psc_cntl_seen_mask & (1u << word)) ||
+		    !(in->psc_ext_seen_mask & (1u << word)))
+			return R300_TCL_BYPASS_VTX_DECLINE;
+		cntl_half_v = (e & 1) ? (in->psc_cntl[word] >> 16)
+				      : (in->psc_cntl[word] & 0xFFFFu);
+		sel_half = (e & 1) ? (in->psc_ext[word] >> 16)
+				   : (in->psc_ext[word] & 0xFFFFu);
+		data_type = cntl_half_v & 0xFu;
+		dst_vec = (cntl_half_v >> 8) & 0x1Fu;
+		if ((cntl_half_v >> 4) & 0xFu)
+			return R300_TCL_BYPASS_VTX_DECLINE;
+		if (dst_vec_mask & (1u << dst_vec))
+			return R300_TCL_BYPASS_VTX_DECLINE;
+		dst_vec_mask |= 1u << dst_vec;
+
+		if (sel_half == R300_TCL_BYPASS_PSC_IDENTITY_HALF) {
+			if (data_type <= R300_TCL_BYPASS_PSC_DATA_TYPE_FLOAT_4) {
+				fetch += data_type + 1;
+				delivered += data_type + 1;
+			} else {
+				widths_known = 0;
+			}
+		} else if (sel_half == R300_TCL_BYPASS_PSC_XY01_HALF &&
+			   data_type == R300_TCL_BYPASS_PSC_DATA_TYPE_FLOAT_2) {
+			identity_only = 0;
+			fetch += 2;
+			delivered += 4;
+		} else {
+			return R300_TCL_BYPASS_VTX_DECLINE;
+		}
+		if (cntl_half_v & R300_TCL_BYPASS_PSC_LAST_VEC) {
+			last_seen = 1;
+			break;
+		}
+	}
+	if (!last_seen)
+		return R300_TCL_BYPASS_VTX_DECLINE;
+	if (!identity_only && !widths_known)
+		return R300_TCL_BYPASS_VTX_DECLINE;
+
+	if (identity_only) {
+		delivered = in->vtx_size;
+		fetch = in->vtx_size;
+	}
+	if (!identity_only) {
+		if (in->vtx_size < fetch)
+			return R300_TCL_BYPASS_VTX_REJECT;
+		if (in->vtx_size != fetch)
+			return R300_TCL_BYPASS_VTX_DECLINE;
+	}
+	if (delivered < required)
+		return R300_TCL_BYPASS_VTX_REJECT;
+	return R300_TCL_BYPASS_VTX_PASS;
+}
+
 static const char *verdict_name(enum r300_tcl_bypass_vtx_verdict v)
 {
 	switch (v) {
@@ -415,6 +596,7 @@ int main(void)
 	unsigned int failures = 0;
 	unsigned int no_pos_deviations = 0;
 	unsigned int identity_deviations = 0;
+	unsigned int color0_width_deviations = 0;
 
 	build_cases();
 	for (i = 0; i < NCASES; i++) {
@@ -440,18 +622,24 @@ int main(void)
 		if (tcl_bypass_vtx_check_identity_assumption(&c->in) !=
 		    c->expected)
 			identity_deviations++;
+		if (tcl_bypass_vtx_check_color0_width_miss(&c->in) !=
+		    c->expected)
+			color0_width_deviations++;
 	}
 
 	if (failures) {
 		printf("calibration FAILED: %u case(s)\n", failures);
 		return 1;
 	}
-	if (!no_pos_deviations || !identity_deviations) {
-		printf("a known-bad shape passed the whole matrix: discrimination lost (no-pos %u, identity %u)\n",
-		       no_pos_deviations, identity_deviations);
+	if (!no_pos_deviations || !identity_deviations ||
+	    !color0_width_deviations) {
+		printf("a known-bad shape passed the whole matrix: discrimination lost (no-pos %u, identity %u, color0-width %u)\n",
+		       no_pos_deviations, identity_deviations,
+		       color0_width_deviations);
 		return 2;
 	}
-	printf("calibration PASS: %u cases, no-pos known-bad deviates on %u, identity known-bad deviates on %u\n",
-	       (unsigned int)NCASES, no_pos_deviations, identity_deviations);
+	printf("calibration PASS: %u cases, no-pos known-bad deviates on %u, identity known-bad deviates on %u, color0-width known-bad deviates on %u\n",
+	       (unsigned int)NCASES, no_pos_deviations, identity_deviations,
+	       color0_width_deviations);
 	return 0;
 }

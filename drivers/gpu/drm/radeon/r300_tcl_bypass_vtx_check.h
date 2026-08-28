@@ -12,6 +12,10 @@
 #define R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT (1 << 0)
 #endif
 
+#ifndef R300_VAP_OUTPUT_VTX_FMT_0__COLOR_PRESENT
+#define R300_VAP_OUTPUT_VTX_FMT_0__COLOR_PRESENT (1 << 1)
+#endif
+
 /* PSC selector halves: each VAP_PROG_STREAM_CNTL_EXT register carries a
  * 16-bit swizzle-and-write-mask half per vertex element.  The identity
  * half selects X, Y, Z, W with a full write mask, so one fetched dword
@@ -39,7 +43,7 @@ enum r300_tcl_bypass_vtx_decline_reason {
 	R300_TCL_BYPASS_DECLINE_PIN_MISSING,
 	R300_TCL_BYPASS_DECLINE_PRIM_WALK_IMMEDIATE,
 	R300_TCL_BYPASS_DECLINE_POSITION_ABSENT,
-	R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_POSITION,
+	R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_MODELED,
 	R300_TCL_BYPASS_DECLINE_FMT1_UNDECODED,
 	R300_TCL_BYPASS_DECLINE_COMPONENT_GT4,
 	R300_TCL_BYPASS_DECLINE_PSC_WORD_UNWRITTEN,
@@ -81,14 +85,21 @@ struct r300_tcl_bypass_vtx_inputs {
 	unsigned int psc_ext[8];	/* VAP_PROG_STREAM_CNTL_EXT_0..7 values */
 };
 
-/* The proven output shape is position (4 dwords) plus texture
- * coordinates (each a 3-bit component count, 0 to 4), anchored by the
+/* The proven output shape is position (4 dwords), optionally COLOR_0
+ * (4 more dwords), plus texture coordinates (each a 3-bit component
+ * count, 0 to 4).  The position-plus-texcoord leg is anchored by the
  * retained RS482 capture where VTX_SIZE 12 retired and VTX_SIZE 8 hung
- * the identical position-plus-two-texcoord tuple.  A tuple without
- * position, a color or point-size bit (GUESS-marked dword weights in
- * r300_reg.h), an undecoded upper format bit, a component count above
- * 4, an incomplete pinned-input set, and a PRIM_WALK 3 immediate draw
- * each decline.
+ * the identical position-plus-two-texcoord tuple.  The COLOR_0 leg is
+ * anchored by the retained RS482 direct GA Flat capture: VAP_OUT_VTX_FMT_0
+ * = POS_PRESENT|COLOR_PRESENT (0x3), FMT_1 = 0, VAP_VTX_SIZE 8, two
+ * identity FLOAT_4 PSC elements (position at DST_VEC 0, COLOR_0 at
+ * DST_VEC 2), producing the predicted target bytes on 1002:5974;
+ * retained in the sibling steinmarder-r300 repository bundle
+ * src/re/r300/results/r3v-native-public-flat-color0-two-draw-first-delivery-rs482
+ * (cell blake3 3646c222).  A tuple without position, a COLOR_1..3 or
+ * point-size bit (GUESS-marked dword weights in r300_reg.h), an
+ * undecoded upper format bit, a component count above 4, an incomplete
+ * pinned-input set, and a PRIM_WALK 3 immediate draw each decline.
  *
  * The delivered width comes from the PSC element list.  The element
  * walk consumes VAP_PROG_STREAM_CNTL halves through the LAST_VEC bit;
@@ -135,8 +146,9 @@ r300_tcl_bypass_vtx_check_reason(
 		why = R300_TCL_BYPASS_DECLINE_PRIM_WALK_IMMEDIATE;
 	else if (!(in->fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT))
 		why = R300_TCL_BYPASS_DECLINE_POSITION_ABSENT;
-	else if (in->fmt0 & ~R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT)
-		why = R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_POSITION;
+	else if (in->fmt0 & ~(R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT |
+			       R300_VAP_OUTPUT_VTX_FMT_0__COLOR_PRESENT))
+		why = R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_MODELED;
 	else if (in->fmt1 & ~0x00FFFFFFUL)
 		why = R300_TCL_BYPASS_DECLINE_FMT1_UNDECODED;
 	if (why) {
@@ -144,6 +156,9 @@ r300_tcl_bypass_vtx_check_reason(
 			*reason = why;
 		return R300_TCL_BYPASS_VTX_DECLINE;
 	}
+
+	if (in->fmt0 & R300_VAP_OUTPUT_VTX_FMT_0__COLOR_PRESENT)
+		required += 4;
 
 	for (i = 0; i < 8; i++) {
 		comp_cnt = (in->fmt1 >> (3 * i)) & 0x7;

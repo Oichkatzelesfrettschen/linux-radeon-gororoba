@@ -95,8 +95,8 @@ static const char *decline_reason_name(
 		return "prim_walk_immediate";
 	case R300_TCL_BYPASS_DECLINE_POSITION_ABSENT:
 		return "position_absent";
-	case R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_POSITION:
-		return "fmt0_beyond_position";
+	case R300_TCL_BYPASS_DECLINE_FMT0_BEYOND_MODELED:
+		return "fmt0_beyond_modeled";
 	case R300_TCL_BYPASS_DECLINE_FMT1_UNDECODED:
 		return "fmt1_undecoded";
 	case R300_TCL_BYPASS_DECLINE_COMPONENT_GT4: return "component_gt4";
