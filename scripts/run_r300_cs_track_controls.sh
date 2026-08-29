@@ -122,14 +122,18 @@ expect accept "color buffer exactly large enough" \
     "${tool}" --set-bo-size "1=16384" "${bundle}" "${ib}"
 # A vertex buffer one byte too small for esize * max_indx * 4, the bound
 # r100_cs_track_check applies to each array: esize is the 3D_LOAD_VBPNTR
-# stride in dwords and max_indx the VAP_VF_MAX_VTX_INDX payload, both read
-# from the stream so a cell with a wider record keeps its controls.
-vertex_bound=$(python3 - "$ib" <<'PY'
+# stride in dwords and max_indx the VAP_VF_MAX_VTX_INDX payload in force
+# at that packet, both read from the stream so a cell with a wider record
+# keeps its controls.  A multi-pass stream binds one array per pass, each
+# through its own relocation, so the control shrinks the buffer object
+# the widest array binds -- the relocation NOP after the packet names the
+# chunk index, entry index / 4 -- and the other arrays keep their room.
+vertex_control=$(python3 - "$ib" <<'PY'
 import struct, sys
 data = open(sys.argv[1], 'rb').read()
 words = struct.unpack('<%dI' % (len(data) // 4), data)
-esize = None
 max_indx = None
+widest = None
 i = 0
 while i < len(words):
     header = words[i]
@@ -144,16 +148,27 @@ while i < len(words):
                 max_indx = words[i + 1 + k]
     elif ptype == 3 and (header & 0xFF00) == 0x2F00:
         esize = (words[i + 2] >> 8) & 0xFF
+        nop = i + count + 2
+        if nop + 1 < len(words) and words[nop] == 0xC0001000 and \
+                max_indx is not None:
+            slot = words[nop + 1] // 4
+            bound = esize * max_indx * 4
+            if widest is None or bound > widest[1]:
+                widest = (slot, bound)
     i += count + 2
-if esize is None or max_indx is None:
+if widest is None:
     sys.exit(1)
-print(esize * max_indx * 4)
+print("%d %d" % widest)
 PY
 )
+vertex_slot=${vertex_control%% *}
+vertex_bound=${vertex_control##* }
 expect reject "vertex buffer one byte too small" \
-    "${tool}" --set-bo-size "0=$((vertex_bound - 1))" "${bundle}" "${ib}"
+    "${tool}" --set-bo-size "${vertex_slot}=$((vertex_bound - 1))" \
+    "${bundle}" "${ib}"
 expect accept "vertex buffer exactly large enough" \
-    "${tool}" --set-bo-size "0=${vertex_bound}" "${bundle}" "${ib}"
+    "${tool}" --set-bo-size "${vertex_slot}=${vertex_bound}" \
+    "${bundle}" "${ib}"
 # A vertex width below what the output format requires.
 expect reject "VAP_VTX_SIZE below the output width" \
     "${tool}" --set-vtx-size 3 "${bundle}" "${ib}"
