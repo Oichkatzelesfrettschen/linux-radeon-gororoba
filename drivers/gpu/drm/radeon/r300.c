@@ -762,6 +762,17 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 		if (r)
 			return r;
 		break;
+	case RADEON_DP_GUI_MASTER_CNTL:
+		r100_cs_track_2d_dst_gui_master_cntl(track, idx_value);
+		break;
+	case RADEON_DST_Y_X:
+		r100_cs_track_2d_dst_y_x(track, idx_value);
+		break;
+	case RADEON_DST_WIDTH_HEIGHT:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, idx_value);
+		if (r)
+			return r;
+		break;
 	case R300_RB3D_COLOROFFSET0:
 	case R300_RB3D_COLOROFFSET1:
 	case R300_RB3D_COLOROFFSET2:

@@ -169,11 +169,20 @@ int r200_packet0_check(struct radeon_cs_parser *p,
 			return r;
 		}
 		break;
-		/* FIXME: only allow PACKET3 blit? easier to check for out of
-		 * range access */
 	case RADEON_DST_PITCH_OFFSET:
 	case RADEON_SRC_PITCH_OFFSET:
 		r = r100_reloc_pitch_offset(p, pkt, idx, reg);
+		if (r)
+			return r;
+		break;
+	case RADEON_DP_GUI_MASTER_CNTL:
+		r100_cs_track_2d_dst_gui_master_cntl(track, idx_value);
+		break;
+	case RADEON_DST_Y_X:
+		r100_cs_track_2d_dst_y_x(track, idx_value);
+		break;
+	case RADEON_DST_WIDTH_HEIGHT:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, idx_value);
 		if (r)
 			return r;
 		break;

@@ -29,6 +29,7 @@
 #include <linux/debugfs.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/pci.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -1308,6 +1309,15 @@ int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
 	tmp = value & 0x003fffff;
 	tmp += (((u32)reloc->gpu_offset) >> 10);
 
+	if (reg == RADEON_DST_PITCH_OFFSET) {
+		struct r100_cs_track *track = p->track;
+
+		track->dst2d.robj = reloc->robj;
+		track->dst2d.offset = (value & 0x003fffff) << 10;
+		track->dst2d.pitch = ((value >> 22) & 0xff) << 6;
+		track->dst2d.pitch_offset_seen = true;
+	}
+
 	if (!(p->cs_flags & RADEON_CS_KEEP_TILING_FLAGS)) {
 		if (reloc->tiling_flags & RADEON_TILING_MACRO)
 			tile_flags |= RADEON_DST_TILE_MACRO;
@@ -1605,11 +1615,20 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 			return r;
 		}
 		break;
-		/* FIXME: only allow PACKET3 blit? easier to check for out of
-		 * range access */
 	case RADEON_DST_PITCH_OFFSET:
 	case RADEON_SRC_PITCH_OFFSET:
 		r = r100_reloc_pitch_offset(p, pkt, idx, reg);
+		if (r)
+			return r;
+		break;
+	case RADEON_DP_GUI_MASTER_CNTL:
+		r100_cs_track_2d_dst_gui_master_cntl(track, idx_value);
+		break;
+	case RADEON_DST_Y_X:
+		r100_cs_track_2d_dst_y_x(track, idx_value);
+		break;
+	case RADEON_DST_WIDTH_HEIGHT:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, idx_value);
 		if (r)
 			return r;
 		break;
@@ -2401,10 +2420,124 @@ int r100_cs_track_check(struct radeon_device *rdev, struct r100_cs_track *track)
 	return 0;
 }
 
+/* Bytes per destination pixel for the DP_GUI_MASTER_CNTL destination
+ * datatype, from the RADEON_COLOR_FORMAT codes radeon_reg.h names.  A code
+ * outside the table sizes to 0, and the launch refuses a 0.
+ */
+static unsigned r100_cs_2d_dst_cpp(unsigned datatype)
+{
+	switch (datatype) {
+	case RADEON_COLOR_FORMAT_RGB332:
+	case RADEON_COLOR_FORMAT_Y8:
+	case RADEON_COLOR_FORMAT_RGB8:
+		return 1;
+	case RADEON_COLOR_FORMAT_ARGB1555:
+	case RADEON_COLOR_FORMAT_RGB565:
+	case RADEON_COLOR_FORMAT_YUV422_VYUY:
+	case RADEON_COLOR_FORMAT_YUV422_YVYU:
+	case RADEON_COLOR_FORMAT_ARGB4444:
+		return 2;
+	case RADEON_COLOR_FORMAT_ARGB8888:
+	case RADEON_COLOR_FORMAT_aYUV444:
+		return 4;
+	default:
+		return 0;
+	}
+}
+
+void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
+					  u32 value)
+{
+	unsigned datatype = (value & RADEON_GMC_DST_DATATYPE_MASK) >>
+			    RADEON_GMC_DST_DATATYPE_SHIFT;
+
+	track->dst2d.cpp = r100_cs_2d_dst_cpp(datatype);
+	track->dst2d.pitch_offset_cntl =
+		(value & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
+	track->dst2d.gui_master_cntl_seen = true;
+}
+
+void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value)
+{
+	track->dst2d.x = value & 0xffff;
+	track->dst2d.y = value >> 16;
+	track->dst2d.y_x_seen = true;
+}
+
+/* The 2D destination footprint a DST_WIDTH_HEIGHT launch writes must lie
+ * inside the relocation-backed buffer object DST_PITCH_OFFSET named.  The
+ * check covers the whole rectangle rather than the part a scissor would
+ * keep, because the buffer bound is the object's, and it runs in u32 with
+ * checked arithmetic because the engine addresses a 32-bit surface:
+ *
+ *   row0       = offset + y * pitch
+ *   last_row   = row0 + (height - 1) * pitch
+ *   end_byte   = last_row + (x + width) * cpp
+ *
+ * with width > 0, height > 0, cpp sized, pitch > 0, x * cpp < pitch,
+ * (x + width) * cpp <= pitch, and end_byte <= radeon_bo_size.  A launch
+ * before DST_PITCH_OFFSET, DP_GUI_MASTER_CNTL, and DST_Y_X have all been
+ * written is refused rather than bounded against a default, and so is a
+ * master control that takes the destination from the DEFAULT_PITCH_OFFSET
+ * register the stream cannot set.  The narrower Vulkan or X buffer inside
+ * the object stays the client's bound.
+ */
+int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
+			       struct radeon_cs_packet *pkt,
+			       unsigned idx, u32 width_height)
+{
+	struct r100_cs_track *track = p->track;
+	struct r100_cs_track_2d_dst *d = &track->dst2d;
+	u32 width = width_height >> 16;
+	u32 height = width_height & 0xffff;
+	u32 x_bytes, span_bytes, rows_bytes, row0, last_row, end_byte;
+	const char *refusal = NULL;
+
+	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen)
+		refusal = "2D destination geometry before DST_PITCH_OFFSET, "
+			  "DP_GUI_MASTER_CNTL, and DST_Y_X";
+	else if (!d->pitch_offset_cntl)
+		refusal = "2D destination taken from DEFAULT_PITCH_OFFSET "
+			  "rather than the relocated DST_PITCH_OFFSET";
+	else if (!d->cpp)
+		refusal = "unsupported 2D destination datatype";
+	else if (!width || !height)
+		refusal = "empty 2D destination rectangle";
+	else if (!d->pitch)
+		refusal = "2D destination pitch 0";
+	else if (check_mul_overflow(d->x, d->cpp, &x_bytes) ||
+		 check_add_overflow(d->x, width, &span_bytes) ||
+		 check_mul_overflow(span_bytes, d->cpp, &span_bytes) ||
+		 check_mul_overflow(d->y, d->pitch, &row0) ||
+		 check_add_overflow(d->offset, row0, &row0) ||
+		 check_mul_overflow(height - 1, d->pitch, &rows_bytes) ||
+		 check_add_overflow(row0, rows_bytes, &last_row) ||
+		 check_add_overflow(last_row, span_bytes, &end_byte))
+		refusal = "2D destination footprint overflows the 32-bit "
+			  "surface address";
+	else if (x_bytes >= d->pitch)
+		refusal = "2D destination x starts past the pitch";
+	else if (span_bytes > d->pitch)
+		refusal = "2D destination width overruns the pitch";
+	else if (end_byte > radeon_bo_size(d->robj))
+		refusal = "2D destination rectangle past the buffer object";
+
+	if (!refusal)
+		return 0;
+	dev_warn_once(p->dev,
+		      "%s: ib[%d]=0x%04X pitch %u offset %u cpp %u x %u y %u width %u height %u object %lu\n",
+		      refusal, idx, RADEON_DST_WIDTH_HEIGHT, d->pitch,
+		      d->offset, d->cpp, d->x, d->y, width, height,
+		      d->robj ? radeon_bo_size(d->robj) : 0UL);
+	radeon_cs_dump_packet(p, pkt);
+	return -EINVAL;
+}
+
 void r100_cs_track_clear(struct radeon_device *rdev, struct r100_cs_track *track)
 {
 	unsigned i, face;
 
+	memset(&track->dst2d, 0, sizeof(track->dst2d));
 	track->cb_dirty = true;
 	track->zb_dirty = true;
 	track->tex_dirty = true;

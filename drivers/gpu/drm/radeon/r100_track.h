@@ -24,6 +24,28 @@ struct r100_cs_track_array {
 	unsigned		esize;
 };
 
+/* The legacy 2D engine's destination surface as the command stream
+ * describes it.  DST_PITCH_OFFSET names the buffer object through its
+ * relocation and packs the pitch in 64-byte units above a 1 KiB-granular
+ * offset, DP_GUI_MASTER_CNTL carries the destination datatype that fixes
+ * the bytes per pixel, DST_Y_X carries the origin, and the write to
+ * DST_WIDTH_HEIGHT launches the operation, so that write runs the
+ * footprint check over this state.  cpp stays 0 for a datatype the
+ * tracker does not size, which the launch refuses.
+ */
+struct r100_cs_track_2d_dst {
+	struct radeon_bo	*robj;
+	unsigned		pitch;
+	unsigned		offset;
+	unsigned		cpp;
+	unsigned		x;
+	unsigned		y;
+	bool			pitch_offset_seen;
+	bool			gui_master_cntl_seen;
+	bool			pitch_offset_cntl;
+	bool			y_x_seen;
+};
+
 struct r100_cs_cube_info {
 	struct radeon_bo	*robj;
 	unsigned		offset;
@@ -82,6 +104,7 @@ struct r100_cs_track {
 	struct r100_cs_track_cb 	zb;
 	struct r100_cs_track_cb 	aa;
 	struct r100_cs_track_texture	textures[R300_TRACK_MAX_TEXTURE];
+	struct r100_cs_track_2d_dst	dst2d;
 	bool				z_enabled;
 	bool                            separate_cube;
 	bool				zb_cb_clear;
@@ -106,6 +129,12 @@ int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
 			    struct radeon_cs_packet *pkt,
 			    unsigned idx,
 			    unsigned reg);
+void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
+					  u32 value);
+void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value);
+int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
+			       struct radeon_cs_packet *pkt,
+			       unsigned idx, u32 width_height);
 int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
 			     struct radeon_cs_packet *pkt,
 			     int idx);

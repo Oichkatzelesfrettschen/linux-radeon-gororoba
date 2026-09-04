@@ -937,6 +937,13 @@ static const struct value_override value_overrides[] = {
 	/* 0x4be8 is admitted on RV530 alone. */
 	{ 0x4be8, 0, 1, "CHIP_RV530",
 	  "0x4be8 is admitted on RV530 alone" },
+	/* DST_WIDTH_HEIGHT launches the 2D operation, and alone in a stream
+	 * it launches before DST_PITCH_OFFSET, DP_GUI_MASTER_CNTL, and
+	 * DST_Y_X have described the destination, which the footprint check
+	 * refuses.
+	 */
+	{ 0x1598, 0, 1, "r100_cs_track_2d_dst_check",
+	  "DST_WIDTH_HEIGHT alone launches before the destination state" },
 };
 
 static const struct value_override *override_find(unsigned int reg)
