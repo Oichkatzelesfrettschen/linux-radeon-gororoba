@@ -3,7 +3,7 @@
 ## Instruction source
 
 `AGENTS.md` is the root instruction file and owns the rules for this
-repository. `CLAUDE.md` loads it and adds tool-specific notes only.
+repository. `CLAUDE.md` is a tracked repository-relative symbolic link to `AGENTS.md`, so Claude Code reads this same body and the rules live in one place.
 
 Every load-bearing rule for source commits is stated in this file, so a
 commit's governing rules are pinned by the commit that carries them rather
@@ -139,3 +139,33 @@ asked to both reproduce and change a legacy fact.
 - Hardware verdict language stays out of this repository. A source change earns
   `compile-verified` at most; promotion requires a retained bundle in
   `steinmarder-r300`.
+
+## Claude Code notes
+
+These notes came from the retired standalone `CLAUDE.md` loader and hold the Claude Code specifics that a tool-generic guide leaves out. A rule that applies to every agent lives in the sections above.
+
+### Loading rule
+
+`radeon-custom/AGENTS.md` carries the shared doctrine this repository inherits.
+Load it before editing when the task touches voice, evidence rank, durable
+names, comment shape, or the prose rules.
+
+### Claude Code operating notes
+
+Inspect the real tree before editing. `UPSTREAM_BASE.toml` identifies the base
+by peeled commit and subtree tree object, and upstream source at that object is
+authority over any summary of it.
+
+A tracked file is source. Before adding a file, check `source-closure.toml`:
+generated headers and built host programs stay untracked.
+
+Inspect the diff before every commit. A hunk touching an imported upstream file
+states which delta class it belongs to.
+
+Commit trailers use `Assisted-by:` naming the tools used. The harness default
+`Co-Authored-By:` trailer does not apply here.
+
+### Response shape
+
+Responses report changed mechanism, evidence used, validation run, checks not
+run and why, and remaining risk, in emoji-free mechanism prose.
