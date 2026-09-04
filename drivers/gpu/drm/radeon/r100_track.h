@@ -30,11 +30,15 @@ struct r100_cs_track_array {
  * offset, DP_GUI_MASTER_CNTL carries the destination datatype that fixes
  * the bytes per pixel, DST_Y_X carries the origin, and the write to
  * DST_WIDTH_HEIGHT launches the operation, so that write runs the
- * footprint check over this state.  cpp stays 0 for a datatype the
- * tracker does not size, which the launch refuses.
+ * footprint check over this state, and so does DST_HEIGHT_WIDTH, the
+ * same launch with the halves swapped.  cpp stays 0 for a datatype the
+ * tracker does not size, which the launch refuses.  robj and object_size
+ * come from the object the relocation decoder consumed, so the bound is
+ * the consumed object's and never a role the stream claims.
  */
 struct r100_cs_track_2d_dst {
 	struct radeon_bo	*robj;
+	unsigned long		object_size;
 	unsigned		pitch;
 	unsigned		offset;
 	unsigned		cpp;
@@ -129,12 +133,21 @@ int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
 			    struct radeon_cs_packet *pkt,
 			    unsigned idx,
 			    unsigned reg);
+int r100_reloc_pitch_offset_ex(struct radeon_cs_parser *p,
+			       struct radeon_cs_packet *pkt,
+			       unsigned idx, unsigned reg,
+			       struct radeon_bo **out_robj,
+			       u32 *out_offset, u32 *out_pitch);
+void r100_cs_track_2d_dst_bind(struct r100_cs_track *track,
+			       struct radeon_bo *robj, u32 offset,
+			       u32 pitch);
 void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
 					  u32 value);
 void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value);
 int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
 			       struct radeon_cs_packet *pkt,
-			       unsigned idx, u32 width_height);
+			       unsigned idx, unsigned reg,
+			       u32 width, u32 height);
 int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
 			     struct radeon_cs_packet *pkt,
 			     int idx);

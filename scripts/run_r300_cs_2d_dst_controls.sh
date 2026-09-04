@@ -48,8 +48,12 @@ BUNDLE
 #   mask                                DP_WRITE_MSK all lanes
 #   brush=COLOR                         DP_BRUSH_FRGD_CLR
 #   rect=X,Y,W,H                        DST_Y_X then DST_WIDTH_HEIGHT
+#   exarect=X,Y,W,H                     DST_Y_X then DST_HEIGHT_WIDTH, the
+#                                       height-high launch the X EXA
+#                                       driver writes
 #   yx=X,Y                              DST_Y_X alone
 #   wh=W,H                              DST_WIDTH_HEIGHT alone
+#   line=X0,Y0,X1,Y1                    DST_LINE_START then DST_LINE_END
 #   flush                               DSTCACHE_CTLSTAT flush-all
 #   wait                                WAIT_UNTIL 2D, host, and DMA idle
 assemble() {
@@ -62,6 +66,8 @@ REG = {"DST_PITCH_OFFSET": 0x142C, "SC_TOP_LEFT": 0x16EC,
        "DP_GUI_MASTER_CNTL": 0x146C, "DP_CNTL": 0x16C0,
        "DP_WRITE_MSK": 0x16CC, "DP_BRUSH_FRGD_CLR": 0x147C,
        "DST_Y_X": 0x1438, "DST_WIDTH_HEIGHT": 0x1598,
+       "DST_HEIGHT_WIDTH": 0x143C, "DST_LINE_START": 0x1600,
+       "DST_LINE_END": 0x1604,
        "DSTCACHE_CTLSTAT": 0x1714, "WAIT_UNTIL": 0x1720}
 words = []
 def pkt0(reg, value):
@@ -96,6 +102,14 @@ for op in ops:
         x, y, w, h = (int(v, 0) for v in a)
         pkt0("DST_Y_X", (y << 16) | x)
         pkt0("DST_WIDTH_HEIGHT", (w << 16) | h)
+    elif name == "exarect":
+        x, y, w, h = (int(v, 0) for v in a)
+        pkt0("DST_Y_X", (y << 16) | x)
+        pkt0("DST_HEIGHT_WIDTH", (h << 16) | w)
+    elif name == "line":
+        x0, y0, x1, y1 = (int(v, 0) for v in a)
+        pkt0("DST_LINE_START", (y0 << 16) | x0)
+        pkt0("DST_LINE_END", (y1 << 16) | x1)
     elif name == "yx":
         x, y = (int(v, 0) for v in a)
         pkt0("DST_Y_X", (y << 16) | x)
@@ -160,6 +174,13 @@ fi
 expect accept "exact 38-dword stream" "" "${work}/exact.bin"
 expect accept "exact stream, verbose footprint" "end 5004 within 65536" \
     "${work}/exact.bin" --verbose
+expect accept "exact stream binds the destination object by relocation" \
+    "DST_PITCH_OFFSET: reloc cursor 2 -> entry 0 (destination) size 65536 base 0 pitch 256" \
+    "${work}/exact.bin" --verbose
+assemble "${work}/exact-exa.bin" \
+    "${prologue} brush=0x11223344 exarect=3,0,61,1 brush=0x11223344 exarect=0,1,64,18 brush=0x11223344 exarect=0,19,35,1 ${epilogue}"
+expect accept "the same fill launched through DST_HEIGHT_WIDTH" \
+    "end 5004 within 65536" "${work}/exact-exa.bin" --verbose
 
 echo "destination containment (REJECT):"
 # The last row of the object: y 255 at pitch 256 fills bytes 65280..65535.
@@ -236,9 +257,29 @@ assemble "${work}/wrong-object.bin" \
     "pitch_offset=256,0,1 scissor master=6 walk mask rect=0,0,2,1 ${epilogue}"
 expect reject "two pixels into the 4-byte completion object" \
     "rectangle past the buffer object" "${work}/wrong-object.bin"
+# The bound came from the object the relocation consumed: the trace names
+# entry 1, the completion role, and its 4-byte size at the binding.
+expect reject "completion-object arm binds entry 1 at size 4" \
+    "DST_PITCH_OFFSET: reloc cursor 2 -> entry 1 (completion) size 4 base 0 pitch 256" \
+    "${work}/wrong-object.bin" --verbose
+assemble "${work}/retained-into-completion.bin" \
+    "pitch_offset=256,0,1 scissor master=6 walk mask brush=0x11223344 rect=3,0,61,1 brush=0x11223344 rect=0,1,64,18 brush=0x11223344 rect=0,19,35,1 ${epilogue}"
+expect reject "retained rectangles into the completion object" \
+    "rectangle past the buffer object" \
+    "${work}/retained-into-completion.bin"
 expect reject "destination object undersized (1024 bytes)" \
     "rectangle past the buffer object" "${work}/exact.bin" \
     --set-bo-size 0=1024
+assemble "${work}/exa-past.bin" "${prologue} exarect=0,256,64,1 ${epilogue}"
+expect reject "DST_HEIGHT_WIDTH launch past the object" \
+    "rectangle past the buffer object" "${work}/exa-past.bin"
+assemble "${work}/exa-before-state.bin" \
+    "scissor master=6 walk mask exarect=0,0,1,1 pitch_offset=256,0,0 ${epilogue}"
+expect reject "DST_HEIGHT_WIDTH launch before DST_PITCH_OFFSET" \
+    "geometry before DST_PITCH_OFFSET" "${work}/exa-before-state.bin"
+assemble "${work}/line.bin" "${prologue} line=0,0,63,0 ${epilogue}"
+expect reject "line launch through DST_LINE_START/END is forbidden" \
+    "forbidden register 0x1600" "${work}/line.bin"
 
 echo "outside the kernel's bound (ACCEPT; the client owns these):"
 assemble "${work}/past-scissor.bin" \

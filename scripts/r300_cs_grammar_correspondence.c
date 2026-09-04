@@ -467,8 +467,8 @@ not_a_label:
 }
 
 /* Count the relocations one case body consumes.  radeon_cs_packet_next_reloc
- * consumes one each time it is called, r100_reloc_pitch_offset consumes one
- * inside itself, and r100_cs_packet_parse_vline consumes one and then
+ * consumes one each time it is called, r100_reloc_pitch_offset and its _ex
+ * form consume one inside themselves, and r100_cs_packet_parse_vline consumes one and then
  * advances past a second packet, which is the shape the replay does not
  * model.  A call the tiling-flag guard encloses is counted apart, because the
  * stream alone does not decide whether it runs.
@@ -493,6 +493,9 @@ static void kcase_scan_bodies(void)
 		     q += 1)
 			kcases[i].nreloc++;
 		for (q = body; (q = strstr(q, "r100_reloc_pitch_offset("));
+		     q += 1)
+			kcases[i].nreloc++;
+		for (q = body; (q = strstr(q, "r100_reloc_pitch_offset_ex("));
 		     q += 1)
 			kcases[i].nreloc++;
 		if (strstr(body, "r100_cs_packet_parse_vline")) {
@@ -944,6 +947,8 @@ static const struct value_override value_overrides[] = {
 	 */
 	{ 0x1598, 0, 1, "r100_cs_track_2d_dst_check",
 	  "DST_WIDTH_HEIGHT alone launches before the destination state" },
+	{ 0x143C, 0, 1, "r100_cs_track_2d_dst_check",
+	  "DST_HEIGHT_WIDTH alone launches before the destination state" },
 };
 
 static const struct value_override *override_find(unsigned int reg)
