@@ -740,6 +740,8 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 	unsigned i;
 	int r;
 	u32 idx_value;
+	struct radeon_bo *dst_robj;
+	u32 dst_offset, dst_pitch;
 
 	ib = p->ib.ptr;
 	track = (struct r100_cs_track *)p->track;
@@ -757,8 +759,35 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 		}
 		break;
 	case RADEON_DST_PITCH_OFFSET:
+		r = r100_reloc_pitch_offset_ex(p, pkt, idx, reg, &dst_robj,
+					       &dst_offset, &dst_pitch);
+		if (r)
+			return r;
+		r100_cs_track_2d_dst_bind(track, dst_robj, dst_offset,
+					  dst_pitch);
+		break;
 	case RADEON_SRC_PITCH_OFFSET:
 		r = r100_reloc_pitch_offset(p, pkt, idx, reg);
+		if (r)
+			return r;
+		break;
+	case RADEON_DP_GUI_MASTER_CNTL:
+		r100_cs_track_2d_dst_gui_master_cntl(track, idx_value);
+		break;
+	case RADEON_DST_Y_X:
+		r100_cs_track_2d_dst_y_x(track, idx_value);
+		break;
+	case RADEON_DST_WIDTH_HEIGHT:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, reg,
+					       idx_value >> 16,
+					       idx_value & 0xffff);
+		if (r)
+			return r;
+		break;
+	case RADEON_DST_HEIGHT_WIDTH:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, reg,
+					       idx_value & 0xffff,
+					       idx_value >> 16);
 		if (r)
 			return r;
 		break;

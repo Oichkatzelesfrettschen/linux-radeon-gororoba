@@ -8,7 +8,10 @@
  * chunk, r100_cs_parse_packet0 admits a register only when the r300 safe
  * bitmap carries its bit, r300_packet0_check updates the tracking state a
  * register controls, r100_packet3_load_vbpntr binds the vertex arrays, and
- * every draw opcode runs r100_cs_track_check over the resulting state.  Each
+ * every draw opcode runs r100_cs_track_check over the resulting state, and a
+ * DST_WIDTH_HEIGHT or DST_HEIGHT_WIDTH write runs r100_cs_track_2d_dst_check
+ * over the legacy 2D destination DST_PITCH_OFFSET, DP_GUI_MASTER_CNTL, and
+ * DST_Y_X built.  Each
  * relocation is consumed the way radeon_cs_packet_next_reloc consumes it: the
  * type-3 NOP that must follow the consuming packet carries a dword index into
  * the relocation chunk, and the buffer object is entry index/4.
@@ -104,6 +107,12 @@
 #define R300_RB3D_AARESOLVE_OFFSET	0x4E80
 #define R300_RB3D_AARESOLVE_PITCH	0x4E84
 #define R300_RB3D_AARESOLVE_CTL		0x4E88
+#define RADEON_DST_PITCH_OFFSET		0x142C
+#define RADEON_DST_Y_X			0x1438
+#define RADEON_DP_GUI_MASTER_CNTL	0x146C
+#define RADEON_DST_WIDTH_HEIGHT		0x1598
+#define RADEON_DST_HEIGHT_WIDTH		0x143C
+#define RADEON_GMC_DST_PITCH_OFFSET_CNTL (1u << 1)
 
 #define R300_VAP_TCL_BYPASS		(1u << 8)
 #define R300_MAX_CB			4
@@ -161,6 +170,22 @@ struct array {
 	unsigned int esize;
 };
 
+/* r100_cs_track_2d_dst: the legacy 2D destination as DST_PITCH_OFFSET,
+ * DP_GUI_MASTER_CNTL, and DST_Y_X describe it, checked when
+ * DST_WIDTH_HEIGHT launches the operation.
+ */
+struct dst2d {
+	int bound;
+	unsigned int bo;
+	unsigned long object_size;
+	unsigned int pitch;
+	unsigned int offset;
+	unsigned int cpp;
+	unsigned int x, y;
+	int pitch_offset_seen, gui_master_cntl_seen, pitch_offset_cntl;
+	int y_x_seen;
+};
+
 struct track {
 	unsigned int num_cb;
 	unsigned int maxy;
@@ -188,6 +213,7 @@ struct track {
 	struct cb zb;
 	struct cb aa;
 	struct array arrays[R300_MAX_ARRAYS];
+	struct dst2d dst2d;
 };
 
 struct parser {
@@ -371,6 +397,95 @@ static int tcl_bypass_vtx_check(struct parser *p)
 	       "or output %u required by VAP_OUT_VTX_FMT 0x%08x/0x%08x",
 	       t->vtx_size, fetch, required,
 	       t->vap_out_vtx_fmt_0, t->vap_out_vtx_fmt_1);
+	return -EINVAL;
+}
+
+/* r100_cs_2d_dst_cpp: bytes per destination pixel for the DP_GUI_MASTER_CNTL
+ * destination datatype, the RADEON_COLOR_FORMAT codes radeon_reg.h names.
+ */
+static unsigned int dst2d_cpp(unsigned int datatype)
+{
+	switch (datatype) {
+	case 7: case 8: case 9:
+		return 1;
+	case 3: case 4: case 11: case 12: case 15:
+		return 2;
+	case 6: case 14:
+		return 4;
+	default:
+		return 0;
+	}
+}
+
+/* r100_cs_track_2d_dst_check: the footprint a launch writes must lie inside
+ * the relocation-backed object DST_PITCH_OFFSET named, computed in u32 with
+ * overflow detection the way the kernel's check_*_overflow calls compute
+ * it, over the whole rectangle rather than a scissored part.  The two
+ * launch registers unpack their halves before the call, DST_WIDTH_HEIGHT
+ * width-high and DST_HEIGHT_WIDTH height-high.
+ */
+static int mul_u32(unsigned int a, unsigned int b, unsigned int *out)
+{
+	unsigned long long r = (unsigned long long)a * b;
+
+	*out = (unsigned int)r;
+	return r > 0xffffffffull;
+}
+
+static int add_u32(unsigned int a, unsigned int b, unsigned int *out)
+{
+	unsigned long long r = (unsigned long long)a + b;
+
+	*out = (unsigned int)r;
+	return r > 0xffffffffull;
+}
+
+static int dst2d_check(struct parser *p, unsigned int idx, unsigned int reg,
+		       unsigned int width, unsigned int height)
+{
+	struct dst2d *d = &p->track.dst2d;
+	unsigned int x_bytes, span_bytes, rows_bytes, row0, last_row, end_byte;
+	unsigned long bo_size = d->object_size;
+	const char *refusal = NULL;
+
+	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen)
+		refusal = "2D destination geometry before DST_PITCH_OFFSET, "
+			  "DP_GUI_MASTER_CNTL, and DST_Y_X";
+	else if (!d->pitch_offset_cntl)
+		refusal = "2D destination taken from DEFAULT_PITCH_OFFSET "
+			  "rather than the relocated DST_PITCH_OFFSET";
+	else if (!d->cpp)
+		refusal = "unsupported 2D destination datatype";
+	else if (!width || !height)
+		refusal = "empty 2D destination rectangle";
+	else if (!d->pitch)
+		refusal = "2D destination pitch 0";
+	else if (mul_u32(d->x, d->cpp, &x_bytes) ||
+		 add_u32(d->x, width, &span_bytes) ||
+		 mul_u32(span_bytes, d->cpp, &span_bytes) ||
+		 mul_u32(d->y, d->pitch, &row0) ||
+		 add_u32(d->offset, row0, &row0) ||
+		 mul_u32(height - 1, d->pitch, &rows_bytes) ||
+		 add_u32(row0, rows_bytes, &last_row) ||
+		 add_u32(last_row, span_bytes, &end_byte))
+		refusal = "2D destination footprint overflows the 32-bit "
+			  "surface address";
+	else if (x_bytes >= d->pitch)
+		refusal = "2D destination x starts past the pitch";
+	else if (span_bytes > d->pitch)
+		refusal = "2D destination width overruns the pitch";
+	else if (end_byte > bo_size)
+		refusal = "2D destination rectangle past the buffer object";
+
+	if (!refusal) {
+		note("  2D destination %ux%u at (%u,%u) pitch %u offset %u "
+		     "cpp %u: end %u within %lu\n", width, height, d->x, d->y,
+		     d->pitch, d->offset, d->cpp, end_byte, bo_size);
+		return 0;
+	}
+	reject("%s: ib[%u]=0x%04X pitch %u offset %u cpp %u x %u y %u "
+	       "width %u height %u object %lu", refusal, idx, reg, d->pitch,
+	       d->offset, d->cpp, d->x, d->y, width, height, bo_size);
 	return -EINVAL;
 }
 
@@ -560,7 +675,6 @@ static int register_consumes_reloc(unsigned int reg)
 		return 1;
 	switch (reg) {
 	case 0x4f5c:	/* R300_ZB_ZPASS_ADDR */
-	case 0x142c:	/* RADEON_DST_PITCH_OFFSET */
 	case 0x1428:	/* RADEON_SRC_PITCH_OFFSET */
 		return 1;
 	default:
@@ -577,7 +691,7 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 {
 	struct track *t = &p->track;
 	uint32_t v = p->ib[idx];
-	unsigned int i, bo;
+	unsigned int i, bo, cursor;
 	int r;
 
 	switch (reg) {
@@ -606,6 +720,52 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		t->zb.bo = bo;
 		t->zb.offset = v;
 		t->zb_dirty = 1;
+		break;
+	case RADEON_DST_PITCH_OFFSET:
+		/* r100_reloc_pitch_offset_ex hands back the object the
+		 * relocation consumed with the 1 KiB-granular offset and the
+		 * 64-byte-granular pitch, and r100_cs_track_2d_dst_bind takes
+		 * that object's size as the destination bound.  The trace
+		 * names the relocation cursor, the entry, and the size the
+		 * bound came from.
+		 */
+		cursor = p->idx;
+		r = next_reloc(p, &bo);
+		if (r) {
+			reject("no reloc for ib[%u]=0x%04X", idx, reg);
+			return r;
+		}
+		t->dst2d.bound = 1;
+		t->dst2d.bo = bo;
+		t->dst2d.object_size = p->bos[bo].size;
+		t->dst2d.offset = (v & 0x003fffff) << 10;
+		t->dst2d.pitch = ((v >> 22) & 0xff) << 6;
+		t->dst2d.pitch_offset_seen = 1;
+		note("  DST_PITCH_OFFSET: reloc cursor %u -> entry %u (%s) "
+		     "size %lu base %u pitch %u\n", cursor, bo,
+		     p->bos[bo].role, t->dst2d.object_size, t->dst2d.offset,
+		     t->dst2d.pitch);
+		break;
+	case RADEON_DP_GUI_MASTER_CNTL:
+		t->dst2d.cpp = dst2d_cpp((v >> 8) & 0xf);
+		t->dst2d.pitch_offset_cntl =
+			(v & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
+		t->dst2d.gui_master_cntl_seen = 1;
+		break;
+	case RADEON_DST_Y_X:
+		t->dst2d.x = v & 0xffff;
+		t->dst2d.y = v >> 16;
+		t->dst2d.y_x_seen = 1;
+		break;
+	case RADEON_DST_WIDTH_HEIGHT:
+		r = dst2d_check(p, idx, reg, v >> 16, v & 0xffff);
+		if (r)
+			return r;
+		break;
+	case RADEON_DST_HEIGHT_WIDTH:
+		r = dst2d_check(p, idx, reg, v & 0xffff, v >> 16);
+		if (r)
+			return r;
 		break;
 	case R300_VAP_CNTL_STATUS:
 		t->vap_cntl_status_seen = 1;

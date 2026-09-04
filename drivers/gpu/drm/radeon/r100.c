@@ -29,6 +29,7 @@
 #include <linux/debugfs.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/pci.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -1285,10 +1286,18 @@ void r100_cp_disable(struct radeon_device *rdev)
 /*
  * CS functions
  */
-int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
-			    struct radeon_cs_packet *pkt,
-			    unsigned idx,
-			    unsigned reg)
+/* Consume the relocation a DST_PITCH_OFFSET or SRC_PITCH_OFFSET write
+ * carries and rebuild the word over the relocated base.  The object the
+ * relocation resolved, the 1 KiB-granular object-relative offset, and the
+ * 64-byte-granular pitch the word packs are handed back to the caller, so
+ * the tracker binds the object the decoder consumed rather than one the
+ * stream claims.
+ */
+int r100_reloc_pitch_offset_ex(struct radeon_cs_parser *p,
+			       struct radeon_cs_packet *pkt,
+			       unsigned idx, unsigned reg,
+			       struct radeon_bo **out_robj,
+			       u32 *out_offset, u32 *out_pitch)
 {
 	int r;
 	u32 tile_flags = 0;
@@ -1308,6 +1317,13 @@ int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
 	tmp = value & 0x003fffff;
 	tmp += (((u32)reloc->gpu_offset) >> 10);
 
+	if (out_robj)
+		*out_robj = reloc->robj;
+	if (out_offset)
+		*out_offset = (value & 0x003fffff) << 10;
+	if (out_pitch)
+		*out_pitch = ((value >> 22) & 0xff) << 6;
+
 	if (!(p->cs_flags & RADEON_CS_KEEP_TILING_FLAGS)) {
 		if (reloc->tiling_flags & RADEON_TILING_MACRO)
 			tile_flags |= RADEON_DST_TILE_MACRO;
@@ -1325,6 +1341,14 @@ int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
 	} else
 		p->ib.ptr[idx] = (value & 0xffc00000) | tmp;
 	return 0;
+}
+
+int r100_reloc_pitch_offset(struct radeon_cs_parser *p,
+			    struct radeon_cs_packet *pkt,
+			    unsigned idx,
+			    unsigned reg)
+{
+	return r100_reloc_pitch_offset_ex(p, pkt, idx, reg, NULL, NULL, NULL);
 }
 
 int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
@@ -1589,6 +1613,8 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 	int i, face;
 	u32 tile_flags = 0;
 	u32 idx_value;
+	struct radeon_bo *dst_robj;
+	u32 dst_offset, dst_pitch;
 
 	ib = p->ib.ptr;
 	track = (struct r100_cs_track *)p->track;
@@ -1605,11 +1631,36 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 			return r;
 		}
 		break;
-		/* FIXME: only allow PACKET3 blit? easier to check for out of
-		 * range access */
 	case RADEON_DST_PITCH_OFFSET:
+		r = r100_reloc_pitch_offset_ex(p, pkt, idx, reg, &dst_robj,
+					       &dst_offset, &dst_pitch);
+		if (r)
+			return r;
+		r100_cs_track_2d_dst_bind(track, dst_robj, dst_offset,
+					  dst_pitch);
+		break;
 	case RADEON_SRC_PITCH_OFFSET:
 		r = r100_reloc_pitch_offset(p, pkt, idx, reg);
+		if (r)
+			return r;
+		break;
+	case RADEON_DP_GUI_MASTER_CNTL:
+		r100_cs_track_2d_dst_gui_master_cntl(track, idx_value);
+		break;
+	case RADEON_DST_Y_X:
+		r100_cs_track_2d_dst_y_x(track, idx_value);
+		break;
+	case RADEON_DST_WIDTH_HEIGHT:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, reg,
+					       idx_value >> 16,
+					       idx_value & 0xffff);
+		if (r)
+			return r;
+		break;
+	case RADEON_DST_HEIGHT_WIDTH:
+		r = r100_cs_track_2d_dst_check(p, pkt, idx, reg,
+					       idx_value & 0xffff,
+					       idx_value >> 16);
 		if (r)
 			return r;
 		break;
@@ -2401,10 +2452,138 @@ int r100_cs_track_check(struct radeon_device *rdev, struct r100_cs_track *track)
 	return 0;
 }
 
+/* Bytes per destination pixel for the DP_GUI_MASTER_CNTL destination
+ * datatype, from the RADEON_COLOR_FORMAT codes radeon_reg.h names.  A code
+ * outside the table sizes to 0, and the launch refuses a 0.
+ */
+static unsigned r100_cs_2d_dst_cpp(unsigned datatype)
+{
+	switch (datatype) {
+	case RADEON_COLOR_FORMAT_RGB332:
+	case RADEON_COLOR_FORMAT_Y8:
+	case RADEON_COLOR_FORMAT_RGB8:
+		return 1;
+	case RADEON_COLOR_FORMAT_ARGB1555:
+	case RADEON_COLOR_FORMAT_RGB565:
+	case RADEON_COLOR_FORMAT_YUV422_VYUY:
+	case RADEON_COLOR_FORMAT_YUV422_YVYU:
+	case RADEON_COLOR_FORMAT_ARGB4444:
+		return 2;
+	case RADEON_COLOR_FORMAT_ARGB8888:
+	case RADEON_COLOR_FORMAT_aYUV444:
+		return 4;
+	default:
+		return 0;
+	}
+}
+
+void r100_cs_track_2d_dst_bind(struct r100_cs_track *track,
+			       struct radeon_bo *robj, u32 offset,
+			       u32 pitch)
+{
+	track->dst2d.robj = robj;
+	track->dst2d.object_size = radeon_bo_size(robj);
+	track->dst2d.offset = offset;
+	track->dst2d.pitch = pitch;
+	track->dst2d.pitch_offset_seen = true;
+}
+
+void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
+					  u32 value)
+{
+	unsigned datatype = (value & RADEON_GMC_DST_DATATYPE_MASK) >>
+			    RADEON_GMC_DST_DATATYPE_SHIFT;
+
+	track->dst2d.cpp = r100_cs_2d_dst_cpp(datatype);
+	track->dst2d.pitch_offset_cntl =
+		(value & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
+	track->dst2d.gui_master_cntl_seen = true;
+}
+
+void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value)
+{
+	track->dst2d.x = value & 0xffff;
+	track->dst2d.y = value >> 16;
+	track->dst2d.y_x_seen = true;
+}
+
+/* The 2D destination footprint a launch writes must lie inside the
+ * relocation-backed buffer object DST_PITCH_OFFSET named.  Two registers
+ * launch a rectangle: DST_WIDTH_HEIGHT packs width high and height low,
+ * DST_HEIGHT_WIDTH packs height high and width low, and the caller
+ * unpacks its own.  The check covers the whole rectangle rather than the
+ * part a scissor would keep, because the buffer bound is the object's,
+ * and it runs in u32 with checked arithmetic because the engine addresses
+ * a 32-bit surface:
+ *
+ *   row0       = offset + y * pitch
+ *   last_row   = row0 + (height - 1) * pitch
+ *   end_byte   = last_row + (x + width) * cpp
+ *
+ * with width > 0, height > 0, cpp sized, pitch > 0, x * cpp < pitch,
+ * (x + width) * cpp <= pitch, and end_byte <= radeon_bo_size.  A launch
+ * before DST_PITCH_OFFSET, DP_GUI_MASTER_CNTL, and DST_Y_X have all been
+ * written is refused rather than bounded against a default, and so is a
+ * master control that takes the destination from the DEFAULT_PITCH_OFFSET
+ * register the stream cannot set.  The narrower Vulkan or X buffer inside
+ * the object stays the client's bound.  The line launch DST_LINE_END and
+ * the width-x launch family stay off every safe list and reject at the
+ * switch default until the tracker models their footprint.
+ */
+int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
+			       struct radeon_cs_packet *pkt,
+			       unsigned idx, unsigned reg,
+			       u32 width, u32 height)
+{
+	struct r100_cs_track *track = p->track;
+	struct r100_cs_track_2d_dst *d = &track->dst2d;
+	u32 x_bytes, span_bytes, rows_bytes, row0, last_row, end_byte;
+	const char *refusal = NULL;
+
+	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen)
+		refusal = "2D destination geometry before DST_PITCH_OFFSET, "
+			  "DP_GUI_MASTER_CNTL, and DST_Y_X";
+	else if (!d->pitch_offset_cntl)
+		refusal = "2D destination taken from DEFAULT_PITCH_OFFSET "
+			  "rather than the relocated DST_PITCH_OFFSET";
+	else if (!d->cpp)
+		refusal = "unsupported 2D destination datatype";
+	else if (!width || !height)
+		refusal = "empty 2D destination rectangle";
+	else if (!d->pitch)
+		refusal = "2D destination pitch 0";
+	else if (check_mul_overflow(d->x, d->cpp, &x_bytes) ||
+		 check_add_overflow(d->x, width, &span_bytes) ||
+		 check_mul_overflow(span_bytes, d->cpp, &span_bytes) ||
+		 check_mul_overflow(d->y, d->pitch, &row0) ||
+		 check_add_overflow(d->offset, row0, &row0) ||
+		 check_mul_overflow(height - 1, d->pitch, &rows_bytes) ||
+		 check_add_overflow(row0, rows_bytes, &last_row) ||
+		 check_add_overflow(last_row, span_bytes, &end_byte))
+		refusal = "2D destination footprint overflows the 32-bit "
+			  "surface address";
+	else if (x_bytes >= d->pitch)
+		refusal = "2D destination x starts past the pitch";
+	else if (span_bytes > d->pitch)
+		refusal = "2D destination width overruns the pitch";
+	else if (end_byte > d->object_size)
+		refusal = "2D destination rectangle past the buffer object";
+
+	if (!refusal)
+		return 0;
+	dev_warn_once(p->dev,
+		      "%s: ib[%d]=0x%04X pitch %u offset %u cpp %u x %u y %u width %u height %u object %lu\n",
+		      refusal, idx, reg, d->pitch, d->offset, d->cpp, d->x,
+		      d->y, width, height, d->object_size);
+	radeon_cs_dump_packet(p, pkt);
+	return -EINVAL;
+}
+
 void r100_cs_track_clear(struct radeon_device *rdev, struct r100_cs_track *track)
 {
 	unsigned i, face;
 
+	memset(&track->dst2d, 0, sizeof(track->dst2d));
 	track->cb_dirty = true;
 	track->zb_dirty = true;
 	track->tex_dirty = true;
