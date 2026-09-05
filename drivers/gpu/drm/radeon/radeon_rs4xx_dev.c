@@ -2625,6 +2625,55 @@ static const struct file_operations rs400_gart_tlb_fault_inject_fops = {
 	.open    = simple_open,
 	.write   = rs400_gart_tlb_fault_inject_write,
 };
+
+/* Re-run the GART half of the resume sequence so an enable-time invalidation
+ * is reachable without a system suspend.  rs400_resume calls
+ * rs400_gart_disable and then reaches rs400_gart_enable through
+ * rs400_startup; it applies no command-stream or ring-busy test of its own,
+ * because radeon_suspend_kms has already stopped the CP and drained fences
+ * before it runs.  Reached from debugfs the device is live, so this node
+ * supplies the quiescence resume inherits: it refuses with -EBUSY while the
+ * GFX ring holds emitted fences, and it wraps the disable and enable in the
+ * hardware transaction rs400_startup wraps its own enable in.
+ *
+ * With the one-shot armed, the enable-time rs400_gart_tlb_invalidate returns
+ * -ETIMEDOUT, rs400_gart_enable clears RS480_AGP_ADDRESS_SPACE_SIZE and leaves
+ * gart.ready false, and the write returns that -ETIMEDOUT.  A later unarmed
+ * write republishes the aperture.
+ */
+static int rs400_gart_reenable_apply(struct radeon_device *rdev)
+{
+	int r;
+
+	if (rdev->family != CHIP_RS480 && rdev->family != CHIP_RS400)
+		return -ENODEV;
+	r = radeon_device_lock_hardware(rdev);
+	if (r)
+		return r;
+	if (radeon_fence_count_emitted(rdev, RADEON_RING_TYPE_GFX_INDEX)) {
+		radeon_device_unlock_hardware(rdev);
+		return -EBUSY;
+	}
+	radeon_dev_mark_mutation(rdev, "RS4xx GART re-enable");
+	rs400_gart_disable(rdev);
+	r = rs400_gart_enable(rdev);
+	radeon_device_unlock_hardware(rdev);
+	return r;
+}
+
+static ssize_t rs400_gart_reenable_write(struct file *file,
+					 const char __user *buffer,
+					 size_t count, loff_t *ppos)
+{
+	return rs400_gart_exact_token_write(file, buffer, count, ppos,
+					    rs400_gart_reenable_apply);
+}
+
+static const struct file_operations rs400_gart_reenable_fops = {
+	.owner   = THIS_MODULE,
+	.open    = simple_open,
+	.write   = rs400_gart_reenable_write,
+};
 #endif
 #endif /* CONFIG_DEBUG_FS */
 
@@ -2660,10 +2709,14 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 			    &rs400_gart_tlb_disposition_fops);
 #if RADEON_MUTATE_DEV
 	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&
-	    (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400))
+	    (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400)) {
 		debugfs_create_file("radeon_rs400_gart_tlb_fault_inject", 0200,
 				    minor->debugfs_root, rdev,
 				    &rs400_gart_tlb_fault_inject_fops);
+		debugfs_create_file("radeon_rs400_gart_reenable", 0200,
+				    minor->debugfs_root, rdev,
+				    &rs400_gart_reenable_fops);
+	}
 #endif
 #if RADEON_MUTATE_DEV
 	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&

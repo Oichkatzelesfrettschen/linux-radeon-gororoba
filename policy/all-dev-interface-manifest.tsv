@@ -14,6 +14,7 @@ reset-mask-selector	module-parameter	rs480_reset_mask	drivers/gpu/drm/radeon/rad
 gart-table-reader	debugfs-file	radeon_rs480_gart_page_table	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M24.table-reader
 gart-table-reader	debugfs-file	radeon_rs400_gart_tlb_disposition	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M24.table-reader
 gart-tlb-fault-injection	debugfs-file	radeon_rs400_gart_tlb_fault_inject	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M24.tlb-fault-injection
+gart-tlb-fault-injection	debugfs-file	radeon_rs400_gart_reenable	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M24.tlb-fault-injection
 candidate-registers	module-parameter	rs480_candidate_regs	drivers/gpu/drm/radeon/radeon_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_candidate_regs	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_candidate_config_regs	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive

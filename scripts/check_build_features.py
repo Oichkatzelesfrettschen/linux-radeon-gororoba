@@ -120,7 +120,7 @@ CANONICAL_GUARD_SOURCE_DIGESTS = {
     "M21": "ae83fdda981f0df99b6bc688e7d004b3f754f1ba5fe0ab58c5ab508e285f37d0",
     "M22": "f782b5d8150a4009e736262c52c1aab9fc8332a69afc94b293ab484b9766af08",
     "M23": "5f450d0b66bcee6cefab7d30c7d3aa9e24fb378ce467f4080b5940c0db1706a2",
-    "M24": "eda801861d4e1466303cf64f2e50692d7ec2546cb69675f89cfc45e2d5d79d84",
+    "M24": "bcffb8a01d9c1ec006b72f50c25f1f7dec9534d5e0db3315a4edfeaaf9abc0b3",
 }
 RS4XX_HARDWARE_ADMISSION_CONSUMERS = {
     "safe-registers",
@@ -129,6 +129,7 @@ RS4XX_HARDWARE_ADMISSION_CONSUMERS = {
     "parked-memory-containment",
     "wedged-3d-reset-probes",
     "gart-table-reader",
+    "gart-tlb-fault-injection",
     "candidate-registers",
     "hazard-readers",
     "cp-me-dump",

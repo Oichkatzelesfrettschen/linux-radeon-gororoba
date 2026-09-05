@@ -134,6 +134,22 @@ therefore answers while the device is parked.
 through a GTT-domain GEM allocation, whose bind calls the ASIC `tlb_flush`
 callback recorded by `GART_BIND_PTE_MB_TLB_PUBLICATION`.
 
+The write-only mutate-dev node `radeon_rs400_gart_reenable` reaches the
+enable-time invalidation without a system suspend. `rs400_resume` calls
+`rs400_gart_disable` and then reaches `rs400_gart_enable` through
+`rs400_startup`, and it applies no command-stream or ring-busy test of its own
+because `radeon_suspend_kms` has already stopped the CP and drained fences
+before it runs. Reached from debugfs the device is live, so the node supplies
+the quiescence resume inherits: it refuses with `-EBUSY` while
+`radeon_fence_count_emitted` reports emitted GFX fences, and it holds the
+device hardware transaction across the disable and the enable, the same
+admission `rs400_startup` wraps its enable in.
+
+An armed re-enable therefore returns `-ETIMEDOUT` with `gart.ready` false and
+the aperture unpublished, a following GTT-domain allocation meets the
+`radeon_gart_bind_locked` refusal, and an unarmed re-enable republishes the
+aperture and readmits allocation.
+
 ## Lifecycle sequence
 
 The bounded source path has these ownership transfers:

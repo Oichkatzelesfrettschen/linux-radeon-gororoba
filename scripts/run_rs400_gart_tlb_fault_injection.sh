@@ -12,6 +12,14 @@
 # node radeon_rs480_mc_flush is not the trigger: it emits an RB3D and Z cache
 # packet sequence on the CP ring and reaches no GART TLB invalidation.
 #
+# Facts 2, 4 and 5 need an enable-time invalidation, which the write-only node
+# radeon_rs400_gart_reenable reaches without a system suspend: it runs
+# rs400_gart_disable and rs400_gart_enable under the hardware transaction
+# rs400_startup wraps its own enable in, refusing with -EBUSY while the GFX ring
+# holds emitted fences. rs400_resume applies no such test itself, because
+# radeon_suspend_kms has already stopped the CP and drained fences before it
+# runs.
+#
 # The module must be built with the mutate profile and the runtime profile must
 # select mutate-dev, because the arming node compiles and registers there alone.
 #
@@ -95,6 +103,22 @@ classify_invalidation() {
 	fi
 }
 
+# Fact 4 classification. The refusal errno is whatever the kernel returned, so
+# it is printed rather than asserted against an expected value.
+classify_faulted_allocation() {
+	case $1 in
+	refused:*)
+		report PASS "fact 4: the next GTT allocation was refused with errno ${1#refused:}"
+		;;
+	bound)
+		report FAIL "fact 4: a GTT allocation succeeded while gart_ready is 0"
+		;;
+	*)
+		report BLOCKED "fact 4: the allocation probe reported $1"
+		;;
+	esac
+}
+
 self_test() {
 	work=$(mktemp -d "${TMPDIR:-/tmp}/rs400-gart-fault.XXXXXX") ||
 		fatal "the calibration cannot create a working directory"
@@ -170,6 +194,18 @@ gart_ready = 1
 	cases=$((cases + 1))
 	printf '  ok: a consumed arm with a flat counter reaches FAIL for fact 1\n'
 
+	for probe in "refused:22 PASS" "bound FAIL" "unreachable:x BLOCKED"; do
+		set -- $probe
+		verdict_status=0
+		classify_faulted_allocation "$1" >"$work/fact4.log"
+		if ! grep -q "^$2: fact 4" "$work/fact4.log"; then
+			printf 'calibration FAIL: %s did not classify as %s\n' "$1" "$2" >&2
+			exit 1
+		fi
+		cases=$((cases + 1))
+		printf '  ok: the allocation probe result %s classifies as %s\n' "$1" "$2"
+	done
+
 	verdict_status=0
 	report BLOCKED "calibration probe"
 	if [ "$verdict_status" -eq 0 ]; then
@@ -242,9 +278,12 @@ printf '1\n' >"$arm" || fatal "the exact arming write failed"
 sample_disposition
 [ "$sample_armed" = 1 ] || fatal "the exact write left the one-shot disarmed"
 
-# Trigger: a GTT-domain buffer object binds its pages into the GART and the
-# bind path publishes them through the ASIC tlb_flush callback.
-trigger_output=$(python3 - "$debugfs_dir" <<'PYEOF'
+# A GTT-domain buffer object binds its pages into the GART, and the bind path
+# publishes them through the ASIC tlb_flush callback. The probe prints "bound"
+# on success and "refused:ERRNO" with the kernel's own errno on refusal, so the
+# refusal is observed rather than assumed.
+gtt_allocation() {
+	python3 - "$debugfs_dir" <<'PYEOF'
 import ctypes, fcntl, os, struct, sys
 
 # DRM_IOCTL_RADEON_GEM_CREATE: DRM_COMMAND_BASE 0x40 + DRM_RADEON_GEM_CREATE 0x1d.
@@ -275,7 +314,9 @@ try:
 finally:
     os.close(fd)
 PYEOF
-)
+}
+
+trigger_output=$(gtt_allocation)
 printf 'trigger: %s\n' "$trigger_output"
 
 sample_disposition
@@ -286,27 +327,60 @@ ready_after=$sample_ready
 classify_invalidation "$timeouts_before" "$timeouts_after" "$armed_after" \
 	"$trigger_output"
 
-# Fact 2: rs400_gart_enable runs at initialization and resume alone, so a
-# userspace run reaches no enable. The observable statement is the published
-# ready state across the injected flush.
-if [ "$ready_after" = "$ready_before" ]; then
-	report PASS "fact 2 (scoped to the reachable path): rs400_gart_enable is unreachable from userspace, and the bind-path flush left gart_ready=$ready_after unchanged; only an enable-time invalidation clears it"
-else
-	report FAIL "fact 2: gart_ready moved $ready_before to $ready_after without an enable"
+# The bind-path flush leaves gart.ready alone, because only an enable-time
+# invalidation clears it. Facts 2, 4 and 5 come from the re-enable node.
+if [ "$ready_after" != "$ready_before" ]; then
+	report FAIL "the bind-path flush moved gart_ready $ready_before to $ready_after without an enable"
 fi
 
-# Fact 3: the resume re-enable needs a suspend cycle.
+reenable=$debugfs_dir/radeon_rs400_gart_reenable
+if [ ! -w "$reenable" ]; then
+	report BLOCKED "facts 2, 4 and 5: $reenable is absent, so no enable-time invalidation is reachable"
+	report NOT_RUN "fact 3: the resume path needs a system suspend and resume, which this script does not initiate on an attended target"
+	printf 'final: tlb_flush_timeouts=%s fault_inject_armed=%s gart_ready=%s\n' \
+		"$timeouts_after" "$armed_after" "$ready_after"
+	exit "$verdict_status"
+fi
+
+# Fact 2: an armed re-enable refuses, so the aperture is not published.
+printf '1\n' >"$arm" || fatal "the second arming write failed"
+sample_disposition
+[ "$sample_armed" = 1 ] || fatal "the second arming write left the one-shot disarmed"
+
+reenable_status=0
+printf '1\n' >"$reenable" 2>/dev/null || reenable_status=$?
+sample_disposition
+if [ "$reenable_status" -ne 0 ] && [ "$sample_ready" = 0 ] && [ "$sample_armed" = 0 ]; then
+	report PASS "fact 2: the armed enable refused and gart_ready is 0, so the aperture is unpublished"
+elif [ "$sample_armed" = 1 ]; then
+	report BLOCKED "fact 2: the re-enable write left the one-shot armed, so it reached no invalidation"
+else
+	report FAIL "fact 2: the armed re-enable exited $reenable_status with gart_ready=$sample_ready"
+fi
+
+# Fact 3: the system resume re-enable stays outside this run.
 report NOT_RUN "fact 3: the resume path needs a system suspend and resume, which this script does not initiate on an attended target"
 
-# Fact 4: the bind-path flush leaves gart.ready true, so radeon_gart_bind_locked
-# admits the next submission. A refusal arrives only after an enable-time
-# injection, where radeon_gart_bind_locked and radeon_gart_unbind_locked return
-# -EINVAL on !rdev->gart.ready.
-report NOT_RUN "fact 4: the bind-path injection leaves gart_ready=$ready_after, so the next submission is admitted; the refusal is -EINVAL from radeon_gart_bind_locked and needs an enable-time injection"
+# Fact 4: with the aperture unpublished, radeon_gart_bind_locked refuses the
+# next allocation. The probe prints the kernel's own errno.
+if [ "$sample_ready" = 0 ]; then
+	classify_faulted_allocation "$(gtt_allocation)"
+else
+	report BLOCKED "fact 4: gart_ready is $sample_ready, so the refusal path was not entered"
+fi
 
-# Fact 5: nothing cleared readiness, so nothing needs restoring.
-report NOT_RUN "fact 5: gart_ready stayed $ready_after, so no recovery re-initialization is required; a cleared aperture is republished by rs400_gart_enable through resume or module reload"
+# Fact 5: an unarmed re-enable republishes the aperture and readmits allocation.
+recovery_status=0
+printf '1\n' >"$reenable" 2>/dev/null || recovery_status=$?
+sample_disposition
+recovered_allocation=$(gtt_allocation)
+if [ "$recovery_status" -eq 0 ] && [ "$sample_ready" = 1 ] &&
+	[ "$recovered_allocation" = bound ]; then
+	report PASS "fact 5: the unarmed re-enable republished the aperture, gart_ready is 1, and a GTT allocation bound again"
+else
+	report FAIL "fact 5: the unarmed re-enable exited $recovery_status with gart_ready=$sample_ready and the allocation reported $recovered_allocation"
+fi
 
 printf 'final: tlb_flush_timeouts=%s fault_inject_armed=%s gart_ready=%s\n' \
-	"$timeouts_after" "$armed_after" "$ready_after"
+	"$sample_timeouts" "$sample_armed" "$sample_ready"
 exit "$verdict_status"

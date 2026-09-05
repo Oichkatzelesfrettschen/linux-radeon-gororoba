@@ -774,7 +774,7 @@ source_mechanisms = ["M24.tlb-fault-injection"]
 dependencies = ["rs4xx-debugfs", "gart-table-reader"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, supported family, root write, and the exact value 1"
+operation_gate = "compiled mutate profile, runtime mutate profile, supported family, root write, the exact token 1, hardware transaction admission, and a GFX ring with no emitted fences"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
@@ -785,16 +785,16 @@ evidence_scope = "scope_refs"
 scope_refs = ["M24"]
 scope_relation = "broader-than-evidence"
 scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
-side_effect_class = "software-state"
-interface_class = "diagnostic-oracle"
-resource_bounds = "one armed invalidation per write, consumed by the next rs400_gart_tlb_invalidate call"
-locking = "atomic_xchg consumes the arm ahead of the hardware transaction"
-error_contract = "unsupported family returns -ENODEV and every value other than 1 returns -EINVAL before the arm is set"
+side_effect_class = "hardware-control-write"
+interface_class = "raw-hardware-writer"
+resource_bounds = "one armed invalidation per arming write, and one GART disable and enable pair per re-enable write"
+locking = "atomic_xchg consumes the arm ahead of the hardware transaction; the re-enable holds the device hardware transaction across the disable and enable"
+error_contract = "unsupported family returns -ENODEV, every token other than 1 returns -EINVAL before any state changes, a busy GFX ring returns -EBUSY, and a refused enable returns -ETIMEDOUT with the aperture unpublished"
 tests = [
   "normal: the exact write arms one invalidation and the next flush counts one timeout",
   "boundary: the arm clears in the same operation that consumes it, so the following invalidation reaches hardware",
-  "failure: unsupported family and an inexact value leave the arm clear",
-  "adversarial: the injected disposition writes no register and holds no hardware admission",
+  "failure: unsupported family, an inexact token, and a busy GFX ring leave the arm and the aperture unchanged",
+  "adversarial: the injected disposition writes no register and holds no hardware admission, and an armed re-enable leaves gart.ready false rather than publishing a stale aperture",
 ]
 production_promotion_condition = "no production promotion for a fault injector"
 profile_exception = "none"

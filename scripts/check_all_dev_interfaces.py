@@ -130,6 +130,7 @@ RS4XX_CP_ME_HARDWARE_ACCESS = re.compile(
 RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
     "radeon_debugfs_rs480_mc_flush_set": (0, 1, 2),
     "rs400_debugfs_gart_page_table_show": (0, 1, 2),
+    "rs400_gart_reenable_apply": (0, 1, 2),
     "rs480_candidate_config_regs_show": (1, 0, 1),
     "rs480_candidate_gart_mc_regs_show": (1, 0, 1),
     "rs480_candidate_regs_emit": (1, 0, 1),
@@ -157,8 +158,8 @@ RS4XX_HARDWARE_TRANSACTION_CALL_DENOMINATOR = {
 }
 RS4XX_HARDWARE_TRANSACTION_GLOBAL_CALLS = {
     "rs480_debugfs_lock_hardware": 21,
-    "radeon_device_lock_hardware": 9,
-    "radeon_device_unlock_hardware": 36,
+    "radeon_device_lock_hardware": 10,
+    "radeon_device_unlock_hardware": 38,
 }
 PROFILE_RANK = {
     "prod": 0,
@@ -263,12 +264,14 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
     }
 )
 RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 35
-RS4XX_DEBUGFS_NODE_COUNT = 40
+RS4XX_DEBUGFS_NODE_COUNT = 41
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({
+    "radeon_rs400_gart_reenable",
     "radeon_rs400_gart_tlb_fault_inject",
     "radeon_rs480_mc_flush",
 })
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
+    "radeon_rs400_gart_reenable": "rs400_gart_reenable_fops",
     "radeon_rs400_gart_tlb_fault_inject": "rs400_gart_tlb_fault_inject_fops",
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
 }
@@ -356,6 +359,11 @@ MUTATION_AUDIT_PATTERNS = {
             "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
             r'radeon_dev_mark_mutation\(rdev,\s*'
             r'"RS4xx GART TLB invalidate fault injection"\)',
+            1,
+        ),
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev, "RS4xx GART re-enable"\)',
             1,
         ),
     ),
@@ -3436,7 +3444,7 @@ def self_test(root: Path) -> int:
         "prod": (0, 0, 0),
         "observe-dev": (4, 2, 19),
         "probe-dev": (13, 14, 29),
-        "mutate-dev": (25, 28, 41),
+        "mutate-dev": (25, 28, 42),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3459,7 +3467,7 @@ def self_test(root: Path) -> int:
         ("mutate-dev", "off"): (0, 0, 0),
         ("mutate-dev", "observe-dev"): (4, 2, 19),
         ("mutate-dev", "probe-dev"): (13, 14, 29),
-        ("mutate-dev", "mutate-dev"): (25, 28, 41),
+        ("mutate-dev", "mutate-dev"): (25, 28, 42),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)
