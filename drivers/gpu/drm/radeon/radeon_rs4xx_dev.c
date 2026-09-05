@@ -990,6 +990,23 @@ static int rs480_uma_status_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_uma_status);
 
+/* COMBIOS table census: what the kernel's own table resolver answers for
+ * every enumerated table against the image it admitted, so a static
+ * decomposition of the retained option ROM has a kernel-side falsifier.
+ * The census reads host memory only; the image was copied at BIOS
+ * acquisition, so no hardware transaction is entered.
+ */
+static int rs480_combios_table_census_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+
+	rs480_debugfs_emit_schema(m);
+	radeon_combios_table_census(rdev, m);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(rs480_combios_table_census);
+
 /* SCLK_CNTL (engine-clock control) read-only status.
  *
  * SCLK_CNTL lives in the PLL index space (R_00000D_SCLK_CNTL, r300d.h), not
@@ -4041,6 +4058,8 @@ static void rs480_candidate_regs_debugfs_init(struct radeon_device *rdev)
 			    &rs480_candidate_gart_status_regs_fops);
 	debugfs_create_file("radeon_rs480_uma_status", 0400, root, rdev,
 			    &rs480_uma_status_fops);
+	debugfs_create_file("radeon_rs480_combios_table_census", 0400, root, rdev,
+			    &rs480_combios_table_census_fops);
 	debugfs_create_file("radeon_rs480_sclk_cntl", 0400, root, rdev,
 			    &rs480_sclk_cntl_fops);
 #if RADEON_PROBE_DEV

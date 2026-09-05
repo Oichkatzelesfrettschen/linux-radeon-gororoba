@@ -442,7 +442,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "rs400.c",
         "rs400_gart_enable",
-    ): "f97178ed96047ce6b23560a5a43b27f00bb3a2bbbe0816f655e58cefb611fe69",
+    ): "c12a5b66e6b2ca9953afadc88d804995bc4d05bd52ba229c743d1936da095a70",
     (
         "rs400.c",
         "rs400_mc_init",

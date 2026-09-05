@@ -243,6 +243,7 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_cp_me_oracle_show",
         "rs480_cp_me_ram_inject_show",
         "rs480_cp_me_ram_seq_show",
+        "rs480_combios_table_census_show",
         "rs480_cp_status_show",
         "rs480_force_clock_3d_read_show",
         "rs480_force_clock_read_show",
@@ -260,8 +261,8 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_zb_zcache_ctlstat_show",
     }
 )
-RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 33
-RS4XX_DEBUGFS_NODE_COUNT = 37
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 34
+RS4XX_DEBUGFS_NODE_COUNT = 38
 RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
@@ -302,6 +303,7 @@ RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
     "radeon_rs480_cp_ib_scratch_oracle": "rs480_cp_ib_scratch_oracle_fops",
     "radeon_rs480_cp_me_oracle": "rs480_cp_me_oracle_fops",
     "radeon_rs480_cp_me_ram_dump": "rs480_cp_me_ram_dump_fops",
+    "radeon_rs480_combios_table_census": "rs480_combios_table_census_fops",
     "radeon_rs480_cp_status": "rs480_cp_status_fops",
     "radeon_rs480_rb3d_dstcache_ctlstat": "rs480_rb3d_dstcache_ctlstat_fops",
     "radeon_rs480_zb_zcache_ctlstat": "rs480_zb_zcache_ctlstat_fops",
@@ -3418,9 +3420,9 @@ def self_test(root: Path) -> int:
 
     expected_counts = {
         "prod": (0, 0, 0),
-        "observe-dev": (4, 2, 17),
-        "probe-dev": (13, 14, 27),
-        "mutate-dev": (24, 28, 38),
+        "observe-dev": (4, 2, 18),
+        "probe-dev": (13, 14, 28),
+        "mutate-dev": (24, 28, 39),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3436,14 +3438,14 @@ def self_test(root: Path) -> int:
 
     runtime_counts = {
         ("observe-dev", "off"): (0, 0, 0),
-        ("observe-dev", "observe-dev"): (4, 2, 17),
+        ("observe-dev", "observe-dev"): (4, 2, 18),
         ("probe-dev", "off"): (0, 0, 0),
-        ("probe-dev", "observe-dev"): (4, 2, 17),
-        ("probe-dev", "probe-dev"): (13, 14, 27),
+        ("probe-dev", "observe-dev"): (4, 2, 18),
+        ("probe-dev", "probe-dev"): (13, 14, 28),
         ("mutate-dev", "off"): (0, 0, 0),
-        ("mutate-dev", "observe-dev"): (4, 2, 17),
-        ("mutate-dev", "probe-dev"): (13, 14, 27),
-        ("mutate-dev", "mutate-dev"): (24, 28, 38),
+        ("mutate-dev", "observe-dev"): (4, 2, 18),
+        ("mutate-dev", "probe-dev"): (13, 14, 28),
+        ("mutate-dev", "mutate-dev"): (24, 28, 39),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)

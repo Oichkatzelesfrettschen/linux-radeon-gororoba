@@ -26,7 +26,7 @@ TTM_AUTHORITY = Path("policy/rs4xx-ttm-retention-authority.toml")
 UPSTREAM_BASE = Path("UPSTREAM_BASE.toml")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "1c9173e4ef9e5f4d5b2d766fee91338eee2b19d6a5e242657639b0b20427979c"
+    "8376afd3fe17a4f82919f3161a363034e481292d90ba00e6a31f635a2bc3d003"
 )
 EXPECTED_TTM_AUTHORITY_SHA256 = (
     "d49d884ec32024abaa044ec3abb4015244b00975d681e077cc39214a0c78096a"
@@ -84,7 +84,7 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "EFFECTIVE_PER_PTE_SNOOP_SEMANTICS": "e3e77b176af743d4a96484d6a4225c76568c83beb7a1561d8593cf825ffa4610",
     "CPU_GTT_GPU_PAYLOAD_PUBLICATION": "1a20db8baa0e1454be1ac09df445bc10ce6e26475032739b7edd41ba4e6bfb3a",
     "GPU_GTT_CPU_PAYLOAD_INVALIDATION": "467c50fdfa11df670c8103fe9dd93b31a8851cab73d4d67a2ffc8cc2011d4c3c",
-    "RS400_TLB_FLUSH_COMPLETION": "76af718d9768d10e3e3f6ac931ac6933b8a02bfa3129ebe34692442772a08c3b",
+    "RS400_TLB_FLUSH_COMPLETION": "deb74d16a551dae5a6610231ede77ae55b6456670afa8a7f19769a09a3bd5f0e",
     "GART_SUSPEND_READY_STATE": "f4509dd49e51a48da562535699ef30e8b7e34defc20aaab597ea5a91ee82ecb1",
     "GART_BACKEND_NOT_READY_UNBIND_STATE": "98b9d15e6ae748e974e10870215875f4cefa2b51900931c3cd8789413353e11b",
     "GART_TTM_TEARDOWN_OWNERSHIP": "a2cd8581b5b686c2e33da216d0b95c5a3b1a8601755c4ff0e90064fde62dea92",
@@ -198,7 +198,7 @@ EXPECTED_ROWS = {
         "GART_BIND_PTE_MB_TLB_PUBLICATION",
     ),
     "RS400_TLB_FLUSH_COMPLETION": (
-        "open",
+        "repaired",
         "GART_BIND_PTE_MB_TLB_PUBLICATION;GART_UNBIND_PTE_MB_TLB_PUBLICATION",
     ),
     "GART_SUSPEND_READY_STATE": (
@@ -325,7 +325,7 @@ EXPECTED_NONCLAIMS = {
     "EFFECTIVE_PER_PTE_SNOOP_SEMANTICS": "The encoded PTE and global register do not establish effective snooping.",
     "CPU_GTT_GPU_PAYLOAD_PUBLICATION": "A directional visibility result does not prove snoop attribution or general cache coherence.",
     "GPU_GTT_CPU_PAYLOAD_INVALIDATION": "A directional visibility result does not prove snoop attribution or general cache coherence.",
-    "RS400_TLB_FLUSH_COMPLETION": "A returned void call does not prove TLB invalidation completed.",
+    "RS400_TLB_FLUSH_COMPLETION": "A completed poll proves the invalidate bit cleared, not that every stale translation was dropped.",
     "GART_SUSPEND_READY_STATE": "gart.ready alone does not prove hardware translation is enabled.",
     "GART_BACKEND_NOT_READY_UNBIND_STATE": "A software completion disposition does not prove completed hardware invalidation.",
     "GART_TTM_TEARDOWN_OWNERSHIP": "Terminal retention proves source lifetime safety, not target recovery or reclaimed memory.",
@@ -2080,15 +2080,42 @@ def check_terminal_ownership(root: Path) -> None:
 
 
 def check_open_source_boundaries(root: Path) -> None:
-    tlb = function(root, "rs400.c", "rs400_gart_tlb_flush")
+    tlb = function(root, "rs400.c", "rs400_gart_tlb_invalidate")
     require_order(
         "RS400 TLB issue and bounded poll structure",
         tlb,
         (
             "timeout = rdev->usec_timeout",
+            "int r = -ETIMEDOUT;",
             "RS480_GART_CACHE_INVALIDATE",
+            "r = 0;",
             "timeout--;",
             "while (timeout > 0)",
+            "return r;",
+        ),
+    )
+    flush = function(root, "rs400.c", "rs400_gart_tlb_flush")
+    require_order(
+        "RS400 TLB flush callback disposition",
+        flush,
+        (
+            "rs400_gart_tlb_invalidate(rdev)",
+            "r == -ETIMEDOUT",
+            "atomic_inc(&rdev->rs4xx_gart_tlb_flush_timeouts)",
+            "dev_warn_once",
+        ),
+    )
+    enable = function(root, "rs400.c", "rs400_gart_enable")
+    require_order(
+        "RS400 GART enable publishes ready only after a completed invalidation",
+        enable,
+        (
+            "RS480_GART_EN | size_reg",
+            "r = rs400_gart_tlb_invalidate(rdev);",
+            "if (r) {",
+            "WREG32_MC(RS480_AGP_ADDRESS_SPACE_SIZE, 0);",
+            "return r;",
+            "rdev->gart.ready = true;",
         ),
     )
     disable = function(root, "rs400.c", "rs400_gart_disable")
