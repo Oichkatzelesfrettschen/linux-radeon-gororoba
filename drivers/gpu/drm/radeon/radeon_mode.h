@@ -857,6 +857,9 @@ extern struct edid *
 radeon_bios_get_hardcoded_edid(struct radeon_device *rdev);
 extern bool radeon_atom_get_clock_info(struct drm_device *dev);
 extern bool radeon_combios_get_clock_info(struct drm_device *dev);
+struct seq_file;
+extern void radeon_combios_table_census(struct radeon_device *rdev,
+					struct seq_file *m);
 extern struct radeon_encoder_atom_dig *
 radeon_atombios_get_lvds_info(struct radeon_encoder *encoder);
 extern bool radeon_atombios_get_tmds_info(struct radeon_encoder *encoder,

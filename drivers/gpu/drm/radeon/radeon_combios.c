@@ -26,6 +26,7 @@
  */
 
 #include <linux/pci.h>
+#include <linux/seq_file.h>
 
 #include <drm/drm_device.h>
 #include <drm/drm_edid.h>
@@ -724,6 +725,90 @@ void radeon_combios_i2c_init(struct radeon_device *rdev)
 		i2c = combios_setup_i2c_bus(rdev, DDC_CRT2, 0, 0);
 		rdev->i2c_bus[4] = radeon_i2c_create(dev, &i2c, "CRT2_DDC");
 	}
+}
+
+/* One name per enum radeon_combios_table_offset entry, in enum order, so a
+ * census can walk the whole enumeration and print what the resolver answers
+ * for each table against the admitted image.
+ */
+static const char *const combios_table_names[] = {
+	[COMBIOS_ASIC_INIT_1_TABLE] = "ASIC_INIT_1",
+	[COMBIOS_BIOS_SUPPORT_TABLE] = "BIOS_SUPPORT",
+	[COMBIOS_DAC_PROGRAMMING_TABLE] = "DAC_PROGRAMMING",
+	[COMBIOS_MAX_COLOR_DEPTH_TABLE] = "MAX_COLOR_DEPTH",
+	[COMBIOS_CRTC_INFO_TABLE] = "CRTC_INFO",
+	[COMBIOS_PLL_INFO_TABLE] = "PLL_INFO",
+	[COMBIOS_TV_INFO_TABLE] = "TV_INFO",
+	[COMBIOS_DFP_INFO_TABLE] = "DFP_INFO",
+	[COMBIOS_HW_CONFIG_INFO_TABLE] = "HW_CONFIG_INFO",
+	[COMBIOS_MULTIMEDIA_INFO_TABLE] = "MULTIMEDIA_INFO",
+	[COMBIOS_TV_STD_PATCH_TABLE] = "TV_STD_PATCH",
+	[COMBIOS_LCD_INFO_TABLE] = "LCD_INFO",
+	[COMBIOS_MOBILE_INFO_TABLE] = "MOBILE_INFO",
+	[COMBIOS_PLL_INIT_TABLE] = "PLL_INIT",
+	[COMBIOS_MEM_CONFIG_TABLE] = "MEM_CONFIG",
+	[COMBIOS_SAVE_MASK_TABLE] = "SAVE_MASK",
+	[COMBIOS_HARDCODED_EDID_TABLE] = "HARDCODED_EDID",
+	[COMBIOS_ASIC_INIT_2_TABLE] = "ASIC_INIT_2",
+	[COMBIOS_CONNECTOR_INFO_TABLE] = "CONNECTOR_INFO",
+	[COMBIOS_DYN_CLK_1_TABLE] = "DYN_CLK_1",
+	[COMBIOS_RESERVED_MEM_TABLE] = "RESERVED_MEM",
+	[COMBIOS_EXT_TMDS_INFO_TABLE] = "EXT_TMDS_INFO",
+	[COMBIOS_MEM_CLK_INFO_TABLE] = "MEM_CLK_INFO",
+	[COMBIOS_EXT_DAC_INFO_TABLE] = "EXT_DAC_INFO",
+	[COMBIOS_MISC_INFO_TABLE] = "MISC_INFO",
+	[COMBIOS_CRT_INFO_TABLE] = "CRT_INFO",
+	[COMBIOS_INTEGRATED_SYSTEM_INFO_TABLE] = "INTEGRATED_SYSTEM_INFO",
+	[COMBIOS_COMPONENT_VIDEO_INFO_TABLE] = "COMPONENT_VIDEO_INFO",
+	[COMBIOS_FAN_SPEED_INFO_TABLE] = "FAN_SPEED_INFO",
+	[COMBIOS_OVERDRIVE_INFO_TABLE] = "OVERDRIVE_INFO",
+	[COMBIOS_OEM_INFO_TABLE] = "OEM_INFO",
+	[COMBIOS_DYN_CLK_2_TABLE] = "DYN_CLK_2",
+	[COMBIOS_POWER_CONNECTOR_INFO_TABLE] = "POWER_CONNECTOR_INFO",
+	[COMBIOS_I2C_INFO_TABLE] = "I2C_INFO",
+	[COMBIOS_ASIC_INIT_3_TABLE] = "ASIC_INIT_3",
+	[COMBIOS_ASIC_INIT_4_TABLE] = "ASIC_INIT_4",
+	[COMBIOS_DETECTED_MEM_TABLE] = "DETECTED_MEM",
+	[COMBIOS_ASIC_INIT_5_TABLE] = "ASIC_INIT_5",
+	[COMBIOS_RAM_RESET_TABLE] = "RAM_RESET",
+	[COMBIOS_POWERPLAY_INFO_TABLE] = "POWERPLAY_INFO",
+	[COMBIOS_GPIO_INFO_TABLE] = "GPIO_INFO",
+	[COMBIOS_LCD_DDC_INFO_TABLE] = "LCD_DDC_INFO",
+	[COMBIOS_TMDS_POWER_TABLE] = "TMDS_POWER",
+	[COMBIOS_TMDS_POWER_ON_TABLE] = "TMDS_POWER_ON",
+	[COMBIOS_TMDS_POWER_OFF_TABLE] = "TMDS_POWER_OFF",
+};
+
+/* Census of every COMBIOS table against the admitted image: the offset
+ * combios_get_table_offset resolves for each enumeration entry through the
+ * same bounded readers the modeset parse uses, over the same rdev->bios
+ * extent.  The output is one tab-separated row per table with the resolved
+ * offset, or 0 for a table the image does not carry, preceded by the image
+ * identity rows.  A table whose offset differs from a static decomposition
+ * of the same image falsifies that decomposition; the census establishes
+ * presence and location, never that the kernel executes the table.
+ */
+void radeon_combios_table_census(struct radeon_device *rdev,
+				 struct seq_file *m)
+{
+	struct drm_device *dev = rdev_to_drm(rdev);
+	unsigned int table;
+
+	seq_printf(m, "image\tbios_size\t%zu\n", rdev->bios ? rdev->bios_size : 0);
+	seq_printf(m, "image\tis_atom_bios\t%u\n", rdev->is_atom_bios ? 1 : 0);
+	seq_printf(m, "image\tparse_failed\t%u\n",
+		   READ_ONCE(rdev->bios_parse_failed) ? 1 : 0);
+	if (!rdev->bios || rdev->is_atom_bios)
+		return;
+	for (table = 0; table < ARRAY_SIZE(combios_table_names); table++) {
+		uint16_t offset = combios_get_table_offset(dev, table);
+
+		seq_printf(m, "table\t%s\t0x%04x\t%s\n",
+			   combios_table_names[table], offset,
+			   offset ? "present" : "absent");
+	}
+	seq_printf(m, "image\tparse_failed_after_census\t%u\n",
+		   READ_ONCE(rdev->bios_parse_failed) ? 1 : 0);
 }
 
 bool radeon_combios_get_clock_info(struct drm_device *dev)

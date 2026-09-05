@@ -5,7 +5,7 @@
 `policy/rs4xx-gart-memory-path.tsv` is the canonical finite ledger for the
 Linux Radeon GART, TTM, buffer object, CPU mapping, and teardown path. Its 35
 rows use one 19 field schema and one acyclic dependency graph. The denominator
-contains 15 `proven` rows, 16 `repaired` rows, and 4 `open` rows.
+contains 15 `proven` rows, 17 `repaired` rows, and 3 `open` rows.
 
 The status in `source_status` describes the bounded source relation. Runtime
 and silicon status remain separate fields. A source proof cannot promote a
@@ -95,8 +95,11 @@ before a tree result has authority.
   GART storage from enabled hardware, propagate common teardown refusal,
   retain complete BO, table, and page ownership, roll back a move-installed
   binding, and veto final TTM destruction while any counted owner remains.
-* `RS400_TLB_FLUSH_COMPLETION` remains the sole open Linux-owned row. The void
-  ASIC callback reports no completed or timed-out disposition to its callers.
+* `RS400_TLB_FLUSH_COMPLETION` is repaired in source. `rs400_gart_tlb_invalidate`
+  returns the poll disposition, the void ASIC callback counts a timeout in
+  `rs4xx_gart_tlb_flush_timeouts` and warns once, and `rs400_gart_enable`
+  refuses to publish `gart.ready` after a timed-out invalidation. Every
+  remaining open row is target-owned.
 
 The Vostro repository supplies event scoped aperture and page table
 observations. Steinmarder supplies RS482 silicon and payload authority. Their
@@ -134,7 +137,7 @@ the requested per PTE snoop state.
 
 ## Repaired source defects
 
-The 16 `repaired` rows preserve the defects and replacement mechanisms as
+The 17 `repaired` rows preserve the defects and replacement mechanisms as
 distinct evidence:
 
 * `USERPTR_PIN_DMA_MAP_TRANSACTION` makes the ownership prefix transactional.
@@ -199,10 +202,11 @@ on passes supports maintenance-required visibility only for that exact state.
 Both arms passing supports only that no maintenance effect was observed in the
 tested trials. Both arms failing leaves visibility open.
 
-* `RS400_TLB_FLUSH_COMPLETION` belongs to Linux. The callback issues
-  invalidation and polls, but its void signature discards timeout disposition.
-  A result channel and calibrated success and timeout paths must account for
-  every caller.
+* `RS400_TLB_FLUSH_COMPLETION` belongs to Linux and carries its result
+  channel: the invalidation returns 0, `-ETIMEDOUT`, or `-EBUSY`, GART enable
+  consumes it before ready publication, and the bind and unbind flushes count
+  it. The runtime status stays `not-run` until a target trial observes the
+  counter and the enable refusal on a forced timeout.
 
 The global snoop enable mutation remains excluded. The retained negative sits
 in Steinmarder and does not authorize another live mutation from this source
@@ -268,8 +272,9 @@ runtime reachability, or silicon behavior.
 1. Preserve the lifecycle checker's known-good and known-bad calibration and
    the eight-lane exact-root, exact-toolchain, zero-warning build matrix on
    every change to the repaired source or its build contract.
-2. Close `RS400_TLB_FLUSH_COMPLETION` only through a result-bearing callback
-   contract with calibrated success and timeout paths for every caller.
+2. Move `RS400_TLB_FLUSH_COMPLETION` from `repaired` to a runtime verdict only
+   through a target trial that forces the timeout path and observes the
+   counter and the enable refusal.
 3. Run exact target snoop and payload trials only in Steinmarder after the
    Linux source and build identities are pinned. The trial must preserve raw
    controls, cache actions, producer and consumer digests, submission, and

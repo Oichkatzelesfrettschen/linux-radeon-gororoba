@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 38 fork-added debugfs nodes and 28 module
+The development surface is 39 fork-added debugfs nodes and 28 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
@@ -47,6 +47,7 @@ columns record the gates beyond that shared guard.
 | radeon_rs480_candidate_vap_regs | 0400 | probe-dev | rs480_hazard_readers_armed == 1 | none |
 | radeon_rs480_candidate_ga_regs, _sc_regs, _gb_regs, _rb3d_regs, _zb_regs (+ legacy alias _z_regs), _firmware_read_regs, _vip_straggler_regs, _mc_benign_regs, _gart_status_regs | 0400 | probe-dev | benign-at-rest lists via rs480_candidate_regs_emit | none |
 | radeon_rs480_uma_status, radeon_rs480_sclk_cntl, radeon_rs480_pll_regs | 0400 | observe-dev | fixed benign list | none |
+| radeon_rs480_combios_table_census | 0400 | observe-dev | host-memory read of the admitted BIOS image through combios_get_table_offset; no MMIO | none |
 | radeon_rs480_gart_page_table | 0400 | observe-dev | GART-ready check; decode only, no MMIO sweep | none |
 | radeon_rs480_cp_me_ram_dump | 0400 | probe-dev | rs480_cp_me_ram_dump=1 in the seq start(); engine-idle contract | none |
 | radeon_rs480_hazard_read | 0400 | probe-dev | rs480_hazard_readers_armed == 1 and rs480_hazard_index selection | none |

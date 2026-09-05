@@ -27,6 +27,7 @@ candidate-registers	debugfs-file	radeon_rs480_candidate_vip_straggler_regs	drive
 candidate-registers	debugfs-file	radeon_rs480_candidate_mc_benign_regs	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_candidate_gart_status_regs	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_uma_status	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
+candidate-registers	debugfs-file	radeon_rs480_combios_table_census	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_sclk_cntl	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 hazard-readers	module-parameter	rs480_hazard_readers_armed	drivers/gpu/drm/radeon/radeon_dev.c	M03.hazard
 cp-me-dump	module-parameter	rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_dev.c	M05

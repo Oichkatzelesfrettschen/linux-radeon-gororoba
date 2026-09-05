@@ -2448,6 +2448,10 @@ struct radeon_device {
 	atomic_t			rs4xx_hardware_closing;
 	atomic_t			rs4xx_hardware_transactions;
 	atomic_t			rs4xx_hardware_readers;
+	/* rs400_gart_tlb_flush polls that ran out before the hardware cleared
+	 * RS480_GART_CACHE_INVALIDATE; each one left the TLB in an unknown state.
+	 */
+	atomic_t			rs4xx_gart_tlb_flush_timeouts;
 	atomic_t			rs4xx_live_bos;
 	atomic_t			rs4xx_retained_gem_objects;
 	atomic_t			rs4xx_retained_ttm_tables;
