@@ -59,6 +59,30 @@ static void radeon_bios_prepare_read(struct radeon_device *rdev)
 	WRITE_ONCE(rdev->bios_parse_failed, false);
 }
 
+/* A bounded read that reports a span failure to its caller instead of
+ * latching bios_parse_failed: a census over the admitted image observes a
+ * malformed table without changing what a later modeset parse sees.
+ * Returns false and leaves *value untouched when the span is outside the
+ * image; length is one to four bytes, assembled little endian.
+ */
+bool radeon_bios_peek(struct radeon_device *rdev, size_t offset,
+		      size_t length, uint32_t *value)
+{
+	uint32_t assembled = 0;
+	size_t i;
+
+	if (!rdev->bios || length == 0 || length > sizeof(uint32_t))
+		return false;
+	/* Stated as a subtraction so the sum that would overflow is never
+	 * formed, the same contract radeon_bios_span_valid holds. */
+	if (offset > rdev->bios_size || rdev->bios_size - offset < length)
+		return false;
+	for (i = 0; i < length; i++)
+		assembled |= (uint32_t)rdev->bios[offset + i] << (8 * i);
+	*value = assembled;
+	return true;
+}
+
 uint8_t radeon_bios_read_u8(struct radeon_device *rdev, size_t offset)
 {
 	if (!radeon_bios_span_valid(rdev, offset, sizeof(uint8_t)))

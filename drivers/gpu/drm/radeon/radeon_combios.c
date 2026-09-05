@@ -29,6 +29,7 @@
 #include <linux/seq_file.h>
 
 #include <drm/drm_device.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
 #include <drm/radeon_drm.h>
 
@@ -128,15 +129,46 @@ static const int legacy_connector_convert[] = {
 	DRM_MODE_CONNECTOR_Unknown,
 };
 
-static uint16_t combios_get_table_offset(struct drm_device *dev,
-					 enum radeon_combios_table_offset table)
+/* A bounded reader over the admitted image.  The modeset parse latches
+ * rdev->bios_parse_failed on the first span failure so every later lookup
+ * answers zero and ASIC initialization refuses; a census over the same
+ * image must observe a malformed optional table without arming that
+ * latch, so the reader records the failure in its own flag and latches
+ * only when its owner asked it to.
+ */
+struct combios_reader {
+	struct radeon_device *rdev;
+	bool latch;
+	bool failed;
+};
+
+static uint32_t combios_reader_read(struct combios_reader *r, size_t offset,
+				    size_t length)
+{
+	uint32_t value = 0;
+
+	if (!radeon_bios_peek(r->rdev, offset, length, &value)) {
+		r->failed = true;
+		if (r->latch)
+			WRITE_ONCE(r->rdev->bios_parse_failed, true);
+		return 0;
+	}
+	return value;
+}
+
+#define CRD8(r, i) ((uint8_t)combios_reader_read((r), (size_t)(i), 1))
+#define CRD16(r, i) ((uint16_t)combios_reader_read((r), (size_t)(i), 2))
+
+static uint16_t combios_resolve_table_offset(struct drm_device *dev,
+					     enum radeon_combios_table_offset table,
+					     struct combios_reader *r)
 {
 	struct radeon_device *rdev = dev->dev_private;
 	int rev, size;
 	size_t scan_offset;
 	uint16_t offset = 0, check_offset;
 
-	if (!rdev->bios || READ_ONCE(rdev->bios_parse_failed))
+	if (!rdev->bios || READ_ONCE(rdev->bios_parse_failed) || r->failed)
 		return 0;
 
 	switch (table) {
@@ -246,11 +278,11 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		/* relative offset tables */
 	case COMBIOS_ASIC_INIT_3_TABLE:	/* offset from misc info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MISC_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MISC_INFO_TABLE, r);
 		if (check_offset) {
-			rev = RBIOS8(check_offset);
+			rev = CRD8(r, check_offset);
 			if (rev > 0) {
-				check_offset = RBIOS16(check_offset + 0x3);
+				check_offset = CRD16(r, check_offset + 0x3);
 				if (check_offset)
 					offset = check_offset;
 			}
@@ -258,11 +290,11 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		break;
 	case COMBIOS_ASIC_INIT_4_TABLE:	/* offset from misc info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MISC_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MISC_INFO_TABLE, r);
 		if (check_offset) {
-			rev = RBIOS8(check_offset);
+			rev = CRD8(r, check_offset);
 			if (rev > 0) {
-				check_offset = RBIOS16(check_offset + 0x5);
+				check_offset = CRD16(r, check_offset + 0x5);
 				if (check_offset)
 					offset = check_offset;
 			}
@@ -270,11 +302,11 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		break;
 	case COMBIOS_DETECTED_MEM_TABLE:	/* offset from misc info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MISC_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MISC_INFO_TABLE, r);
 		if (check_offset) {
-			rev = RBIOS8(check_offset);
+			rev = CRD8(r, check_offset);
 			if (rev > 0) {
-				check_offset = RBIOS16(check_offset + 0x7);
+				check_offset = CRD16(r, check_offset + 0x7);
 				if (check_offset)
 					offset = check_offset;
 			}
@@ -282,11 +314,11 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		break;
 	case COMBIOS_ASIC_INIT_5_TABLE:	/* offset from misc info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MISC_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MISC_INFO_TABLE, r);
 		if (check_offset) {
-			rev = RBIOS8(check_offset);
+			rev = CRD8(r, check_offset);
 			if (rev == 2) {
-				check_offset = RBIOS16(check_offset + 0x9);
+				check_offset = CRD16(r, check_offset + 0x9);
 				if (check_offset)
 					offset = check_offset;
 			}
@@ -294,70 +326,73 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		break;
 	case COMBIOS_RAM_RESET_TABLE:	/* offset from mem config */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MEM_CONFIG_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MEM_CONFIG_TABLE, r);
 		if (check_offset) {
 			scan_offset = check_offset;
-			while (radeon_bios_read_u8(rdev, scan_offset++)) {
-				if (READ_ONCE(rdev->bios_parse_failed))
+			while (CRD8(r, scan_offset++)) {
+				if (r->failed)
 					return 0;
 			}
 			scan_offset += 2;
-			if (scan_offset <= U16_MAX)
+			if (scan_offset <= U16_MAX) {
 				offset = scan_offset;
-			else
-				WRITE_ONCE(rdev->bios_parse_failed, true);
+			} else {
+				r->failed = true;
+				if (r->latch)
+					WRITE_ONCE(rdev->bios_parse_failed, true);
+			}
 		}
 		break;
 	case COMBIOS_POWERPLAY_INFO_TABLE:	/* offset from mobile info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE, r);
 		if (check_offset) {
-			check_offset = RBIOS16(check_offset + 0x11);
+			check_offset = CRD16(r, check_offset + 0x11);
 			if (check_offset)
 				offset = check_offset;
 		}
 		break;
 	case COMBIOS_GPIO_INFO_TABLE:	/* offset from mobile info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE, r);
 		if (check_offset) {
-			check_offset = RBIOS16(check_offset + 0x13);
+			check_offset = CRD16(r, check_offset + 0x13);
 			if (check_offset)
 				offset = check_offset;
 		}
 		break;
 	case COMBIOS_LCD_DDC_INFO_TABLE:	/* offset from mobile info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE, r);
 		if (check_offset) {
-			check_offset = RBIOS16(check_offset + 0x15);
+			check_offset = CRD16(r, check_offset + 0x15);
 			if (check_offset)
 				offset = check_offset;
 		}
 		break;
 	case COMBIOS_TMDS_POWER_TABLE:	/* offset from mobile info */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_MOBILE_INFO_TABLE, r);
 		if (check_offset) {
-			check_offset = RBIOS16(check_offset + 0x17);
+			check_offset = CRD16(r, check_offset + 0x17);
 			if (check_offset)
 				offset = check_offset;
 		}
 		break;
 	case COMBIOS_TMDS_POWER_ON_TABLE:	/* offset from tmds power */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_TMDS_POWER_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_TMDS_POWER_TABLE, r);
 		if (check_offset) {
-			check_offset = RBIOS16(check_offset + 0x2);
+			check_offset = CRD16(r, check_offset + 0x2);
 			if (check_offset)
 				offset = check_offset;
 		}
 		break;
 	case COMBIOS_TMDS_POWER_OFF_TABLE:	/* offset from tmds power */
 		check_offset =
-		    combios_get_table_offset(dev, COMBIOS_TMDS_POWER_TABLE);
+		    combios_resolve_table_offset(dev, COMBIOS_TMDS_POWER_TABLE, r);
 		if (check_offset) {
-			check_offset = RBIOS16(check_offset + 0x4);
+			check_offset = CRD16(r, check_offset + 0x4);
 			if (check_offset)
 				offset = check_offset;
 		}
@@ -367,14 +402,25 @@ static uint16_t combios_get_table_offset(struct drm_device *dev,
 		break;
 	}
 
-	size = RBIOS8(rdev->bios_header_start + 0x6);
+	size = CRD8(r, rdev->bios_header_start + 0x6);
 	/* check absolute offset tables */
 	if (table < COMBIOS_ASIC_INIT_3_TABLE && check_offset && check_offset < size)
-		offset = RBIOS16(rdev->bios_header_start + check_offset);
+		offset = CRD16(r, rdev->bios_header_start + check_offset);
 	if (READ_ONCE(rdev->bios_parse_failed))
 		return 0;
 
 	return offset;
+}
+
+/* The modeset parse's resolver: reads latch the shared failure so a
+ * truncated table stops every later lookup and ASIC initialization. */
+static uint16_t combios_get_table_offset(struct drm_device *dev,
+					 enum radeon_combios_table_offset table)
+{
+	struct radeon_device *rdev = dev->dev_private;
+	struct combios_reader r = { .rdev = rdev, .latch = true };
+
+	return combios_resolve_table_offset(dev, table, &r);
 }
 
 bool radeon_combios_check_hardcoded_edid(struct radeon_device *rdev)
@@ -792,23 +838,45 @@ void radeon_combios_table_census(struct radeon_device *rdev,
 				 struct seq_file *m)
 {
 	struct drm_device *dev = rdev_to_drm(rdev);
+	struct combios_reader r = { .rdev = rdev, .latch = false };
 	unsigned int table;
+	int idx;
 
+	/* The image is freed by radeon_bios_fini during driver unload, which
+	 * runs after drm_dev_unplug removed this file and drained its readers;
+	 * the enter/exit pair makes that ordering explicit and answers an
+	 * unplugged device with the identity rows alone.
+	 */
+	if (!drm_dev_enter(dev, &idx)) {
+		seq_puts(m, "image\tunplugged\t1\n");
+		return;
+	}
 	seq_printf(m, "image\tbios_size\t%zu\n", rdev->bios ? rdev->bios_size : 0);
 	seq_printf(m, "image\tis_atom_bios\t%u\n", rdev->is_atom_bios ? 1 : 0);
 	seq_printf(m, "image\tparse_failed\t%u\n",
 		   READ_ONCE(rdev->bios_parse_failed) ? 1 : 0);
-	if (!rdev->bios || rdev->is_atom_bios)
+	if (!rdev->bios || rdev->is_atom_bios) {
+		drm_dev_exit(idx);
 		return;
+	}
+	/* Each table resolves through the modeset parse's own walk over a
+	 * reader that records a span failure without latching the shared
+	 * flag, so a malformed optional table reads as invalid here and
+	 * changes nothing for a later modeset. */
 	for (table = 0; table < ARRAY_SIZE(combios_table_names); table++) {
-		uint16_t offset = combios_get_table_offset(dev, table);
+		uint16_t offset;
 
+		r.failed = false;
+		offset = combios_resolve_table_offset(dev, table, &r);
 		seq_printf(m, "table\t%s\t0x%04x\t%s\n",
-			   combios_table_names[table], offset,
-			   offset ? "present" : "absent");
+			   combios_table_names[table] ? combios_table_names[table]
+						       : "unknown",
+			   offset,
+			   r.failed ? "invalid" : offset ? "present" : "absent");
 	}
 	seq_printf(m, "image\tparse_failed_after_census\t%u\n",
 		   READ_ONCE(rdev->bios_parse_failed) ? 1 : 0);
+	drm_dev_exit(idx);
 }
 
 bool radeon_combios_get_clock_info(struct drm_device *dev)
