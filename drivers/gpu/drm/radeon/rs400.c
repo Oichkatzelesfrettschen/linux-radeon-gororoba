@@ -231,6 +231,10 @@ int rs400_gart_enable(struct radeon_device *rdev)
 	r = rs400_gart_tlb_invalidate(rdev);
 	if (r) {
 		WREG32_MC(RS480_AGP_ADDRESS_SPACE_SIZE, 0);
+		/* A resume re-enable arrives with gart.ready still true from
+		 * the enable before suspend; the refused aperture clears it so
+		 * bind and unbind see the hardware state, not the old one. */
+		rdev->gart.ready = false;
 		dev_err(rdev->dev,
 			"RS400 GART enable: TLB invalidate returned %d; aperture not published\n",
 			r);

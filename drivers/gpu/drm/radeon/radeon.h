@@ -3000,6 +3000,8 @@ uint16_t radeon_bios_read_u16(struct radeon_device *rdev, size_t offset);
 uint32_t radeon_bios_read_u32(struct radeon_device *rdev, size_t offset);
 void radeon_bios_fini(struct radeon_device *rdev);
 
+bool radeon_bios_peek(struct radeon_device *rdev, size_t offset,
+		      size_t length, uint32_t *value);
 #define RBIOS8(i) radeon_bios_read_u8(rdev, (size_t)(i))
 #define RBIOS16(i) radeon_bios_read_u16(rdev, (size_t)(i))
 #define RBIOS32(i) radeon_bios_read_u32(rdev, (size_t)(i))
