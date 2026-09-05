@@ -26,7 +26,7 @@ TTM_AUTHORITY = Path("policy/rs4xx-ttm-retention-authority.toml")
 UPSTREAM_BASE = Path("UPSTREAM_BASE.toml")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "8376afd3fe17a4f82919f3161a363034e481292d90ba00e6a31f635a2bc3d003"
+    "62f117eef7de9e84e2d80871f70d0d976f907a9198ece8e9275cd95978e2762e"
 )
 EXPECTED_TTM_AUTHORITY_SHA256 = (
     "d49d884ec32024abaa044ec3abb4015244b00975d681e077cc39214a0c78096a"
@@ -84,7 +84,7 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "EFFECTIVE_PER_PTE_SNOOP_SEMANTICS": "e3e77b176af743d4a96484d6a4225c76568c83beb7a1561d8593cf825ffa4610",
     "CPU_GTT_GPU_PAYLOAD_PUBLICATION": "1a20db8baa0e1454be1ac09df445bc10ce6e26475032739b7edd41ba4e6bfb3a",
     "GPU_GTT_CPU_PAYLOAD_INVALIDATION": "467c50fdfa11df670c8103fe9dd93b31a8851cab73d4d67a2ffc8cc2011d4c3c",
-    "RS400_TLB_FLUSH_COMPLETION": "deb74d16a551dae5a6610231ede77ae55b6456670afa8a7f19769a09a3bd5f0e",
+    "RS400_TLB_FLUSH_COMPLETION": "b9eee72d3c55fc4ec3f1f906cec7fe66bb8229091c34ad78e190de68ee4e86da",
     "GART_SUSPEND_READY_STATE": "f4509dd49e51a48da562535699ef30e8b7e34defc20aaab597ea5a91ee82ecb1",
     "GART_BACKEND_NOT_READY_UNBIND_STATE": "98b9d15e6ae748e974e10870215875f4cefa2b51900931c3cd8789413353e11b",
     "GART_TTM_TEARDOWN_OWNERSHIP": "a2cd8581b5b686c2e33da216d0b95c5a3b1a8601755c4ff0e90064fde62dea92",
@@ -94,6 +94,15 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "RS4XX_BO_TRANSACTION_ROOTS": "7565a641fa7f281aeed18a445253271aae5023cd0c01263899073ce51d2b8315",
     "RS4XX_TTM_FINI_LIVE_DENOMINATOR": "a0973fc564a7a530f5072fe8cb7dd2f776174a92d9a83ccf490b0e21fd9ee496",
 }
+
+# A runtime status names what a target run produced. "not-run" carries no
+# target execution, "awaiting-target-run" names a row whose verifier exists and
+# whose run is pending, and "peer-observation" carries an external repository's
+# retained observation. A value outside this set would let a row claim target
+# execution the repository holds no artifact for.
+RUNTIME_STATUS_VOCABULARY = frozenset(
+    {"not-run", "awaiting-target-run", "peer-observation"}
+)
 
 EXPECTED_ROWS = {
     "GART_SOURCE_BUILD_REACHABILITY": ("proven", "NONE"),
@@ -832,6 +841,8 @@ def check_dependencies(rows: dict[str, dict[str, str]]) -> None:
             raise LifecycleError(f"{row_id}: dependency edge differs")
         if row["source_status"] not in {"proven", "repaired", "open"}:
             raise LifecycleError(f"{row_id}: invalid source_status")
+        if row["runtime_status"] not in RUNTIME_STATUS_VOCABULARY:
+            raise LifecycleError(f"{row_id}: invalid runtime_status")
         if row["source_status"] == "open" and row["silicon_status"] == "proven":
             raise LifecycleError(f"{row_id}: an OPEN source row claims proven silicon")
         dependencies = (
@@ -3440,6 +3451,12 @@ POLICY_MUTATIONS = {
         7,
         "Target execution proves coherent CPU to GPU payload publication.",
         "CPU_GTT_GPU_PAYLOAD_PUBLICATION: exact policy row identity differs",
+    ),
+    "TLB flush runtime status leaves the declared vocabulary": (
+        "RS400_TLB_FLUSH_COMPLETION\t",
+        10,
+        "hardware-pass",
+        "RS400_TLB_FLUSH_COMPLETION: invalid runtime_status",
     ),
     "payload runtime fabricates target observation": (
         "CPU_GTT_GPU_PAYLOAD_PUBLICATION\t",

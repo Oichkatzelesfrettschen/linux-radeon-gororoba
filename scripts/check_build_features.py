@@ -120,7 +120,7 @@ CANONICAL_GUARD_SOURCE_DIGESTS = {
     "M21": "ae83fdda981f0df99b6bc688e7d004b3f754f1ba5fe0ab58c5ab508e285f37d0",
     "M22": "f782b5d8150a4009e736262c52c1aab9fc8332a69afc94b293ab484b9766af08",
     "M23": "5f450d0b66bcee6cefab7d30c7d3aa9e24fb378ce467f4080b5940c0db1706a2",
-    "M24": "491e37e8def3b99858fb66b021339b1c3a02a8ffee6b903b79936547f4612268",
+    "M24": "eda801861d4e1466303cf64f2e50692d7ec2546cb69675f89cfc45e2d5d79d84",
 }
 RS4XX_HARDWARE_ADMISSION_CONSUMERS = {
     "safe-registers",
@@ -178,6 +178,7 @@ SPLIT_MECHANISMS = {
     "M10": {"pll", "first-read", "status-pair", "status-census",
             "cache-ctlstat"},
     "M11": {"force-clock", "vap-census", "vap-burst-census"},
+    "M24": {"table-reader", "tlb-fault-injection"},
 }
 SPLIT_TIERS = {
     "B11": {"production": "prod", "unsafe": "mutate-dev"},
@@ -187,8 +188,16 @@ SPLIT_TIERS = {
             "cache-ctlstat": "probe-dev"},
     "M11": {"force-clock": "mutate-dev", "vap-census": "mutate-dev",
             "vap-burst-census": "mutate-dev"},
+    "M24": {"table-reader": "observe-dev",
+            "tlb-fault-injection": "mutate-dev"},
 }
-SPLIT_PLAN_PART = {"B11": "production", "M03": "hazard", "M10": "pll", "M11": "force-clock"}
+SPLIT_PLAN_PART = {
+    "B11": "production",
+    "M03": "hazard",
+    "M10": "pll",
+    "M11": "force-clock",
+    "M24": "table-reader",
+}
 KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MECHANISM = re.compile(r"^([BM][0-9]{2})(?:\.([a-z0-9-]+))?$")
 REQUIRED_FIELDS = {

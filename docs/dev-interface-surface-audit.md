@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 39 fork-added debugfs nodes and 28 module
+The development surface is 41 fork-added debugfs nodes and 28 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
@@ -20,8 +20,9 @@ family refusal, wrong mode, and wrong lifetime owner.
 
 ## Access-mode policy
 
-Every node that touches hardware on read is root-only 0400. The two write
-nodes are 0200 (`radeon_rs480_mc_flush`, `radeon_force_pci_reset_safe`).
+Every node that touches hardware on read is root-only 0400. The three write
+nodes are 0200 (`radeon_rs400_gart_tlb_fault_inject`,
+`radeon_rs480_mc_flush`, `radeon_force_pci_reset_safe`).
 `radeon_rs480_cp_me_ram_inject` is 0600 because its read reports the
 last-injection software-state result buffer and never touches hardware; its
 write is the armed path. The upstream radeon debugfs nodes
@@ -49,6 +50,8 @@ columns record the gates beyond that shared guard.
 | radeon_rs480_uma_status, radeon_rs480_sclk_cntl, radeon_rs480_pll_regs | 0400 | observe-dev | fixed benign list | none |
 | radeon_rs480_combios_table_census | 0400 | observe-dev | host-memory read of the admitted BIOS image through combios_get_table_offset; no MMIO | none |
 | radeon_rs480_gart_page_table | 0400 | observe-dev | GART-ready check; decode only, no MMIO sweep | none |
+| radeon_rs400_gart_tlb_disposition | 0400 | observe-dev | driver memory only: the TLB flush timeout counter, the fault-injection arm, and gart.ready | none |
+| radeon_rs400_gart_tlb_fault_inject | 0200 | mutate-dev | family in {CHIP_RS400, CHIP_RS480}; the exact value 1 arms one invalidation | RS4xx GART TLB invalidate fault injection |
 | radeon_rs480_cp_me_ram_dump | 0400 | probe-dev | rs480_cp_me_ram_dump=1 in the seq start(); engine-idle contract | none |
 | radeon_rs480_hazard_read | 0400 | probe-dev | rs480_hazard_readers_armed == 1 and rs480_hazard_index selection | none |
 | radeon_rs480_frontier_probe, radeon_rs480_vertex_probe | 0400 | probe-dev | index selector (-1 sentinel) | none |

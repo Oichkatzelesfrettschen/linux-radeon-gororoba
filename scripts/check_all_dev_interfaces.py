@@ -247,6 +247,7 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_cp_status_show",
         "rs480_force_clock_3d_read_show",
         "rs480_force_clock_read_show",
+        "rs400_gart_tlb_disposition_show",
         "rs480_frontier_probe_show",
         "rs480_gated_read_show",
         "rs480_hazard_read_show",
@@ -261,10 +262,14 @@ RS4XX_OUTPUT_SCHEMA_SHOW_FUNCTIONS = frozenset(
         "rs480_zb_zcache_ctlstat_show",
     }
 )
-RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 34
-RS4XX_DEBUGFS_NODE_COUNT = 38
-RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({"radeon_rs480_mc_flush"})
+RS4XX_OUTPUT_SCHEMA_READABLE_NODE_COUNT = 35
+RS4XX_DEBUGFS_NODE_COUNT = 40
+RS4XX_WRITE_ONLY_DEBUGFS_NODES = frozenset({
+    "radeon_rs400_gart_tlb_fault_inject",
+    "radeon_rs480_mc_flush",
+})
 RS4XX_WRITE_ONLY_DEBUGFS_NODE_FOPS = {
+    "radeon_rs400_gart_tlb_fault_inject": "rs400_gart_tlb_fault_inject_fops",
     "radeon_rs480_mc_flush": "rs480_mc_flush_fops",
 }
 # Binary-transport nodes serve a fixed little-endian buffer through dedicated
@@ -281,6 +286,7 @@ RS4XX_BINARY_DEBUGFS_NODE_FOPS = {
     "radeon_rs480_vap_status_burst_census": "rs480_vap_burst_fops",
 }
 RS4XX_OUTPUT_SCHEMA_NODE_FOPS = {
+    "radeon_rs400_gart_tlb_disposition": "rs400_gart_tlb_disposition_fops",
     "radeon_rs480_candidate_config_regs": "rs480_candidate_config_regs_fops",
     "radeon_rs480_candidate_firmware_read_regs": (
         "rs480_candidate_firmware_read_regs_fops"
@@ -342,6 +348,14 @@ MUTATION_AUDIT_PATTERNS = {
         (
             "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
             r'radeon_dev_mark_mutation\(rdev, "RS4xx CP cache drain"\)',
+            1,
+        ),
+    ),
+    "gart-tlb-fault-injection": (
+        (
+            "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+            r'radeon_dev_mark_mutation\(rdev,\s*'
+            r'"RS4xx GART TLB invalidate fault injection"\)',
             1,
         ),
     ),
@@ -967,7 +981,7 @@ def custom_debugfs_files(driver_root: Path) -> set[str]:
         text = source.read_text(encoding="utf-8")
         for name in DEBUGFS_FILE.findall(text):
             if name == "radeon_force_pci_reset_safe" or name.startswith(
-                "radeon_rs480_"
+                ("radeon_rs400_", "radeon_rs480_")
             ):
                 files.add(name)
     return files
@@ -1116,7 +1130,7 @@ def validate_rs4xx_output_schema_paths(
 
     source_without_comments = strip_comments(source)
     registration_pattern = re.compile(
-        r'debugfs_create_file\(\s*"(?P<node>radeon_rs480_[^"]+)"\s*,'
+        r'debugfs_create_file\(\s*"(?P<node>radeon_rs4(?:00|80)_[^"]+)"\s*,'
         r"\s*(?P<mode>0[0-7]+)\s*,.*?,"
         r"\s*&(?P<fops>[A-Za-z0-9_]+)\s*\);",
         re.DOTALL,
@@ -3420,9 +3434,9 @@ def self_test(root: Path) -> int:
 
     expected_counts = {
         "prod": (0, 0, 0),
-        "observe-dev": (4, 2, 18),
-        "probe-dev": (13, 14, 28),
-        "mutate-dev": (24, 28, 39),
+        "observe-dev": (4, 2, 19),
+        "probe-dev": (13, 14, 29),
+        "mutate-dev": (25, 28, 41),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3438,14 +3452,14 @@ def self_test(root: Path) -> int:
 
     runtime_counts = {
         ("observe-dev", "off"): (0, 0, 0),
-        ("observe-dev", "observe-dev"): (4, 2, 18),
+        ("observe-dev", "observe-dev"): (4, 2, 19),
         ("probe-dev", "off"): (0, 0, 0),
-        ("probe-dev", "observe-dev"): (4, 2, 18),
-        ("probe-dev", "probe-dev"): (13, 14, 28),
+        ("probe-dev", "observe-dev"): (4, 2, 19),
+        ("probe-dev", "probe-dev"): (13, 14, 29),
         ("mutate-dev", "off"): (0, 0, 0),
-        ("mutate-dev", "observe-dev"): (4, 2, 18),
-        ("mutate-dev", "probe-dev"): (13, 14, 28),
-        ("mutate-dev", "mutate-dev"): (24, 28, 39),
+        ("mutate-dev", "observe-dev"): (4, 2, 19),
+        ("mutate-dev", "probe-dev"): (13, 14, 29),
+        ("mutate-dev", "mutate-dev"): (25, 28, 41),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)
@@ -3673,6 +3687,20 @@ def self_test(root: Path) -> int:
         "self-test common schema fixture differs from the source",
     )
     reject_schema_mutant("a missing common schema line", missing_common_schema)
+
+    # The registration scanner reads the two declared node prefixes,
+    # radeon_rs400_ and radeon_rs480_. A node registered under any other
+    # prefix leaves the fops map and must fail rather than pass unread.
+    undeclared_prefix = rs4xx_source.replace(
+        '"radeon_rs400_gart_tlb_disposition"',
+        '"radeon_rs490_gart_tlb_disposition"',
+        1,
+    )
+    require(
+        undeclared_prefix != rs4xx_source,
+        "self-test undeclared node prefix fixture differs from the source",
+    )
+    reject_schema_mutant("an undeclared node prefix", undeclared_prefix)
 
     early_disarmed_functions = (
         "rs480_candidate_vap_regs_show",

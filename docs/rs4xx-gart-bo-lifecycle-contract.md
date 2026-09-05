@@ -106,6 +106,32 @@ observations. Steinmarder supplies RS482 silicon and payload authority. Their
 full commit identities and row names live in the policy ledger so an adjacent
 repository cannot silently replace the evidence bound by this contract.
 
+## Fault-injection contract
+
+`rs400_gart_tlb_invalidate` consumes `rdev->rs4xx_gart_tlb_fault_inject` with
+`atomic_xchg` as its first statement, so an armed one-shot returns `-ETIMEDOUT`
+before `radeon_rs4xx_hardware_access_begin` opens a hardware transaction. The
+injected call writes no memory-controller register, holds no admission, and
+clears the arm in the operation that reads it, so exactly one invalidation
+carries the injected disposition and the next call reaches hardware.
+
+Every consequence below the injected call is the disposition the poll would
+have produced. `rs400_gart_tlb_flush` increments
+`rs4xx_gart_tlb_flush_timeouts` and warns once; an enable-time invalidation
+clears `RS480_AGP_ADDRESS_SPACE_SIZE`, leaves `gart.ready` false, and returns
+`-ETIMEDOUT`, so `radeon_gart_bind_locked` and `radeon_gart_unbind_locked`
+refuse with `-EINVAL` until an enable publishes the aperture again.
+
+The mutate profile arms the one-shot through the write-only debugfs node
+`radeon_rs400_gart_tlb_fault_inject`, which accepts the exact value 1 and
+returns `-EINVAL` for every other value and `-ENODEV` off `CHIP_RS400` and
+`CHIP_RS480`. The observe profile reads the counter, the arm, and `gart.ready`
+through `radeon_rs400_gart_tlb_disposition`, which serves driver memory and
+therefore answers while the device is parked.
+`scripts/run_rs400_gart_tlb_fault_injection.sh` drives the arm on the target
+through a GTT-domain GEM allocation, whose bind calls the ASIC `tlb_flush`
+callback recorded by `GART_BIND_PTE_MB_TLB_PUBLICATION`.
+
 ## Lifecycle sequence
 
 The bounded source path has these ownership transfers:

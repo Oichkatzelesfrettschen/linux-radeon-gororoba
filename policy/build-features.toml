@@ -725,10 +725,11 @@ id = "gart-table-reader"
 setting = "gart-reader-dev"
 tier = "observe-dev"
 source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
   "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
   "drivers/gpu/drm/radeon/rs400.c",
 ]
-source_mechanisms = ["M24"]
+source_mechanisms = ["M24.table-reader"]
 dependencies = ["rs4xx-debugfs", "parked-entry-containment", "failed-reset-parking"]
 evidence_dependencies = []
 runtime_profile = "observe-dev"
@@ -759,6 +760,47 @@ profile_exception = "none"
 exception_basis = "none"
 package_projection = "development"
 rollback = "select prod or disable the runtime development profile"
+
+[[feature]]
+id = "gart-tlb-fault-injection"
+setting = "gart-fault-dev"
+tier = "mutate-dev"
+source_objects = [
+  "drivers/gpu/drm/radeon/radeon.h",
+  "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
+  "drivers/gpu/drm/radeon/rs400.c",
+]
+source_mechanisms = ["M24.tlb-fault-injection"]
+dependencies = ["rs4xx-debugfs", "gart-table-reader"]
+evidence_dependencies = []
+runtime_profile = "mutate-dev"
+operation_gate = "compiled mutate profile, runtime mutate profile, supported family, root write, and the exact value 1"
+availability_default = "absent-in-prod"
+runtime_profile_default = "off"
+operation_arm_default = "unarmed"
+arming_model = "explicit-root-write"
+privilege = "debugfs-root"
+execution_scope = "scope_refs"
+evidence_scope = "scope_refs"
+scope_refs = ["M24"]
+scope_relation = "broader-than-evidence"
+scope_decision = "resolve policy/rs4xx-guard-scope.tsv"
+side_effect_class = "software-state"
+interface_class = "diagnostic-oracle"
+resource_bounds = "one armed invalidation per write, consumed by the next rs400_gart_tlb_invalidate call"
+locking = "atomic_xchg consumes the arm ahead of the hardware transaction"
+error_contract = "unsupported family returns -ENODEV and every value other than 1 returns -EINVAL before the arm is set"
+tests = [
+  "normal: the exact write arms one invalidation and the next flush counts one timeout",
+  "boundary: the arm clears in the same operation that consumes it, so the following invalidation reaches hardware",
+  "failure: unsupported family and an inexact value leave the arm clear",
+  "adversarial: the injected disposition writes no register and holds no hardware admission",
+]
+production_promotion_condition = "no production promotion for a fault injector"
+profile_exception = "none"
+exception_basis = "none"
+package_projection = "development"
+rollback = "select a lower profile or remove the development package"
 
 [[feature]]
 id = "cs-parser-telemetry"
