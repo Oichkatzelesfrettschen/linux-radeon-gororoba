@@ -2549,6 +2549,65 @@ static int rs480_reset_hang_probe_show(struct seq_file *m, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(rs480_reset_hang_probe);
 #endif
+/* RS400 GART TLB flush disposition.  Three software facts describe what the
+ * invalidation path produced: the timeouts rs400_gart_tlb_flush counted, the
+ * state of the one-shot fault injection the mutate profile arms, and the
+ * aperture ready state rs400_gart_enable publishes.  Every value is driver
+ * memory, so the read completes while the device is parked.
+ */
+static int rs400_gart_tlb_disposition_show(struct seq_file *m, void *unused)
+{
+	struct radeon_device *rdev = m->private;
+
+	rs480_debugfs_emit_schema(m);
+	seq_printf(m, "tlb_flush_timeouts = %d\n",
+		   atomic_read(&rdev->rs4xx_gart_tlb_flush_timeouts));
+	seq_printf(m, "fault_inject_armed = %d\n",
+		   atomic_read(&rdev->rs4xx_gart_tlb_fault_inject));
+	seq_printf(m, "gart_ready = %d\n", rdev->gart.ready ? 1 : 0);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(rs400_gart_tlb_disposition);
+
+#if RADEON_MUTATE_DEV
+/* Arm one rs400_gart_tlb_invalidate call to report -ETIMEDOUT.  The arm is an
+ * exact command: 1 arms, every other integer rejects, so a stray numeric write
+ * cannot fault the GART path.  The invalidation consumes the arm with
+ * atomic_xchg ahead of its hardware transaction, so the injected disposition
+ * writes no register and holds no admission.
+ */
+static int radeon_debugfs_rs400_gart_tlb_fault_inject_set(void *data, u64 val)
+{
+	struct radeon_device *rdev = data;
+
+	if (rdev->family != CHIP_RS480 && rdev->family != CHIP_RS400)
+		return -ENODEV;
+	if (val != 1)
+		return -EINVAL;
+	radeon_dev_mark_mutation(rdev, "RS4xx GART TLB invalidate fault injection");
+	atomic_set(&rdev->rs4xx_gart_tlb_fault_inject, 1);
+	return 0;
+}
+/* simple_attr_open wires the "%llu\n" setter and nonseekable_open clears
+ * FMODE_LSEEK and FMODE_PWRITE, so each arm is a fresh open-write-close and
+ * pwrite fails at the VFS layer. */
+static int rs400_gart_tlb_fault_inject_open(struct inode *inode,
+					    struct file *file)
+{
+	int r = simple_attr_open(inode, file, NULL,
+				 radeon_debugfs_rs400_gart_tlb_fault_inject_set,
+				 "%llu\n");
+
+	return r ? r : nonseekable_open(inode, file);
+}
+
+static const struct file_operations rs400_gart_tlb_fault_inject_fops = {
+	.owner   = THIS_MODULE,
+	.open    = rs400_gart_tlb_fault_inject_open,
+	.release = simple_attr_release,
+	.write   = simple_attr_write,
+};
+#endif
 #endif /* CONFIG_DEBUG_FS */
 
 /* drm_driver.debugfs_init hook.  drm_debugfs_register() assigns
@@ -2578,6 +2637,16 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
 	rs480_candidate_regs_debugfs_init(rdev);
 	debugfs_create_file("radeon_rs480_gart_page_table", 0400,
 			    minor->debugfs_root, rdev, &rs400_debugfs_gart_page_table_fops);
+	debugfs_create_file("radeon_rs400_gart_tlb_disposition", 0400,
+			    minor->debugfs_root, rdev,
+			    &rs400_gart_tlb_disposition_fops);
+#if RADEON_MUTATE_DEV
+	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&
+	    (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400))
+		debugfs_create_file("radeon_rs400_gart_tlb_fault_inject", 0200,
+				    minor->debugfs_root, rdev,
+				    &rs400_gart_tlb_fault_inject_fops);
+#endif
 #if RADEON_MUTATE_DEV
 	if (radeon_dev_profile_enabled(rdev, RADEON_DEV_PROFILE_MUTATE) &&
 	    (rdev->family == CHIP_RS480 || rdev->family == CHIP_RS400) &&

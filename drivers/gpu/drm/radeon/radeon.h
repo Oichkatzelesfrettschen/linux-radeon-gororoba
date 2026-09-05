@@ -2452,6 +2452,16 @@ struct radeon_device {
 	 * RS480_GART_CACHE_INVALIDATE; each one left the TLB in an unknown state.
 	 */
 	atomic_t			rs4xx_gart_tlb_flush_timeouts;
+#if RADEON_OBSERVE_DEV
+	/* One-shot software disposition for rs400_gart_tlb_invalidate. A
+	 * nonzero value makes the next invalidation report -ETIMEDOUT before
+	 * any memory-controller access, so the flush counter, the enable
+	 * refusal, and the published ready state are exercised on a healthy
+	 * TLB. The mutate profile arms it through debugfs; the observe and
+	 * probe profiles read it and it stays zero.
+	 */
+	atomic_t			rs4xx_gart_tlb_fault_inject;
+#endif
 	atomic_t			rs4xx_live_bos;
 	atomic_t			rs4xx_retained_gem_objects;
 	atomic_t			rs4xx_retained_ttm_tables;
