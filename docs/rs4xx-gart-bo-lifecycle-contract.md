@@ -123,9 +123,11 @@ clears `RS480_AGP_ADDRESS_SPACE_SIZE`, leaves `gart.ready` false, and returns
 refuse with `-EINVAL` until an enable publishes the aperture again.
 
 The mutate profile arms the one-shot through the write-only debugfs node
-`radeon_rs400_gart_tlb_fault_inject`, which accepts the exact value 1 and
-returns `-EINVAL` for every other value and `-ENODEV` off `CHIP_RS400` and
-`CHIP_RS480`. The observe profile reads the counter, the arm, and `gart.ready`
+`radeon_rs400_gart_tlb_fault_inject`, whose write handler compares the written
+bytes against the token `1` whole, with one optional trailing newline, and
+returns `-EINVAL` for every other spelling and `-ENODEV` off `CHIP_RS400` and
+`CHIP_RS480`. A numeric parser would have admitted `+1`, `01`, `0x1`, and a
+value followed by trailing bytes. The observe profile reads the counter, the arm, and `gart.ready`
 through `radeon_rs400_gart_tlb_disposition`, which serves driver memory and
 therefore answers while the device is parked.
 `scripts/run_rs400_gart_tlb_fault_injection.sh` drives the arm on the target

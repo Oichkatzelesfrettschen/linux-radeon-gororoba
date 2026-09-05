@@ -51,7 +51,7 @@ columns record the gates beyond that shared guard.
 | radeon_rs480_combios_table_census | 0400 | observe-dev | host-memory read of the admitted BIOS image through combios_get_table_offset; no MMIO | none |
 | radeon_rs480_gart_page_table | 0400 | observe-dev | GART-ready check; decode only, no MMIO sweep | none |
 | radeon_rs400_gart_tlb_disposition | 0400 | observe-dev | driver memory only: the TLB flush timeout counter, the fault-injection arm, and gart.ready | none |
-| radeon_rs400_gart_tlb_fault_inject | 0200 | mutate-dev | family in {CHIP_RS400, CHIP_RS480}; the exact value 1 arms one invalidation | RS4xx GART TLB invalidate fault injection |
+| radeon_rs400_gart_tlb_fault_inject | 0200 | mutate-dev | family in {CHIP_RS400, CHIP_RS480}; the exact token 1 or 1 with a newline arms one invalidation | RS4xx GART TLB invalidate fault injection |
 | radeon_rs480_cp_me_ram_dump | 0400 | probe-dev | rs480_cp_me_ram_dump=1 in the seq start(); engine-idle contract | none |
 | radeon_rs480_hazard_read | 0400 | probe-dev | rs480_hazard_readers_armed == 1 and rs480_hazard_index selection | none |
 | radeon_rs480_frontier_probe, radeon_rs480_vertex_probe | 0400 | probe-dev | index selector (-1 sentinel) | none |

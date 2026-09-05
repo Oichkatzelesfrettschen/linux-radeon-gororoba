@@ -66,21 +66,33 @@ read_field() {
 	printf '%s' "$value"
 }
 
-# Calibrate the arming node before trusting an armed run: an inexact value
-# must be refused, so a later success is the exact command and not an
-# unconditional accept. The open must succeed for the refusal to be the
-# setter's, so a failed redirection blocks the run rather than counting as one.
-exec 3>"$arm" || fatal "$arm cannot be opened for writing"
-inexact_status=0
-printf '2\n' >&3 2>/dev/null || inexact_status=$?
-exec 3>&-
-if [ "$inexact_status" -eq 0 ]; then
-	report FAIL "the arming node accepted the value 2"
-else
-	report PASS "the arming node refuses an inexact value"
-fi
-if [ "$(read_field fault_inject_armed)" != 0 ]; then
-	fatal "the refused write left the one-shot armed"
+# Calibrate the arming node before trusting an armed run. The node compares the
+# written bytes against the token "1" whole, so each spelling a numeric parser
+# would have accepted must be refused; a later success is then the exact
+# command and not an unconditional accept. The open must succeed for the
+# refusal to be the write handler's, so a failed redirection blocks the run
+# rather than counting as one.
+refuse_token() {
+	exec 3>"$arm" || fatal "$arm cannot be opened for writing"
+	token_status=0
+	printf '%s' "$1" >&3 2>/dev/null || token_status=$?
+	exec 3>&-
+	if [ "$token_status" -eq 0 ]; then
+		report FAIL "the arming node accepted the token $2"
+		return
+	fi
+	report PASS "the arming node refuses the token $2"
+}
+
+refuse_token '2' '2'
+refuse_token '+1' '+1'
+refuse_token '01' '01'
+refuse_token '0x1' '0x1'
+refuse_token '11' '11'
+refuse_token '1 ' '1 with a trailing space'
+armed_now=$(read_field fault_inject_armed) || fatal "the disposition is unreadable"
+if [ "$armed_now" != 0 ]; then
+	fatal "a refused write left the one-shot armed"
 fi
 
 timeouts_before=$(read_field tlb_flush_timeouts)

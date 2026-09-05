@@ -2570,42 +2570,60 @@ static int rs400_gart_tlb_disposition_show(struct seq_file *m, void *unused)
 DEFINE_SHOW_ATTRIBUTE(rs400_gart_tlb_disposition);
 
 #if RADEON_MUTATE_DEV
-/* Arm one rs400_gart_tlb_invalidate call to report -ETIMEDOUT.  The arm is an
- * exact command: 1 arms, every other integer rejects, so a stray numeric write
- * cannot fault the GART path.  The invalidation consumes the arm with
+/* Arm one rs400_gart_tlb_invalidate call to report -ETIMEDOUT.  The
+ * invalidation consumes the arm with
  * atomic_xchg ahead of its hardware transaction, so the injected disposition
  * writes no register and holds no admission.
  */
-static int radeon_debugfs_rs400_gart_tlb_fault_inject_set(void *data, u64 val)
+static int rs400_gart_tlb_fault_inject_apply(struct radeon_device *rdev)
 {
-	struct radeon_device *rdev = data;
-
 	if (rdev->family != CHIP_RS480 && rdev->family != CHIP_RS400)
 		return -ENODEV;
-	if (val != 1)
-		return -EINVAL;
 	radeon_dev_mark_mutation(rdev, "RS4xx GART TLB invalidate fault injection");
 	atomic_set(&rdev->rs4xx_gart_tlb_fault_inject, 1);
 	return 0;
 }
-/* simple_attr_open wires the "%llu\n" setter and nonseekable_open clears
- * FMODE_LSEEK and FMODE_PWRITE, so each arm is a fresh open-write-close and
- * pwrite fails at the VFS layer. */
-static int rs400_gart_tlb_fault_inject_open(struct inode *inode,
-					    struct file *file)
+/* The exact command is the byte string "1", with one optional trailing
+ * newline.  A numeric parser would also accept "+1", "01", "0x1", and a value
+ * followed by trailing bytes, so the token is compared whole: at most two
+ * bytes are copied, a longer write is refused before the copy, and every
+ * spelling other than "1" and "1\n" returns -EINVAL.
+ */
+static ssize_t rs400_gart_exact_token_write(struct file *file,
+					    const char __user *buffer,
+					    size_t count, loff_t *ppos,
+					    int (*apply)(struct radeon_device *))
 {
-	int r = simple_attr_open(inode, file, NULL,
-				 radeon_debugfs_rs400_gart_tlb_fault_inject_set,
-				 "%llu\n");
+	struct radeon_device *rdev = file->private_data;
+	char token[3];
+	int r;
 
-	return r ? r : nonseekable_open(inode, file);
+	if (count == 0 || count > sizeof(token) - 1)
+		return -EINVAL;
+	if (copy_from_user(token, buffer, count))
+		return -EFAULT;
+	token[count] = '\0';
+	if (strcmp(token, "1") && strcmp(token, "1\n"))
+		return -EINVAL;
+	r = apply(rdev);
+	if (r)
+		return r;
+	*ppos += count;
+	return count;
+}
+
+static ssize_t rs400_gart_tlb_fault_inject_write(struct file *file,
+						 const char __user *buffer,
+						 size_t count, loff_t *ppos)
+{
+	return rs400_gart_exact_token_write(file, buffer, count, ppos,
+					    rs400_gart_tlb_fault_inject_apply);
 }
 
 static const struct file_operations rs400_gart_tlb_fault_inject_fops = {
 	.owner   = THIS_MODULE,
-	.open    = rs400_gart_tlb_fault_inject_open,
-	.release = simple_attr_release,
-	.write   = simple_attr_write,
+	.open    = simple_open,
+	.write   = rs400_gart_tlb_fault_inject_write,
 };
 #endif
 #endif /* CONFIG_DEBUG_FS */
