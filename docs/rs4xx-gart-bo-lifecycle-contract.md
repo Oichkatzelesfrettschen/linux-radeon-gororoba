@@ -106,6 +106,50 @@ observations. Steinmarder supplies RS482 silicon and payload authority. Their
 full commit identities and row names live in the policy ledger so an adjacent
 repository cannot silently replace the evidence bound by this contract.
 
+## Fault-injection contract
+
+`rs400_gart_tlb_invalidate` consumes `rdev->rs4xx_gart_tlb_fault_inject` with
+`atomic_xchg` as its first statement, so an armed one-shot returns `-ETIMEDOUT`
+before `radeon_rs4xx_hardware_access_begin` opens a hardware transaction. The
+injected call writes no memory-controller register, holds no admission, and
+clears the arm in the operation that reads it, so exactly one invalidation
+carries the injected disposition and the next call reaches hardware.
+
+Every consequence below the injected call is the disposition the poll would
+have produced. `rs400_gart_tlb_flush` increments
+`rs4xx_gart_tlb_flush_timeouts` and warns once; an enable-time invalidation
+clears `RS480_AGP_ADDRESS_SPACE_SIZE`, leaves `gart.ready` false, and returns
+`-ETIMEDOUT`, so `radeon_gart_bind_locked` and `radeon_gart_unbind_locked`
+refuse with `-EINVAL` until an enable publishes the aperture again.
+
+The mutate profile arms the one-shot through the write-only debugfs node
+`radeon_rs400_gart_tlb_fault_inject`, whose write handler compares the written
+bytes against the token `1` whole, with one optional trailing newline, and
+returns `-EINVAL` for every other spelling and `-ENODEV` off `CHIP_RS400` and
+`CHIP_RS480`. A numeric parser would have admitted `+1`, `01`, `0x1`, and a
+value followed by trailing bytes. The observe profile reads the counter, the arm, and `gart.ready`
+through `radeon_rs400_gart_tlb_disposition`, which serves driver memory and
+therefore answers while the device is parked.
+`scripts/run_rs400_gart_tlb_fault_injection.sh` drives the arm on the target
+through a GTT-domain GEM allocation, whose bind calls the ASIC `tlb_flush`
+callback recorded by `GART_BIND_PTE_MB_TLB_PUBLICATION`.
+
+The write-only mutate-dev node `radeon_rs400_gart_reenable` reaches the
+enable-time invalidation without a system suspend. `rs400_resume` calls
+`rs400_gart_disable` and then reaches `rs400_gart_enable` through
+`rs400_startup`, and it applies no command-stream or ring-busy test of its own
+because `radeon_suspend_kms` has already stopped the CP and drained fences
+before it runs. Reached from debugfs the device is live, so the node supplies
+the quiescence resume inherits: it refuses with `-EBUSY` while
+`radeon_fence_count_emitted` reports emitted GFX fences, and it holds the
+device hardware transaction across the disable and the enable, the same
+admission `rs400_startup` wraps its enable in.
+
+An armed re-enable therefore returns `-ETIMEDOUT` with `gart.ready` false and
+the aperture unpublished, a following GTT-domain allocation meets the
+`radeon_gart_bind_locked` refusal, and an unarmed re-enable republishes the
+aperture and readmits allocation.
+
 ## Lifecycle sequence
 
 The bounded source path has these ownership transfers:

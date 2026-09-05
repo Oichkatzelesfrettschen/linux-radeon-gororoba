@@ -78,6 +78,17 @@ int rs400_gart_tlb_invalidate(struct radeon_device *rdev)
 	unsigned int timeout = rdev->usec_timeout;
 	int r = -ETIMEDOUT;
 
+#if RADEON_MUTATE_DEV
+	/* The armed one-shot reports the timeout disposition ahead of the
+	 * hardware transaction, so no register is written, no admission is
+	 * held, and the arm clears in the same operation that consumes it.
+	 * Every consequence below this call is the software disposition: the
+	 * callback counts the timeout and warns once, and an enable-time
+	 * invalidation leaves the aperture unpublished.
+	 */
+	if (atomic_xchg(&rdev->rs4xx_gart_tlb_fault_inject, 0))
+		return -ETIMEDOUT;
+#endif
 	if (radeon_rs4xx_hardware_access_begin(rdev))
 		return -EBUSY;
 
