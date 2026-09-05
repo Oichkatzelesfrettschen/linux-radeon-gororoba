@@ -6,14 +6,14 @@
 contract for RS482 capacity admission, placement, allocation, movement, and
 observation. The contract has four supporting denominators:
 
-* `policy/rs482-gtt-capacity-matrix.tsv` fixes the four requested nominal GTT
+* `policy/rs485m-gtt-capacity-matrix.tsv` fixes the four requested nominal GTT
   selectors and their source-derived metadata sizes.
-* `policy/rs482-gtt-capacity-exclusions.tsv` closes the nearby input classes
+* `policy/rs485m-gtt-capacity-exclusions.tsv` closes the nearby input classes
   that do not represent comparable trials.
-* `policy/rs482-vram-gtt-capacity-coefficients.tsv` retains each linear or
+* `policy/rs485m-vram-gtt-capacity-coefficients.tsv` retains each linear or
   piecewise coefficient, its evaluation input, its valid domain, and its
   nonclaim.
-* `policy/rs482-vram-gtt-capacity-source-lineage.tsv` binds the reviewed input
+* `policy/rs485m-vram-gtt-capacity-source-lineage.tsv` binds the reviewed input
   commit, Git blob, and content SHA-256 identities to the projections
   preserved by this contract.
 
@@ -65,6 +65,18 @@ The model separates four resources that similar names can otherwise blur:
 the physical VRAM interval. It cannot return firmware-reserved DRAM to the
 operating system, so this contract excludes it as a memory-reclamation
 mechanism.
+
+## Table identity and specimen scope
+
+The four supporting tables carry the `rs485m-` prefix because every value in
+them that is not a pure source derivation was measured on the Dell Vostro 1000
+RS485M specimen (PCI `1002:5974`, subsystem `1028:022a`). The contract table
+keeps its `rs4xx-` prefix because its rows bind family-scoped source
+mechanisms. Row identifiers such as `RS482_GTT_SELECTOR_MATRIX`, the intake
+tag `rs482-vram-gtt-capacity-source-policy-authority`, and the lineage
+`input_path` values are historical identities of the reviewed input and stay
+spelled as the tag carries them; the lineage `current_path` column is the one
+field that follows a rename, and the verifier binds both.
 
 ## Capacity state machine
 
@@ -350,6 +362,80 @@ The work proceeds through explicit gates:
 8. `radeon-custom` advances its signed source pin only when the driver source
    subtree identity changes. This policy-only batch does not change that
    subtree.
+
+## Invariant decomposition
+
+Each contract row reduces to one invariant the verifier holds the source to.
+The decomposition names the quantity, the relation, and the source symbol
+that makes it true, so a row that moves is a relation that changed.
+
+1. Request latch. `radeon_gart_size` is one writable module-global integer,
+   and `radeon_check_arguments` publishes `mc.gtt_size` from it per device.
+   Invariant: the value a device sees is the shared integer at its own probe,
+   so two devices probed in one module lifetime can see different requests
+   only through that shared mutation (`RADEON_GTT_MODULE_GLOBAL_REQUEST_STATE`).
+2. Selector admission. An explicit `gartsize` reaches `mc.gtt_size` when it
+   is a power of two of at least 32 MiB; every other input becomes the first
+   probed family default, 512 MiB below `CHIP_RV770`. Invariant: the admitted
+   set is `{2^k MiB : 5 <= k <= 11}` and nothing in it identifies the probing
+   device (`RS482_GTT_PARAMETER_ADMISSION`).
+3. Register encoding. `rs400_gart_adjust_size` forces a selector outside
+   the admitted set to 32 MiB, and `rs400_gart_enable` maps the admitted
+   selector `S` to the `RS480_VA_SIZE_*` code `(log2(S / MiB) - 5) << 1`
+   from `r500_reg.h` and sets `RS480_GART_EN` on top of it. Invariant: the four matrix rows carry
+   `size_code_hex = 0x4, 0x6, 0x8, 0xa` and `enabled_value_hex = code | 1`
+   (`RS482_GTT_SIZE_REGISTER_ENCODING`).
+4. Address fit. With `gtt_base_align = S - 1`, `radeon_gtt_location` aligns
+   the region before VRAM and the region after it to `S` and keeps the larger.
+   Invariant: the effective aperture `E` is `S` or `0`, never an intermediate
+   size, and `0` fails the RS400 selector switch with `EINVAL`
+   (`RS482_GTT_ADDRESS_PLACEMENT`).
+5. Metadata cost. Per 4 KiB page Linux allocates one hardware PTE (4 bytes,
+   `rs400_gart_init`), one CPU page pointer (8 bytes on x86_64), and one u64
+   PTE shadow (8 bytes, `radeon_gart_init`). Invariant:
+   `static_metadata_bytes = 5120 * gtt_mib`, which the matrix carries for all
+   four rows and the coefficient ledger carries as
+   `RS482_STATIC_METADATA_BYTES_PER_GTT_MIB` (`RS482_GART_METADATA_CAPACITY`).
+6. VRAM carveout. `rs400_mc_init` derives the GPU-usable VRAM interval from
+   the northbridge top-of-memory register, and `radeon_vram_limit` only
+   reduces `real_vram_size` below it. Invariant: the 128 MiB `vram_mib` input
+   is a firmware fact, and no module parameter returns carveout DRAM to the
+   host (`RS482_VRAM_CARVEOUT_ACCOUNTING`, `RADEON_VRAMLIMIT_TEST_BOUNDARY`).
+7. Allocator capacity. TTM initializes the VRAM manager from
+   `real_vram_size`, bounds its active size by `visible_vram_size`, pins the
+   stolen VGA object, then initializes the GTT manager from `E`. Invariant:
+   allocator capacity is `E` minus pinned bytes minus fragmentation, and is
+   smaller than `E` whenever either term is nonzero
+   (`RADEON_TTM_MANAGER_CAPACITY`, `RADEON_PINNED_CAPACITY_ACCOUNTING`).
+8. Placement order. `radeon_ttm_placement_from_domain` appends VRAM, then
+   GTT, then CPU, and requests top-down insertion for GTT objects at or below
+   the 512 KiB segregation boundary. Invariant: small GTT objects pack against
+   the top of the aperture and wide requests cut from the bottom, so the
+   widest free hole survives small-object churn
+   (`RADEON_BO_DOMAIN_PLACEMENT_ORDER`).
+9. Relocation threshold. `radeon_bo_get_threshold_for_moves` returns the
+   larger of 1 MiB and half the free portion of the lower half of real VRAM.
+   Invariant: at 128 MiB VRAM the intercept is 32 MiB, each 2 bytes of usage
+   lowers the raw threshold by 1 byte, and the byte-domain floor begins at
+   65,011,711 bytes of usage (`RADEON_VRAM_RELOCATION_THRESHOLD`, the four
+   `RADEON_MOVE_THRESHOLD_*` and `RS482_MOVE_THRESHOLD_128_MIB_KNEE`
+   coefficients).
+10. Single-object ceiling. `radeon_gem_object_create` refuses an object larger
+    than `E - gart_pin_size`, because VRAM-to-system migration travels the
+    GTT path. Invariant: the largest admissible buffer object is bounded by
+    the effective aperture, not by VRAM (`RADEON_SINGLE_BO_GTT_CEILING`).
+11. Observation. `GEM_INFO` reports visible VRAM and effective GTT minus the
+    pinned counters, `RADEON_INFO` reports usage and cumulative moved bytes,
+    and the debugfs object list reports each object's monotonic identity and
+    realized placement. Invariant: every capacity number an observer reads is
+    one of these three surfaces, and the raw `radeon_vram_mm` and
+    `radeon_gtt_mm` extents stay excluded from capacity capture
+    (`RADEON_CAPACITY_USAGE_AND_MOVE_COUNTERS`,
+    `RADEON_FRAGMENTATION_AND_PLACEMENT_DEBUGFS`).
+12. Optimum. The source fixes every mechanism above and none of them selects
+    an aperture for a workload. Invariant: `RS482_CAPACITY_OPTIMUM` stays
+    `open` until a target allocation-pressure trial on the RS485M specimen
+    closes it, and the ten exclusion classes keep the trial input comparable.
 
 ## Verification
 
