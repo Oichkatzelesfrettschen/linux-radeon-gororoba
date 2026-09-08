@@ -1245,9 +1245,28 @@ static int radeon_debugfs_fence_info_show(struct seq_file *m, void *data)
 	int i, j;
 	int r;
 
+	if (radeon_rs4xx_hardware_target(rdev)) {
+		/* Atomic counters converge after page-flip cleanup quiesces. */
+		seq_printf(m, "Page-flip reservation busy: %lld\n",
+			   (long long)atomic64_read(&rdev->rs4xx_flip_reserve_busy));
+		seq_printf(m, "Page-flip admission refused: %lld\n",
+			   (long long)atomic64_read(&rdev->rs4xx_flip_admission_refused));
+		seq_printf(m, "Page-flip retained total: %lld\n",
+			   (long long)atomic64_read(&rdev->rs4xx_flip_retained_total));
+		seq_printf(m, "Page-flip retained released: %lld\n",
+			   (long long)atomic64_read(&rdev->rs4xx_flip_retained_released));
+		seq_printf(m, "Page-flip retained pending: %d\n",
+			   atomic_read(&rdev->rs4xx_flip_retained_pending));
+	}
+
 	r = radeon_device_lock_hardware(rdev);
-	if (r)
+	if (r) {
+		if (radeon_rs4xx_hardware_target(rdev)) {
+			seq_printf(m, "Fence hardware admission refused: %d\n", r);
+			return 0;
+		}
 		return r;
+	}
 
 	for (i = 0; i < RADEON_NUM_RINGS; ++i) {
 		if (!rdev->fence_drv[i].initialized)

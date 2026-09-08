@@ -725,6 +725,7 @@ struct radeon_flip_work {
 	bool				submitted;
 	bool				vblank_acquired;
 	bool				pflip_acquired;
+	bool				retained_accounted;
 };
 
 struct r500_irq_stat_regs {
@@ -2482,6 +2483,11 @@ struct radeon_device {
 	struct work_struct		rs4xx_parked_publish_work;
 	struct mutex			rs4xx_retained_flip_lock;
 	struct list_head		rs4xx_retained_flips;
+	atomic64_t			rs4xx_flip_reserve_busy;
+	atomic64_t			rs4xx_flip_admission_refused;
+	atomic64_t			rs4xx_flip_retained_total;
+	atomic64_t			rs4xx_flip_retained_released;
+	atomic_t			rs4xx_flip_retained_pending;
 	struct delayed_work		rs4xx_flip_cleanup_work;
 	bool				rs4xx_reset_reprogramming;
 	bool				rs4xx_reset_reprogram_failed;
