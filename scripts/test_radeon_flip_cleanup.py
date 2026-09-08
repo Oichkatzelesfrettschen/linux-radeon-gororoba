@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Compile production flip cleanup helpers against reservation and ownership fixtures."""
 
 import argparse

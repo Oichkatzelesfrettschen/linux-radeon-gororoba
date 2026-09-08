@@ -9,6 +9,7 @@ import csv
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -126,12 +127,68 @@ def tree_entry(root: Path, treeish: str, repository_path: str) -> str | None:
     return lines[0].split("\t", 1)[0]
 
 
+def read_blob(root: Path, object_id: str) -> bytes:
+    result = subprocess.run(
+        ["git", "cat-file", "blob", object_id], cwd=root,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    require(result.returncode == 0, f"cannot read source blob: {object_id}")
+    return result.stdout
+
+
+def validate_merged_blobs(
+    root: Path,
+    entries: tuple[str | None, ...],
+    repository_path: str,
+    blob_reader: Callable[[Path, str], bytes] = read_blob,
+) -> None:
+    parsed = []
+    for entry in entries:
+        require(entry is not None, f"merge requires existing blobs: {repository_path}")
+        fields = entry.split() if entry is not None else []
+        require(
+            len(fields) == 3 and fields[0] in {"100644", "100755"}
+            and fields[1] == "blob" and SHA40.fullmatch(fields[2]) is not None,
+            f"merge requires regular source blobs: {repository_path}",
+        )
+        parsed.append(fields)
+    require(len(parsed) == 4, "source merge requires four tree entries")
+    require(
+        len({fields[0] for fields in parsed}) == 1,
+        f"source merge changes file mode: {repository_path}",
+    )
+    contents = [blob_reader(root, fields[2]) for fields in parsed]
+    require(
+        all(b"\0" not in content for content in contents),
+        f"source merge contains binary content: {repository_path}",
+    )
+    # Byte IO preserves line endings and the final newline. Plain merge-file
+    # supports the Git versions used by both source and package CI.
+    with tempfile.TemporaryDirectory(prefix=".source-delta-merge-", dir=root) as scratch:
+        paths = [Path(scratch) / name for name in ("base", "first", "second")]
+        for path, content in zip(paths, contents[:3]):
+            path.write_bytes(content)
+        result = subprocess.run(
+            ["git", "merge-file", "-p", "--", str(paths[1]), str(paths[0]), str(paths[2])],
+            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+    require(
+        result.returncode == 0 and not result.stderr,
+        f"source merge has conflicts or diagnostics: {repository_path}",
+    )
+    require(
+        result.stdout == contents[3],
+        f"source merge differs from exact combined parent content: {repository_path}",
+    )
+
+
 def validate_union_path(
     base_entry: str | None,
     first_parent_entry: str | None,
     second_parent_entry: str | None,
     result_entry: str | None,
     repository_path: str,
+    merge_checker: Callable[[tuple[str | None, ...], str], None] | None = None,
 ) -> None:
     if first_parent_entry == second_parent_entry:
         require(
@@ -149,6 +206,12 @@ def validate_union_path(
         require(
             result_entry == first_parent_entry,
             f"union merge drops its first-parent change: {repository_path}",
+        )
+        return
+    if merge_checker is not None:
+        merge_checker(
+            (base_entry, first_parent_entry, second_parent_entry, result_entry),
+            repository_path,
         )
         return
     raise DeltaMapError(f"union merge parents diverge on one path: {repository_path}")
@@ -193,6 +256,7 @@ def validate_union_only_merge(
             tree_reader(root, parents[1], repository_path),
             tree_reader(root, commit, repository_path),
             repository_path,
+            merge_checker=lambda entries, path: validate_merged_blobs(root, entries, path),
         )
 
 
@@ -586,6 +650,67 @@ def self_test(root: Path) -> int:
         rejection_count += 1
     else:
         raise DeltaMapError("self-test accepted an octopus source merge")
+
+    base_content = b"head\nanchor-one\nanchor-two\nanchor-three\ntail\n"
+    first_content = base_content.replace(b"head", b"first-head")
+    second_content = base_content.replace(b"tail", b"second-tail")
+    combined_content = first_content.replace(b"tail", b"second-tail")
+    object_ids = [f"{number:040x}" for number in range(1, 5)]
+    regular_entries = tuple(f"100644 blob {object_id}" for object_id in object_ids)
+
+    def check_fixture(
+        contents: tuple[bytes, bytes, bytes, bytes],
+        entries: tuple[str | None, ...] = regular_entries,
+    ) -> None:
+        blobs = dict(zip(object_ids, contents))
+
+        def fixture_blob_reader(_root: Path, object_id: str) -> bytes:
+            return blobs[object_id]
+
+        validate_union_path(
+            *entries, "combined.c",
+            merge_checker=lambda values, path: validate_merged_blobs(
+                root, values, path, fixture_blob_reader
+            ),
+        )
+
+    positive_contents = (
+        base_content, first_content, second_content, combined_content,
+    )
+    check_fixture(positive_contents)
+    check_fixture(
+        positive_contents,
+        tuple(entry.replace("100644", "100755") for entry in regular_entries),
+    )
+    # Final-newline and CRLF preservation are byte-level merge obligations.
+    check_fixture(tuple(content.replace(b"\n", b"\r\n") for content in positive_contents))
+    invalid_content_fixtures = (
+        (base_content, first_content, second_content, first_content),
+        (base_content, first_content, second_content, second_content),
+        (base_content, first_content, second_content, combined_content + b"novel\n"),
+        (base_content, first_content, second_content, combined_content.rstrip(b"\n")),
+        (base_content, first_content, base_content.replace(b"head", b"other-head"), first_content),
+        tuple(content + b"\0" for content in positive_contents),
+    )
+    for contents in invalid_content_fixtures:
+        try:
+            check_fixture(contents)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid combined blob")
+    for index in range(4):
+        for replacement in (None, "100755 blob " + object_ids[index],
+                            "120000 blob " + object_ids[index],
+                            "160000 commit " + object_ids[index]):
+            entries = list(regular_entries)
+            entries[index] = replacement
+            try:
+                check_fixture(positive_contents, tuple(entries))
+            except DeltaMapError:
+                rejection_count += 1
+            else:
+                raise DeltaMapError("self-test accepted an invalid combined entry")
 
     print(f"source delta map calibration: {rejection_count} invalid classes rejected")
     return 0
