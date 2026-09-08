@@ -28,10 +28,10 @@ from check_all_dev_interfaces import (
 from check_radeon_gart_lifecycle import c_tokens
 
 POLICY = Path("policy/rs4xx-vram-gtt-capacity-contract.tsv")
-MATRIX = Path("policy/rs482-gtt-capacity-matrix.tsv")
-EXCLUSIONS = Path("policy/rs482-gtt-capacity-exclusions.tsv")
-COEFFICIENTS = Path("policy/rs482-vram-gtt-capacity-coefficients.tsv")
-LINEAGE = Path("policy/rs482-vram-gtt-capacity-source-lineage.tsv")
+MATRIX = Path("policy/rs485m-gtt-capacity-matrix.tsv")
+EXCLUSIONS = Path("policy/rs485m-gtt-capacity-exclusions.tsv")
+COEFFICIENTS = Path("policy/rs485m-vram-gtt-capacity-coefficients.tsv")
+LINEAGE = Path("policy/rs485m-vram-gtt-capacity-source-lineage.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 MAX_TSV_BYTES = 256 * 1024
 MAX_TSV_ROWS = 64
@@ -303,7 +303,7 @@ EXPECTED_LINEAGE_ROWS = (
         ),
         "input_row_count": "4",
         "preservation_contract": "config-id-through-static-metadata-bytes-exact",
-        "current_path": "policy/rs482-gtt-capacity-matrix.tsv",
+        "current_path": "policy/rs485m-gtt-capacity-matrix.tsv",
         "current_row_count": "4",
         "preserved_row_count": "4",
         "added_identity": "NONE",
@@ -442,7 +442,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "rs400.c",
         "rs400_gart_enable",
-    ): "f97178ed96047ce6b23560a5a43b27f00bb3a2bbbe0816f655e58cefb611fe69",
+    ): "f0082453579297e1802f3d432f1319b4379c7dd6604949c548f2250da500f77b",
     (
         "rs400.c",
         "rs400_mc_init",
