@@ -420,12 +420,14 @@ static int tcl_bypass_vtx_check(struct parser *p)
 }
 
 /* r100_cs_2d_dst_cpp: bytes per destination pixel for the DP_GUI_MASTER_CNTL
- * destination datatype, the RADEON_COLOR_FORMAT codes radeon_reg.h names.
+ * destination datatype.  The Rage 128 Pro register table defines datatype 2
+ * as CI8 pseudocolor, an 8bpp destination; the remaining entries use the
+ * RADEON_COLOR_FORMAT values from radeon_reg.h.
  */
 static unsigned int dst2d_cpp(unsigned int datatype)
 {
 	switch (datatype) {
-	case 7: case 8:
+	case 2: case 7: case 8:
 		return 1;
 	case 3: case 4: case 11: case 12: case 15:
 		return 2;

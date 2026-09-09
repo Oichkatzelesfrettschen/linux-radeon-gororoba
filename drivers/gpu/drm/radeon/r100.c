@@ -2473,12 +2473,16 @@ int r100_cs_track_check(struct radeon_device *rdev, struct r100_cs_track *track)
 }
 
 /* Bytes per destination pixel for the DP_GUI_MASTER_CNTL destination
- * datatype, from the RADEON_COLOR_FORMAT codes radeon_reg.h names.  A code
- * outside the table sizes to 0, and the launch refuses a 0.
+ * datatype.  The Rage 128 Pro register table defines datatype 2 as CI8
+ * pseudocolor, an 8bpp destination; the later RADEON_COLOR_FORMAT names
+ * cover the remaining table entries.  A code outside the table sizes to 0,
+ * and the launch refuses a 0.
  */
 static unsigned r100_cs_2d_dst_cpp(unsigned datatype)
 {
 	switch (datatype) {
+	case ATI_DATATYPE_CI8:
+		return 1;
 	case RADEON_COLOR_FORMAT_RGB332:
 	case RADEON_COLOR_FORMAT_Y8:
 		return 1;
