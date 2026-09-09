@@ -2520,6 +2520,9 @@ void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
 		(value & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
 	track->src2d.pitch_offset_cntl =
 		(value & RADEON_GMC_SRC_PITCH_OFFSET_CNTL) != 0;
+	track->src2d.source_memory =
+		(value & RADEON_DP_SRC_SOURCE_MASK) == RADEON_DP_SRC_SOURCE_MEMORY;
+	track->src2d.source_required = track->src2d.source_memory;
 	track->dst2d.gui_master_cntl_seen = true;
 	track->src2d.gui_master_cntl_seen = true;
 }
@@ -2650,9 +2653,11 @@ int r100_cs_track_2d_src_check(struct radeon_cs_parser *p,
 	u32 last_row, end_byte;
 	const char *refusal = NULL;
 
-	if (!s->gui_master_cntl_seen || !s->pitch_offset_cntl)
+	if (!s->gui_master_cntl_seen || !s->source_required)
 		return 0;
-	if (!s->pitch_offset_seen || !s->y_x_seen || !track->dp_cntl_seen)
+	if (!s->pitch_offset_cntl)
+		refusal = "2D memory source lacks SRC_PITCH_OFFSET control";
+	else if (!s->pitch_offset_seen || !s->y_x_seen || !track->dp_cntl_seen)
 		refusal = "2D source geometry before SRC_PITCH_OFFSET, "
 			  "DP_GUI_MASTER_CNTL, SRC_Y_X, and DP_CNTL";
 	else if (!s->cpp)

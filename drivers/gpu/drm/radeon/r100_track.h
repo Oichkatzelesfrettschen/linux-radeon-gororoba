@@ -61,6 +61,8 @@ struct r100_cs_track_2d_src {
 	bool			pitch_offset_seen;
 	bool			gui_master_cntl_seen;
 	bool			pitch_offset_cntl;
+	bool			source_memory;
+	bool			source_required;
 	bool			y_x_seen;
 };
 
