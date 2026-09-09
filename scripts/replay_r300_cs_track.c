@@ -108,10 +108,14 @@
 #define R300_RB3D_AARESOLVE_PITCH	0x4E84
 #define R300_RB3D_AARESOLVE_CTL		0x4E88
 #define RADEON_DST_PITCH_OFFSET		0x142C
+#define RADEON_SRC_PITCH_OFFSET		0x1428
+#define RADEON_SRC_Y_X			0x1434
 #define RADEON_DST_Y_X			0x1438
+#define RADEON_DP_CNTL			0x16C0
 #define RADEON_DP_GUI_MASTER_CNTL	0x146C
 #define RADEON_DST_WIDTH_HEIGHT		0x1598
 #define RADEON_DST_HEIGHT_WIDTH		0x143C
+#define RADEON_GMC_SRC_PITCH_OFFSET_CNTL (1u << 0)
 #define RADEON_GMC_DST_PITCH_OFFSET_CNTL (1u << 1)
 
 #define R300_VAP_TCL_BYPASS		(1u << 8)
@@ -186,6 +190,18 @@ struct dst2d {
 	int y_x_seen;
 };
 
+struct src2d {
+	int bound;
+	unsigned int bo;
+	unsigned long object_size;
+	unsigned int pitch;
+	unsigned int offset;
+	unsigned int cpp;
+	unsigned int x, y;
+	int pitch_offset_seen, gui_master_cntl_seen, pitch_offset_cntl;
+	int y_x_seen;
+};
+
 struct track {
 	unsigned int num_cb;
 	unsigned int maxy;
@@ -214,6 +230,8 @@ struct track {
 	struct cb aa;
 	struct array arrays[R300_MAX_ARRAYS];
 	struct dst2d dst2d;
+	struct src2d src2d;
+	int dp_cntl_seen, xdir_left_to_right, ydir_top_to_bottom;
 };
 
 struct parser {
@@ -448,9 +466,10 @@ static int dst2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 	unsigned long bo_size = d->object_size;
 	const char *refusal = NULL;
 
-	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen)
+	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen ||
+	    !p->track.dp_cntl_seen)
 		refusal = "2D destination geometry before DST_PITCH_OFFSET, "
-			  "DP_GUI_MASTER_CNTL, and DST_Y_X";
+			  "DP_GUI_MASTER_CNTL, DST_Y_X, and DP_CNTL";
 	else if (!d->pitch_offset_cntl)
 		refusal = "2D destination taken from DEFAULT_PITCH_OFFSET "
 			  "rather than the relocated DST_PITCH_OFFSET";
@@ -460,22 +479,32 @@ static int dst2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 		refusal = "empty 2D destination rectangle";
 	else if (!d->pitch)
 		refusal = "2D destination pitch 0";
-	else if (mul_u32(d->x, d->cpp, &x_bytes) ||
-		 add_u32(d->x, width, &span_bytes) ||
-		 mul_u32(span_bytes, d->cpp, &span_bytes) ||
-		 mul_u32(d->y, d->pitch, &row0) ||
-		 add_u32(d->offset, row0, &row0) ||
-		 mul_u32(height - 1, d->pitch, &rows_bytes) ||
-		 add_u32(row0, rows_bytes, &last_row) ||
-		 add_u32(last_row, span_bytes, &end_byte))
-		refusal = "2D destination footprint overflows the 32-bit "
-			  "surface address";
-	else if (x_bytes >= d->pitch)
-		refusal = "2D destination x starts past the pitch";
-	else if (span_bytes > d->pitch)
-		refusal = "2D destination width overruns the pitch";
-	else if (end_byte > bo_size)
-		refusal = "2D destination rectangle past the buffer object";
+	else if ((!p->track.xdir_left_to_right && d->x < width - 1) ||
+		 (!p->track.ydir_top_to_bottom && d->y < height - 1))
+		refusal = "2D destination reverse direction starts before the surface";
+	if (!refusal) {
+		unsigned int x_start = p->track.xdir_left_to_right ? d->x :
+			d->x - (width - 1);
+		unsigned int y_start = p->track.ydir_top_to_bottom ? d->y :
+			d->y - (height - 1);
+
+		if (mul_u32(x_start, d->cpp, &x_bytes) ||
+		    mul_u32(width, d->cpp, &span_bytes) ||
+		    add_u32(x_bytes, span_bytes, &span_bytes) ||
+		    mul_u32(y_start, d->pitch, &row0) ||
+		    add_u32(d->offset, row0, &row0) ||
+		    mul_u32(height - 1, d->pitch, &rows_bytes) ||
+		    add_u32(row0, rows_bytes, &last_row) ||
+		    add_u32(last_row, span_bytes, &end_byte))
+			refusal = "2D destination footprint overflows the 32-bit "
+				  "surface address";
+		else if (x_bytes >= d->pitch)
+			refusal = "2D destination x starts past the pitch";
+		else if (span_bytes > d->pitch)
+			refusal = "2D destination width overruns the pitch";
+		else if (end_byte > bo_size)
+			refusal = "2D destination rectangle past the buffer object";
+	}
 
 	if (!refusal) {
 		note("  2D destination %ux%u at (%u,%u) pitch %u offset %u "
@@ -486,6 +515,62 @@ static int dst2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 	reject("%s: ib[%u]=0x%04X pitch %u offset %u cpp %u x %u y %u "
 	       "width %u height %u object %lu", refusal, idx, reg, d->pitch,
 	       d->offset, d->cpp, d->x, d->y, width, height, bo_size);
+	return -EINVAL;
+}
+
+static int src2d_check(struct parser *p, unsigned int idx, unsigned int reg,
+			       unsigned int width, unsigned int height)
+{
+	struct src2d *s = &p->track.src2d;
+	unsigned int x_bytes, span_bytes, rows_bytes, row0, last_row, end_byte;
+	unsigned long bo_size = s->object_size;
+	const char *refusal = NULL;
+
+	if (!s->gui_master_cntl_seen || !s->pitch_offset_cntl)
+		return 0;
+	if (!s->pitch_offset_seen || !s->y_x_seen || !p->track.dp_cntl_seen)
+		refusal = "2D source geometry before SRC_PITCH_OFFSET, "
+			  "DP_GUI_MASTER_CNTL, SRC_Y_X, and DP_CNTL";
+	else if (!s->cpp)
+		refusal = "unsupported 2D source datatype";
+	else if (!width || !height)
+		refusal = "empty 2D source rectangle";
+	else if (!s->pitch)
+		refusal = "2D source pitch 0";
+	else if ((!p->track.xdir_left_to_right && s->x < width - 1) ||
+		 (!p->track.ydir_top_to_bottom && s->y < height - 1))
+		refusal = "2D source reverse direction starts before the surface";
+	if (!refusal) {
+		unsigned int x_start = p->track.xdir_left_to_right ? s->x :
+			s->x - (width - 1);
+		unsigned int y_start = p->track.ydir_top_to_bottom ? s->y :
+			s->y - (height - 1);
+
+		if (mul_u32(x_start, s->cpp, &x_bytes) ||
+		    mul_u32(width, s->cpp, &span_bytes) ||
+		    add_u32(x_bytes, span_bytes, &span_bytes) ||
+		    mul_u32(y_start, s->pitch, &row0) ||
+		    add_u32(s->offset, row0, &row0) ||
+		    mul_u32(height - 1, s->pitch, &rows_bytes) ||
+		    add_u32(row0, rows_bytes, &last_row) ||
+		    add_u32(last_row, span_bytes, &end_byte))
+			refusal = "2D source footprint overflows the 32-bit surface address";
+		else if (x_bytes >= s->pitch)
+			refusal = "2D source x starts past the pitch";
+		else if (span_bytes > s->pitch)
+			refusal = "2D source width overruns the pitch";
+		else if (end_byte > bo_size)
+			refusal = "2D source rectangle past the buffer object";
+	}
+	if (!refusal) {
+		note("  2D source %ux%u at (%u,%u) pitch %u offset %u cpp %u: "
+		     "end %u within %lu\n", width, height, s->x, s->y,
+		     s->pitch, s->offset, s->cpp, end_byte, bo_size);
+		return 0;
+	}
+	reject("%s: ib[%u]=0x%04X pitch %u offset %u cpp %u x %u y %u "
+	       "width %u height %u object %lu", refusal, idx, reg, s->pitch,
+	       s->offset, s->cpp, s->x, s->y, width, height, bo_size);
 	return -EINVAL;
 }
 
@@ -746,11 +831,43 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		     p->bos[bo].role, t->dst2d.object_size, t->dst2d.offset,
 		     t->dst2d.pitch);
 		break;
+	case RADEON_SRC_PITCH_OFFSET:
+		cursor = p->idx;
+		r = next_reloc(p, &bo);
+		if (r) {
+			reject("no reloc for ib[%u]=0x%04X", idx, reg);
+			return r;
+		}
+		t->src2d.bound = 1;
+		t->src2d.bo = bo;
+		t->src2d.object_size = p->bos[bo].size;
+		t->src2d.offset = (v & 0x003fffff) << 10;
+		t->src2d.pitch = ((v >> 22) & 0xff) << 6;
+		t->src2d.pitch_offset_seen = 1;
+		note("  SRC_PITCH_OFFSET: reloc cursor %u -> entry %u (%s) "
+		     "size %lu base %u pitch %u\n", cursor, bo,
+		     p->bos[bo].role, t->src2d.object_size, t->src2d.offset,
+		     t->src2d.pitch);
+		break;
 	case RADEON_DP_GUI_MASTER_CNTL:
 		t->dst2d.cpp = dst2d_cpp((v >> 8) & 0xf);
+		t->src2d.cpp = t->dst2d.cpp;
 		t->dst2d.pitch_offset_cntl =
 			(v & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
+		t->src2d.pitch_offset_cntl =
+			(v & 1) != 0;
 		t->dst2d.gui_master_cntl_seen = 1;
+		t->src2d.gui_master_cntl_seen = 1;
+		break;
+	case RADEON_DP_CNTL:
+		t->xdir_left_to_right = (v & 1) != 0;
+		t->ydir_top_to_bottom = (v & 2) != 0;
+		t->dp_cntl_seen = 1;
+		break;
+	case RADEON_SRC_Y_X:
+		t->src2d.x = v & 0xffff;
+		t->src2d.y = v >> 16;
+		t->src2d.y_x_seen = 1;
 		break;
 	case RADEON_DST_Y_X:
 		t->dst2d.x = v & 0xffff;
@@ -758,11 +875,17 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		t->dst2d.y_x_seen = 1;
 		break;
 	case RADEON_DST_WIDTH_HEIGHT:
+		r = src2d_check(p, idx, reg, v >> 16, v & 0xffff);
+		if (r)
+			return r;
 		r = dst2d_check(p, idx, reg, v >> 16, v & 0xffff);
 		if (r)
 			return r;
 		break;
 	case RADEON_DST_HEIGHT_WIDTH:
+		r = src2d_check(p, idx, reg, v & 0xffff, v >> 16);
+		if (r)
+			return r;
 		r = dst2d_check(p, idx, reg, v & 0xffff, v >> 16);
 		if (r)
 			return r;
