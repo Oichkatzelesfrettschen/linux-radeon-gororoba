@@ -2481,7 +2481,6 @@ static unsigned r100_cs_2d_dst_cpp(unsigned datatype)
 	switch (datatype) {
 	case RADEON_COLOR_FORMAT_RGB332:
 	case RADEON_COLOR_FORMAT_Y8:
-	case RADEON_COLOR_FORMAT_RGB8:
 		return 1;
 	case RADEON_COLOR_FORMAT_ARGB1555:
 	case RADEON_COLOR_FORMAT_RGB565:

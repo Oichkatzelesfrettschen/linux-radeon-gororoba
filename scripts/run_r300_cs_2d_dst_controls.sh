@@ -293,6 +293,10 @@ assemble "${work}/cpp-unknown.bin" \
     "pitch_offset=256,0,0 scissor master=0 walk mask rect=0,0,1,1 ${epilogue}"
 expect reject "unsupported destination datatype (code 0)" \
     "unsupported 2D destination datatype" "${work}/cpp-unknown.bin"
+assemble "${work}/cpp-rgb8.bin" \
+    "pitch_offset=256,0,0 scissor master=9 walk mask rect=5,0,3,1 ${epilogue}"
+expect reject "RGB8 datatype 9 destination launch" \
+    "unsupported 2D destination datatype" "${work}/cpp-rgb8.bin"
 assemble "${work}/before-pitch.bin" \
     "scissor master=6 walk mask rect=0,0,1,1 pitch_offset=256,0,0 ${epilogue}"
 expect reject "geometry before DST_PITCH_OFFSET" \

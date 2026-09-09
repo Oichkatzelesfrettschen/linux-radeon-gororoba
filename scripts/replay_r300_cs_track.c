@@ -425,7 +425,7 @@ static int tcl_bypass_vtx_check(struct parser *p)
 static unsigned int dst2d_cpp(unsigned int datatype)
 {
 	switch (datatype) {
-	case 7: case 8: case 9:
+	case 7: case 8:
 		return 1;
 	case 3: case 4: case 11: case 12: case 15:
 		return 2;
