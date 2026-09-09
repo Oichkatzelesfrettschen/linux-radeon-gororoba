@@ -97,7 +97,7 @@ expect reject "forbidden register" \
 # A register the bitmap does not flag is written through unvalidated, which is
 # the arm that separates "forbidden" from "unchecked".
 expect accept "unflagged register passes unchecked" \
-    "${tool}" --set-dword "0=0x00001392" "${bundle}" "${ib}"
+	"${tool}" --set-dword "16=0x00001392" "${bundle}" "${ib}"
 # The relocation payload past the relocation chunk.
 reloc_payload=$(python3 - "$ib" <<'PY'
 import struct, sys
