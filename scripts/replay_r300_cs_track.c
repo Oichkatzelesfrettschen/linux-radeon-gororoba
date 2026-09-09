@@ -199,6 +199,7 @@ struct src2d {
 	unsigned int cpp;
 	unsigned int x, y;
 	int pitch_offset_seen, gui_master_cntl_seen, pitch_offset_cntl;
+	int source_memory, source_required;
 	int y_x_seen;
 };
 
@@ -526,9 +527,11 @@ static int src2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 	unsigned long bo_size = s->object_size;
 	const char *refusal = NULL;
 
-	if (!s->gui_master_cntl_seen || !s->pitch_offset_cntl)
+	if (!s->gui_master_cntl_seen || !s->source_required)
 		return 0;
-	if (!s->pitch_offset_seen || !s->y_x_seen || !p->track.dp_cntl_seen)
+	if (!s->pitch_offset_cntl)
+		refusal = "2D memory source lacks SRC_PITCH_OFFSET control";
+	else if (!s->pitch_offset_seen || !s->y_x_seen || !p->track.dp_cntl_seen)
 		refusal = "2D source geometry before SRC_PITCH_OFFSET, "
 			  "DP_GUI_MASTER_CNTL, SRC_Y_X, and DP_CNTL";
 	else if (!s->cpp)
@@ -856,6 +859,9 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 			(v & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
 		t->src2d.pitch_offset_cntl =
 			(v & 1) != 0;
+		t->src2d.source_memory =
+			(v & (7 << 24)) == (2 << 24);
+		t->src2d.source_required = t->src2d.source_memory;
 		t->dst2d.gui_master_cntl_seen = 1;
 		t->src2d.gui_master_cntl_seen = 1;
 		break;

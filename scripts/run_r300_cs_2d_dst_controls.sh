@@ -45,8 +45,10 @@ BUNDLE
 #   scissor                             SC_TOP_LEFT 0, SC_BOTTOM_RIGHT and
 #                                       DEFAULT_SC_BOTTOM_RIGHT 0x1fff1fff
 #   scissor=WORD                        the two bottom-right words = WORD
-#   master=DATATYPE[,nocntl][,src]       DP_GUI_MASTER_CNTL for a solid brush
-#                                       and ROP3 P at that datatype code
+#   master=DATATYPE[,nocntl][,src][,usesource]
+#                                       DP_GUI_MASTER_CNTL for a solid brush;
+#                                       src selects memory source and usesource
+#                                       selects ROP3 S for source-read tests
 #   walk                                DP_CNTL left-to-right, top-to-bottom
 #   mask                                DP_WRITE_MSK all lanes
 #   brush=COLOR                         DP_BRUSH_FRGD_CLR
@@ -97,9 +99,12 @@ for op in ops:
         datatype = int(a[0], 0)
         cntl = 0 if len(a) > 1 and a[1] == "nocntl" else (1 << 1)
         if "src" in a[1:]:
-            cntl |= 1
+            cntl |= 2 << 24
+            if "nocntl" not in a[1:]:
+                cntl |= 1
+        rop = 0x00cc0000 if "usesource" in a[1:] else 0x00f00000
         pkt0("DP_GUI_MASTER_CNTL", cntl | (13 << 4) | (datatype << 8) |
-             0x00f00000 | (1 << 28) | (1 << 30))
+             rop | (1 << 28) | (1 << 30))
     elif name == "walk":
         pkt0("DP_CNTL", 3)
     elif name == "walkrev":
@@ -166,7 +171,7 @@ expect() {
 prologue="pitch_offset=256,0,0 scissor master=6 walk mask"
 epilogue="flush wait"
 
-copy_prologue="pitch_offset=256,0,0 src_pitch_offset=256,0,2 srcyx=0,0 scissor master=6,src walk mask"
+copy_prologue="pitch_offset=256,0,0 src_pitch_offset=256,0,2 srcyx=0,0 scissor master=6,src,usesource walk mask"
 
 echo "known-good:"
 assemble "${work}/exact.bin" \
@@ -208,6 +213,16 @@ assemble "${work}/copy-source-no-reloc.bin" \
     "pitch_offset=256,0,0 src_pitch_offset=256,0 srcyx=0,0 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
 expect reject "missing source relocation" "no packet3 NOP" \
     "${work}/copy-source-no-reloc.bin"
+assemble "${work}/copy-source-no-control.bin" \
+    "pitch_offset=256,0,0 scissor master=6,nocntl,src,usesource walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "memory source without pitch control" \
+    "2D memory source lacks SRC_PITCH_OFFSET control" \
+    "${work}/copy-source-no-control.bin"
+assemble "${work}/copy-source-selection-after-binding.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=256,0,2 srcyx=0,0 scissor master=6 master=6,nocntl,src,usesource walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "memory source selected after source binding" \
+    "2D memory source lacks SRC_PITCH_OFFSET control" \
+    "${work}/copy-source-selection-after-binding.bin"
 assemble "${work}/copy-source-before-origin.bin" \
     "pitch_offset=256,0,0 src_pitch_offset=256,0,2 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
 expect reject "source launch before SRC_Y_X" \
