@@ -458,10 +458,13 @@ int radeon_fbdev_driver_fbdev_probe(struct drm_fb_helper *fb_helper,
 	struct radeon_device *rdev = fb_helper->dev->dev_private;
 	const struct drm_format_info *format_info;
 	struct drm_mode_fb_cmd2 mode_cmd = { };
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-	struct fb_info *info = fb_helper->info;
-#else
+#ifndef RADEON_DRM_FB_HELPER_ALLOC_INFO_PRESENT
+#error "Radeon fbdev allocation compatibility was not resolved by Kbuild"
+#endif
+#if RADEON_DRM_FB_HELPER_ALLOC_INFO_PRESENT
 	struct fb_info *info;
+#else
+	struct fb_info *info = fb_helper->info;
 #endif
 	struct drm_gem_object *gobj;
 	struct radeon_bo *rbo;
@@ -503,7 +506,7 @@ int radeon_fbdev_driver_fbdev_probe(struct drm_fb_helper *fb_helper,
 	fb_helper->funcs = &radeon_fbdev_fb_helper_funcs;
 	fb_helper->fb = fb;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+#if RADEON_DRM_FB_HELPER_ALLOC_INFO_PRESENT
 	/* okay we have an object now allocate the framebuffer */
 	info = drm_fb_helper_alloc_info(fb_helper);
 	if (IS_ERR(info)) {
@@ -535,7 +538,7 @@ int radeon_fbdev_driver_fbdev_probe(struct drm_fb_helper *fb_helper,
 
 	return 0;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+#if RADEON_DRM_FB_HELPER_ALLOC_INFO_PRESENT
 err_drm_framebuffer_unregister_private:
 	fb_helper->fb = NULL;
 	drm_framebuffer_unregister_private(fb);
