@@ -1236,6 +1236,7 @@ def check_suspend_fence_lock_context(root: Path) -> None:
         spans = lifecycle.direct_function_statements(tokens)
         statements = tuple(tokens[start:end] for start, end in spans)
         lock_tokens = lifecycle.c_tokens(lock)
+        unlock_tokens = lifecycle.c_tokens(unlock)
         loop_prefix = lifecycle.c_tokens("for (i = 0; i < RADEON_NUM_RINGS; i++)")
         direct_lock_indexes = [
             index
@@ -1247,14 +1248,56 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             for index, statement in enumerate(statements)
             if statement[: len(loop_prefix)] == loop_prefix
         ]
-        if len(direct_lock_indexes) != 1 or len(direct_loop_indexes) != 1:
+        direct_unlock_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if statement == unlock_tokens
+        ]
+        if (
+            len(direct_lock_indexes) != 1
+            or len(direct_loop_indexes) != 1
+            or len(direct_unlock_indexes) != 1
+        ):
             raise lifecycle.LifecycleError(
-                "suspend fence drain requires one direct lock and ring loop"
+                "suspend fence drain requires one direct lock, ring loop, and unlock"
             )
         if direct_lock_indexes[0] + 1 != direct_loop_indexes[0]:
             raise lifecycle.LifecycleError(
                 "suspend ring loop must directly follow ring lock acquisition"
             )
+        if direct_loop_indexes[0] + 1 != direct_unlock_indexes[0]:
+            raise lifecycle.LifecycleError(
+                "suspend ring unlock must directly follow the ring loop"
+            )
+        loop_statement = statements[direct_loop_indexes[0]]
+        for label, condition, expected_body in (
+            (
+                "suspend wait error unlock path differs",
+                "radeon_rs4xx_hardware_target(rdev)",
+                "mutex_unlock(&rdev->ring_lock); goto rs4xx_suspend_parked;",
+            ),
+            (
+                "suspend parked observation unlock path differs",
+                "radeon_rs4xx_hardware_target(rdev) && READ_ONCE(rdev->gpu_parked)",
+                "r = -EIO; mutex_unlock(&rdev->ring_lock); goto rs4xx_suspend_parked;",
+            ),
+        ):
+            expected_condition = lifecycle.c_tokens(condition)
+            matching_bodies = []
+            for index, token in enumerate(loop_statement[:-1]):
+                if token != "if" or loop_statement[index + 1] != "(":
+                    continue
+                condition_end = lifecycle.matching_token(
+                    loop_statement, index + 1, "(", ")"
+                )
+                if loop_statement[index + 2 : condition_end] == expected_condition:
+                    matching_bodies.append(
+                        lifecycle.if_statement_body(loop_statement, condition_end)
+                    )
+            if len(matching_bodies) != 1:
+                raise lifecycle.LifecycleError(f"{label}: guard count differs")
+            if matching_bodies[0] != lifecycle.c_tokens(expected_body):
+                raise lifecycle.LifecycleError(f"{label}: exact guard body differs")
     except lifecycle.LifecycleError as exc:
         raise ContractError(str(exc)) from exc
     require_order(
@@ -1408,6 +1451,15 @@ SOURCE_MUTATIONS = {
             "\t\t\t}"
         ),
     ),
+    "suspend wait error conditionally bypasses ring unlock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n\t\t\t\tgoto rs4xx_suspend_parked;",
+        (
+            "\t\t\t\tif (false)\n"
+            "\t\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+    ),
     "suspend parked observation leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         (
@@ -1417,10 +1469,29 @@ SOURCE_MUTATIONS = {
         ),
         ("\t\t\tr = -EIO;\n\t\t\tgoto rs4xx_suspend_parked;"),
     ),
+    "suspend parked observation conditionally bypasses ring unlock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t\t\tmutex_unlock(&rdev->ring_lock);\n\t\t\tgoto rs4xx_suspend_parked;",
+        (
+            "\t\t\tif (false)\n"
+            "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+    ),
     "suspend successful drain leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         "\t}\n\tmutex_unlock(&rdev->ring_lock);\n\n\tradeon_save_bios_scratch_regs(rdev);",
         "\t}\n\n\tradeon_save_bios_scratch_regs(rdev);",
+    ),
+    "suspend successful drain conditionally bypasses ring unlock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t}\n\tmutex_unlock(&rdev->ring_lock);\n\n\tradeon_save_bios_scratch_regs(rdev);",
+        (
+            "\t}\n"
+            "\tif (false)\n"
+            "\t\tmutex_unlock(&rdev->ring_lock);\n\n"
+            "\tradeon_save_bios_scratch_regs(rdev);"
+        ),
     ),
     "parked CS condition is inverted": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
