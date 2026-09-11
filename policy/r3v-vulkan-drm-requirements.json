@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "coverage": "Six initial rows carry fifteen selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, excerpt containment between consecutive declarations, and the declared supporting-claim inventory. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Allocation, image binding, packet grammar, suspend, exhaustive clause coverage, and behavioral qualification remain open.",
+  "coverage": "Eight initial rows carry twenty-one selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, excerpt containment between consecutive declarations, and the declared supporting-claim inventory. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Packet grammar, suspend, exhaustive clause coverage, and behavioral qualification remain open.",
   "sources": {
     "vulkan_commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
     "vulkan_repository": "https://github.com/KhronosGroup/Vulkan-Docs",
@@ -9,6 +9,42 @@
     "kernel_commit": "07e65682a835bb807420e079b56387cbf1c0b172"
   },
   "requirements": [
+    {
+      "id": "device-memory-allocation",
+      "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "    A successful returned allocation must: use the requested parameters --\n    no substitution is permitted by the implementation."},
+      "supporting_specifications": [
+        {"claim": "allocation-alignment", "chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "Allocations returned by fname:vkAllocateMemory are guaranteed to meet any\nalignment requirement of the implementation."},
+        {"claim": "allocation-size-failure", "chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "Some platforms may: have a limit on the maximum size of a single allocation.\nFor example, certain systems may: fail to create allocations with a size\ngreater than or equal to 4GB.\nSuch a limit is implementation-dependent, and if such a failure occurs then\nthe error ename:VK_ERROR_OUT_OF_DEVICE_MEMORY must: be returned."}
+      ],
+      "requirement": "Successful allocation preserves the requested Vulkan parameters and satisfies implementation alignment. A platform single-allocation size refusal returns OUT_OF_DEVICE_MEMORY.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "RS4XX_BO_TRANSACTION_ROOTS",
+      "mesa_discovery": "rg --fixed-strings 'r3v_AllocateMemory' src/amd/r300/vulkan/r3v_native_memory.c",
+      "kernel_discovery": ["rg --fixed-strings 'radeon_gem_create_ioctl' drivers/gpu/drm/radeon/radeon_gem.c", "rg --fixed-strings 'radeon_gem_object_create' drivers/gpu/drm/radeon/radeon_gem.c"],
+      "interface": "DRM_RADEON_GEM_CREATE size, alignment, initial_domain, flags, and GEM handle lifetime",
+      "test": "Exercise requested sizes at page and capacity boundaries, every advertised memory type, allocation failure cleanup, and placement pressure through the allocation implementation and GEM transport; compare requested logical size with backing size and advertised properties with effective access behavior.",
+      "boundary": "Vulkan allocation parameters and TTM placement are distinct. A placement retry establishes a kernel policy choice; violation requires evidence that an advertised Vulkan property or required access behavior fails. Extra page-rounded backing bytes do not enlarge the application's permitted allocation extent. Vulkan invalid usage and kernel object containment require separate controls.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "image-memory-binding",
+      "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindImageMemory-size-01049", "excerpt": "    The pname:size member of the sname:VkMemoryRequirements structure\n    returned from a call to fname:vkGetImageMemoryRequirements with\n    pname:image must: be less than or equal to the size of pname:memory\n    minus pname:memoryOffset"},
+      "supporting_specifications": [
+        {"claim": "allowed-memory-type", "chapter": "resources.txt", "anchor": "VUID-vkBindImageMemory-memory-01047", "excerpt": "    pname:memory must: have been allocated using one of the memory types\n    allowed in the pname:memoryTypeBits member of the\n    sname:VkMemoryRequirements structure returned from a call to\n    fname:vkGetImageMemoryRequirements with pname:image"},
+        {"claim": "aligned-offset", "chapter": "resources.txt", "anchor": "VUID-vkBindImageMemory-memoryOffset-01048", "excerpt": "    pname:memoryOffset must: be an integer multiple of the pname:alignment\n    member of the sname:VkMemoryRequirements structure returned from a call\n    to fname:vkGetImageMemoryRequirements with pname:image"}
+      ],
+      "requirement": "Valid image binding uses an allowed memory type and an aligned offset with enough allocation space for the reported requirements.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "CS_BO_RESERVATION_LOCKS",
+      "mesa_discovery": "rg --fixed-strings 'r3v_BindImageMemory' src/amd/r300/vulkan/r3v_native_image.c",
+      "kernel_discovery": ["rg --fixed-strings 'r300_cs_track_check' drivers/gpu/drm/radeon/r300.c", "rg --fixed-strings 'radeon_bo_list_validate' drivers/gpu/drm/radeon/radeon_cs.c"],
+      "interface": "Image footprint and binding offset become packet surface addresses within relocated GEM buffer objects",
+      "test": "Exercise valid exact-end bindings, aligned nonzero suballocations, layers, depth surfaces, and each supported tiling footprint through image binding and packet construction; run out-of-object packet controls through the actual parser independently of Vulkan invalid-usage controls.",
+      "boundary": "Vulkan valid usage constrains image binding by the application. Mesa owns image layout and offset translation; DRM independently contains packet surface accesses within GEM objects. A Vulkan invalid-usage refusal alone establishes neither a DRM defect nor parser containment.",
+      "test_status": "not_run"
+    },
     {
       "id": "host-coherent-memory-type",
       "supporting_specifications": [

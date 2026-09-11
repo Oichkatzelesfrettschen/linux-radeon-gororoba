@@ -43,6 +43,8 @@ ANCHOR_DECLARATION = re.compile(
     r"^[ \t]*(?:\*[ \t]+)?\[\[([A-Za-z0-9_-]+)\]\][ \t]*$", re.MULTILINE
 )
 SUPPORTING_CLAIMS = {
+    "device-memory-allocation": {"allocation-alignment", "allocation-size-failure"},
+    "image-memory-binding": {"allowed-memory-type", "aligned-offset"},
     "host-coherent-memory-type": {"cache-maintenance"},
     "buffer-memory-binding": {"allowed-memory-type", "aligned-offset"},
     "resource-access-dependencies": {"access-scopes"},

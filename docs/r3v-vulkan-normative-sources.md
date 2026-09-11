@@ -30,8 +30,9 @@ cross-reference to an anchor supplies neither a declaration nor an excerpt.
 
 ## Evidence boundary
 
-The fifteen excerpts cover the coherent memory-type minimum and cache semantics,
-buffer binding size, alignment and memory types, memory dependency ordering,
+The twenty-one excerpts cover allocation parameters, alignment and size failure,
+the coherent memory-type minimum and cache semantics, buffer and image binding
+size, alignment and memory types, memory dependency ordering,
 availability and visibility, access scopes, queue fence scope, and finite waits
 after device loss. Terminal logical-device loss and object lifetime have separate
 supporting clauses. The lost-device wait excerpt preserves the swapchain
@@ -40,8 +41,8 @@ conditional directives so extension scope remains explicit.
 The excerpt check establishes source identity and location. Schema version 2
 requires the declared supporting-claim inventory and rejects duplicate or missing
 claims and requirements. Human review still determines whether a quotation
-supports each interpretation. Allocation, image binding, packet admission, and
-suspend require additional mappings. The tracker keeps
+supports each interpretation. Packet admission and suspend require additional
+mappings. The tracker keeps
 behavioral tests at `not_run`; parser execution and retained target observations
 remain separate evidence in `steinmarder-r300`.
 
@@ -49,3 +50,10 @@ A signaled fence and a visible payload answer different questions. Fence scope
 orders operations; availability and visibility govern the values that consumers
 can access. Qualification tests record ordering and directional payload checks
 separately.
+
+R3V owns image layout and translates binding offsets into packet addresses.
+The kernel parser validates those addresses against GEM objects. Application
+valid-usage rules and kernel containment therefore have separate negative
+controls. Likewise, TTM placement policy and advertised Vulkan memory properties
+name different contracts; a placement retry alone establishes a policy choice,
+while a property violation needs an observable failure of the advertised behavior.
