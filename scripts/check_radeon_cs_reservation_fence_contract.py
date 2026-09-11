@@ -1253,6 +1253,16 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             for index, statement in enumerate(statements)
             if statement == unlock_tokens
         ]
+        direct_goto_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if statement[:1] == ("goto",)
+        ]
+        goto_targets = {
+            tokens[index + 1]
+            for index, token in enumerate(tokens[:-2])
+            if token == "goto" and tokens[index + 2] == ";"
+        }
         if (
             len(direct_lock_indexes) != 1
             or len(direct_loop_indexes) != 1
@@ -1260,6 +1270,14 @@ def check_suspend_fence_lock_context(root: Path) -> None:
         ):
             raise lifecycle.LifecycleError(
                 "suspend fence drain requires one direct lock, ring loop, and unlock"
+            )
+        if direct_goto_indexes:
+            raise lifecycle.LifecycleError(
+                "suspend function-level goto bypasses the fence drain"
+            )
+        if goto_targets != {"rs4xx_suspend_parked"}:
+            raise lifecycle.LifecycleError(
+                "suspend goto targets must only reach the parked exit"
             )
         if direct_lock_indexes[0] + 1 != direct_loop_indexes[0]:
             raise lifecycle.LifecycleError(
@@ -1281,21 +1299,25 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             lifecycle.c_tokens(statement)
             for statement in (
                 "r = radeon_fence_wait_empty(rdev, i);",
-                "if (r) {"
-                "if (radeon_rs4xx_hardware_target(rdev)) {"
-                "mutex_unlock(&rdev->ring_lock);"
-                "goto rs4xx_suspend_parked;"
-                "}"
-                "radeon_fence_driver_force_completion(rdev, i);"
-                "} else {"
-                "flush_delayed_work(&rdev->fence_drv[i].lockup_work);"
-                "}",
-                "if (radeon_rs4xx_hardware_target(rdev) && "
-                "READ_ONCE(rdev->gpu_parked)) {"
-                "r = -EIO;"
-                "mutex_unlock(&rdev->ring_lock);"
-                "goto rs4xx_suspend_parked;"
-                "}",
+                (
+                    "if (r) {"
+                    "if (radeon_rs4xx_hardware_target(rdev)) {"
+                    "mutex_unlock(&rdev->ring_lock);"
+                    "goto rs4xx_suspend_parked;"
+                    "}"
+                    "radeon_fence_driver_force_completion(rdev, i);"
+                    "} else {"
+                    "flush_delayed_work(&rdev->fence_drv[i].lockup_work);"
+                    "}"
+                ),
+                (
+                    "if (radeon_rs4xx_hardware_target(rdev) && "
+                    "READ_ONCE(rdev->gpu_parked)) {"
+                    "r = -EIO;"
+                    "mutex_unlock(&rdev->ring_lock);"
+                    "goto rs4xx_suspend_parked;"
+                    "}"
+                ),
             )
         )
         if loop_body != expected_loop_body:
@@ -1441,11 +1463,22 @@ SOURCE_MUTATIONS = {
             "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
         ),
     ),
+    "suspend function-level goto bypasses fence drain": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tgoto rs4xx_suspend_parked;\n"
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
     "suspend fence drain hides loop body in unreachable guard": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
-        "\tmutex_lock(&rdev->ring_lock);\n"
-        "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) if (false) {",
+        (
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) if (false) {"
+        ),
     ),
     "suspend wait error leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
@@ -2064,6 +2097,9 @@ SOURCE_EXPECTED_ERRORS = {
     "reset implementation drops writer lock": (
         "reset backup, reset, replay, and force-completion structure: "
         "missing or out of order: down_write(&rdev->exclusive_lock)"
+    ),
+    "suspend function-level goto bypasses fence drain": (
+        "suspend function-level goto bypasses the fence drain"
     ),
     "parked CS condition is inverted": (
         "command-submission projected path requires one direct parked guard"
