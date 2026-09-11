@@ -282,11 +282,22 @@ def validate_union_only_merge(
     git_reader: Callable[..., str] = git_output,
     tree_reader: Callable[[Path, str, str], str | None] = tree_entry,
     pathspec: str | None = DRIVER_ROOT.as_posix(),
+    authoritative_parent: str | None = None,
+    authoritative_path: Callable[[str], bool] | None = None,
 ) -> None:
     require(
         len(parents) == 2,
         f"post-tag source merge has {len(parents)} parents: {commit}",
     )
+    require(
+        (authoritative_parent is None) == (authoritative_path is None),
+        "authoritative merge parent and path policy must be paired",
+    )
+    if authoritative_parent is not None:
+        require(
+            parents.count(authoritative_parent) == 1,
+            "authoritative merge parent is not unique",
+        )
     merge_bases = git_reader(root, "merge-base", "--all", *parents).splitlines()
     require(
         len(merge_bases) == 1,
@@ -308,6 +319,15 @@ def validate_union_only_merge(
         union_paths.update(path for path in changed_paths.splitlines() if path)
     require(bool(union_paths), f"post-tag union merge is path-empty: {commit}")
     for repository_path in sorted(union_paths):
+        if authoritative_path is not None and authoritative_path(repository_path):
+            authoritative_entry = tree_reader(
+                root, authoritative_parent, repository_path
+            )
+            require(
+                tree_reader(root, commit, repository_path) == authoritative_entry,
+                f"union merge changes authoritative parent content: {repository_path}",
+            )
+            continue
         validate_union_path(
             tree_reader(root, merge_base, repository_path),
             tree_reader(root, parents[0], repository_path),
@@ -662,6 +682,46 @@ def self_test(root: Path) -> int:
         tree_reader=merge_tree_reader("second-change"),
         pathspec=None,
     )
+
+    ordinary_tree_reader = merge_tree_reader("second-change")
+
+    def authoritative_tree_reader(
+        _root: Path, treeish: str, source_path: str
+    ) -> str | None:
+        if treeish == "result" and source_path == first_path:
+            return "base-first"
+        return ordinary_tree_reader(_root, treeish, source_path)
+
+    validate_union_only_merge(
+        root,
+        "result",
+        ["first", "second"],
+        git_reader=merge_git_reader((first_path, second_path)),
+        tree_reader=authoritative_tree_reader,
+        pathspec=None,
+        authoritative_parent="second",
+        authoritative_path=lambda path: path == first_path,
+    )
+    for authoritative_parent, authoritative_path in (
+        ("second", None),
+        (None, lambda path: path == first_path),
+        ("absent", lambda path: path == first_path),
+    ):
+        try:
+            validate_union_only_merge(
+                root,
+                "result",
+                ["first", "second"],
+                git_reader=merge_git_reader((first_path, second_path)),
+                tree_reader=merge_tree_reader("second-change"),
+                pathspec=None,
+                authoritative_parent=authoritative_parent,
+                authoritative_path=authoritative_path,
+            )
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted invalid merge authority")
     try:
         validate_union_only_merge(
             root,
