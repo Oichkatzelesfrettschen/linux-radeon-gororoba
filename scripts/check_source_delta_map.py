@@ -168,6 +168,48 @@ def validate_appended_map_union(contents: list[bytes]) -> None:
         keys.add(key)
 
 
+def map_row_identity(row: dict[str, str]) -> tuple[str, str, str, str]:
+    return tuple(row[field] for field in (
+        "delta_id", "source_commit", "source_path", "symbol_or_range"
+    ))
+
+
+def validate_crisscross_map_union(
+    contents: list[bytes], authoritative_index: int
+) -> None:
+    first, second, result = (
+        parse_map(content.decode("utf-8")) for content in contents
+    )
+    keyed_parents = []
+    for rows in (first, second):
+        keyed = {map_row_identity(row): row for row in rows}
+        require(len(keyed) == len(rows), "source map parent duplicates a row identity")
+        keyed_parents.append(keyed)
+    keyed_result = {map_row_identity(row): row for row in result}
+    require(len(keyed_result) == len(result), "source map union duplicates a row identity")
+    expected_keys = set(keyed_parents[0]) | set(keyed_parents[1])
+    require(set(keyed_result) == expected_keys, "source map row union differs")
+    for key in expected_keys:
+        parent_rows = [parent[key] for parent in keyed_parents if key in parent]
+        require(
+            all(row == parent_rows[0] for row in parent_rows[1:]),
+            "source map parents disagree on a shared row identity",
+        )
+        require(
+            keyed_result[key] == parent_rows[0],
+            "source map union alters a parent row",
+        )
+    require(authoritative_index in {0, 1}, "source map authority index is invalid")
+    parent_rows = (first, second)
+    authoritative_rows = parent_rows[authoritative_index]
+    other_rows = parent_rows[1 - authoritative_index]
+    authoritative_keys = {map_row_identity(row) for row in authoritative_rows}
+    expected_rows = authoritative_rows + [
+        row for row in other_rows if map_row_identity(row) not in authoritative_keys
+    ]
+    require(result == expected_rows, "source map union order differs from authority")
+
+
 def is_line_insertion_superset(base: bytes, candidate: bytes) -> bool:
     base_lines = iter(base.splitlines(keepends=True))
     expected = next(base_lines, None)
@@ -187,6 +229,29 @@ def validate_insertion_superset_merge(contents: list[bytes]) -> bool:
     if result == second and first != second:
         return is_line_insertion_superset(first, second)
     return False
+
+
+def recursive_merge_tree(root: Path, parents: list[str]) -> tuple[str, set[str]]:
+    result = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--messages", *parents],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        check=False,
+    )
+    require(result.returncode in {0, 1}, "recursive merge-tree execution failed")
+    require(not result.stderr, "recursive merge-tree wrote diagnostics to stderr")
+    lines = result.stdout.splitlines()
+    require(bool(lines) and SHA40.fullmatch(lines[0]) is not None,
+            "recursive merge-tree omitted its tree identity")
+    conflict_paths = {
+        match.group(1)
+        for line in lines[1:]
+        if (match := re.fullmatch(r"[0-9]{6} [0-9a-f]{40} [123]\t(.+)", line))
+    }
+    require(
+        result.returncode == (1 if conflict_paths else 0),
+        "recursive merge-tree status differs from its conflict entries",
+    )
+    return lines[0], conflict_paths
 
 
 def validate_merged_blobs(
@@ -299,24 +364,29 @@ def validate_union_only_merge(
             "authoritative merge parent is not unique",
         )
     merge_bases = git_reader(root, "merge-base", "--all", *parents).splitlines()
-    require(
-        len(merge_bases) == 1,
-        f"post-tag source merge has {len(merge_bases)} merge bases: {commit}",
-    )
-    merge_base = merge_bases[0]
+    require(bool(merge_bases), f"post-tag source merge has no merge base: {commit}")
+    recursive_tree = None
+    if len(merge_bases) > 1:
+        recursive_tree, conflict_paths = recursive_merge_tree(root, parents)
+        require(
+            conflict_paths <= {MAP_PATH.as_posix()},
+            "recursive source merge conflicts outside the source map: "
+            + ", ".join(sorted(conflict_paths)),
+        )
     union_paths: set[str] = set()
-    for treeish in (*parents, commit):
-        arguments = [
-            "diff",
-            "--name-only",
-            "--no-renames",
-            merge_base,
-            treeish,
-        ]
-        if pathspec is not None:
-            arguments.extend(("--", pathspec))
-        changed_paths = git_reader(root, *arguments)
-        union_paths.update(path for path in changed_paths.splitlines() if path)
+    for merge_base in merge_bases:
+        for treeish in (*parents, commit):
+            arguments = [
+                "diff",
+                "--name-only",
+                "--no-renames",
+                merge_base,
+                treeish,
+            ]
+            if pathspec is not None:
+                arguments.extend(("--", pathspec))
+            changed_paths = git_reader(root, *arguments)
+            union_paths.update(path for path in changed_paths.splitlines() if path)
     require(bool(union_paths), f"post-tag union merge is path-empty: {commit}")
     for repository_path in sorted(union_paths):
         if authoritative_path is not None and authoritative_path(repository_path):
@@ -326,6 +396,34 @@ def validate_union_only_merge(
             require(
                 tree_reader(root, commit, repository_path) == authoritative_entry,
                 f"union merge changes authoritative parent content: {repository_path}",
+            )
+            continue
+        if recursive_tree is not None:
+            if repository_path == MAP_PATH.as_posix():
+                entries = [
+                    tree_reader(root, treeish, repository_path)
+                    for treeish in (*parents, commit)
+                ]
+                parsed_entries = []
+                for entry in entries:
+                    require(entry is not None, "crisscross source map is absent")
+                    fields = entry.split()
+                    require(
+                        len(fields) == 3 and fields[0] == "100644"
+                        and fields[1] == "blob"
+                        and SHA40.fullmatch(fields[2]) is not None,
+                        "crisscross source map is not a regular blob",
+                    )
+                    parsed_entries.append(fields)
+                validate_crisscross_map_union(
+                    [read_blob(root, fields[2]) for fields in parsed_entries],
+                    parents.index(authoritative_parent),
+                )
+                continue
+            require(
+                tree_reader(root, commit, repository_path)
+                == tree_reader(root, recursive_tree, repository_path),
+                f"source merge differs from recursive result: {repository_path}",
             )
             continue
         validate_union_path(
@@ -906,6 +1004,27 @@ def self_test(root: Path) -> int:
             rejection_count += 1
         else:
             raise DeltaMapError("self-test accepted an invalid appended map union")
+
+    validate_crisscross_map_union([
+        map_first, map_second, map_base + first_suffix + second_suffix,
+    ], 0)
+    validate_crisscross_map_union([
+        map_first, map_second, map_base + second_suffix + first_suffix,
+    ], 1)
+    crisscross_invalid = (
+        map_base + first_suffix,
+        map_base + first_suffix + second_suffix + map_row("novel"),
+        map_base + first_suffix + first_suffix + second_suffix,
+        map_base + map_row("first-two") + map_row("first-one") + second_suffix,
+        (map_base + first_suffix + second_suffix).replace(b"first-one", b"changed"),
+    )
+    for result in crisscross_invalid:
+        try:
+            validate_crisscross_map_union([map_first, map_second, result], 0)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid crisscross map union")
 
     print(f"source delta map calibration: {rejection_count} invalid classes rejected")
     return 0
