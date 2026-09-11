@@ -50,6 +50,22 @@ struct r100_cs_track_2d_dst {
 	bool			y_x_seen;
 };
 
+struct r100_cs_track_2d_src {
+	struct radeon_bo	*robj;
+	unsigned long		object_size;
+	unsigned		pitch;
+	unsigned		offset;
+	unsigned		cpp;
+	unsigned		x;
+	unsigned		y;
+	bool			pitch_offset_seen;
+	bool			gui_master_cntl_seen;
+	bool			pitch_offset_cntl;
+	bool			source_memory;
+	bool			source_required;
+	bool			y_x_seen;
+};
+
 struct r100_cs_cube_info {
 	struct radeon_bo	*robj;
 	unsigned		offset;
@@ -109,6 +125,10 @@ struct r100_cs_track {
 	struct r100_cs_track_cb 	aa;
 	struct r100_cs_track_texture	textures[R300_TRACK_MAX_TEXTURE];
 	struct r100_cs_track_2d_dst	dst2d;
+	struct r100_cs_track_2d_src	src2d;
+	bool				dp_cntl_seen;
+	bool				xdir_left_to_right;
+	bool				ydir_top_to_bottom;
 	bool				z_enabled;
 	bool                            separate_cube;
 	bool				zb_cb_clear;
@@ -144,10 +164,19 @@ void r100_cs_track_2d_dst_bind(struct r100_cs_track *track,
 void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
 					  u32 value);
 void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value);
+void r100_cs_track_2d_src_bind(struct r100_cs_track *track,
+				       struct radeon_bo *robj, u32 offset,
+				       u32 pitch);
+void r100_cs_track_2d_src_y_x(struct r100_cs_track *track, u32 value);
+void r100_cs_track_2d_dp_cntl(struct r100_cs_track *track, u32 value);
 int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
 			       struct radeon_cs_packet *pkt,
 			       unsigned idx, unsigned reg,
 			       u32 width, u32 height);
+int r100_cs_track_2d_src_check(struct radeon_cs_parser *p,
+				       struct radeon_cs_packet *pkt,
+				       unsigned idx, unsigned reg,
+				       u32 width, u32 height);
 int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
 			     struct radeon_cs_packet *pkt,
 			     int idx);
