@@ -33,6 +33,9 @@ CS_DIRECT_PREFIX_SHA256 = {
     "ioctl": "34d442fa506862b82b7d389cf62034e7c950f2c0dd51ea9d999cdeb1a4383839",
     "next_reloc": "bd02f061ab8376685f57aaaf9e108cc2ac1a67bbd90a27abb082442393caaa2e",
 }
+SUSPEND_DRAIN_DIRECT_PREFIX_SHA256 = (
+    "27b08d4967294314ccd455c27198aa83d5130c4233a6f77c33d0ade85d5069dc"
+)
 EXPECTED_POLICY_ROW_SHA256 = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
     "CS_PARKED_EARLY_REFUSAL": "54c22fe4390532a7476fd666051efb5748ed929d2f5dcaab9ef5dfdd7ce2af22",
@@ -1279,6 +1282,12 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             raise lifecycle.LifecycleError(
                 "suspend goto targets must only reach the parked exit"
             )
+        lifecycle.require_direct_statement_prefix_sha256(
+            "suspend fence drain lock reachability",
+            statements,
+            direct_lock_indexes[0],
+            SUSPEND_DRAIN_DIRECT_PREFIX_SHA256,
+        )
         if direct_lock_indexes[0] + 1 != direct_loop_indexes[0]:
             raise lifecycle.LifecycleError(
                 "suspend ring loop must directly follow ring lock acquisition"
@@ -1468,6 +1477,16 @@ SOURCE_MUTATIONS = {
         "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
         (
             "\tgoto rs4xx_suspend_parked;\n"
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
+    "suspend conditional goto bypasses fence drain": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tif (true)\n"
+            "\t\tgoto rs4xx_suspend_parked;\n"
             "\tmutex_lock(&rdev->ring_lock);\n"
             "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
         ),
@@ -2100,6 +2119,9 @@ SOURCE_EXPECTED_ERRORS = {
     ),
     "suspend function-level goto bypasses fence drain": (
         "suspend function-level goto bypasses the fence drain"
+    ),
+    "suspend conditional goto bypasses fence drain": (
+        "suspend fence drain lock reachability: exact direct statement prefix differs"
     ),
     "parked CS condition is inverted": (
         "command-submission projected path requires one direct parked guard"
