@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "coverage": "Six initial rows carry selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, and excerpt containment between consecutive declarations. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Allocation, image binding, packet grammar, suspend, complete clause coverage, and behavioral qualification remain open.",
+  "schema_version": 2,
+  "coverage": "Six initial rows carry fifteen selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, excerpt containment between consecutive declarations, and the declared supporting-claim inventory. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Allocation, image binding, packet grammar, suspend, exhaustive clause coverage, and behavioral qualification remain open.",
   "sources": {
     "vulkan_commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
     "vulkan_repository": "https://github.com/KhronosGroup/Vulkan-Docs",
@@ -11,6 +11,9 @@
   "requirements": [
     {
       "id": "host-coherent-memory-type",
+      "supporting_specifications": [
+        {"claim": "cache-maintenance", "chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "  * ename:VK_MEMORY_PROPERTY_HOST_COHERENT_BIT bit indicates that the host\n    cache management commands flink:vkFlushMappedMemoryRanges and\n    flink:vkInvalidateMappedMemoryRanges are not needed to flush host writes\n    to the device or make device writes visible to the host, respectively."}
+      ],
       "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "There must: be at least one memory type with both the\nename:VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT and\nename:VK_MEMORY_PROPERTY_HOST_COHERENT_BIT bits set in its\npname:propertyFlags."},
       "requirement": "At least one memory type is both HOST_VISIBLE and HOST_COHERENT. Coherent memory requires neither application flush nor application invalidation for the respective host and device writes.",
       "classification": "missing_validation",
@@ -25,6 +28,10 @@
     },
     {
       "id": "buffer-memory-binding",
+      "supporting_specifications": [
+        {"claim": "allowed-memory-type", "chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-memory-01035", "excerpt": "    pname:memory must: have been allocated using one of the memory types\n    allowed in the pname:memoryTypeBits member of the\n    sname:VkMemoryRequirements structure returned from a call to\n    fname:vkGetBufferMemoryRequirements with pname:buffer"},
+        {"claim": "aligned-offset", "chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-memoryOffset-01036", "excerpt": "    pname:memoryOffset must: be an integer multiple of the pname:alignment\n    member of the sname:VkMemoryRequirements structure returned from a call\n    to fname:vkGetBufferMemoryRequirements with pname:buffer"}
+      ],
       "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-size-01037", "excerpt": "    The pname:size member of the sname:VkMemoryRequirements structure\n    returned from a call to fname:vkGetBufferMemoryRequirements with\n    pname:buffer must: be less than or equal to the size of pname:memory\n    minus pname:memoryOffset"},
       "requirement": "A valid buffer binding fits the required byte size within the allocation after the binding offset. Related valid usage requires an allowed memory type and aligned offset.",
       "classification": "missing_validation",
@@ -39,6 +46,9 @@
     },
     {
       "id": "resource-access-dependencies",
+      "supporting_specifications": [
+        {"claim": "access-scopes", "chapter": "synchronization.txt", "anchor": "synchronization-dependencies-access-scopes", "excerpt": "The specific memory accesses that are made available and visible are defined\nby the _access scopes_ of a memory dependency.\nAny type of access that is in a memory dependency's first access scope and\noccurs in *A'* is made available.\nAny type of access that is in a memory dependency's second access scope and\noccurs in *B'* has any available writes made visible to it.\nAny type of operation that is not in a synchronization command's access\nscopes will not be included in the resulting dependency."}
+      ],
       "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory", "excerpt": "A _memory dependency_ is an execution dependency which includes availability\nand visibility operations such that:\n\n  * The first set of operations happens-before the availability operation.\n  * The availability operation happens-before the visibility operation.\n  * The visibility operation happens-before the second set of operations."},
       "requirement": "Memory dependencies order operations and include availability and visibility for their access scopes.",
       "classification": "missing_validation",
@@ -58,6 +68,10 @@
     },
     {
       "id": "memory-availability-visibility",
+      "supporting_specifications": [
+        {"claim": "availability-operations", "chapter": "synchronization.txt", "anchor": "synchronization-dependencies-available-and-visible", "excerpt": "_Availability operations_ cause the values generated by specified memory\nwrite accesses to become _available_ for future access.\nAny available value remains available until a subsequent write to the same\nmemory location occurs (whether it is made available or not) or the memory\nis freed."},
+        {"claim": "visibility-operations", "chapter": "synchronization.txt", "anchor": "synchronization-dependencies-available-and-visible", "excerpt": "_Visibility operations_ cause any available values to become _visible_ to\nspecified memory accesses."}
+      ],
       "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory", "excerpt": "Once written values are made visible to a particular type of memory access,\nthey can: be read or written by that type of memory access.\nMost synchronization commands in Vulkan define a memory dependency."},
       "requirement": "Written values become available and visible to the accesses included in the memory dependency.",
       "classification": "hardware_uncertainty",
@@ -72,6 +86,9 @@
     },
     {
       "id": "queue-fence-completion",
+      "supporting_specifications": [
+        {"claim": "memory-access-scopes", "chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling", "excerpt": "The first <<synchronization-dependencies-access-scopes, access scope>>\nincludes all memory access performed by the device.\n\nThe second <<synchronization-dependencies-access-scopes, access scope>> is\nempty."}
+      ],
       "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling", "excerpt": "The first <<synchronization-dependencies-scopes, synchronization scope>>\nincludes every batch submitted in the same <<devsandqueues-submission, queue\nsubmission>> command.\nFence signal operations that are defined by flink:vkQueueSubmit additionally\ninclude in the first synchronization scope all previous queue submissions to\nthe same queue via flink:vkQueueSubmit."},
       "requirement": "The fence signal operation follows the submitted batches and the earlier queue operations included in its synchronization scope.",
       "classification": "missing_validation",
@@ -86,6 +103,10 @@
     },
     {
       "id": "device-loss-finite-waits",
+      "supporting_specifications": [
+        {"claim": "terminal-logical-device", "chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "It is not possible to reset the logical device to a non-lost state, however\nthe lost state is specific to a logical device (sname:VkDevice), and the\ncorresponding physical device (sname:VkPhysicalDevice) may: be otherwise\nunaffected."},
+        {"claim": "object-lifetime", "chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "When a device is lost, its child objects are not implicitly destroyed and\ntheir handles are still valid.\nThose objects must: still be destroyed before their parents or the device\ncan: be destroyed (see the <<fundamentals-objectmodel-lifetime,Object\nLifetime>> section).\nThe host address space corresponding to device memory mapped using\nflink:vkMapMemory is still valid, and host memory accesses to these mapped\nregions are still valid, but the contents are undefined."}
+      ],
       "specification": {"chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "Commands that wait indefinitely for device execution (namely\nflink:vkDeviceWaitIdle, flink:vkQueueWaitIdle, flink:vkWaitForFences\nifdef::VK_KHR_swapchain[]\nor flink:vkAcquireNextImageKHR\nendif::VK_KHR_swapchain[]\nwith a maximum pname:timeout, and flink:vkGetQueryPoolResults with the\nename:VK_QUERY_RESULT_WAIT_BIT bit set in pname:flags) must: return in\nfinite time even in the case of a lost device, and return either\nename:VK_SUCCESS or ename:VK_ERROR_DEVICE_LOST."},
       "requirement": "Device loss is terminal for the logical device. Covered indefinite waits return in finite time with VK_SUCCESS or VK_ERROR_DEVICE_LOST; object handles remain valid for destruction and mapped contents become undefined.",
       "classification": "missing_validation",

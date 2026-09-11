@@ -42,6 +42,14 @@ CHAPTER_BLOBS = {
 ANCHOR_DECLARATION = re.compile(
     r"^[ \t]*(?:\*[ \t]+)?\[\[([A-Za-z0-9_-]+)\]\][ \t]*$", re.MULTILINE
 )
+SUPPORTING_CLAIMS = {
+    "host-coherent-memory-type": {"cache-maintenance"},
+    "buffer-memory-binding": {"allowed-memory-type", "aligned-offset"},
+    "resource-access-dependencies": {"access-scopes"},
+    "memory-availability-visibility": {"availability-operations", "visibility-operations"},
+    "queue-fence-completion": {"memory-access-scopes"},
+    "device-loss-finite-waits": {"terminal-logical-device", "object-lifetime"},
+}
 
 
 def require(condition: bool, message: str) -> None:
@@ -102,13 +110,14 @@ def check_specification(specification: dict, vulkan: Path) -> None:
 
 
 def check(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> None:
-    require(document["schema_version"] == 1, "unsupported schema")
+    require(document["schema_version"] == 2, "unsupported schema")
     require(document["sources"] == SOURCE_IDENTITY, "source identity drift")
     require(bool(document["coverage"].strip()), "missing coverage boundary")
     rows = document["requirements"]
     require(isinstance(rows, list) and bool(rows), "empty requirement list")
     identifiers = [row["id"] for row in rows]
     require(len(set(identifiers)) == len(identifiers), "duplicate requirement id")
+    require(set(identifiers) == set(SUPPORTING_CLAIMS), "requirement coverage drift")
     policy_ids = set()
     for ledger in LEDGERS:
         text = source_text(kernel, SOURCE_IDENTITY["kernel_commit"], ledger)
@@ -121,6 +130,13 @@ def check(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> None:
         for field in ("requirement", "interface", "test", "boundary"):
             require(bool(row[field].strip()), f"empty {field}: {row['id']}")
         check_specification(row["specification"], vulkan)
+        supporting = row["supporting_specifications"]
+        require(isinstance(supporting, list), "supporting specifications must be a list")
+        claims = [clause["claim"] for clause in supporting]
+        require(len(set(claims)) == len(claims), "duplicate supporting claim")
+        require(set(claims) == SUPPORTING_CLAIMS[row["id"]], "supporting coverage drift")
+        for clause in supporting:
+            check_specification(clause, vulkan)
         require(row["test_status"] == "not_run",
                 "execution results require a retained-evidence schema extension")
         check_discovery(mesa, SOURCE_IDENTITY["mesa_commit"], row["mesa_discovery"])
@@ -137,6 +153,7 @@ def selftest(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> int:
         ("kernel_policy_row", "ABSENT_POLICY_ROW"), ("requirement", ""),
         ("test", ""), ("boundary", ""), ("test_status", "passed"),
         ("kernel_discovery", []),
+        ("supporting_specifications", []),
         ("mesa_discovery", "rg --fixed-strings absent_symbol missing.c"),
         ("mesa_discovery", "rg --fixed-strings absent_symbol ../outside.c"),
         ("mesa_discovery", "rg --fixed-strings '' file.c"),
@@ -166,11 +183,27 @@ def selftest(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> int:
         mutated["requirements"][0][field] = value
         bad_documents.append(mutated)
     conditional = copy.deepcopy(document)
-    lost_specification = conditional["requirements"][-1]["specification"]
+    lost_specification = next(row["specification"] for row in conditional["requirements"]
+                              if row["id"] == "device-loss-finite-waits")
     lost_specification["excerpt"] = lost_specification["excerpt"].replace(
         "ifdef::VK_KHR_swapchain[]\n", ""
     ).replace("endif::VK_KHR_swapchain[]\n", "")
     bad_documents.append(conditional)
+    for row_index, row in enumerate(document["requirements"]):
+        for clause_index, clause in enumerate(row["supporting_specifications"]):
+            for field, value in (("excerpt", clause["excerpt"] + " altered"),
+                                 ("claim", "unknown-claim")):
+                mutated = copy.deepcopy(document)
+                mutated["requirements"][row_index]["supporting_specifications"][
+                    clause_index][field] = value
+                bad_documents.append(mutated)
+    missing_row = copy.deepcopy(document)
+    missing_row["requirements"].pop()
+    bad_documents.append(missing_row)
+    duplicate_clause = copy.deepcopy(document)
+    supporting = duplicate_clause["requirements"][0]["supporting_specifications"]
+    supporting.append(copy.deepcopy(supporting[0]))
+    bad_documents.append(duplicate_clause)
     duplicated = copy.deepcopy(document)
     duplicated["requirements"].append(copy.deepcopy(duplicated["requirements"][0]))
     bad_documents.append(duplicated)
@@ -204,6 +237,9 @@ def main() -> int:
             count = selftest(document, args.kernel_tree, args.mesa_tree, args.vulkan_tree)
             print(f"selftest: one good document and {count} bad mutations classified")
         print(f"source references: {len(document['requirements'])} requirements pass")
+        excerpt_count = sum(1 + len(row["supporting_specifications"])
+                            for row in document["requirements"])
+        print(f"normative source excerpts: {excerpt_count} pass")
         print("Pinned chapter identities, anchor declarations, and exact excerpts pass.")
         print("Semantic completeness and behavior remain unverified.")
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:

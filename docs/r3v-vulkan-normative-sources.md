@@ -30,16 +30,18 @@ cross-reference to an anchor supplies neither a declaration nor an excerpt.
 
 ## Evidence boundary
 
-The six excerpts cover the coherent memory-type minimum, buffer binding size,
-memory dependency ordering, visibility, queue fence scope, and finite waits
-after device loss. The lost-device excerpt preserves the swapchain conditional
-directives so extension scope remains explicit.
+The fifteen excerpts cover the coherent memory-type minimum and cache semantics,
+buffer binding size, alignment and memory types, memory dependency ordering,
+availability and visibility, access scopes, queue fence scope, and finite waits
+after device loss. Terminal logical-device loss and object lifetime have separate
+supporting clauses. The lost-device wait excerpt preserves the swapchain
+conditional directives so extension scope remains explicit.
 
-The excerpt check establishes source identity and location. Human review still
-determines whether a quotation supports each interpretation. Additional clauses
-for coherent cache semantics, binding alignment and memory types, access scopes,
-and lost-device object lifetime remain to be quoted. Allocation, image binding,
-packet admission, and suspend require additional mappings. The tracker keeps
+The excerpt check establishes source identity and location. Schema version 2
+requires the declared supporting-claim inventory and rejects duplicate or missing
+claims and requirements. Human review still determines whether a quotation
+supports each interpretation. Allocation, image binding, packet admission, and
+suspend require additional mappings. The tracker keeps
 behavioral tests at `not_run`; parser execution and retained target observations
 remain separate evidence in `steinmarder-r300`.
 
