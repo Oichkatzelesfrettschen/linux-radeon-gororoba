@@ -136,6 +136,38 @@ def read_blob(root: Path, object_id: str) -> bytes:
     return result.stdout
 
 
+def validate_appended_map_union(contents: list[bytes]) -> None:
+    base, first, second, result = contents
+    require(base.endswith(b"\n"), "source map base ends inside a row")
+    suffixes = []
+    for parent in (first, second):
+        require(parent.startswith(base), "source map merge modifies its base rows")
+        suffix = parent[len(base):]
+        require(bool(suffix) and suffix.endswith(b"\n"), "source map suffix is incomplete")
+        require(
+            all(line and not line.startswith(b"#") for line in suffix.splitlines()),
+            "source map suffix contains a blank or metadata line",
+        )
+        suffixes.append(suffix)
+    require(
+        result in (base + suffixes[0] + suffixes[1],
+                   base + suffixes[1] + suffixes[0]),
+        "source map merge must retain each complete parent suffix once",
+    )
+    rows = parse_map(result.decode("utf-8"))
+    keys = set()
+    for row in rows:
+        require(
+            set(row) == MAP_FIELDS and all(value is not None for value in row.values()),
+            "source map union contains an incomplete or overfull row",
+        )
+        key = tuple(row[field] for field in (
+            "delta_id", "source_commit", "source_path", "symbol_or_range"
+        ))
+        require(key not in keys, "source map union duplicates a row identity")
+        keys.add(key)
+
+
 def validate_merged_blobs(
     root: Path,
     entries: tuple[str | None, ...],
@@ -162,6 +194,9 @@ def validate_merged_blobs(
         all(b"\0" not in content for content in contents),
         f"source merge contains binary content: {repository_path}",
     )
+    if repository_path == MAP_PATH.as_posix():
+        validate_appended_map_union(contents)
+        return
     # Byte IO preserves line endings and the final newline. Plain merge-file
     # supports the Git versions used by both source and package CI.
     with tempfile.TemporaryDirectory(prefix=".source-delta-merge-", dir=root) as scratch:
@@ -711,6 +746,53 @@ def self_test(root: Path) -> int:
                 rejection_count += 1
             else:
                 raise DeltaMapError("self-test accepted an invalid combined entry")
+
+    map_header = ("\n".join(REQUIRED_HEADERS) + "\n" +
+                  "\t".join(sorted(MAP_FIELDS)) + "\n").encode()
+
+    def map_row(identity: str) -> bytes:
+        fields = {field: "value" for field in MAP_FIELDS}
+        fields["delta_id"] = identity
+        return ("\t".join(fields[field] for field in sorted(MAP_FIELDS)) + "\n").encode()
+
+    map_base = map_header + map_row("base")
+    first_suffix = map_row("first-one") + map_row("first-two")
+    second_suffix = map_row("second-one") + map_row("second-two")
+    map_first = map_base + first_suffix
+    map_second = map_base + second_suffix
+    for suffix_order in (first_suffix + second_suffix, second_suffix + first_suffix):
+        validate_appended_map_union([map_base, map_first, map_second, map_base + suffix_order])
+    invalid_map_results = (
+        map_first,
+        map_second,
+        map_base + first_suffix + second_suffix + map_row("novel"),
+        map_base + first_suffix + first_suffix + second_suffix,
+        map_base + map_row("first-two") + map_row("first-one") + second_suffix,
+        map_base + map_row("first-one") + second_suffix + map_row("first-two"),
+        map_base + first_suffix + second_suffix.rstrip(b"\n"),
+        (map_base + first_suffix + second_suffix).replace(b"first-one", b"mutated"),
+    )
+    invalid_map_inputs = [
+        [map_base, map_first, map_second, result] for result in invalid_map_results
+    ]
+    invalid_map_inputs.extend((
+        [map_base, map_first.replace(b"base\t", b"changed\t"), map_second,
+         map_base + first_suffix + second_suffix],
+        [map_base, map_first, map_base + first_suffix, map_base + first_suffix * 2],
+        [map_base, map_base + map_row("base"), map_second,
+         map_base + map_row("base") + second_suffix],
+        [map_base, map_base + b"# metadata\n", map_second,
+         map_base + b"# metadata\n" + second_suffix],
+        [map_base, map_first + b"\n", map_second,
+         map_first + b"\n" + second_suffix],
+    ))
+    for contents in invalid_map_inputs:
+        try:
+            validate_appended_map_union(contents)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid appended map union")
 
     print(f"source delta map calibration: {rejection_count} invalid classes rejected")
     return 0
