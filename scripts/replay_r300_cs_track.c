@@ -196,7 +196,7 @@ struct src2d {
 	unsigned long object_size;
 	unsigned int pitch;
 	unsigned int offset;
-	unsigned int cpp;
+	unsigned int bits_per_pixel;
 	unsigned int x, y;
 	int pitch_offset_seen, gui_master_cntl_seen, pitch_offset_cntl;
 	int source_memory, source_required;
@@ -438,6 +438,19 @@ static unsigned int dst2d_cpp(unsigned int datatype)
 	}
 }
 
+static unsigned int src2d_bits_per_pixel(uint32_t value, unsigned int dst_cpp)
+{
+	switch (value & (3U << 12)) {
+	case 0U << 12:
+	case 1U << 12:
+		return 1;
+	case 3U << 12:
+		return dst_cpp * 8;
+	default:
+		return 0;
+	}
+}
+
 /* r100_cs_track_2d_dst_check: the footprint a launch writes must lie inside
  * the relocation-backed object DST_PITCH_OFFSET named, computed in u32 with
  * overflow detection the way the kernel's check_*_overflow calls compute
@@ -525,7 +538,8 @@ static int src2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 			       unsigned int width, unsigned int height)
 {
 	struct src2d *s = &p->track.src2d;
-	unsigned int x_bytes, span_bytes, rows_bytes, row0, last_row, end_byte;
+	unsigned int x_bits, end_bits, x_bytes, span_bytes, rows_bytes;
+	unsigned int row0, last_row, end_byte;
 	unsigned long bo_size = s->object_size;
 	const char *refusal = NULL;
 
@@ -536,7 +550,7 @@ static int src2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 	else if (!s->pitch_offset_seen || !s->y_x_seen || !p->track.dp_cntl_seen)
 		refusal = "2D source geometry before SRC_PITCH_OFFSET, "
 			  "DP_GUI_MASTER_CNTL, SRC_Y_X, and DP_CNTL";
-	else if (!s->cpp)
+	else if (!s->bits_per_pixel)
 		refusal = "unsupported 2D source datatype";
 	else if (!width || !height)
 		refusal = "empty 2D source rectangle";
@@ -551,31 +565,38 @@ static int src2d_check(struct parser *p, unsigned int idx, unsigned int reg,
 		unsigned int y_start = p->track.ydir_top_to_bottom ? s->y :
 			s->y - (height - 1);
 
-		if (mul_u32(x_start, s->cpp, &x_bytes) ||
-		    mul_u32(width, s->cpp, &span_bytes) ||
-		    add_u32(x_bytes, span_bytes, &span_bytes) ||
-		    mul_u32(y_start, s->pitch, &row0) ||
+		if (mul_u32(x_start, s->bits_per_pixel, &x_bits) ||
+		    mul_u32(width, s->bits_per_pixel, &end_bits) ||
+		    add_u32(x_bits, end_bits, &end_bits) ||
+		    add_u32(end_bits, 7, &span_bytes)) {
+			refusal = "2D source footprint overflows the 32-bit surface address";
+		} else {
+			x_bytes = x_bits / 8;
+			span_bytes /= 8;
+		}
+		if (!refusal &&
+		    (mul_u32(y_start, s->pitch, &row0) ||
 		    add_u32(s->offset, row0, &row0) ||
 		    mul_u32(height - 1, s->pitch, &rows_bytes) ||
 		    add_u32(row0, rows_bytes, &last_row) ||
-		    add_u32(last_row, span_bytes, &end_byte))
+		    add_u32(last_row, span_bytes, &end_byte)))
 			refusal = "2D source footprint overflows the 32-bit surface address";
-		else if (x_bytes >= s->pitch)
+		else if (!refusal && x_bytes >= s->pitch)
 			refusal = "2D source x starts past the pitch";
-		else if (span_bytes > s->pitch)
+		else if (!refusal && span_bytes > s->pitch)
 			refusal = "2D source width overruns the pitch";
-		else if (end_byte > bo_size)
+		else if (!refusal && end_byte > bo_size)
 			refusal = "2D source rectangle past the buffer object";
 	}
 	if (!refusal) {
-		note("  2D source %ux%u at (%u,%u) pitch %u offset %u cpp %u: "
+		note("  2D source %ux%u at (%u,%u) pitch %u offset %u bpp %u: "
 		     "end %u within %lu\n", width, height, s->x, s->y,
-		     s->pitch, s->offset, s->cpp, end_byte, bo_size);
+		     s->pitch, s->offset, s->bits_per_pixel, end_byte, bo_size);
 		return 0;
 	}
-	reject("%s: ib[%u]=0x%04X pitch %u offset %u cpp %u x %u y %u "
+	reject("%s: ib[%u]=0x%04X pitch %u offset %u bpp %u x %u y %u "
 	       "width %u height %u object %lu", refusal, idx, reg, s->pitch,
-	       s->offset, s->cpp, s->x, s->y, width, height, bo_size);
+	       s->offset, s->bits_per_pixel, s->x, s->y, width, height, bo_size);
 	return -EINVAL;
 }
 
@@ -856,7 +877,8 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		break;
 	case RADEON_DP_GUI_MASTER_CNTL:
 		t->dst2d.cpp = dst2d_cpp((v >> 8) & 0xf);
-		t->src2d.cpp = t->dst2d.cpp;
+		t->src2d.bits_per_pixel =
+			src2d_bits_per_pixel(v, t->dst2d.cpp);
 		t->dst2d.pitch_offset_cntl =
 			(v & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
 		t->src2d.pitch_offset_cntl =

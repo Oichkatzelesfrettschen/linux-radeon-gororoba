@@ -103,6 +103,10 @@ for op in ops:
             cntl |= 2 << 24
             if "nocntl" not in a[1:]:
                 cntl |= 1
+            if "reservedsrc" in a[1:]:
+                cntl |= 2 << 12
+            elif "mono" not in a[1:]:
+                cntl |= 3 << 12
         rop = 0x00cc0000 if "usesource" in a[1:] else 0x00f00000
         pkt0("DP_GUI_MASTER_CNTL", cntl | (13 << 4) | (datatype << 8) |
              rop | (1 << 28) | (1 << 30))
@@ -212,6 +216,19 @@ assemble "${work}/copy-source-small.bin" \
 expect reject "source object undersized" \
     "2D source rectangle past the buffer object" "${work}/copy-source-small.bin" \
     --set-bo-size 2=252
+assemble "${work}/copy-source-mono-64.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=64,0,2 srcyx=0,0 scissor master=6,src,usesource,mono walk mask rect=0,0,64,1 ${epilogue}"
+expect accept "64 monochrome source pixels fit eight bytes" "" \
+    "${work}/copy-source-mono-64.bin" --set-bo-size 2=8
+assemble "${work}/copy-source-mono-65.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=64,0,2 srcyx=0,0 scissor master=6,src,usesource,mono walk mask rect=0,0,65,1 ${epilogue}"
+expect reject "65 monochrome source pixels require nine bytes" \
+    "2D source rectangle past the buffer object" \
+    "${work}/copy-source-mono-65.bin" --set-bo-size 2=8
+assemble "${work}/copy-source-reserved.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=64,0,2 srcyx=0,0 scissor master=6,src,usesource,reservedsrc walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "reserved memory source datatype" \
+    "unsupported 2D source datatype" "${work}/copy-source-reserved.bin"
 assemble "${work}/copy-source-no-reloc.bin" \
     "pitch_offset=256,0,0 src_pitch_offset=256,0 srcyx=0,0 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
 expect reject "missing source relocation" "no packet3 NOP" \
