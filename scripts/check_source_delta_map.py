@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import copy
 import csv
 import difflib
@@ -281,12 +280,42 @@ def decode_git_path(repository_path: str) -> str:
     if not repository_path.startswith('"'):
         return repository_path
     require(repository_path.endswith('"'), "Git path quotation is incomplete")
-    try:
-        encoded_path = ast.literal_eval("b" + repository_path)
-        require(isinstance(encoded_path, bytes), "Git path quotation is not bytes")
-        return encoded_path.decode("utf-8", errors="surrogateescape")
-    except (SyntaxError, ValueError) as exc:
-        raise DeltaMapError("Git path quotation is invalid") from exc
+    decoded = bytearray()
+    content = repository_path[1:-1]
+    position = 0
+    escape_bytes = {
+        "a": 7,
+        "b": 8,
+        "t": 9,
+        "n": 10,
+        "v": 11,
+        "f": 12,
+        "r": 13,
+        '"': 34,
+        "\\": 92,
+    }
+    while position < len(content):
+        character = content[position]
+        if character != "\\":
+            decoded.extend(character.encode("utf-8", errors="surrogateescape"))
+            position += 1
+            continue
+        position += 1
+        require(position < len(content), "Git path escape is incomplete")
+        escaped = content[position]
+        if escaped in escape_bytes:
+            decoded.append(escape_bytes[escaped])
+            position += 1
+            continue
+        require(escaped in "01234567", "Git path escape is invalid")
+        octal_end = position
+        while octal_end < min(position + 3, len(content)):
+            if content[octal_end] not in "01234567":
+                break
+            octal_end += 1
+        decoded.append(int(content[position:octal_end], 8))
+        position = octal_end
+    return decoded.decode("utf-8", errors="surrogateescape")
 
 
 def recursive_merge_tree(root: Path, parents: list[str]) -> tuple[str, set[str]]:
@@ -755,7 +784,16 @@ def self_test(root: Path) -> int:
         == "drivers/gpu/drm/radeon/utf8-é.c",
         "Git UTF-8 path decoding differs",
     )
-    for invalid_git_path in ('"unterminated', '"invalid\\xescape"'):
+    require(
+        decode_git_path('"drivers/gpu/drm/radeon/utf8-é\\tname.c"')
+        == "drivers/gpu/drm/radeon/utf8-é\tname.c",
+        "Git mixed UTF-8 and tab path decoding differs",
+    )
+    for invalid_git_path in (
+        '"unterminated',
+        '"incomplete\\"',
+        '"invalid\\xescape"',
+    ):
         try:
             decode_git_path(invalid_git_path)
         except DeltaMapError:
