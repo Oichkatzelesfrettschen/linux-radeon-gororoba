@@ -1270,34 +1270,33 @@ def check_suspend_fence_lock_context(root: Path) -> None:
                 "suspend ring unlock must directly follow the ring loop"
             )
         loop_statement = statements[direct_loop_indexes[0]]
-        for label, condition, expected_body in (
-            (
-                "suspend wait error unlock path differs",
-                "radeon_rs4xx_hardware_target(rdev)",
-                "mutex_unlock(&rdev->ring_lock); goto rs4xx_suspend_parked;",
-            ),
-            (
-                "suspend parked observation unlock path differs",
-                "radeon_rs4xx_hardware_target(rdev) && READ_ONCE(rdev->gpu_parked)",
-                "r = -EIO; mutex_unlock(&rdev->ring_lock); goto rs4xx_suspend_parked;",
-            ),
-        ):
-            expected_condition = lifecycle.c_tokens(condition)
-            matching_bodies = []
-            for index, token in enumerate(loop_statement[:-1]):
-                if token != "if" or loop_statement[index + 1] != "(":
-                    continue
-                condition_end = lifecycle.matching_token(
-                    loop_statement, index + 1, "(", ")"
-                )
-                if loop_statement[index + 2 : condition_end] == expected_condition:
-                    matching_bodies.append(
-                        lifecycle.if_statement_body(loop_statement, condition_end)
-                    )
-            if len(matching_bodies) != 1:
-                raise lifecycle.LifecycleError(f"{label}: guard count differs")
-            if matching_bodies[0] != lifecycle.c_tokens(expected_body):
-                raise lifecycle.LifecycleError(f"{label}: exact guard body differs")
+        loop_spans = lifecycle.direct_function_statements(loop_statement)
+        loop_body = tuple(loop_statement[start:end] for start, end in loop_spans)
+        expected_loop_body = tuple(
+            lifecycle.c_tokens(statement)
+            for statement in (
+                "r = radeon_fence_wait_empty(rdev, i);",
+                "if (r) {"
+                "if (radeon_rs4xx_hardware_target(rdev)) {"
+                "mutex_unlock(&rdev->ring_lock);"
+                "goto rs4xx_suspend_parked;"
+                "}"
+                "radeon_fence_driver_force_completion(rdev, i);"
+                "} else {"
+                "flush_delayed_work(&rdev->fence_drv[i].lockup_work);"
+                "}",
+                "if (radeon_rs4xx_hardware_target(rdev) && "
+                "READ_ONCE(rdev->gpu_parked)) {"
+                "r = -EIO;"
+                "mutex_unlock(&rdev->ring_lock);"
+                "goto rs4xx_suspend_parked;"
+                "}",
+            )
+        )
+        if loop_body != expected_loop_body:
+            raise lifecycle.LifecycleError(
+                "suspend ring loop direct statement topology differs"
+            )
     except lifecycle.LifecycleError as exc:
         raise ContractError(str(exc)) from exc
     require_order(
@@ -1458,6 +1457,24 @@ SOURCE_MUTATIONS = {
             "\t\t\t\tif (false)\n"
             "\t\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
             "\t\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+    ),
+    "suspend wait error hides unlock in unreachable decoy guard": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\t\t\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\tgoto rs4xx_suspend_parked;\n"
+            "\t\t\t}"
+        ),
+        (
+            "\t\t\tif (false) {\n"
+            "\t\t\t\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\t\tgoto rs4xx_suspend_parked;\n"
+            "\t\t\t\t}\n"
+            "\t\t\t}\n"
+            "\t\t\tgoto rs4xx_suspend_parked;"
         ),
     ),
     "suspend parked observation leaks ring lock": (
