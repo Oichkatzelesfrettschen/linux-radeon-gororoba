@@ -32,6 +32,12 @@
     {
       "id": "requirements",
       "status": "in_progress",
+      "steps": [
+        {"id": "chapter-anchor-excerpts", "status": "completed", "acceptance": "Six selected exact excerpts bind to declared intervals in four pinned Khronos chapter blobs. Offline controls reject malformed references and altered excerpts."},
+        {"id": "remaining-clause-coverage", "status": "completed", "acceptance": "Coherent cache semantics, binding alignment and types, access scopes, and device-loss lifetime carry nine additional exact supporting clauses. The checker enforces the declared claim inventory."},
+        {"id": "allocation-image-mapping", "status": "completed", "acceptance": "Allocation parameters and image binding map through native R3V symbols to GEM construction and R300 surface containment with six exact clauses and separate application-validity and kernel-containment controls."},
+        {"id": "packet-suspend-mapping", "status": "in_progress", "acceptance": "Packet admission and suspend mappings distinguish Vulkan obligations from independent kernel containment."}
+      ],
       "work": "Map pinned Vulkan prose clauses through R3V symbols, DRM interfaces, kernel handlers, and existing policy row identifiers into a machine-readable requirements tracker.",
       "acceptance": "Each requirement carries source revisions, exact discovery queries, owner, classification, decisive test, and result reference."
     },
