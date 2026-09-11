@@ -1228,11 +1228,22 @@ def check_open_boundaries(root: Path) -> None:
 
 def check_suspend_fence_lock_context(root: Path) -> None:
     device_source = source(root, "radeon_device.c")
-    if re.search(
-        r"(?m)^\s*#\s*(?:define|undef)\s+mutex_(?:un)?lock\b",
-        device_source,
-    ):
-        raise ContractError("radeon_device.c shadows ring mutex primitives")
+    for source_path in sorted((root / SUBTREE).rglob("*")):
+        if source_path.suffix not in {".c", ".h"}:
+            continue
+        preprocessor_source = cache_policy.strip_comments(
+            source_path.read_text(encoding="utf-8")
+        ).replace("\\\n", "")
+        if re.search(
+            r"(?m)^\s*#\s*(?:define|undef)\s+mutex_(?:un)?lock\b",
+            preprocessor_source,
+        ):
+            raise ContractError("Radeon source shadows ring mutex primitives")
+        if re.search(
+            r"(?m)^\s*#\s*define\b[^\n]*\bradeon_suspend_kms\b",
+            preprocessor_source,
+        ):
+            raise ContractError("Radeon source aliases radeon_suspend_kms")
     device_tokens = lifecycle.c_tokens(device_source)
     suspend_definition_count = 0
     for index, token in enumerate(device_tokens[:-1]):
@@ -1247,6 +1258,8 @@ def check_suspend_fence_lock_context(root: Path) -> None:
     wait_empty = function(root, "radeon_fence.c", "radeon_fence_wait_empty")
     if "ring_lock" in lifecycle.c_tokens(wait_empty):
         raise ContractError("radeon_fence_wait_empty manipulates ring_lock")
+    if lifecycle.c_tokens(source(root, "radeon_fence.c")).count("ring_lock") != 4:
+        raise ContractError("radeon_fence.c ring_lock use denominator differs")
 
     suspend = function(root, "radeon_device.c", "radeon_suspend_kms")
     lock = "mutex_lock(&rdev->ring_lock);"
@@ -1538,6 +1551,15 @@ SOURCE_MUTATIONS = {
             "\t\t       bool notify_clients, bool freeze)"
         ),
     ),
+    "included header shadows suspend release primitive": (
+        "drivers/gpu/drm/radeon/radeon.h",
+        "#define __RADEON_H__\n",
+        (
+            "#define __RADEON_H__\n"
+            "#undef mutex_unlock\n"
+            "#define mutex_unlock(lock) do { } while (0)\n"
+        ),
+    ),
     "preprocessor disabled suspend definition is selected": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         (
@@ -1572,6 +1594,25 @@ SOURCE_MUTATIONS = {
             "#endif\n"
             "typeof(0) radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
             "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "macro alias hides live suspend definition": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "#define SUSPEND_NAME radeon_suspend_kms\n"
+            "int SUSPEND_NAME(struct drm_device *dev, bool suspend,\n"
+            "\t\t bool notify_clients, bool freeze)"
         ),
     ),
     "suspend fence drain hides loop body in unreachable guard": (
@@ -2198,6 +2239,24 @@ SOURCE_MUTATIONS = {
             "\tseq[ring] = rdev->fence_drv[ring].sync_seq[ring];"
         ),
     ),
+    "fence wait delegates caller ring lock release": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "int radeon_fence_wait_empty(struct radeon_device *rdev, int ring)\n"
+            "{\n"
+            "\tuint64_t seq[RADEON_NUM_RINGS] = {};"
+        ),
+        (
+            "static void radeon_fence_drop_caller_lock(struct radeon_device *rdev)\n"
+            "{\n"
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "}\n\n"
+            "int radeon_fence_wait_empty(struct radeon_device *rdev, int ring)\n"
+            "{\n"
+            "\tuint64_t seq[RADEON_NUM_RINGS] = {};\n\n"
+            "\tradeon_fence_drop_caller_lock(rdev);"
+        ),
+    ),
 }
 
 SOURCE_EXPECTED_ERRORS = {
@@ -2215,10 +2274,13 @@ SOURCE_EXPECTED_ERRORS = {
         "suspend fence drain lock reachability: exact direct statement prefix differs"
     ),
     "mutex unlock macro shadows suspend releases": (
-        "radeon_device.c shadows ring mutex primitives"
+        "Radeon source shadows ring mutex primitives"
     ),
     "mutex lock macro shadows suspend acquisition": (
-        "radeon_device.c shadows ring mutex primitives"
+        "Radeon source shadows ring mutex primitives"
+    ),
+    "included header shadows suspend release primitive": (
+        "Radeon source shadows ring mutex primitives"
     ),
     "preprocessor disabled suspend definition is selected": (
         "radeon_suspend_kms definition denominator differs"
@@ -2226,8 +2288,14 @@ SOURCE_EXPECTED_ERRORS = {
     "nonstandard return duplicate suspend definition is selected": (
         "radeon_suspend_kms definition denominator differs"
     ),
+    "macro alias hides live suspend definition": (
+        "Radeon source aliases radeon_suspend_kms"
+    ),
     "fence wait helper releases caller ring lock": (
         "radeon_fence_wait_empty manipulates ring_lock"
+    ),
+    "fence wait delegates caller ring lock release": (
+        "radeon_fence.c ring_lock use denominator differs"
     ),
     "parked CS condition is inverted": (
         "command-submission projected path requires one direct parked guard"
