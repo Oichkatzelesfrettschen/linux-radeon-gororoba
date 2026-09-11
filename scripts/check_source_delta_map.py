@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import difflib
 import re
 import subprocess
 import sys
@@ -168,6 +169,178 @@ def validate_appended_map_union(contents: list[bytes]) -> None:
         keys.add(key)
 
 
+def map_row_identity(row: dict[str, str]) -> tuple[str, str, str, str]:
+    return tuple(row[field] for field in (
+        "delta_id", "source_commit", "source_path", "symbol_or_range"
+    ))
+
+
+def validate_crisscross_map_union(
+    contents: list[bytes], authoritative_index: int | None
+) -> None:
+    first, second, result = (
+        parse_map(content.decode("utf-8")) for content in contents
+    )
+    keyed_parents = []
+    for rows in (first, second):
+        keyed = {map_row_identity(row): row for row in rows}
+        require(len(keyed) == len(rows), "source map parent duplicates a row identity")
+        keyed_parents.append(keyed)
+    keyed_result = {map_row_identity(row): row for row in result}
+    require(len(keyed_result) == len(result), "source map union duplicates a row identity")
+    expected_keys = set(keyed_parents[0]) | set(keyed_parents[1])
+    require(set(keyed_result) == expected_keys, "source map row union differs")
+    for key in expected_keys:
+        parent_rows = [parent[key] for parent in keyed_parents if key in parent]
+        require(
+            all(row == parent_rows[0] for row in parent_rows[1:]),
+            "source map parents disagree on a shared row identity",
+        )
+        require(
+            keyed_result[key] == parent_rows[0],
+            "source map union alters a parent row",
+        )
+    parent_rows = (first, second)
+    allowed_authorities = (0, 1) if authoritative_index is None else (authoritative_index,)
+    require(
+        all(index in {0, 1} for index in allowed_authorities),
+        "source map authority index is invalid",
+    )
+    expected_results = []
+    for authority in allowed_authorities:
+        authoritative_rows = parent_rows[authority]
+        other_rows = parent_rows[1 - authority]
+        authoritative_keys = {map_row_identity(row) for row in authoritative_rows}
+        expected_results.append(authoritative_rows + [
+            row for row in other_rows if map_row_identity(row) not in authoritative_keys
+        ])
+    require(result in expected_results, "source map union order differs from authority")
+
+
+def insertion_runs_by_base_gap(base: bytes, candidate: bytes) -> dict[int, list[bytes]] | None:
+    base_lines = base.splitlines(keepends=True)
+    candidate_lines = candidate.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(
+        None, base_lines, candidate_lines, autojunk=False
+    )
+    insertions: dict[int, list[bytes]] = {}
+    for operation, base_start, base_end, candidate_start, candidate_end in matcher.get_opcodes():
+        if operation == "equal":
+            continue
+        if operation != "insert" or base_start != base_end:
+            return None
+        insertions.setdefault(base_start, []).extend(
+            candidate_lines[candidate_start:candidate_end]
+        )
+    return insertions
+
+
+def insertion_run_is_subsequence(required: list[bytes], candidate: list[bytes]) -> bool:
+    required_lines = iter(required)
+    expected = next(required_lines, None)
+    for line in candidate:
+        if line == expected:
+            expected = next(required_lines, None)
+    return expected is None
+
+
+def is_gap_preserving_insertion_superset(
+    base: bytes, required: bytes, candidate: bytes
+) -> bool:
+    required_runs = insertion_runs_by_base_gap(base, required)
+    candidate_runs = insertion_runs_by_base_gap(base, candidate)
+    if required_runs is None or candidate_runs is None:
+        return False
+    return all(
+        insertion_run_is_subsequence(lines, candidate_runs.get(gap, []))
+        for gap, lines in required_runs.items()
+    )
+
+
+def validate_insertion_superset_merge(contents: list[bytes]) -> bool:
+    base, first, second, result = contents
+    if not (insertion_runs_by_base_gap(base, first) is not None
+            and insertion_runs_by_base_gap(base, second) is not None):
+        return False
+    if result == first and first != second:
+        return is_gap_preserving_insertion_superset(base, second, first)
+    if result == second and first != second:
+        return is_gap_preserving_insertion_superset(base, first, second)
+    return False
+
+
+def path_matches_scope(repository_path: str, pathspec: str | None) -> bool:
+    if pathspec is None:
+        return True
+    normalized = pathspec.rstrip("/")
+    return repository_path == normalized or repository_path.startswith(normalized + "/")
+
+
+def decode_git_path(repository_path: str) -> str:
+    if not repository_path.startswith('"'):
+        return repository_path
+    require(repository_path.endswith('"'), "Git path quotation is incomplete")
+    decoded = bytearray()
+    content = repository_path[1:-1]
+    position = 0
+    escape_bytes = {
+        "a": 7,
+        "b": 8,
+        "t": 9,
+        "n": 10,
+        "v": 11,
+        "f": 12,
+        "r": 13,
+        '"': 34,
+        "\\": 92,
+    }
+    while position < len(content):
+        character = content[position]
+        if character != "\\":
+            decoded.extend(character.encode("utf-8", errors="surrogateescape"))
+            position += 1
+            continue
+        position += 1
+        require(position < len(content), "Git path escape is incomplete")
+        escaped = content[position]
+        if escaped in escape_bytes:
+            decoded.append(escape_bytes[escaped])
+            position += 1
+            continue
+        require(escaped in "01234567", "Git path escape is invalid")
+        octal_end = position
+        while octal_end < min(position + 3, len(content)):
+            if content[octal_end] not in "01234567":
+                break
+            octal_end += 1
+        decoded.append(int(content[position:octal_end], 8))
+        position = octal_end
+    return decoded.decode("utf-8", errors="surrogateescape")
+
+
+def recursive_merge_tree(root: Path, parents: list[str]) -> tuple[str, set[str]]:
+    result = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--messages", *parents],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        check=False,
+    )
+    require(result.returncode in {0, 1}, "recursive merge-tree execution failed")
+    require(not result.stderr, "recursive merge-tree wrote diagnostics to stderr")
+    lines = result.stdout.splitlines()
+    require(bool(lines) and SHA40.fullmatch(lines[0]) is not None,
+            "recursive merge-tree omitted its tree identity")
+    conflict_paths = {
+        decode_git_path(match.group(1))
+        for line in lines[1:]
+        if (match := re.fullmatch(r"[0-9]{6} [0-9a-f]{40} [123]\t(.+)", line))
+    }
+    require(
+        result.returncode == (1 if conflict_paths else 0),
+        "recursive merge-tree status differs from its conflict entries",
+    )
+    return lines[0], conflict_paths
+
+
 def validate_merged_blobs(
     root: Path,
     entries: tuple[str | None, ...],
@@ -196,6 +369,8 @@ def validate_merged_blobs(
     )
     if repository_path == MAP_PATH.as_posix():
         validate_appended_map_union(contents)
+        return
+    if validate_insertion_superset_merge(contents):
         return
     # Byte IO preserves line endings and the final newline. Plain merge-file
     # supports the Git versions used by both source and package CI.
@@ -259,39 +434,116 @@ def validate_union_only_merge(
     git_reader: Callable[..., str] = git_output,
     tree_reader: Callable[[Path, str, str], str | None] = tree_entry,
     pathspec: str | None = DRIVER_ROOT.as_posix(),
+    authoritative_parent: str | None = None,
+    authoritative_path: Callable[[str], bool] | None = None,
+    recursive_reader: Callable[[Path, list[str]], tuple[str, set[str]]] = recursive_merge_tree,
+    blob_reader: Callable[[Path, str], bytes] = read_blob,
 ) -> None:
     require(
         len(parents) == 2,
         f"post-tag source merge has {len(parents)} parents: {commit}",
     )
-    merge_bases = git_reader(root, "merge-base", "--all", *parents).splitlines()
     require(
-        len(merge_bases) == 1,
-        f"post-tag source merge has {len(merge_bases)} merge bases: {commit}",
+        (authoritative_parent is None) == (authoritative_path is None),
+        "authoritative merge parent and path policy must be paired",
     )
-    merge_base = merge_bases[0]
+    if authoritative_parent is not None:
+        require(
+            parents.count(authoritative_parent) == 1,
+            "authoritative merge parent is not unique",
+        )
+    merge_bases = git_reader(root, "merge-base", "--all", *parents).splitlines()
+    require(bool(merge_bases), f"post-tag source merge has no merge base: {commit}")
+    recursive_tree = None
+    if len(merge_bases) > 1:
+        recursive_tree, conflict_paths = recursive_reader(root, parents)
+        scoped_conflicts = {
+            repository_path
+            for repository_path in conflict_paths
+            if (repository_path == MAP_PATH.as_posix()
+                or path_matches_scope(repository_path, pathspec))
+        }
+        rejected_conflicts = {
+            repository_path
+            for repository_path in scoped_conflicts
+            if repository_path != MAP_PATH.as_posix()
+            and not (authoritative_path is not None
+                     and authoritative_path(repository_path))
+        }
+        require(
+            not rejected_conflicts,
+            "recursive source merge conflicts outside the source map: "
+            + ", ".join(sorted(rejected_conflicts)),
+        )
     union_paths: set[str] = set()
-    for treeish in (*parents, commit):
-        arguments = [
-            "diff",
-            "--name-only",
-            "--no-renames",
-            merge_base,
-            treeish,
-        ]
-        if pathspec is not None:
-            arguments.extend(("--", pathspec))
-        changed_paths = git_reader(root, *arguments)
-        union_paths.update(path for path in changed_paths.splitlines() if path)
+    for merge_base in merge_bases:
+        for treeish in (*parents, commit):
+            arguments = [
+                "diff",
+                "--name-only",
+                "--no-renames",
+                merge_base,
+                treeish,
+            ]
+            if pathspec is not None:
+                arguments.extend(("--", pathspec))
+                if len(merge_bases) > 1:
+                    arguments.append(MAP_PATH.as_posix())
+            changed_paths = git_reader(root, *arguments)
+            union_paths.update(
+                decode_git_path(path)
+                for path in changed_paths.splitlines()
+                if path
+            )
     require(bool(union_paths), f"post-tag union merge is path-empty: {commit}")
     for repository_path in sorted(union_paths):
+        if authoritative_path is not None and authoritative_path(repository_path):
+            authoritative_entry = tree_reader(
+                root, authoritative_parent, repository_path
+            )
+            require(
+                tree_reader(root, commit, repository_path) == authoritative_entry,
+                f"union merge changes authoritative parent content: {repository_path}",
+            )
+            continue
+        if recursive_tree is not None:
+            if repository_path == MAP_PATH.as_posix():
+                entries = [
+                    tree_reader(root, treeish, repository_path)
+                    for treeish in (*parents, commit)
+                ]
+                parsed_entries = []
+                for entry in entries:
+                    require(entry is not None, "crisscross source map is absent")
+                    fields = entry.split()
+                    require(
+                        len(fields) == 3 and fields[0] == "100644"
+                        and fields[1] == "blob"
+                        and SHA40.fullmatch(fields[2]) is not None,
+                        "crisscross source map is not a regular blob",
+                    )
+                    parsed_entries.append(fields)
+                validate_crisscross_map_union(
+                    [blob_reader(root, fields[2]) for fields in parsed_entries],
+                    (parents.index(authoritative_parent)
+                     if authoritative_parent is not None else None),
+                )
+                continue
+            require(
+                tree_reader(root, commit, repository_path)
+                == tree_reader(root, recursive_tree, repository_path),
+                f"source merge differs from recursive result: {repository_path}",
+            )
+            continue
         validate_union_path(
             tree_reader(root, merge_base, repository_path),
             tree_reader(root, parents[0], repository_path),
             tree_reader(root, parents[1], repository_path),
             tree_reader(root, commit, repository_path),
             repository_path,
-            merge_checker=lambda entries, path: validate_merged_blobs(root, entries, path),
+            merge_checker=lambda entries, path: validate_merged_blobs(
+                root, entries, path, blob_reader
+            ),
         )
 
 
@@ -515,6 +767,40 @@ def self_test(root: Path) -> int:
         else:
             raise DeltaMapError("self-test accepted an invalid source-delta map")
 
+    require(
+        decode_git_path('"drivers/gpu/drm/radeon/tab\\tname.c"')
+        == "drivers/gpu/drm/radeon/tab\tname.c",
+        "Git tab path decoding differs",
+    )
+    require(
+        path_matches_scope(
+            decode_git_path('"drivers/gpu/drm/radeon/tab\\tname.c"'),
+            DRIVER_ROOT.as_posix(),
+        ),
+        "decoded Git tab path escapes the driver scope",
+    )
+    require(
+        decode_git_path('"drivers/gpu/drm/radeon/utf8-\\303\\251.c"')
+        == "drivers/gpu/drm/radeon/utf8-é.c",
+        "Git UTF-8 path decoding differs",
+    )
+    require(
+        decode_git_path('"drivers/gpu/drm/radeon/utf8-é\\tname.c"')
+        == "drivers/gpu/drm/radeon/utf8-é\tname.c",
+        "Git mixed UTF-8 and tab path decoding differs",
+    )
+    for invalid_git_path in (
+        '"unterminated',
+        '"incomplete\\"',
+        '"invalid\\xescape"',
+    ):
+        try:
+            decode_git_path(invalid_git_path)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted invalid Git path quotation")
+
     validate_union_path("base", "first", "base", "first", "first-only.c")
     validate_union_path("base", "base", "second", "second", "second-only.c")
     validate_union_path("base", "shared", "shared", "shared", "shared.c")
@@ -590,7 +876,10 @@ def self_test(root: Path) -> int:
                 "base",
             ):
                 require(
-                    arguments[5:] in ((), ("--", DRIVER_ROOT.as_posix())),
+                    arguments[5:] in (
+                        (),
+                        ("--", DRIVER_ROOT.as_posix()),
+                    ),
                     "self-test merge pathspec differs",
                 )
                 paths_by_tree = {
@@ -639,6 +928,61 @@ def self_test(root: Path) -> int:
         tree_reader=merge_tree_reader("second-change"),
         pathspec=None,
     )
+
+    ordinary_tree_reader = merge_tree_reader("second-change")
+
+    def authoritative_tree_reader(
+        _root: Path, treeish: str, source_path: str
+    ) -> str | None:
+        if treeish == "result" and source_path == first_path:
+            return "base-first"
+        return ordinary_tree_reader(_root, treeish, source_path)
+
+    validate_union_only_merge(
+        root,
+        "result",
+        ["first", "second"],
+        git_reader=merge_git_reader((first_path, second_path)),
+        tree_reader=authoritative_tree_reader,
+        pathspec=None,
+        authoritative_parent="second",
+        authoritative_path=lambda path: path == first_path,
+    )
+    try:
+        validate_union_only_merge(
+            root,
+            "result",
+            ["first", "second"],
+            git_reader=merge_git_reader((first_path, second_path)),
+            tree_reader=ordinary_tree_reader,
+            pathspec=None,
+            authoritative_parent="second",
+            authoritative_path=lambda path: path == first_path,
+        )
+    except DeltaMapError:
+        rejection_count += 1
+    else:
+        raise DeltaMapError("self-test accepted nonauthoritative result content")
+    for authoritative_parent, authoritative_path in (
+        ("second", None),
+        (None, lambda path: path == first_path),
+        ("absent", lambda path: path == first_path),
+    ):
+        try:
+            validate_union_only_merge(
+                root,
+                "result",
+                ["first", "second"],
+                git_reader=merge_git_reader((first_path, second_path)),
+                tree_reader=merge_tree_reader("second-change"),
+                pathspec=None,
+                authoritative_parent=authoritative_parent,
+                authoritative_path=authoritative_path,
+            )
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted invalid merge authority")
     try:
         validate_union_only_merge(
             root,
@@ -747,6 +1091,42 @@ def self_test(root: Path) -> int:
             else:
                 raise DeltaMapError("self-test accepted an invalid combined entry")
 
+    inserted_once = base_content.replace(
+        b"anchor-two\n", b"anchor-two\nshared-control\n"
+    )
+    inserted_twice = inserted_once.replace(
+        b"anchor-three\n", b"anchor-three\nnew-control\n"
+    )
+    for superset_contents in (
+        (base_content, inserted_once, inserted_twice, inserted_twice),
+        (base_content, inserted_twice, inserted_once, inserted_twice),
+    ):
+        check_fixture(superset_contents)
+    invalid_superset_fixtures = (
+        (base_content, inserted_once, inserted_twice, inserted_once),
+        (base_content, inserted_once, inserted_twice, inserted_twice + b"novel\n"),
+        (base_content, inserted_once, inserted_twice,
+         inserted_twice.replace(b"anchor-one", b"changed-anchor")),
+        (base_content, inserted_once,
+         inserted_twice.replace(b"anchor-one\n", b""), inserted_twice),
+        (base_content, inserted_once,
+         inserted_twice.replace(b"anchor-two\nshared-control\n",
+                                b"shared-control\nanchor-two\n"), inserted_twice),
+        (
+            b"A\nB\nA\nB\n",
+            b"A\nX\nB\nA\nB\n",
+            b"A\nB\nA\nX\nB\nA\nB\n",
+            b"A\nB\nA\nX\nB\nA\nB\n",
+        ),
+    )
+    for contents in invalid_superset_fixtures:
+        try:
+            check_fixture(contents)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid insertion superset")
+
     map_header = ("\n".join(REQUIRED_HEADERS) + "\n" +
                   "\t".join(sorted(MAP_FIELDS)) + "\n").encode()
 
@@ -793,6 +1173,95 @@ def self_test(root: Path) -> int:
             rejection_count += 1
         else:
             raise DeltaMapError("self-test accepted an invalid appended map union")
+
+    validate_crisscross_map_union([
+        map_first, map_second, map_base + first_suffix + second_suffix,
+    ], 0)
+    validate_crisscross_map_union([
+        map_first, map_second, map_base + second_suffix + first_suffix,
+    ], 1)
+    crisscross_invalid = (
+        map_base + first_suffix,
+        map_base + first_suffix + second_suffix + map_row("novel"),
+        map_base + first_suffix + first_suffix + second_suffix,
+        map_base + map_row("first-two") + map_row("first-one") + second_suffix,
+        (map_base + first_suffix + second_suffix).replace(b"first-one", b"changed"),
+    )
+    for result in crisscross_invalid:
+        try:
+            validate_crisscross_map_union([map_first, map_second, result], 0)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid crisscross map union")
+
+    crisscross_map_object_ids = [f"{number:040x}" for number in range(21, 24)]
+    crisscross_blobs = dict(zip(
+        crisscross_map_object_ids,
+        (map_first, map_second, map_base + first_suffix + second_suffix),
+    ))
+
+    def crisscross_blob_reader(_root: Path, object_id: str) -> bytes:
+        return crisscross_blobs[object_id]
+
+    def crisscross_git_reader(_root: Path, *arguments: str) -> str:
+        if arguments == ("merge-base", "--all", "first", "second"):
+            return "base-one\nbase-two\n"
+        if arguments[:3] == ("diff", "--name-only", "--no-renames"):
+            require(
+                arguments[5:] == (
+                    "--", DRIVER_ROOT.as_posix(), MAP_PATH.as_posix()
+                ),
+                "crisscross source-map pathspec omits the map",
+            )
+            return f"{first_path}\n{MAP_PATH.as_posix()}\n"
+        raise DeltaMapError("self-test crisscross git command differs")
+
+    crisscross_entries = {
+        ("first", first_path): "100644 blob " + object_ids[0],
+        ("second", first_path): "100644 blob " + object_ids[1],
+        ("result", first_path): "100644 blob " + object_ids[2],
+        ("recursive", first_path): "100644 blob " + object_ids[2],
+        ("first", MAP_PATH.as_posix()):
+            "100644 blob " + crisscross_map_object_ids[0],
+        ("second", MAP_PATH.as_posix()):
+            "100644 blob " + crisscross_map_object_ids[1],
+        ("result", MAP_PATH.as_posix()):
+            "100644 blob " + crisscross_map_object_ids[2],
+    }
+
+    def crisscross_tree_reader(
+        _root: Path, treeish: str, repository_path: str
+    ) -> str | None:
+        return crisscross_entries[(treeish, repository_path)]
+
+    validate_union_only_merge(
+        root,
+        "result",
+        ["first", "second"],
+        git_reader=crisscross_git_reader,
+        tree_reader=crisscross_tree_reader,
+        recursive_reader=lambda _root, _parents: (
+            "recursive", {"docs/unrelated-conflict.md"}
+        ),
+        blob_reader=crisscross_blob_reader,
+    )
+    try:
+        validate_union_only_merge(
+            root,
+            "result",
+            ["first", "second"],
+            git_reader=crisscross_git_reader,
+            tree_reader=crisscross_tree_reader,
+            recursive_reader=lambda _root, _parents: (
+                "recursive", {first_path}
+            ),
+            blob_reader=crisscross_blob_reader,
+        )
+    except DeltaMapError:
+        rejection_count += 1
+    else:
+        raise DeltaMapError("self-test accepted an in-scope recursive conflict")
 
     print(f"source delta map calibration: {rejection_count} invalid classes rejected")
     return 0

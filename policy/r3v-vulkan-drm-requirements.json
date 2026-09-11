@@ -1,0 +1,162 @@
+{
+  "schema_version": 2,
+  "coverage": "Eight initial rows carry twenty-one selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, excerpt containment between consecutive declarations, and the declared supporting-claim inventory. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Packet grammar, suspend, exhaustive clause coverage, and behavioral qualification remain open.",
+  "sources": {
+    "vulkan_commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
+    "vulkan_repository": "https://github.com/KhronosGroup/Vulkan-Docs",
+    "vulkan_chapter_root": "doc/specs/vulkan/chapters/",
+    "mesa_commit": "0b66d14e758c80808e7cc661c008b2a834d12fba",
+    "kernel_commit": "07e65682a835bb807420e079b56387cbf1c0b172"
+  },
+  "requirements": [
+    {
+      "id": "device-memory-allocation",
+      "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "    A successful returned allocation must: use the requested parameters --\n    no substitution is permitted by the implementation."},
+      "supporting_specifications": [
+        {"claim": "allocation-alignment", "chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "Allocations returned by fname:vkAllocateMemory are guaranteed to meet any\nalignment requirement of the implementation."},
+        {"claim": "allocation-size-failure", "chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "Some platforms may: have a limit on the maximum size of a single allocation.\nFor example, certain systems may: fail to create allocations with a size\ngreater than or equal to 4GB.\nSuch a limit is implementation-dependent, and if such a failure occurs then\nthe error ename:VK_ERROR_OUT_OF_DEVICE_MEMORY must: be returned."}
+      ],
+      "requirement": "Successful allocation preserves the requested Vulkan parameters and satisfies implementation alignment. A platform single-allocation size refusal returns OUT_OF_DEVICE_MEMORY.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "RS4XX_BO_TRANSACTION_ROOTS",
+      "mesa_discovery": "rg --fixed-strings 'r3v_AllocateMemory' src/amd/r300/vulkan/r3v_native_memory.c",
+      "kernel_discovery": ["rg --fixed-strings 'radeon_gem_create_ioctl' drivers/gpu/drm/radeon/radeon_gem.c", "rg --fixed-strings 'radeon_gem_object_create' drivers/gpu/drm/radeon/radeon_gem.c"],
+      "interface": "DRM_RADEON_GEM_CREATE size, alignment, initial_domain, flags, and GEM handle lifetime",
+      "test": "Exercise requested sizes at page and capacity boundaries, every advertised memory type, allocation failure cleanup, and placement pressure through the allocation implementation and GEM transport; compare requested logical size with backing size and advertised properties with effective access behavior.",
+      "boundary": "Vulkan allocation parameters and TTM placement are distinct. A placement retry establishes a kernel policy choice; violation requires evidence that an advertised Vulkan property or required access behavior fails. Extra page-rounded backing bytes do not enlarge the application's permitted allocation extent. Vulkan invalid usage and kernel object containment require separate controls.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "image-memory-binding",
+      "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindImageMemory-size-01049", "excerpt": "    The pname:size member of the sname:VkMemoryRequirements structure\n    returned from a call to fname:vkGetImageMemoryRequirements with\n    pname:image must: be less than or equal to the size of pname:memory\n    minus pname:memoryOffset"},
+      "supporting_specifications": [
+        {"claim": "allowed-memory-type", "chapter": "resources.txt", "anchor": "VUID-vkBindImageMemory-memory-01047", "excerpt": "    pname:memory must: have been allocated using one of the memory types\n    allowed in the pname:memoryTypeBits member of the\n    sname:VkMemoryRequirements structure returned from a call to\n    fname:vkGetImageMemoryRequirements with pname:image"},
+        {"claim": "aligned-offset", "chapter": "resources.txt", "anchor": "VUID-vkBindImageMemory-memoryOffset-01048", "excerpt": "    pname:memoryOffset must: be an integer multiple of the pname:alignment\n    member of the sname:VkMemoryRequirements structure returned from a call\n    to fname:vkGetImageMemoryRequirements with pname:image"}
+      ],
+      "requirement": "Valid image binding uses an allowed memory type and an aligned offset with enough allocation space for the reported requirements.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "CS_BO_RESERVATION_LOCKS",
+      "mesa_discovery": "rg --fixed-strings 'r3v_BindImageMemory' src/amd/r300/vulkan/r3v_native_image.c",
+      "kernel_discovery": ["rg --fixed-strings 'r300_cs_track_check' drivers/gpu/drm/radeon/r300.c", "rg --fixed-strings 'radeon_bo_list_validate' drivers/gpu/drm/radeon/radeon_cs.c"],
+      "interface": "Image footprint and binding offset become packet surface addresses within relocated GEM buffer objects",
+      "test": "Exercise valid exact-end bindings, aligned nonzero suballocations, layers, depth surfaces, and each supported tiling footprint through image binding and packet construction; run out-of-object packet controls through the actual parser independently of Vulkan invalid-usage controls.",
+      "boundary": "Vulkan valid usage constrains image binding by the application. Mesa owns image layout and offset translation; DRM independently contains packet surface accesses within GEM objects. A Vulkan invalid-usage refusal alone establishes neither a DRM defect nor parser containment.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "host-coherent-memory-type",
+      "supporting_specifications": [
+        {"claim": "cache-maintenance", "chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "  * ename:VK_MEMORY_PROPERTY_HOST_COHERENT_BIT bit indicates that the host\n    cache management commands flink:vkFlushMappedMemoryRanges and\n    flink:vkInvalidateMappedMemoryRanges are not needed to flush host writes\n    to the device or make device writes visible to the host, respectively."}
+      ],
+      "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "There must: be at least one memory type with both the\nename:VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT and\nename:VK_MEMORY_PROPERTY_HOST_COHERENT_BIT bits set in its\npname:propertyFlags."},
+      "requirement": "At least one memory type is both HOST_VISIBLE and HOST_COHERENT. Coherent memory requires neither application flush nor application invalidation for the respective host and device writes.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "NON_PCIE_GTT_ATTRIBUTE_NORMALIZATION",
+      "mesa_discovery": "rg --fixed-strings 'r3v_native_memory_properties_fill' src/amd/r300/vulkan/r3v_memory_properties_contract.h",
+      "kernel_discovery": ["rg --fixed-strings 'RADEON_GEM_GTT_UC' drivers/gpu/drm/radeon/radeon_object.c"],
+      "interface": "GEM_CREATE cache attributes, GEM_MMAP, and R3V software cache maintenance",
+      "test": "Exercise every native GPU access path with persistently mapped memory and application flush and invalidate calls omitted; verify producer and consumer digests and maintenance ordering through real queue seams, then retain target observations.",
+      "boundary": "R3V advertises software-maintained coherence around synchronous submission. Removing HOST_COHERENT alone violates the required memory-type minimum. A kernel cache-attribute change requires evidence that userspace maintenance cannot meet the complete contract.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "buffer-memory-binding",
+      "supporting_specifications": [
+        {"claim": "allowed-memory-type", "chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-memory-01035", "excerpt": "    pname:memory must: have been allocated using one of the memory types\n    allowed in the pname:memoryTypeBits member of the\n    sname:VkMemoryRequirements structure returned from a call to\n    fname:vkGetBufferMemoryRequirements with pname:buffer"},
+        {"claim": "aligned-offset", "chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-memoryOffset-01036", "excerpt": "    pname:memoryOffset must: be an integer multiple of the pname:alignment\n    member of the sname:VkMemoryRequirements structure returned from a call\n    to fname:vkGetBufferMemoryRequirements with pname:buffer"}
+      ],
+      "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-size-01037", "excerpt": "    The pname:size member of the sname:VkMemoryRequirements structure\n    returned from a call to fname:vkGetBufferMemoryRequirements with\n    pname:buffer must: be less than or equal to the size of pname:memory\n    minus pname:memoryOffset"},
+      "requirement": "A valid buffer binding fits the required byte size within the allocation after the binding offset. Related valid usage requires an allowed memory type and aligned offset.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "CS_BO_RESERVATION_LOCKS",
+      "mesa_discovery": "rg --fixed-strings 'r3v_BindBufferMemory2' src/amd/r300/vulkan/r3v_native_memory.c",
+      "kernel_discovery": ["rg --fixed-strings 'radeon_bo_list_validate' drivers/gpu/drm/radeon/radeon_cs.c"],
+      "interface": "VkDeviceMemory GEM BO plus resource offset, translated into packet addresses and relocations",
+      "test": "Exercise aligned suballocations, exact-end ranges, multiple resources sharing one allocation, and deliberately invalid range controls through binding and packet construction; qualify parser bounds separately.",
+      "boundary": "Vulkan valid usage constrains the application. Mesa owns resource binding semantics; DRM independently contains packet accesses within GEM objects and retains their lifetime.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "resource-access-dependencies",
+      "supporting_specifications": [
+        {"claim": "access-scopes", "chapter": "synchronization.txt", "anchor": "synchronization-dependencies-access-scopes", "excerpt": "The specific memory accesses that are made available and visible are defined\nby the _access scopes_ of a memory dependency.\nAny type of access that is in a memory dependency's first access scope and\noccurs in *A'* is made available.\nAny type of access that is in a memory dependency's second access scope and\noccurs in *B'* has any available writes made visible to it.\nAny type of operation that is not in a synchronization command's access\nscopes will not be included in the resulting dependency."}
+      ],
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory", "excerpt": "A _memory dependency_ is an execution dependency which includes availability\nand visibility operations such that:\n\n  * The first set of operations happens-before the availability operation.\n  * The availability operation happens-before the visibility operation.\n  * The visibility operation happens-before the second set of operations."},
+      "requirement": "Memory dependencies order operations and include availability and visibility for their access scopes.",
+      "classification": "missing_validation",
+      "owner": "linux-radeon-gororoba",
+      "kernel_policy_row": "CS_RELOCATION_ACCESS_DIRECTION",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_cs_submit' src/amd/r300/vulkan/r3v_native_queue.c",
+      "kernel_discovery": [
+        "rg --fixed-strings 'p->relocs[i].shared = !r->write_domain' drivers/gpu/drm/radeon/radeon_cs.c",
+        "rg --fixed-strings 'dma_resv_usage_rw(!shared)' drivers/gpu/drm/radeon/radeon_sync.c",
+        "rg --fixed-strings 'DMA_RESV_USAGE_READ' drivers/gpu/drm/radeon/radeon_cs.c"
+      ],
+      "interface": "DRM_RADEON_CS relocation read_domains and write_domain",
+      "hypothesis": "A packet that writes through a relocation declared read-only can receive incomplete reservation dependencies and publish a READ fence. Actual packet role validation must be tested before declaring a demonstrated defect.",
+      "test": "Run actual supported packet consumers with accurate and inaccurate access declarations, including duplicate handles; inspect scheduling and fence usage.",
+      "boundary": "Vulkan application synchronization remains required. Malformed relocation declarations test kernel trust enforcement, not valid Vulkan application behavior by themselves.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "memory-availability-visibility",
+      "supporting_specifications": [
+        {"claim": "availability-operations", "chapter": "synchronization.txt", "anchor": "synchronization-dependencies-available-and-visible", "excerpt": "_Availability operations_ cause the values generated by specified memory\nwrite accesses to become _available_ for future access.\nAny available value remains available until a subsequent write to the same\nmemory location occurs (whether it is made available or not) or the memory\nis freed."},
+        {"claim": "visibility-operations", "chapter": "synchronization.txt", "anchor": "synchronization-dependencies-available-and-visible", "excerpt": "_Visibility operations_ cause any available values to become _visible_ to\nspecified memory accesses."}
+      ],
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory", "excerpt": "Once written values are made visible to a particular type of memory access,\nthey can: be read or written by that type of memory access.\nMost synchronization commands in Vulkan define a memory dependency."},
+      "requirement": "Written values become available and visible to the accesses included in the memory dependency.",
+      "classification": "hardware_uncertainty",
+      "owner": "steinmarder-r300",
+      "kernel_policy_row": "RS482_CACHED_GTT_PAYLOAD_VISIBILITY",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_bo_cache_sync' src/amd/r300/vulkan/r3v_native_memory.c",
+      "kernel_discovery": ["rg --fixed-strings 'RS480_REQ_TYPE_SNOOP_DIS' drivers/gpu/drm/radeon/rs400.c"],
+      "interface": "GEM mappings, GART translations, CPU cache maintenance, and completion fences",
+      "test": "Retain CPU-to-GPU and GPU-to-CPU producer/consumer digests with completed fences, mapping identity, raw cache controls, and maintenance-on/off controls under the existing hardware procedure.",
+      "boundary": "Source ordering and a signaled reservation fence alone do not prove payload visibility or effective snooping.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "queue-fence-completion",
+      "supporting_specifications": [
+        {"claim": "memory-access-scopes", "chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling", "excerpt": "The first <<synchronization-dependencies-access-scopes, access scope>>\nincludes all memory access performed by the device.\n\nThe second <<synchronization-dependencies-access-scopes, access scope>> is\nempty."}
+      ],
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling", "excerpt": "The first <<synchronization-dependencies-scopes, synchronization scope>>\nincludes every batch submitted in the same <<devsandqueues-submission, queue\nsubmission>> command.\nFence signal operations that are defined by flink:vkQueueSubmit additionally\ninclude in the first synchronization scope all previous queue submissions to\nthe same queue via flink:vkQueueSubmit."},
+      "requirement": "The fence signal operation follows the submitted batches and the earlier queue operations included in its synchronization scope.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "CS_RESERVATION_FENCE_PUBLICATION",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_completion_await' src/amd/r300/vulkan/r3v_native_queue.c",
+      "kernel_discovery": ["rg --fixed-strings 'radeon_gem_wait_idle_ioctl' drivers/gpu/drm/radeon/radeon_gem.c"],
+      "interface": "DRM_RADEON_GEM_WAIT_IDLE on the submission completion BO",
+      "test": "Exercise accepted submissions, delayed completion, ioctl refusal, and completion failure through the real queue and kernel seams; verify Vulkan fence state and retained buffer lifetime.",
+      "boundary": "Kernel fence publication establishes ordering metadata. Device execution and output validity require separate observations.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "device-loss-finite-waits",
+      "supporting_specifications": [
+        {"claim": "terminal-logical-device", "chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "It is not possible to reset the logical device to a non-lost state, however\nthe lost state is specific to a logical device (sname:VkDevice), and the\ncorresponding physical device (sname:VkPhysicalDevice) may: be otherwise\nunaffected."},
+        {"claim": "object-lifetime", "chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "When a device is lost, its child objects are not implicitly destroyed and\ntheir handles are still valid.\nThose objects must: still be destroyed before their parents or the device\ncan: be destroyed (see the <<fundamentals-objectmodel-lifetime,Object\nLifetime>> section).\nThe host address space corresponding to device memory mapped using\nflink:vkMapMemory is still valid, and host memory accesses to these mapped\nregions are still valid, but the contents are undefined."}
+      ],
+      "specification": {"chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "Commands that wait indefinitely for device execution (namely\nflink:vkDeviceWaitIdle, flink:vkQueueWaitIdle, flink:vkWaitForFences\nifdef::VK_KHR_swapchain[]\nor flink:vkAcquireNextImageKHR\nendif::VK_KHR_swapchain[]\nwith a maximum pname:timeout, and flink:vkGetQueryPoolResults with the\nename:VK_QUERY_RESULT_WAIT_BIT bit set in pname:flags) must: return in\nfinite time even in the case of a lost device, and return either\nename:VK_SUCCESS or ename:VK_ERROR_DEVICE_LOST."},
+      "requirement": "Device loss is terminal for the logical device. Covered indefinite waits return in finite time with VK_SUCCESS or VK_ERROR_DEVICE_LOST; object handles remain valid for destruction and mapped contents become undefined.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "FENCE_FORCE_COMPLETION_PUBLICATION",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_completion_await' src/amd/radeon/drm_vk/radeon_drm_vk_completion.c",
+      "kernel_discovery": [
+        "rg --fixed-strings 'radeon_fence_driver_force_completion_parked' drivers/gpu/drm/radeon/radeon_fence.c",
+        "rg --fixed-strings 'gpu_parked' drivers/gpu/drm/radeon/radeon_cs.c"
+      ],
+      "interface": "Submission and wait errno propagation, reservation fence errors, and terminal hardware admission",
+      "test": "Inject terminal completion errors through compiled seams and verify finite Vulkan waits, logical-device loss handling, and object teardown. Qualify target recovery separately.",
+      "boundary": "A permitted successful wait after device loss does not certify successful GPU output. Exactly-once effects after successful reset remain a separate hardware question.",
+      "test_status": "not_run"
+    }
+  ]
+}

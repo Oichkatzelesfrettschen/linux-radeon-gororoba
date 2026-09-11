@@ -71,6 +71,7 @@ REG = {"SRC_PITCH_OFFSET": 0x1428, "SRC_Y_X": 0x1434,
        "DST_PITCH_OFFSET": 0x142C, "SC_TOP_LEFT": 0x16EC,
        "SC_BOTTOM_RIGHT": 0x16F0, "DEFAULT_SC_BOTTOM_RIGHT": 0x16E8,
        "DP_GUI_MASTER_CNTL": 0x146C, "DP_CNTL": 0x16C0,
+       "DP_CNTL_XDIR_YDIR_YMAJOR": 0x16D0,
        "DP_WRITE_MSK": 0x16CC, "DP_BRUSH_FRGD_CLR": 0x147C,
        "DST_Y_X": 0x1438, "DST_WIDTH_HEIGHT": 0x1598,
        "DST_HEIGHT_WIDTH": 0x143C, "DST_LINE_START": 0x1600,
@@ -102,6 +103,10 @@ for op in ops:
             cntl |= 2 << 24
             if "nocntl" not in a[1:]:
                 cntl |= 1
+            if "reservedsrc" in a[1:]:
+                cntl |= 2 << 12
+            elif "mono" not in a[1:]:
+                cntl |= 3 << 12
         rop = 0x00cc0000 if "usesource" in a[1:] else 0x00f00000
         pkt0("DP_GUI_MASTER_CNTL", cntl | (13 << 4) | (datatype << 8) |
              rop | (1 << 28) | (1 << 30))
@@ -109,6 +114,8 @@ for op in ops:
         pkt0("DP_CNTL", 3)
     elif name == "walkrev":
         pkt0("DP_CNTL", 0)
+    elif name == "alternate_walkrev":
+        pkt0("DP_CNTL_XDIR_YDIR_YMAJOR", 0)
     elif name == "mask":
         pkt0("DP_WRITE_MSK", 0xffffffff)
     elif name == "srcyx":
@@ -209,6 +216,19 @@ assemble "${work}/copy-source-small.bin" \
 expect reject "source object undersized" \
     "2D source rectangle past the buffer object" "${work}/copy-source-small.bin" \
     --set-bo-size 2=252
+assemble "${work}/copy-source-mono-64.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=64,0,2 srcyx=0,0 scissor master=6,src,usesource,mono walk mask rect=0,0,64,1 ${epilogue}"
+expect accept "64 monochrome source pixels fit eight bytes" "" \
+    "${work}/copy-source-mono-64.bin" --set-bo-size 2=8
+assemble "${work}/copy-source-mono-65.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=64,0,2 srcyx=0,0 scissor master=6,src,usesource,mono walk mask rect=0,0,65,1 ${epilogue}"
+expect reject "65 monochrome source pixels require nine bytes" \
+    "2D source rectangle past the buffer object" \
+    "${work}/copy-source-mono-65.bin" --set-bo-size 2=8
+assemble "${work}/copy-source-reserved.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=64,0,2 srcyx=0,0 scissor master=6,src,usesource,reservedsrc walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "reserved memory source datatype" \
+    "unsupported 2D source datatype" "${work}/copy-source-reserved.bin"
 assemble "${work}/copy-source-no-reloc.bin" \
     "pitch_offset=256,0,0 src_pitch_offset=256,0 srcyx=0,0 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
 expect reject "missing source relocation" "no packet3 NOP" \
@@ -241,6 +261,10 @@ assemble "${work}/copy-reverse-underflow.bin" \
 expect reject "reverse source x underflow" \
     "2D source reverse direction starts before the surface" \
     "${work}/copy-reverse-underflow.bin"
+assemble "${work}/alternate-direction.bin" \
+    "${copy_prologue} alternate_walkrev rect=0,0,1,1 ${epilogue}"
+expect reject "alternate direction control register" \
+    "forbidden register 0x16D0" "${work}/alternate-direction.bin"
 expect accept "exact stream binds the destination object by relocation" \
     "DST_PITCH_OFFSET: reloc cursor 2 -> entry 0 (destination) size 65536 base 0 pitch 256" \
     "${work}/exact.bin" --verbose
@@ -293,6 +317,22 @@ assemble "${work}/cpp-unknown.bin" \
     "pitch_offset=256,0,0 scissor master=0 walk mask rect=0,0,1,1 ${epilogue}"
 expect reject "unsupported destination datatype (code 0)" \
     "unsupported 2D destination datatype" "${work}/cpp-unknown.bin"
+assemble "${work}/cpp-rgb8.bin" \
+    "pitch_offset=256,0,0 scissor master=9 walk mask rect=5,0,3,1 ${epilogue}"
+expect reject "RGB8 datatype 9 destination launch" \
+    "unsupported 2D destination datatype" "${work}/cpp-rgb8.bin"
+assemble "${work}/cpp-ci8.bin" \
+    "pitch_offset=256,0,0 scissor master=2 walk mask rect=5,0,3,1 ${epilogue}"
+expect accept "CI8 pseudocolor datatype 2 destination launch" "" \
+    "${work}/cpp-ci8.bin"
+assemble "${work}/cpp-ci8-row-end.bin" \
+    "pitch_offset=256,0,0 scissor master=2 walk mask rect=255,0,1,1 ${epilogue}"
+expect accept "CI8 one-byte pixel at the row end" "" \
+    "${work}/cpp-ci8-row-end.bin"
+assemble "${work}/cpp-ci8-past-row.bin" \
+    "pitch_offset=256,0,0 scissor master=2 walk mask rect=256,0,1,1 ${epilogue}"
+expect reject "CI8 one-byte pixel past the row end" \
+    "x starts past the pitch" "${work}/cpp-ci8-past-row.bin"
 assemble "${work}/before-pitch.bin" \
     "scissor master=6 walk mask rect=0,0,1,1 pitch_offset=256,0,0 ${epilogue}"
 expect reject "geometry before DST_PITCH_OFFSET" \

@@ -324,6 +324,8 @@ def verify_post_tag_commit(
                 commit,
                 parents,
                 pathspec=None,
+                authoritative_parent=trusted_base,
+                authoritative_path=is_control_path,
             )
         except DeltaMapError as exc:
             raise HistoryError(f"{commit[:12]}: {exc}") from exc

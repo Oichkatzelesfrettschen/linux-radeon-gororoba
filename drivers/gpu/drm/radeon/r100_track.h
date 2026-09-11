@@ -50,12 +50,16 @@ struct r100_cs_track_2d_dst {
 	bool			y_x_seen;
 };
 
+/* DP_GUI_MASTER_CNTL selects either one bit per monochrome source pixel or
+ * the destination color width for a color source.  bits_per_pixel stays 0
+ * for the reserved source datatype, which makes a memory source launch fail.
+ */
 struct r100_cs_track_2d_src {
 	struct radeon_bo	*robj;
 	unsigned long		object_size;
 	unsigned		pitch;
 	unsigned		offset;
-	unsigned		cpp;
+	unsigned		bits_per_pixel;
 	unsigned		x;
 	unsigned		y;
 	bool			pitch_offset_seen;

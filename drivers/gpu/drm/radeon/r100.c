@@ -2473,15 +2473,18 @@ int r100_cs_track_check(struct radeon_device *rdev, struct r100_cs_track *track)
 }
 
 /* Bytes per destination pixel for the DP_GUI_MASTER_CNTL destination
- * datatype, from the RADEON_COLOR_FORMAT codes radeon_reg.h names.  A code
- * outside the table sizes to 0, and the launch refuses a 0.
+ * datatype.  The Rage 128 Pro register table defines datatype 2 as CI8
+ * pseudocolor, an 8bpp destination; the later RADEON_COLOR_FORMAT names
+ * cover the remaining table entries.  A code outside the table sizes to 0,
+ * and the launch refuses a 0.
  */
 static unsigned r100_cs_2d_dst_cpp(unsigned datatype)
 {
 	switch (datatype) {
+	case ATI_DATATYPE_CI8:
+		return 1;
 	case RADEON_COLOR_FORMAT_RGB332:
 	case RADEON_COLOR_FORMAT_Y8:
-	case RADEON_COLOR_FORMAT_RGB8:
 		return 1;
 	case RADEON_COLOR_FORMAT_ARGB1555:
 	case RADEON_COLOR_FORMAT_RGB565:
@@ -2492,6 +2495,20 @@ static unsigned r100_cs_2d_dst_cpp(unsigned datatype)
 	case RADEON_COLOR_FORMAT_ARGB8888:
 	case RADEON_COLOR_FORMAT_aYUV444:
 		return 4;
+	default:
+		return 0;
+	}
+}
+
+static unsigned r100_cs_2d_src_bits_per_pixel(u32 value,
+					       unsigned dst_cpp)
+{
+	switch (value & RADEON_GMC_SRC_DATATYPE_MASK) {
+	case RADEON_GMC_SRC_DATATYPE_MONO_FG_BG:
+	case RADEON_GMC_SRC_DATATYPE_MONO_FG_LA:
+		return 1;
+	case RADEON_GMC_SRC_DATATYPE_COLOR:
+		return dst_cpp * 8;
 	default:
 		return 0;
 	}
@@ -2515,7 +2532,8 @@ void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
 			    RADEON_GMC_DST_DATATYPE_SHIFT;
 
 	track->dst2d.cpp = r100_cs_2d_dst_cpp(datatype);
-	track->src2d.cpp = track->dst2d.cpp;
+	track->src2d.bits_per_pixel =
+		r100_cs_2d_src_bits_per_pixel(value, track->dst2d.cpp);
 	track->dst2d.pitch_offset_cntl =
 		(value & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
 	track->src2d.pitch_offset_cntl =
@@ -2649,7 +2667,8 @@ int r100_cs_track_2d_src_check(struct radeon_cs_parser *p,
 {
 	struct r100_cs_track *track = p->track;
 	struct r100_cs_track_2d_src *s = &track->src2d;
-	u32 x_start, y_start, x_bytes, span_bytes, rows_bytes, row0;
+	u32 x_start, y_start, x_bits, end_bits, x_bytes, span_bytes;
+	u32 rows_bytes, row0;
 	u32 last_row, end_byte;
 	const char *refusal = NULL;
 
@@ -2660,7 +2679,7 @@ int r100_cs_track_2d_src_check(struct radeon_cs_parser *p,
 	else if (!s->pitch_offset_seen || !s->y_x_seen || !track->dp_cntl_seen)
 		refusal = "2D source geometry before SRC_PITCH_OFFSET, "
 			  "DP_GUI_MASTER_CNTL, SRC_Y_X, and DP_CNTL";
-	else if (!s->cpp)
+	else if (!s->bits_per_pixel)
 		refusal = "unsupported 2D source datatype";
 	else if (!width || !height)
 		refusal = "empty 2D source rectangle";
@@ -2672,28 +2691,35 @@ int r100_cs_track_2d_src_check(struct radeon_cs_parser *p,
 	if (!refusal) {
 		x_start = track->xdir_left_to_right ? s->x : s->x - (width - 1);
 		y_start = track->ydir_top_to_bottom ? s->y : s->y - (height - 1);
-		if (check_mul_overflow(x_start, s->cpp, &x_bytes) ||
-		    check_mul_overflow(width, s->cpp, &span_bytes) ||
-		    check_add_overflow(x_bytes, span_bytes, &span_bytes) ||
-		    check_mul_overflow(y_start, s->pitch, &row0) ||
+		if (check_mul_overflow(x_start, s->bits_per_pixel, &x_bits) ||
+		    check_mul_overflow(width, s->bits_per_pixel, &end_bits) ||
+		    check_add_overflow(x_bits, end_bits, &end_bits) ||
+		    check_add_overflow(end_bits, 7U, &span_bytes)) {
+			refusal = "2D source footprint overflows the 32-bit surface address";
+		} else {
+			x_bytes = x_bits / 8;
+			span_bytes /= 8;
+		}
+		if (!refusal &&
+		    (check_mul_overflow(y_start, s->pitch, &row0) ||
 		    check_add_overflow(s->offset, row0, &row0) ||
 		    check_mul_overflow(height - 1, s->pitch, &rows_bytes) ||
 		    check_add_overflow(row0, rows_bytes, &last_row) ||
-		    check_add_overflow(last_row, span_bytes, &end_byte))
+		    check_add_overflow(last_row, span_bytes, &end_byte)))
 			refusal = "2D source footprint overflows the 32-bit surface address";
-		else if (x_bytes >= s->pitch)
+		else if (!refusal && x_bytes >= s->pitch)
 			refusal = "2D source x starts past the pitch";
-		else if (span_bytes > s->pitch)
+		else if (!refusal && span_bytes > s->pitch)
 			refusal = "2D source width overruns the pitch";
-		else if (end_byte > s->object_size)
+		else if (!refusal && end_byte > s->object_size)
 			refusal = "2D source rectangle past the buffer object";
 	}
 
 	if (!refusal)
 		return 0;
 	dev_warn_once(p->dev,
-		      "%s: ib[%d]=0x%04X pitch %u offset %u cpp %u x %u y %u width %u height %u object %lu\n",
-		      refusal, idx, reg, s->pitch, s->offset, s->cpp, s->x,
+		      "%s: ib[%d]=0x%04X pitch %u offset %u bpp %u x %u y %u width %u height %u object %lu\n",
+		      refusal, idx, reg, s->pitch, s->offset, s->bits_per_pixel, s->x,
 		      s->y, width, height, s->object_size);
 	radeon_cs_dump_packet(p, pkt);
 	return -EINVAL;
