@@ -168,6 +168,27 @@ def validate_appended_map_union(contents: list[bytes]) -> None:
         keys.add(key)
 
 
+def is_line_insertion_superset(base: bytes, candidate: bytes) -> bool:
+    base_lines = iter(base.splitlines(keepends=True))
+    expected = next(base_lines, None)
+    for line in candidate.splitlines(keepends=True):
+        if line == expected:
+            expected = next(base_lines, None)
+    return expected is None
+
+
+def validate_insertion_superset_merge(contents: list[bytes]) -> bool:
+    base, first, second, result = contents
+    if not (is_line_insertion_superset(base, first)
+            and is_line_insertion_superset(base, second)):
+        return False
+    if result == first and first != second:
+        return is_line_insertion_superset(second, first)
+    if result == second and first != second:
+        return is_line_insertion_superset(first, second)
+    return False
+
+
 def validate_merged_blobs(
     root: Path,
     entries: tuple[str | None, ...],
@@ -196,6 +217,8 @@ def validate_merged_blobs(
     )
     if repository_path == MAP_PATH.as_posix():
         validate_appended_map_union(contents)
+        return
+    if validate_insertion_superset_merge(contents):
         return
     # Byte IO preserves line endings and the final newline. Plain merge-file
     # supports the Git versions used by both source and package CI.
@@ -746,6 +769,36 @@ def self_test(root: Path) -> int:
                 rejection_count += 1
             else:
                 raise DeltaMapError("self-test accepted an invalid combined entry")
+
+    inserted_once = base_content.replace(
+        b"anchor-two\n", b"anchor-two\nshared-control\n"
+    )
+    inserted_twice = inserted_once.replace(
+        b"anchor-three\n", b"anchor-three\nnew-control\n"
+    )
+    for superset_contents in (
+        (base_content, inserted_once, inserted_twice, inserted_twice),
+        (base_content, inserted_twice, inserted_once, inserted_twice),
+    ):
+        check_fixture(superset_contents)
+    invalid_superset_fixtures = (
+        (base_content, inserted_once, inserted_twice, inserted_once),
+        (base_content, inserted_once, inserted_twice, inserted_twice + b"novel\n"),
+        (base_content, inserted_once, inserted_twice,
+         inserted_twice.replace(b"anchor-one", b"changed-anchor")),
+        (base_content, inserted_once,
+         inserted_twice.replace(b"anchor-one\n", b""), inserted_twice),
+        (base_content, inserted_once,
+         inserted_twice.replace(b"anchor-two\nshared-control\n",
+                                b"shared-control\nanchor-two\n"), inserted_twice),
+    )
+    for contents in invalid_superset_fixtures:
+        try:
+            check_fixture(contents)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted an invalid insertion superset")
 
     map_header = ("\n".join(REQUIRED_HEADERS) + "\n" +
                   "\t".join(sorted(MAP_FIELDS)) + "\n").encode()
