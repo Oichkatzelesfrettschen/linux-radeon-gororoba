@@ -41,8 +41,10 @@ conditional directives so extension scope remains explicit.
 The excerpt check establishes source identity and location. Schema version 2
 requires the declared supporting-claim inventory and rejects duplicate or missing
 claims and requirements. Human review still determines whether a quotation
-supports each interpretation. Packet admission and suspend require additional
-mappings. The tracker keeps
+supports each interpretation. Packet admission requires additional mapping.
+Suspend fence draining is an independent kernel containment contract rather
+than a Vulkan API requirement; `CS_SUSPEND_FENCE_LOCK_CONTEXT` records its
+source repair. The tracker keeps
 behavioral tests at `not_run`; parser execution and retained target observations
 remain separate evidence in `steinmarder-r300`.
 

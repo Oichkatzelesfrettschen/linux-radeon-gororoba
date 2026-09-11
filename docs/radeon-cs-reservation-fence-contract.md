@@ -6,7 +6,7 @@
 ledger for Radeon command submission admission, BO reservation, dependency
 import, IB scheduling, fence command emission, and reservation fence
 publication. Its 14 rows use the same 19 field schema as the GART lifecycle
-ledger. The denominator contains 7 `proven` rows, 3 `repaired` rows, and 4
+ledger. The denominator contains 7 `proven` rows, 4 `repaired` rows, and 3
 `open` rows.
 
 The source ledger proves software ownership and order. It does not infer fence
@@ -92,10 +92,17 @@ error before the tree result has authority.
   transaction only after this cleanup returns, then releases parser relocation
   references. Error cleanup adds no new fence. Publication orders later users
   but does not report completion or payload visibility.
-* Linux trust and waiter ownership uses `CS_RELOCATION_ACCESS_DIRECTION` and
-  `CS_SUSPEND_FENCE_LOCK_CONTEXT`. Linux owns the missing packet role
-  validation and suspend lock proof. Each row stays open until source and
+* Linux packet trust uses `CS_RELOCATION_ACCESS_DIRECTION`. Linux owns the
+  missing packet role validation. The row stays open until source and
   calibrated fixtures account for its full local contract.
+* Suspend waiter ownership uses `CS_SUSPEND_FENCE_LOCK_CONTEXT`.
+  `radeon_suspend_kms` acquires `ring_lock` after VRAM eviction and holds it
+  across every `radeon_fence_wait_empty` call. Normal completion and both
+  RS4xx terminal exits release the mutex before BIOS, suspend, or parked-state
+  handling. The RS4xx transition owner remains the outer hardware-admission
+  boundary, which preserves the transaction-before-ring lock order used by
+  command submission. Source mutation tests prove the lock placement and exit
+  balance. Target suspend and resume remain unproved.
 * Failed-reset waiter ownership uses `FENCE_FORCE_COMPLETION_PUBLICATION`.
   `radeon_rs4xx_publish_parked_state` latches `gpu_parked` before it calls
   `radeon_fence_driver_force_completion_parked`. The helper cancels delayed
@@ -197,10 +204,6 @@ and do not prove that an emitted fence completed.
   question. An admitted marker and fence harness must materialize an owner that
   distinguishes not executed, executed once, and repeated effects on RS482.
   This successful-reset branch does not traverse failed-reset force completion.
-* `CS_SUSPEND_FENCE_LOCK_CONTEXT` belongs to Linux. `radeon_fence_wait_empty`
-  documents a ring lock requirement, while the bounded suspend caller has no
-  adjacent lock proof. A complete caller exclusion proof or a repaired lock
-  invariant must close the local precondition.
 * `RS482_CACHED_GTT_PAYLOAD_VISIBILITY` belongs to Steinmarder. Reservations,
   fences, barriers, and emitted GPU cache commands contain no CPU payload
   cache maintenance or target digest observation. Both exact target directions

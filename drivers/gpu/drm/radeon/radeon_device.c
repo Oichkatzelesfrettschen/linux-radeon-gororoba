@@ -2483,11 +2483,14 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 	}
 
 	/* wait for gpu to finish processing current batch */
+	mutex_lock(&rdev->ring_lock);
 	for (i = 0; i < RADEON_NUM_RINGS; i++) {
 		r = radeon_fence_wait_empty(rdev, i);
 		if (r) {
-			if (radeon_rs4xx_hardware_target(rdev))
+			if (radeon_rs4xx_hardware_target(rdev)) {
+				mutex_unlock(&rdev->ring_lock);
 				goto rs4xx_suspend_parked;
+			}
 			/* delay GPU reset to resume */
 			radeon_fence_driver_force_completion(rdev, i);
 		} else {
@@ -2497,9 +2500,11 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 		if (radeon_rs4xx_hardware_target(rdev) &&
 		    READ_ONCE(rdev->gpu_parked)) {
 			r = -EIO;
+			mutex_unlock(&rdev->ring_lock);
 			goto rs4xx_suspend_parked;
 		}
 	}
+	mutex_unlock(&rdev->ring_lock);
 
 	radeon_save_bios_scratch_regs(rdev);
 
