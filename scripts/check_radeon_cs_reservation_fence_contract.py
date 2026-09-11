@@ -1227,6 +1227,18 @@ def check_open_boundaries(root: Path) -> None:
 
 
 def check_suspend_fence_lock_context(root: Path) -> None:
+    device_source = source(root, "radeon_device.c")
+    if re.search(
+        r"(?m)^\s*#\s*(?:define|undef)\s+mutex_unlock\b", device_source
+    ):
+        raise ContractError("radeon_device.c shadows mutex_unlock")
+    if len(re.findall(r"\bint\s+radeon_suspend_kms\s*\(", device_source)) != 1:
+        raise ContractError("radeon_suspend_kms definition denominator differs")
+
+    wait_empty = function(root, "radeon_fence.c", "radeon_fence_wait_empty")
+    if "ring_lock" in lifecycle.c_tokens(wait_empty):
+        raise ContractError("radeon_fence_wait_empty manipulates ring_lock")
+
     suspend = function(root, "radeon_device.c", "radeon_suspend_kms")
     lock = "mutex_lock(&rdev->ring_lock);"
     unlock = "mutex_unlock(&rdev->ring_lock);"
@@ -1489,6 +1501,37 @@ SOURCE_MUTATIONS = {
             "\t\tgoto rs4xx_suspend_parked;\n"
             "\tmutex_lock(&rdev->ring_lock);\n"
             "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
+    "mutex unlock macro shadows suspend releases": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#undef mutex_unlock\n"
+            "#define mutex_unlock(lock) do { } while (0)\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "preprocessor disabled suspend definition is selected": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
         ),
     ),
     "suspend fence drain hides loop body in unreachable guard": (
@@ -2107,6 +2150,14 @@ SOURCE_MUTATIONS = {
             "\t\tif (r == -EBUSY || (rs4xx_device && r == -EHOSTDOWN))"
         ),
     ),
+    "fence wait helper releases caller ring lock": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        "\tseq[ring] = rdev->fence_drv[ring].sync_seq[ring];",
+        (
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "\tseq[ring] = rdev->fence_drv[ring].sync_seq[ring];"
+        ),
+    ),
 }
 
 SOURCE_EXPECTED_ERRORS = {
@@ -2122,6 +2173,15 @@ SOURCE_EXPECTED_ERRORS = {
     ),
     "suspend conditional goto bypasses fence drain": (
         "suspend fence drain lock reachability: exact direct statement prefix differs"
+    ),
+    "mutex unlock macro shadows suspend releases": (
+        "radeon_device.c shadows mutex_unlock"
+    ),
+    "preprocessor disabled suspend definition is selected": (
+        "radeon_suspend_kms definition denominator differs"
+    ),
+    "fence wait helper releases caller ring lock": (
+        "radeon_fence_wait_empty manipulates ring_lock"
     ),
     "parked CS condition is inverted": (
         "command-submission projected path requires one direct parked guard"
