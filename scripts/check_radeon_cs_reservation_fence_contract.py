@@ -1231,6 +1231,32 @@ def check_suspend_fence_lock_context(root: Path) -> None:
         raise ContractError("suspend fence drain requires one ring lock acquisition")
     if suspend.count(unlock) != 3:
         raise ContractError("suspend fence drain requires three ring lock releases")
+    try:
+        tokens = lifecycle.c_tokens(suspend)
+        spans = lifecycle.direct_function_statements(tokens)
+        statements = tuple(tokens[start:end] for start, end in spans)
+        lock_tokens = lifecycle.c_tokens(lock)
+        loop_prefix = lifecycle.c_tokens("for (i = 0; i < RADEON_NUM_RINGS; i++)")
+        direct_lock_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if statement == lock_tokens
+        ]
+        direct_loop_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if statement[: len(loop_prefix)] == loop_prefix
+        ]
+        if len(direct_lock_indexes) != 1 or len(direct_loop_indexes) != 1:
+            raise lifecycle.LifecycleError(
+                "suspend fence drain requires one direct lock and ring loop"
+            )
+        if direct_lock_indexes[0] + 1 != direct_loop_indexes[0]:
+            raise lifecycle.LifecycleError(
+                "suspend ring loop must directly follow ring lock acquisition"
+            )
+    except lifecycle.LifecycleError as exc:
+        raise ContractError(str(exc)) from exc
     require_order(
         "suspend fence drain ring lock context",
         suspend,
@@ -1356,6 +1382,15 @@ SOURCE_MUTATIONS = {
         (
             "\tmutex_lock(&rdev->ring_lock);\n"
             "\tmutex_unlock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
+    "suspend fence drain conditionally bypasses ring lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tif (false)\n"
+            "\t\tmutex_lock(&rdev->ring_lock);\n"
             "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
         ),
     ),
