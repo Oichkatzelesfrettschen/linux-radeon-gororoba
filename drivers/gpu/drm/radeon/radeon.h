@@ -2449,6 +2449,20 @@ struct radeon_device {
 	atomic_t			rs4xx_hardware_closing;
 	atomic_t			rs4xx_hardware_transactions;
 	atomic_t			rs4xx_hardware_readers;
+	/* rs400_gart_tlb_flush polls that ran out before the hardware cleared
+	 * RS480_GART_CACHE_INVALIDATE; each one left the TLB in an unknown state.
+	 */
+	atomic_t			rs4xx_gart_tlb_flush_timeouts;
+#if RADEON_OBSERVE_DEV
+	/* One-shot software disposition for rs400_gart_tlb_invalidate. A
+	 * nonzero value makes the next invalidation report -ETIMEDOUT before
+	 * any memory-controller access, so the flush counter, the enable
+	 * refusal, and the published ready state are exercised on a healthy
+	 * TLB. The mutate profile arms it through debugfs; the observe and
+	 * probe profiles read it and it stays zero.
+	 */
+	atomic_t			rs4xx_gart_tlb_fault_inject;
+#endif
 	atomic_t			rs4xx_live_bos;
 	atomic_t			rs4xx_retained_gem_objects;
 	atomic_t			rs4xx_retained_ttm_tables;
@@ -3002,6 +3016,8 @@ uint16_t radeon_bios_read_u16(struct radeon_device *rdev, size_t offset);
 uint32_t radeon_bios_read_u32(struct radeon_device *rdev, size_t offset);
 void radeon_bios_fini(struct radeon_device *rdev);
 
+bool radeon_bios_peek(struct radeon_device *rdev, size_t offset,
+		      size_t length, uint32_t *value);
 #define RBIOS8(i) radeon_bios_read_u8(rdev, (size_t)(i))
 #define RBIOS16(i) radeon_bios_read_u16(rdev, (size_t)(i))
 #define RBIOS32(i) radeon_bios_read_u32(rdev, (size_t)(i))

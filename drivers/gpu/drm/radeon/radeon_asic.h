@@ -210,6 +210,7 @@ extern void rs400_fini(struct radeon_device *rdev);
 extern int rs400_suspend(struct radeon_device *rdev);
 extern int rs400_resume(struct radeon_device *rdev);
 void rs400_gart_tlb_flush(struct radeon_device *rdev);
+int rs400_gart_tlb_invalidate(struct radeon_device *rdev);
 uint64_t rs400_gart_get_page_entry(uint64_t addr, uint32_t flags);
 void rs400_gart_set_page(struct radeon_device *rdev, unsigned i,
 			 uint64_t entry);

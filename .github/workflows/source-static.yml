@@ -378,6 +378,8 @@ jobs:
         run: shellcheck -S warning scripts/*.sh
       - name: deployment identity preflight calibration
         run: sh scripts/radeon_deployment_preflight.sh --self-test
+      - name: GART TLB fault-injection runner calibration
+        run: bash scripts/run_rs400_gart_tlb_fault_injection.sh --self-test
       - name: ruff
         run: ruff check scripts/
       - name: build-relevance classifier calibration

@@ -62,24 +62,66 @@ void rs400_gart_adjust_size(struct radeon_device *rdev)
 	}
 }
 
-void rs400_gart_tlb_flush(struct radeon_device *rdev)
+/* Invalidates the GART TLB and reports whether the invalidation completed.
+ * RS480_GART_CACHE_INVALIDATE is written, the register is polled until the
+ * hardware clears the bit or usec_timeout microseconds elapse, and the
+ * control register is returned to zero either way.  A poll that ran out
+ * leaves translations the hardware may still serve from its cache, so the
+ * caller decides what a stale TLB means for its operation: GART enable
+ * refuses to publish the aperture, and the bind and unbind paths count it.
+ * Returns 0, -ETIMEDOUT when the bit stayed set, or -EBUSY when hardware
+ * access is refused.
+ */
+int rs400_gart_tlb_invalidate(struct radeon_device *rdev)
 {
 	uint32_t tmp;
 	unsigned int timeout = rdev->usec_timeout;
+	int r = -ETIMEDOUT;
 
+#if RADEON_MUTATE_DEV
+	/* The armed one-shot reports the timeout disposition ahead of the
+	 * hardware transaction, so no register is written, no admission is
+	 * held, and the arm clears in the same operation that consumes it.
+	 * Every consequence below this call is the software disposition: the
+	 * callback counts the timeout and warns once, and an enable-time
+	 * invalidation leaves the aperture unpublished.
+	 */
+	if (atomic_xchg(&rdev->rs4xx_gart_tlb_fault_inject, 0))
+		return -ETIMEDOUT;
+#endif
 	if (radeon_rs4xx_hardware_access_begin(rdev))
-		return;
+		return -EBUSY;
 
 	WREG32_MC(RS480_GART_CACHE_CNTRL, RS480_GART_CACHE_INVALIDATE);
 	do {
 		tmp = RREG32_MC(RS480_GART_CACHE_CNTRL);
-		if ((tmp & RS480_GART_CACHE_INVALIDATE) == 0)
+		if ((tmp & RS480_GART_CACHE_INVALIDATE) == 0) {
+			r = 0;
 			break;
+		}
 		udelay(1);
 		timeout--;
 	} while (timeout > 0);
 	WREG32_MC(RS480_GART_CACHE_CNTRL, 0);
 	radeon_rs4xx_hardware_access_end(rdev);
+	return r;
+}
+
+/* The ASIC tlb_flush callback keeps the void signature every family shares.
+ * A timed-out invalidation is counted in rs4xx_gart_tlb_flush_timeouts and
+ * reported once, so the disposition the poll produced survives the void
+ * return instead of being discarded.
+ */
+void rs400_gart_tlb_flush(struct radeon_device *rdev)
+{
+	int r = rs400_gart_tlb_invalidate(rdev);
+
+	if (r == -ETIMEDOUT) {
+		atomic_inc(&rdev->rs4xx_gart_tlb_flush_timeouts);
+		dev_warn_once(rdev->dev,
+			      "RS400 GART TLB invalidate did not complete within %u us; translations may be stale\n",
+			      rdev->usec_timeout);
+	}
 }
 
 int rs400_gart_init(struct radeon_device *rdev)
@@ -116,6 +158,7 @@ int rs400_gart_enable(struct radeon_device *rdev)
 {
 	uint32_t size_reg;
 	uint32_t tmp;
+	int r;
 
 	tmp = RREG32_MC(RS690_AIC_CTRL_SCRATCH);
 	tmp |= RS690_DIS_OUT_OF_PCI_GART_ACCESS;
@@ -191,7 +234,23 @@ int rs400_gart_enable(struct radeon_device *rdev)
 	}
 	/* Enable gart */
 	WREG32_MC(RS480_AGP_ADDRESS_SPACE_SIZE, (RS480_GART_EN | size_reg));
-	rs400_gart_tlb_flush(rdev);
+	/* The aperture is published as ready only after the TLB holds no
+	 * translation from before the enable.  A poll that ran out leaves that
+	 * unknown, so the enable refuses rather than publishing an aperture
+	 * whose first translations may be stale.
+	 */
+	r = rs400_gart_tlb_invalidate(rdev);
+	if (r) {
+		WREG32_MC(RS480_AGP_ADDRESS_SPACE_SIZE, 0);
+		/* A resume re-enable arrives with gart.ready still true from
+		 * the enable before suspend; the refused aperture clears it so
+		 * bind and unbind see the hardware state, not the old one. */
+		rdev->gart.ready = false;
+		dev_err(rdev->dev,
+			"RS400 GART enable: TLB invalidate returned %d; aperture not published\n",
+			r);
+		return r;
+	}
 	DRM_INFO("PCIE GART of %uM enabled (table at 0x%016llX).\n",
 		 (unsigned)(rdev->mc.gtt_size >> 20),
 		 (unsigned long long)rdev->gart.table_addr);
