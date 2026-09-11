@@ -422,7 +422,7 @@ EXPECTED_FUNCTION_SHA256 = {
     (
         "radeon_device.c",
         "radeon_device_init",
-    ): "9dc4c447b431b6bf354b78504d4ed597dd9b186479b86d62849fa1025ee6df0b",
+    ): "e32ed95fa2998ed90c16ebe8fc788817943a96ea156e2de0351078dc1ef64568",
     (
         "radeon_device.c",
         "radeon_vram_location",

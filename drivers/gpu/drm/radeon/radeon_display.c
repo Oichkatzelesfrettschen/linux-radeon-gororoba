@@ -262,15 +262,27 @@ static void radeon_crtc_destroy(struct drm_crtc *crtc)
 
 static int radeon_flip_work_lock_hardware(struct radeon_device *rdev);
 
+static void radeon_flip_work_add_retained_locked(struct radeon_flip_work *work)
+{
+	struct radeon_device *rdev = work->rdev;
+
+	lockdep_assert_held(&rdev_to_drm(rdev)->event_lock);
+	if (list_empty(&work->retained))
+		list_add_tail(&work->retained, &rdev->rs4xx_retained_flips);
+	if (!work->retained_accounted) {
+		work->retained_accounted = true;
+		atomic64_inc(&rdev->rs4xx_flip_retained_total);
+		atomic_inc(&rdev->rs4xx_flip_retained_pending);
+	}
+}
+
 static void radeon_flip_work_add_retained(struct radeon_flip_work *work)
 {
 	struct drm_device *dev = rdev_to_drm(work->rdev);
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->event_lock, flags);
-	if (list_empty(&work->retained))
-		list_add_tail(&work->retained,
-			      &work->rdev->rs4xx_retained_flips);
+	radeon_flip_work_add_retained_locked(work);
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 }
 
@@ -280,10 +292,14 @@ static void radeon_flip_work_release_references(struct radeon_flip_work *work)
 	drm_gem_object_put(&work->new_rbo->tbo.base);
 	work->old_rbo = NULL;
 	work->new_rbo = NULL;
+	if (work->retained_accounted) {
+		atomic64_inc(&work->rdev->rs4xx_flip_retained_released);
+		atomic_dec(&work->rdev->rs4xx_flip_retained_pending);
+	}
 	kfree(work);
 }
 
-static bool radeon_flip_work_release_old(struct radeon_flip_work *work)
+static int radeon_flip_work_release_old(struct radeon_flip_work *work)
 {
 	struct radeon_device *rdev = work->rdev;
 	int r;
@@ -292,13 +308,22 @@ static bool radeon_flip_work_release_old(struct radeon_flip_work *work)
 		r = ttm_bo_reserve(&work->old_rbo->tbo, false, true, NULL);
 	else
 		r = radeon_bo_reserve(work->old_rbo, true);
-	if (r)
-		return false;
+	if (r) {
+		if (radeon_rs4xx_hardware_target(rdev) && r == -EBUSY) {
+			atomic64_inc(&rdev->rs4xx_flip_reserve_busy);
+			DRM_DEBUG_KMS("page-flip reservation busy; deferring release\n");
+		} else {
+			DRM_ERROR("page-flip buffer reservation failed: %d\n", r);
+		}
+		return r;
+	}
 	if (radeon_rs4xx_hardware_target(rdev)) {
 		r = radeon_device_lock_hardware(rdev);
 		if (r) {
 			radeon_bo_unreserve(work->old_rbo);
-			return false;
+			atomic64_inc(&rdev->rs4xx_flip_admission_refused);
+			DRM_ERROR("page-flip release hardware admission refused: %d\n", r);
+			return r;
 		}
 	}
 	radeon_bo_unpin(work->old_rbo);
@@ -306,7 +331,7 @@ static bool radeon_flip_work_release_old(struct radeon_flip_work *work)
 		radeon_device_unlock_hardware(rdev);
 	radeon_bo_unreserve(work->old_rbo);
 	radeon_flip_work_release_references(work);
-	return true;
+	return 0;
 }
 
 static bool radeon_flip_work_quiesce_one(struct radeon_flip_work *work)
@@ -322,9 +347,7 @@ static bool radeon_flip_work_quiesce_one(struct radeon_flip_work *work)
 	if (radeon_crtc && radeon_crtc->flip_work == work) {
 		radeon_crtc->flip_status = RADEON_FLIP_NONE;
 		radeon_crtc->flip_work = NULL;
-		if (list_empty(&work->retained))
-			list_add_tail(&work->retained,
-				      &rdev->rs4xx_retained_flips);
+		radeon_flip_work_add_retained_locked(work);
 		detached = true;
 	}
 	spin_unlock_irqrestore(&rdev_to_drm(rdev)->event_lock, flags);
@@ -373,10 +396,8 @@ bool radeon_page_flip_finalize_retained(struct radeon_device *rdev,
 	list_for_each_entry_safe(work, next, &retained_works, retained) {
 		list_del_init(&work->retained);
 		radeon_flip_work_drop_completion(work);
-		if (!release_buffers || !radeon_flip_work_release_old(work)) {
+		if (!release_buffers || radeon_flip_work_release_old(work)) {
 			all_released = false;
-			if (release_buffers)
-				DRM_ERROR("failed to release retained page-flip buffer\n");
 			radeon_flip_work_add_retained(work);
 		}
 	}
@@ -470,9 +491,7 @@ static void radeon_unpin_work_func(struct work_struct *__work)
 	int r;
 
 	if (radeon_rs4xx_hardware_target(rdev)) {
-		if (!radeon_flip_work_release_old(work)) {
-			DRM_ERROR("page-flip buffer release is busy; "
-				  "retaining pin and reference\n");
+		if (radeon_flip_work_release_old(work)) {
 			radeon_flip_work_add_retained(work);
 			queue_delayed_work(system_unbound_wq,
 					   &rdev->rs4xx_flip_cleanup_work,
@@ -486,7 +505,7 @@ static void radeon_unpin_work_func(struct work_struct *__work)
 		radeon_flip_work_release_references(work);
 		return;
 	}
-	if (!radeon_flip_work_release_old(work)) {
+	if (radeon_flip_work_release_old(work)) {
 		radeon_device_unlock_hardware(rdev);
 		DRM_ERROR("failed to reserve buffer after flip; retaining pin\n");
 		radeon_flip_work_release_references(work);

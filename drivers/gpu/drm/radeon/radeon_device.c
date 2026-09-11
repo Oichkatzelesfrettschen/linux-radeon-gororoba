@@ -1971,6 +1971,11 @@ int radeon_device_init(struct radeon_device *rdev,
 	WRITE_ONCE(rdev->rs4xx_gart_teardown_complete, false);
 	mutex_init(&rdev->rs4xx_retained_flip_lock);
 	INIT_LIST_HEAD(&rdev->rs4xx_retained_flips);
+	atomic64_set(&rdev->rs4xx_flip_reserve_busy, 0);
+	atomic64_set(&rdev->rs4xx_flip_admission_refused, 0);
+	atomic64_set(&rdev->rs4xx_flip_retained_total, 0);
+	atomic64_set(&rdev->rs4xx_flip_retained_released, 0);
+	atomic_set(&rdev->rs4xx_flip_retained_pending, 0);
 	INIT_DELAYED_WORK(&rdev->rs4xx_flip_cleanup_work,
 			  radeon_page_flip_cleanup_work);
 	INIT_WORK(&rdev->rs4xx_parked_publish_work,
