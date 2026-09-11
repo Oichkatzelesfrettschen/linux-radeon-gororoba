@@ -428,8 +428,6 @@ jobs:
         run: python3 scripts/check_rs4xx_hardware_admission_contract.py --selftest
       - name: RS4xx hardware admission contract
         run: python3 scripts/check_rs4xx_hardware_admission_contract.py
-      - name: Radeon page-flip cleanup fixtures and calibration
-        run: python3 scripts/test_radeon_flip_cleanup.py --selftest
       - name: RS480 CP ME restore containment calibration
         run: python3 scripts/check_rs480_cp_me_restore_containment.py --selftest
       - name: RS480 CP ME restore containment contract

@@ -1615,6 +1615,8 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 	u32 idx_value;
 	struct radeon_bo *dst_robj;
 	u32 dst_offset, dst_pitch;
+	struct radeon_bo *src_robj;
+	u32 src_offset, src_pitch;
 
 	ib = p->ib.ptr;
 	track = (struct r100_cs_track *)p->track;
@@ -1640,17 +1642,30 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 					  dst_pitch);
 		break;
 	case RADEON_SRC_PITCH_OFFSET:
-		r = r100_reloc_pitch_offset(p, pkt, idx, reg);
+		r = r100_reloc_pitch_offset_ex(p, pkt, idx, reg, &src_robj,
+					       &src_offset, &src_pitch);
 		if (r)
 			return r;
+		r100_cs_track_2d_src_bind(track, src_robj, src_offset, src_pitch);
 		break;
 	case RADEON_DP_GUI_MASTER_CNTL:
 		r100_cs_track_2d_dst_gui_master_cntl(track, idx_value);
+		break;
+	case RADEON_DP_CNTL:
+		r100_cs_track_2d_dp_cntl(track, idx_value);
+		break;
+	case RADEON_SRC_Y_X:
+		r100_cs_track_2d_src_y_x(track, idx_value);
 		break;
 	case RADEON_DST_Y_X:
 		r100_cs_track_2d_dst_y_x(track, idx_value);
 		break;
 	case RADEON_DST_WIDTH_HEIGHT:
+		r = r100_cs_track_2d_src_check(p, pkt, idx, reg,
+					       idx_value >> 16,
+					       idx_value & 0xffff);
+		if (r)
+			return r;
 		r = r100_cs_track_2d_dst_check(p, pkt, idx, reg,
 					       idx_value >> 16,
 					       idx_value & 0xffff);
@@ -1658,6 +1673,11 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 			return r;
 		break;
 	case RADEON_DST_HEIGHT_WIDTH:
+		r = r100_cs_track_2d_src_check(p, pkt, idx, reg,
+					       idx_value & 0xffff,
+					       idx_value >> 16);
+		if (r)
+			return r;
 		r = r100_cs_track_2d_dst_check(p, pkt, idx, reg,
 					       idx_value & 0xffff,
 					       idx_value >> 16);
@@ -2495,9 +2515,16 @@ void r100_cs_track_2d_dst_gui_master_cntl(struct r100_cs_track *track,
 			    RADEON_GMC_DST_DATATYPE_SHIFT;
 
 	track->dst2d.cpp = r100_cs_2d_dst_cpp(datatype);
+	track->src2d.cpp = track->dst2d.cpp;
 	track->dst2d.pitch_offset_cntl =
 		(value & RADEON_GMC_DST_PITCH_OFFSET_CNTL) != 0;
+	track->src2d.pitch_offset_cntl =
+		(value & RADEON_GMC_SRC_PITCH_OFFSET_CNTL) != 0;
+	track->src2d.source_memory =
+		(value & RADEON_DP_SRC_SOURCE_MASK) == RADEON_DP_SRC_SOURCE_MEMORY;
+	track->src2d.source_required = track->src2d.source_memory;
 	track->dst2d.gui_master_cntl_seen = true;
+	track->src2d.gui_master_cntl_seen = true;
 }
 
 void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value)
@@ -2505,6 +2532,33 @@ void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value)
 	track->dst2d.x = value & 0xffff;
 	track->dst2d.y = value >> 16;
 	track->dst2d.y_x_seen = true;
+}
+
+void r100_cs_track_2d_src_bind(struct r100_cs_track *track,
+				       struct radeon_bo *robj, u32 offset,
+				       u32 pitch)
+{
+	track->src2d.robj = robj;
+	track->src2d.object_size = radeon_bo_size(robj);
+	track->src2d.offset = offset;
+	track->src2d.pitch = pitch;
+	track->src2d.pitch_offset_seen = true;
+}
+
+void r100_cs_track_2d_src_y_x(struct r100_cs_track *track, u32 value)
+{
+	track->src2d.x = value & 0xffff;
+	track->src2d.y = value >> 16;
+	track->src2d.y_x_seen = true;
+}
+
+void r100_cs_track_2d_dp_cntl(struct r100_cs_track *track, u32 value)
+{
+	track->xdir_left_to_right =
+		(value & RADEON_DST_X_LEFT_TO_RIGHT) != 0;
+	track->ydir_top_to_bottom =
+		(value & RADEON_DST_Y_TOP_TO_BOTTOM) != 0;
+	track->dp_cntl_seen = true;
 }
 
 /* The 2D destination footprint a launch writes must lie inside the
@@ -2516,9 +2570,9 @@ void r100_cs_track_2d_dst_y_x(struct r100_cs_track *track, u32 value)
  * and it runs in u32 with checked arithmetic because the engine addresses
  * a 32-bit surface:
  *
- *   row0       = offset + y * pitch
+ *   row0       = offset + y_start * pitch
  *   last_row   = row0 + (height - 1) * pitch
- *   end_byte   = last_row + (x + width) * cpp
+ *   end_byte   = last_row + (x_start + width) * cpp
  *
  * with width > 0, height > 0, cpp sized, pitch > 0, x * cpp < pitch,
  * (x + width) * cpp <= pitch, and end_byte <= radeon_bo_size.  A launch
@@ -2537,12 +2591,14 @@ int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
 {
 	struct r100_cs_track *track = p->track;
 	struct r100_cs_track_2d_dst *d = &track->dst2d;
-	u32 x_bytes, span_bytes, rows_bytes, row0, last_row, end_byte;
+	u32 x_start, y_start, x_bytes, span_bytes, rows_bytes, row0;
+	u32 last_row, end_byte;
 	const char *refusal = NULL;
 
-	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen)
+	if (!d->pitch_offset_seen || !d->gui_master_cntl_seen || !d->y_x_seen ||
+	    !track->dp_cntl_seen)
 		refusal = "2D destination geometry before DST_PITCH_OFFSET, "
-			  "DP_GUI_MASTER_CNTL, and DST_Y_X";
+			  "DP_GUI_MASTER_CNTL, DST_Y_X, and DP_CNTL";
 	else if (!d->pitch_offset_cntl)
 		refusal = "2D destination taken from DEFAULT_PITCH_OFFSET "
 			  "rather than the relocated DST_PITCH_OFFSET";
@@ -2552,22 +2608,29 @@ int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
 		refusal = "empty 2D destination rectangle";
 	else if (!d->pitch)
 		refusal = "2D destination pitch 0";
-	else if (check_mul_overflow(d->x, d->cpp, &x_bytes) ||
-		 check_add_overflow(d->x, width, &span_bytes) ||
-		 check_mul_overflow(span_bytes, d->cpp, &span_bytes) ||
-		 check_mul_overflow(d->y, d->pitch, &row0) ||
-		 check_add_overflow(d->offset, row0, &row0) ||
-		 check_mul_overflow(height - 1, d->pitch, &rows_bytes) ||
-		 check_add_overflow(row0, rows_bytes, &last_row) ||
-		 check_add_overflow(last_row, span_bytes, &end_byte))
-		refusal = "2D destination footprint overflows the 32-bit "
-			  "surface address";
-	else if (x_bytes >= d->pitch)
-		refusal = "2D destination x starts past the pitch";
-	else if (span_bytes > d->pitch)
-		refusal = "2D destination width overruns the pitch";
-	else if (end_byte > d->object_size)
-		refusal = "2D destination rectangle past the buffer object";
+	else if ((!track->xdir_left_to_right && d->x < width - 1) ||
+		 (!track->ydir_top_to_bottom && d->y < height - 1))
+		refusal = "2D destination reverse direction starts before the surface";
+	if (!refusal) {
+		x_start = track->xdir_left_to_right ? d->x : d->x - (width - 1);
+		y_start = track->ydir_top_to_bottom ? d->y : d->y - (height - 1);
+		if (check_mul_overflow(x_start, d->cpp, &x_bytes) ||
+		    check_mul_overflow(width, d->cpp, &span_bytes) ||
+		    check_add_overflow(x_bytes, span_bytes, &span_bytes) ||
+		    check_mul_overflow(y_start, d->pitch, &row0) ||
+		    check_add_overflow(d->offset, row0, &row0) ||
+		    check_mul_overflow(height - 1, d->pitch, &rows_bytes) ||
+		    check_add_overflow(row0, rows_bytes, &last_row) ||
+		    check_add_overflow(last_row, span_bytes, &end_byte))
+			refusal = "2D destination footprint overflows the 32-bit "
+				  "surface address";
+		else if (x_bytes >= d->pitch)
+			refusal = "2D destination x starts past the pitch";
+		else if (span_bytes > d->pitch)
+			refusal = "2D destination width overruns the pitch";
+		else if (end_byte > d->object_size)
+			refusal = "2D destination rectangle past the buffer object";
+	}
 
 	if (!refusal)
 		return 0;
@@ -2579,11 +2642,72 @@ int r100_cs_track_2d_dst_check(struct radeon_cs_parser *p,
 	return -EINVAL;
 }
 
+int r100_cs_track_2d_src_check(struct radeon_cs_parser *p,
+				       struct radeon_cs_packet *pkt,
+				       unsigned idx, unsigned reg,
+				       u32 width, u32 height)
+{
+	struct r100_cs_track *track = p->track;
+	struct r100_cs_track_2d_src *s = &track->src2d;
+	u32 x_start, y_start, x_bytes, span_bytes, rows_bytes, row0;
+	u32 last_row, end_byte;
+	const char *refusal = NULL;
+
+	if (!s->gui_master_cntl_seen || !s->source_required)
+		return 0;
+	if (!s->pitch_offset_cntl)
+		refusal = "2D memory source lacks SRC_PITCH_OFFSET control";
+	else if (!s->pitch_offset_seen || !s->y_x_seen || !track->dp_cntl_seen)
+		refusal = "2D source geometry before SRC_PITCH_OFFSET, "
+			  "DP_GUI_MASTER_CNTL, SRC_Y_X, and DP_CNTL";
+	else if (!s->cpp)
+		refusal = "unsupported 2D source datatype";
+	else if (!width || !height)
+		refusal = "empty 2D source rectangle";
+	else if (!s->pitch)
+		refusal = "2D source pitch 0";
+	else if ((!track->xdir_left_to_right && s->x < width - 1) ||
+		 (!track->ydir_top_to_bottom && s->y < height - 1))
+		refusal = "2D source reverse direction starts before the surface";
+	if (!refusal) {
+		x_start = track->xdir_left_to_right ? s->x : s->x - (width - 1);
+		y_start = track->ydir_top_to_bottom ? s->y : s->y - (height - 1);
+		if (check_mul_overflow(x_start, s->cpp, &x_bytes) ||
+		    check_mul_overflow(width, s->cpp, &span_bytes) ||
+		    check_add_overflow(x_bytes, span_bytes, &span_bytes) ||
+		    check_mul_overflow(y_start, s->pitch, &row0) ||
+		    check_add_overflow(s->offset, row0, &row0) ||
+		    check_mul_overflow(height - 1, s->pitch, &rows_bytes) ||
+		    check_add_overflow(row0, rows_bytes, &last_row) ||
+		    check_add_overflow(last_row, span_bytes, &end_byte))
+			refusal = "2D source footprint overflows the 32-bit surface address";
+		else if (x_bytes >= s->pitch)
+			refusal = "2D source x starts past the pitch";
+		else if (span_bytes > s->pitch)
+			refusal = "2D source width overruns the pitch";
+		else if (end_byte > s->object_size)
+			refusal = "2D source rectangle past the buffer object";
+	}
+
+	if (!refusal)
+		return 0;
+	dev_warn_once(p->dev,
+		      "%s: ib[%d]=0x%04X pitch %u offset %u cpp %u x %u y %u width %u height %u object %lu\n",
+		      refusal, idx, reg, s->pitch, s->offset, s->cpp, s->x,
+		      s->y, width, height, s->object_size);
+	radeon_cs_dump_packet(p, pkt);
+	return -EINVAL;
+}
+
 void r100_cs_track_clear(struct radeon_device *rdev, struct r100_cs_track *track)
 {
 	unsigned i, face;
 
 	memset(&track->dst2d, 0, sizeof(track->dst2d));
+	memset(&track->src2d, 0, sizeof(track->src2d));
+	track->dp_cntl_seen = false;
+	track->xdir_left_to_right = false;
+	track->ydir_top_to_bottom = false;
 	track->cb_dirty = true;
 	track->zb_dirty = true;
 	track->tex_dirty = true;

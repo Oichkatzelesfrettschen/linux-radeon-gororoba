@@ -31,6 +31,7 @@ cat > "${bundle}" <<'BUNDLE'
 family rs480
 bo 0 role=destination size=65536 read_domains=0x0 write_domain=0x2
 bo 1 role=completion size=4 read_domains=0x0 write_domain=0x2
+bo 2 role=source size=65536 read_domains=0x1 write_domain=0x0
 BUNDLE
 
 # assemble <out> <spec>: the spec is a whitespace-separated list of
@@ -39,14 +40,19 @@ BUNDLE
 #                                       bytes) then the relocation NOP naming
 #                                       chunk dword RELOC*4 (RELOC omitted:
 #                                       no NOP at all)
+#   src_pitch_offset=PITCH,OFFSET[,RELOC]
+#                                       SRC_PITCH_OFFSET and its relocation
 #   scissor                             SC_TOP_LEFT 0, SC_BOTTOM_RIGHT and
 #                                       DEFAULT_SC_BOTTOM_RIGHT 0x1fff1fff
 #   scissor=WORD                        the two bottom-right words = WORD
-#   master=DATATYPE[,nocntl]            DP_GUI_MASTER_CNTL for a solid brush
-#                                       and ROP3 P at that datatype code
+#   master=DATATYPE[,nocntl][,src][,usesource]
+#                                       DP_GUI_MASTER_CNTL for a solid brush;
+#                                       src selects memory source and usesource
+#                                       selects ROP3 S for source-read tests
 #   walk                                DP_CNTL left-to-right, top-to-bottom
 #   mask                                DP_WRITE_MSK all lanes
 #   brush=COLOR                         DP_BRUSH_FRGD_CLR
+#   srcyx=X,Y                           SRC_Y_X source origin
 #   rect=X,Y,W,H                        DST_Y_X then DST_WIDTH_HEIGHT
 #   exarect=X,Y,W,H                     DST_Y_X then DST_HEIGHT_WIDTH, the
 #                                       height-high launch the X EXA
@@ -61,7 +67,8 @@ assemble() {
 import struct, sys
 out = sys.argv[1]
 ops = sys.argv[2].split()
-REG = {"DST_PITCH_OFFSET": 0x142C, "SC_TOP_LEFT": 0x16EC,
+REG = {"SRC_PITCH_OFFSET": 0x1428, "SRC_Y_X": 0x1434,
+       "DST_PITCH_OFFSET": 0x142C, "SC_TOP_LEFT": 0x16EC,
        "SC_BOTTOM_RIGHT": 0x16F0, "DEFAULT_SC_BOTTOM_RIGHT": 0x16E8,
        "DP_GUI_MASTER_CNTL": 0x146C, "DP_CNTL": 0x16C0,
        "DP_WRITE_MSK": 0x16CC, "DP_BRUSH_FRGD_CLR": 0x147C,
@@ -76,9 +83,10 @@ def pkt0(reg, value):
 for op in ops:
     name, _, arg = op.partition("=")
     a = arg.split(",") if arg else []
-    if name == "pitch_offset":
+    if name in ("pitch_offset", "src_pitch_offset"):
         pitch, offset = int(a[0], 0), int(a[1], 0)
-        pkt0("DST_PITCH_OFFSET", ((pitch >> 6) << 22) | (offset >> 10))
+        register = "DST_PITCH_OFFSET" if name == "pitch_offset" else "SRC_PITCH_OFFSET"
+        pkt0(register, ((pitch >> 6) << 22) | (offset >> 10))
         if len(a) > 2:
             words.append((3 << 30) | (0 << 16) | (0x10 << 8))
             words.append(int(a[2], 0) * 4)
@@ -90,12 +98,22 @@ for op in ops:
     elif name == "master":
         datatype = int(a[0], 0)
         cntl = 0 if len(a) > 1 and a[1] == "nocntl" else (1 << 1)
+        if "src" in a[1:]:
+            cntl |= 2 << 24
+            if "nocntl" not in a[1:]:
+                cntl |= 1
+        rop = 0x00cc0000 if "usesource" in a[1:] else 0x00f00000
         pkt0("DP_GUI_MASTER_CNTL", cntl | (13 << 4) | (datatype << 8) |
-             0x00f00000 | (1 << 28) | (1 << 30))
+             rop | (1 << 28) | (1 << 30))
     elif name == "walk":
         pkt0("DP_CNTL", 3)
+    elif name == "walkrev":
+        pkt0("DP_CNTL", 0)
     elif name == "mask":
         pkt0("DP_WRITE_MSK", 0xffffffff)
+    elif name == "srcyx":
+        x, y = (int(v, 0) for v in a)
+        pkt0("SRC_Y_X", (y << 16) | x)
     elif name == "brush":
         pkt0("DP_BRUSH_FRGD_CLR", int(a[0], 0))
     elif name == "rect":
@@ -153,6 +171,8 @@ expect() {
 prologue="pitch_offset=256,0,0 scissor master=6 walk mask"
 epilogue="flush wait"
 
+copy_prologue="pitch_offset=256,0,0 src_pitch_offset=256,0,2 srcyx=0,0 scissor master=6,src,usesource walk mask"
+
 echo "known-good:"
 assemble "${work}/exact.bin" \
     "${prologue} brush=0x11223344 rect=3,0,61,1 brush=0x11223344 rect=0,1,64,18 brush=0x11223344 rect=0,19,35,1 ${epilogue}"
@@ -174,6 +194,53 @@ fi
 expect accept "exact 38-dword stream" "" "${work}/exact.bin"
 expect accept "exact stream, verbose footprint" "end 5004 within 65536" \
     "${work}/exact.bin" --verbose
+
+echo "memory-source containment:"
+assemble "${work}/copy.bin" \
+    "${copy_prologue} rect=0,0,64,1 ${epilogue}"
+expect accept "memory source copy inside both objects" "2D source 64x1" \
+    "${work}/copy.bin" --verbose
+assemble "${work}/copy-source-past.bin" \
+    "${copy_prologue} srcyx=0,256 rect=0,0,64,1 ${epilogue}"
+expect reject "source row past the source object" \
+    "2D source rectangle past the buffer object" "${work}/copy-source-past.bin"
+assemble "${work}/copy-source-small.bin" \
+    "${copy_prologue} rect=0,0,64,1 ${epilogue}"
+expect reject "source object undersized" \
+    "2D source rectangle past the buffer object" "${work}/copy-source-small.bin" \
+    --set-bo-size 2=252
+assemble "${work}/copy-source-no-reloc.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=256,0 srcyx=0,0 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "missing source relocation" "no packet3 NOP" \
+    "${work}/copy-source-no-reloc.bin"
+assemble "${work}/copy-source-no-control.bin" \
+    "pitch_offset=256,0,0 scissor master=6,nocntl,src,usesource walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "memory source without pitch control" \
+    "2D memory source lacks SRC_PITCH_OFFSET control" \
+    "${work}/copy-source-no-control.bin"
+assemble "${work}/copy-source-selection-after-binding.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=256,0,2 srcyx=0,0 scissor master=6 master=6,nocntl,src,usesource walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "memory source selected after source binding" \
+    "2D memory source lacks SRC_PITCH_OFFSET control" \
+    "${work}/copy-source-selection-after-binding.bin"
+assemble "${work}/copy-source-before-origin.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=256,0,2 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "source launch before SRC_Y_X" \
+    "2D source geometry before SRC_PITCH_OFFSET" \
+    "${work}/copy-source-before-origin.bin"
+assemble "${work}/copy-source-overflow.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=256,0xfffffc00,2 srcyx=0,5 scissor master=6,src walk mask rect=0,0,1,1 ${epilogue}"
+expect reject "source base plus row overflows the surface" \
+    "2D source footprint overflows" "${work}/copy-source-overflow.bin"
+assemble "${work}/copy-reverse.bin" \
+    "pitch_offset=256,0,0 src_pitch_offset=256,0,2 srcyx=63,0 scissor master=6,src walkrev mask rect=63,0,64,1 ${epilogue}"
+expect accept "reverse memory source copy preserves the footprint" "" \
+    "${work}/copy-reverse.bin"
+assemble "${work}/copy-reverse-underflow.bin" \
+    "${copy_prologue} srcyx=0,0 walkrev rect=0,0,2,1 ${epilogue}"
+expect reject "reverse source x underflow" \
+    "2D source reverse direction starts before the surface" \
+    "${work}/copy-reverse-underflow.bin"
 expect accept "exact stream binds the destination object by relocation" \
     "DST_PITCH_OFFSET: reloc cursor 2 -> entry 0 (destination) size 65536 base 0 pitch 256" \
     "${work}/exact.bin" --verbose
