@@ -104,10 +104,10 @@
     },
     {
       "id": "suspend-exclusion",
-      "status": "pending",
+      "status": "completed",
       "policy_row": "CS_SUSPEND_FENCE_LOCK_CONTEXT",
       "work": "Trace callers and exclusion around fence draining during suspend before deciding whether the documented precondition or implementation needs correction.",
-      "acceptance": "A complete caller proof or tested lock correction closes the policy question."
+      "acceptance": "Kernel commit d5da478089bc244aea27838fd31ed862a64b9e95 holds ring_lock across every suspend fence wait and releases it on all exits. Calibrated source mutations and dual-kernel warning-clean builds qualify the source repair; target suspend and resume remain unproved."
     },
     {
       "id": "kernel-repairs",

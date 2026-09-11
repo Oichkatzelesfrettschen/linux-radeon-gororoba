@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "coverage": "Eight initial rows carry twenty-one selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, excerpt containment between consecutive declarations, and the declared supporting-claim inventory. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Packet grammar, suspend, exhaustive clause coverage, and behavioral qualification remain open.",
+  "coverage": "Eight initial rows carry twenty-one selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, excerpt containment between consecutive declarations, and the declared supporting-claim inventory. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Packet grammar, exhaustive clause coverage, and behavioral qualification remain open. Suspend fence draining is an independent kernel containment contract recorded by CS_SUSPEND_FENCE_LOCK_CONTEXT rather than a Vulkan requirement row.",
   "sources": {
     "vulkan_commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
     "vulkan_repository": "https://github.com/KhronosGroup/Vulkan-Docs",

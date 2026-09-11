@@ -25,7 +25,7 @@ import check_rs4xx_gart_cache_policy as cache_policy
 POLICY = Path("policy/radeon-cs-reservation-fence-contract.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "8e49222dda24dd72432d6150d237b5ed00a0ec82f50ff0fd358f4405f377859b"
+    "6f5597a23c4b6332d9f7072f02d0b236933c5a2dfcfd7c029c6822cca2d0cc30"
 )
 CS_DIRECT_PREFIX_SHA256 = {
     "relocs": "bd4645062b4348cbecfb5a1353312a61f20f1e5909401bf2c9cac9717e652ead",
@@ -46,7 +46,7 @@ EXPECTED_POLICY_ROW_SHA256 = {
     "CS_RELOCATION_ACCESS_DIRECTION": "95daa42dc85a437f368f23a1cbb49a33532d92fdb1cbd90b864fcdc7bdd9acb8",
     "FENCE_FORCE_COMPLETION_PUBLICATION": "23547d33203f13678aa3c192f0bd5211046af379f3b3bbd639650fe9e530f43f",
     "RS482_RESET_RING_REPLAY_SEMANTICS": "2af2b8ad90f3fb88315fd5d7e26f2593093fbaefe21f6ea0d184a241d15250af",
-    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "d5f1c05bceb9f4ec163f50a9a39e8edc56b4194e2b6968de90c825577e0392e7",
+    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "9e96fa0d0ba5666b724f69737c1d0f2bcbd56dc5941b35474fe73fe2c8a723e1",
     "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "ead3e30b7df67642aaef51257aac3a90f5c821e808f1f5141e3d51fa719f5190",
 }
 
@@ -88,7 +88,7 @@ EXPECTED_ROWS = {
         "CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
     ),
     "CS_SUSPEND_FENCE_LOCK_CONTEXT": (
-        "open",
+        "repaired",
         "CS_RING_DEPENDENCY_AND_IB_SCHEDULE",
     ),
     "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": (
@@ -119,7 +119,7 @@ EXPECTED_NONCLAIMS = {
     "CS_RELOCATION_ACCESS_DIRECTION": "Parser address validation alone does not prove correct reservation usage.",
     "FENCE_FORCE_COMPLETION_PUBLICATION": "Source error completion does not prove target fence execution or silicon recovery.",
     "RS482_RESET_RING_REPLAY_SEMANTICS": "Source replay structure does not prove payload idempotence.",
-    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "A comment precondition does not prove the caller holds the lock.",
+    "CS_SUSPEND_FENCE_LOCK_CONTEXT": "The source lock invariant does not prove target suspend and resume.",
     "RS482_CACHED_GTT_PAYLOAD_VISIBILITY": "Reservations, fences, mb, and emitted GPU cache commands do not prove payload visibility.",
 }
 
@@ -1195,17 +1195,6 @@ def check_open_boundaries(root: Path) -> None:
             "r300 packet access now references write_domain; update the OPEN row"
         )
 
-    suspend = function(root, "radeon_device.c", "radeon_suspend_kms")
-    require_order(
-        "suspend fence wait structure",
-        suspend,
-        ("radeon_bo_evict_vram", "radeon_fence_wait_empty", "radeon_suspend"),
-    )
-    if "ring_lock" in suspend:
-        raise ContractError(
-            "suspend now carries a ring lock token; update the OPEN lock row"
-        )
-
     reset_entry = function(root, "radeon_device.c", "radeon_gpu_reset")
     require(
         "reset entry delegation differs",
@@ -1234,6 +1223,37 @@ def check_open_boundaries(root: Path) -> None:
     )
 
 
+def check_suspend_fence_lock_context(root: Path) -> None:
+    suspend = function(root, "radeon_device.c", "radeon_suspend_kms")
+    lock = "mutex_lock(&rdev->ring_lock);"
+    unlock = "mutex_unlock(&rdev->ring_lock);"
+    if suspend.count(lock) != 1:
+        raise ContractError("suspend fence drain requires one ring lock acquisition")
+    if suspend.count(unlock) != 3:
+        raise ContractError("suspend fence drain requires three ring lock releases")
+    require_order(
+        "suspend fence drain ring lock context",
+        suspend,
+        (
+            "radeon_bo_evict_vram",
+            lock,
+            "for (i = 0; i < RADEON_NUM_RINGS; i++)",
+            "radeon_fence_wait_empty",
+            "if (r)",
+            "if (radeon_rs4xx_hardware_target(rdev))",
+            unlock,
+            "goto rs4xx_suspend_parked",
+            "radeon_fence_driver_force_completion",
+            "flush_delayed_work",
+            "if (radeon_rs4xx_hardware_target(rdev) &&",
+            unlock,
+            "goto rs4xx_suspend_parked",
+            unlock,
+            "radeon_save_bios_scratch_regs",
+        ),
+    )
+
+
 def check_tree(
     root: Path, expected_policy_sha256: str = EXPECTED_POLICY_SHA256
 ) -> None:
@@ -1247,6 +1267,7 @@ def check_tree(
     check_reservation_ownership(root)
     check_ring_and_fence_publication(root)
     check_failed_reset_fence_publication(root)
+    check_suspend_fence_lock_context(root)
     check_open_boundaries(root)
 
 
@@ -1323,6 +1344,48 @@ SOURCE_MUTATIONS = {
         "drivers/gpu/drm/radeon/radeon_device.c",
         "\tdown_write(&rdev->exclusive_lock);\n",
         "",
+    ),
+    "suspend fence drain drops ring lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+    ),
+    "suspend fence drain unlocks before wait": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
+    "suspend wait error leaks ring lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\t\t\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\tgoto rs4xx_suspend_parked;\n"
+            "\t\t\t}"
+        ),
+        (
+            "\t\t\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\t\t\tgoto rs4xx_suspend_parked;\n"
+            "\t\t\t}"
+        ),
+    ),
+    "suspend parked observation leaks ring lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\t\t\tr = -EIO;\n"
+            "\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+        ("\t\t\tr = -EIO;\n\t\t\tgoto rs4xx_suspend_parked;"),
+    ),
+    "suspend successful drain leaks ring lock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t}\n\tmutex_unlock(&rdev->ring_lock);\n\n\tradeon_save_bios_scratch_regs(rdev);",
+        "\t}\n\n\tradeon_save_bios_scratch_regs(rdev);",
     ),
     "parked CS condition is inverted": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
