@@ -1,8 +1,8 @@
-d5b1b326669f827caa6cbea658fc9f3bbdb721ad6e37f222402623c942a298f7  /var/cache/pacman/pkg/llvm-libs-22.1.6-2-x86_64_v3.pkg.tar.zst
-69c948d2f91c7be2b4aca0d30cc9edcefc6f3d05d6b7531a90bc81207e76a122  /var/cache/pacman/pkg/llvm-libs-22.1.6-2-x86_64_v3.pkg.tar.zst.sig
-cbfa007309b32f646ef786a84466adc53338462de863a0cfc9ce08d3d5a03a17  /var/cache/pacman/pkg/llvm-22.1.6-2-x86_64_v3.pkg.tar.zst
-4b7a45906d9973abfa4446877554d01a5ef5d8b557f9840677728a28a041e2a8  /var/cache/pacman/pkg/llvm-22.1.6-2-x86_64_v3.pkg.tar.zst.sig
-51d82fcc4898220826e9c1eec8b79c43224ca474a95cc8aa749c364697076a27  /var/cache/pacman/pkg/clang-22.1.6-2-x86_64_v3.pkg.tar.zst
-25a7c68d513e4d9d34685fe8538db00b46042f75f6a0120cb6db1053180b147a  /var/cache/pacman/pkg/clang-22.1.6-2-x86_64_v3.pkg.tar.zst.sig
-41e97e452cb65f4ca7016b043ad86ba505c038d3de00e5e32f78db6096c7f284  /var/cache/pacman/pkg/lld-22.1.6-1.1-x86_64_v3.pkg.tar.zst
-507e470f22b29e6e47d5c1fce76f6261e6e1d9e080da21cd0a5e60cf51f02590  /var/cache/pacman/pkg/lld-22.1.6-1.1-x86_64_v3.pkg.tar.zst.sig
+6ced8a3e24c933e7b4c1c37cbaf26e497fe4a1f9f891ffe249fde0521900e339  /var/cache/pacman/pkg/llvm-libs-22.1.6-1-x86_64.pkg.tar.zst
+a104809cbe05d14a446a62ad40caf0f7c525c652b7d92bc6065609d283c47292  /var/cache/pacman/pkg/llvm-libs-22.1.6-1-x86_64.pkg.tar.zst.sig
+272b342b7ad7432595ec440df3b6cbd75cfc72dc73e35f57acb8de836eb6c128  /var/cache/pacman/pkg/llvm-22.1.6-1-x86_64.pkg.tar.zst
+322f7f657dcf181a3644bca928ab26992165fa2388b29910c2d44ad4570b8c5c  /var/cache/pacman/pkg/llvm-22.1.6-1-x86_64.pkg.tar.zst.sig
+85ab6fcefbe196cb72e029038242cc003c92262a61a337597bbc2f5da4dba66c  /var/cache/pacman/pkg/clang-22.1.6-1-x86_64.pkg.tar.zst
+2efd09c26876b60cd2717a63c2b869aa070772034b6a642a92c7bc653391e9c9  /var/cache/pacman/pkg/clang-22.1.6-1-x86_64.pkg.tar.zst.sig
+2c369793a14dacc432297a19b244c8561b51beb1810c47c7ad8de022382ac36e  /var/cache/pacman/pkg/lld-22.1.6-1-x86_64.pkg.tar.zst
+93aa0a23ba314d54b68417e097eb24aef24ba63d1e01fc6eeb72deb4ee909ed8  /var/cache/pacman/pkg/lld-22.1.6-1-x86_64.pkg.tar.zst.sig
