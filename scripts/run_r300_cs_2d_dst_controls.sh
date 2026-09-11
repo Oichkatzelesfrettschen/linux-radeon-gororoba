@@ -71,6 +71,7 @@ REG = {"SRC_PITCH_OFFSET": 0x1428, "SRC_Y_X": 0x1434,
        "DST_PITCH_OFFSET": 0x142C, "SC_TOP_LEFT": 0x16EC,
        "SC_BOTTOM_RIGHT": 0x16F0, "DEFAULT_SC_BOTTOM_RIGHT": 0x16E8,
        "DP_GUI_MASTER_CNTL": 0x146C, "DP_CNTL": 0x16C0,
+       "DP_CNTL_XDIR_YDIR_YMAJOR": 0x16D0,
        "DP_WRITE_MSK": 0x16CC, "DP_BRUSH_FRGD_CLR": 0x147C,
        "DST_Y_X": 0x1438, "DST_WIDTH_HEIGHT": 0x1598,
        "DST_HEIGHT_WIDTH": 0x143C, "DST_LINE_START": 0x1600,
@@ -109,6 +110,8 @@ for op in ops:
         pkt0("DP_CNTL", 3)
     elif name == "walkrev":
         pkt0("DP_CNTL", 0)
+    elif name == "alternate_walkrev":
+        pkt0("DP_CNTL_XDIR_YDIR_YMAJOR", 0)
     elif name == "mask":
         pkt0("DP_WRITE_MSK", 0xffffffff)
     elif name == "srcyx":
@@ -241,6 +244,10 @@ assemble "${work}/copy-reverse-underflow.bin" \
 expect reject "reverse source x underflow" \
     "2D source reverse direction starts before the surface" \
     "${work}/copy-reverse-underflow.bin"
+assemble "${work}/alternate-direction.bin" \
+    "${copy_prologue} alternate_walkrev rect=0,0,1,1 ${epilogue}"
+expect reject "alternate direction control register" \
+    "forbidden register 0x16D0" "${work}/alternate-direction.bin"
 expect accept "exact stream binds the destination object by relocation" \
     "DST_PITCH_OFFSET: reloc cursor 2 -> entry 0 (destination) size 65536 base 0 pitch 256" \
     "${work}/exact.bin" --verbose
