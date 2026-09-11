@@ -39,6 +39,9 @@ CHAPTER_BLOBS = {
     "synchronization.txt": "3d285f3c19f65e23d5e45ed946ab7d9e52207e8f",
     "devsandqueues.txt": "ea67767e54469bbd18aaf0776f7e28ee0184fdd1",
 }
+ANCHOR_DECLARATION = re.compile(
+    r"^[ \t]*(?:\*[ \t]+)?\[\[([A-Za-z0-9_-]+)\]\][ \t]*$", re.MULTILINE
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -83,10 +86,19 @@ def check_specification(specification: dict, vulkan: Path) -> None:
     require(result.stdout.strip() == CHAPTER_BLOBS[chapter],
             "specification chapter identity drift")
     chapter_text = source_text(vulkan, revision, path)
-    declarations = re.findall(r"^[ \t]*\[\[" + re.escape(anchor) + r"\]\][ \t]*$",
-                              chapter_text, re.MULTILINE)
+    declarations = [match for match in ANCHOR_DECLARATION.finditer(chapter_text)
+                    if match.group(1) == anchor]
     require(len(declarations) == 1,
             f"expected one anchor declaration in {chapter}: {anchor}")
+    section_start = declarations[0].end()
+    next_anchor = ANCHOR_DECLARATION.search(chapter_text, section_start)
+    section_end = next_anchor.start() if next_anchor else len(chapter_text)
+    section = chapter_text[section_start:section_end]
+    excerpt = specification["excerpt"]
+    require(isinstance(excerpt, str) and len(excerpt.strip()) >= 40,
+            "missing or vacuous specification excerpt")
+    require(excerpt in section,
+            f"exact excerpt absent from anchor interval: {chapter}:{anchor}")
 
 
 def check(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> None:
@@ -139,6 +151,12 @@ def selftest(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> int:
         ("chapter", "resources.txt"),
         ("chapter", "../memory.txt"),
         ("chapter", "absent.txt"),
+        ("excerpt", ""),
+        ("excerpt", " "),
+        ("excerpt", "There must:"),
+        ("excerpt", "An invented normative statement with enough characters to pass length."),
+        ("excerpt", document["requirements"][1]["specification"]["excerpt"]),
+        ("anchor", "memory-device"),
     ):
         mutated = copy.deepcopy(document)
         mutated["requirements"][0]["specification"][field] = value
@@ -147,6 +165,12 @@ def selftest(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> int:
         mutated = copy.deepcopy(document)
         mutated["requirements"][0][field] = value
         bad_documents.append(mutated)
+    conditional = copy.deepcopy(document)
+    lost_specification = conditional["requirements"][-1]["specification"]
+    lost_specification["excerpt"] = lost_specification["excerpt"].replace(
+        "ifdef::VK_KHR_swapchain[]\n", ""
+    ).replace("endif::VK_KHR_swapchain[]\n", "")
+    bad_documents.append(conditional)
     duplicated = copy.deepcopy(document)
     duplicated["requirements"].append(copy.deepcopy(duplicated["requirements"][0]))
     bad_documents.append(duplicated)
@@ -180,8 +204,8 @@ def main() -> int:
             count = selftest(document, args.kernel_tree, args.mesa_tree, args.vulkan_tree)
             print(f"selftest: one good document and {count} bad mutations classified")
         print(f"source references: {len(document['requirements'])} requirements pass")
-        print("Pinned chapter identities and anchor declarations pass.")
-        print("Normative excerpt coverage and behavior remain unverified.")
+        print("Pinned chapter identities, anchor declarations, and exact excerpts pass.")
+        print("Semantic completeness and behavior remain unverified.")
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print(f"source reference check failed: {error}")
         return 1

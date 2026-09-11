@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "coverage": "Initial contract mapping includes buffer binding and the mandatory coherent memory type. Allocation, image binding, packet grammar, and suspend rows remain to be mapped. This artifact establishes neither exhaustive coverage nor conformance. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators and policy references; specification anchors and behavioral outcomes require separate verification.",
+  "coverage": "Six initial rows carry selected exact normative excerpts. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators, policy references, chapter blob identities, anchor declarations, and excerpt containment between consecutive declarations. docs/r3v-vulkan-normative-sources.md records reproduction and quotation limits. Allocation, image binding, packet grammar, suspend, complete clause coverage, and behavioral qualification remain open.",
   "sources": {
     "vulkan_commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
     "vulkan_repository": "https://github.com/KhronosGroup/Vulkan-Docs",
@@ -11,7 +11,7 @@
   "requirements": [
     {
       "id": "host-coherent-memory-type",
-      "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list"},
+      "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list", "excerpt": "There must: be at least one memory type with both the\nename:VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT and\nename:VK_MEMORY_PROPERTY_HOST_COHERENT_BIT bits set in its\npname:propertyFlags."},
       "requirement": "At least one memory type is both HOST_VISIBLE and HOST_COHERENT. Coherent memory requires neither application flush nor application invalidation for the respective host and device writes.",
       "classification": "missing_validation",
       "owner": "mesa-26-gororoba",
@@ -25,7 +25,7 @@
     },
     {
       "id": "buffer-memory-binding",
-      "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-size-01037"},
+      "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-size-01037", "excerpt": "    The pname:size member of the sname:VkMemoryRequirements structure\n    returned from a call to fname:vkGetBufferMemoryRequirements with\n    pname:buffer must: be less than or equal to the size of pname:memory\n    minus pname:memoryOffset"},
       "requirement": "A valid buffer binding fits the required byte size within the allocation after the binding offset. Related valid usage requires an allowed memory type and aligned offset.",
       "classification": "missing_validation",
       "owner": "mesa-26-gororoba",
@@ -39,7 +39,7 @@
     },
     {
       "id": "resource-access-dependencies",
-      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory"},
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory", "excerpt": "A _memory dependency_ is an execution dependency which includes availability\nand visibility operations such that:\n\n  * The first set of operations happens-before the availability operation.\n  * The availability operation happens-before the visibility operation.\n  * The visibility operation happens-before the second set of operations."},
       "requirement": "Memory dependencies order operations and include availability and visibility for their access scopes.",
       "classification": "missing_validation",
       "owner": "linux-radeon-gororoba",
@@ -58,7 +58,7 @@
     },
     {
       "id": "memory-availability-visibility",
-      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory"},
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory", "excerpt": "Once written values are made visible to a particular type of memory access,\nthey can: be read or written by that type of memory access.\nMost synchronization commands in Vulkan define a memory dependency."},
       "requirement": "Written values become available and visible to the accesses included in the memory dependency.",
       "classification": "hardware_uncertainty",
       "owner": "steinmarder-r300",
@@ -72,7 +72,7 @@
     },
     {
       "id": "queue-fence-completion",
-      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling"},
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling", "excerpt": "The first <<synchronization-dependencies-scopes, synchronization scope>>\nincludes every batch submitted in the same <<devsandqueues-submission, queue\nsubmission>> command.\nFence signal operations that are defined by flink:vkQueueSubmit additionally\ninclude in the first synchronization scope all previous queue submissions to\nthe same queue via flink:vkQueueSubmit."},
       "requirement": "The fence signal operation follows the submitted batches and the earlier queue operations included in its synchronization scope.",
       "classification": "missing_validation",
       "owner": "mesa-26-gororoba",
@@ -86,7 +86,7 @@
     },
     {
       "id": "device-loss-finite-waits",
-      "specification": {"chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device"},
+      "specification": {"chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device", "excerpt": "Commands that wait indefinitely for device execution (namely\nflink:vkDeviceWaitIdle, flink:vkQueueWaitIdle, flink:vkWaitForFences\nifdef::VK_KHR_swapchain[]\nor flink:vkAcquireNextImageKHR\nendif::VK_KHR_swapchain[]\nwith a maximum pname:timeout, and flink:vkGetQueryPoolResults with the\nename:VK_QUERY_RESULT_WAIT_BIT bit set in pname:flags) must: return in\nfinite time even in the case of a lost device, and return either\nename:VK_SUCCESS or ename:VK_ERROR_DEVICE_LOST."},
       "requirement": "Device loss is terminal for the logical device. Covered indefinite waits return in finite time with VK_SUCCESS or VK_ERROR_DEVICE_LOST; object handles remain valid for destruction and mapped contents become undefined.",
       "classification": "missing_validation",
       "owner": "mesa-26-gororoba",
