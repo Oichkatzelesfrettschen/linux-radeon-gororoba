@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "objective": "Qualify and repair Vulkan 1.0 contracts crossing native R3V into Radeon DRM, validate on RS482, and integrate source and packaging through reviewed merges.",
+  "kernel_baseline": "07e65682a835bb807420e079b56387cbf1c0b172",
+  "integration_receipts": {
+    "memory_type_mesa_merge": "0d66a5059f0519f8923696c8e137f5c1b846b325",
+    "tracker_source_identity_mesa_merge": "f5146c940dbdf8d08b2c0bc977d574ab8a0282f8",
+    "memory_type_evidence_merge": "e02a21e0e559f877f599cc4b733ae4892bccd28b",
+    "evidence_repository": "steinmarder-r300",
+    "evidence_path": "src/re/r300/results/r3v-native-memory-type-contract",
+    "mesa_review_threads": "All 14 PR 2183 review threads report resolved after the merged tracker source correction.",
+    "synchronization": "Local Mesa and evidence main checkouts are synchronized. Remote Mesa main is synchronized. Remote evidence main ref is fast-forwarded while the feature checkout HEAD and porcelain status remain unchanged.",
+    "retention": "Three merged editing worktrees move to recoverable trash. Detached qualification worktrees and external build artifacts remain retained for the continuing DRM work."
+  },
+  "artifact_ownership": {
+    "vulkan_implementation": "mesa-26-gororoba",
+    "kernel_implementation": "linux-radeon-gororoba",
+    "test_results": "steinmarder-r300",
+    "packaging": "radeon-custom",
+    "firmware_evidence": "steinmarder-r300/src/re/r300/docs/isa_references/rs482_firmware",
+    "platform_evidence": "vostro1000-re"
+  },
+  "classification_values": [
+    "existing_support",
+    "missing_validation",
+    "confirmed_mesa_defect",
+    "confirmed_drm_defect",
+    "hardware_uncertainty"
+  ],
+  "scope": "The task list records work status. Existing policy ledgers retain authority over individual kernel contracts. Normative Vulkan clause mapping remains pending; registry command presence alone establishes neither a kernel defect nor conformance.",
+  "tasks": [
+    {
+      "id": "requirements",
+      "status": "in_progress",
+      "steps": [
+        {"id": "chapter-anchor-excerpts", "status": "completed", "acceptance": "Six selected exact excerpts bind to declared intervals in four pinned Khronos chapter blobs. Offline controls reject malformed references and altered excerpts."},
+        {"id": "remaining-clause-coverage", "status": "completed", "acceptance": "Coherent cache semantics, binding alignment and types, access scopes, and device-loss lifetime carry nine additional exact supporting clauses. The checker enforces the declared claim inventory."},
+        {"id": "allocation-image-mapping", "status": "completed", "acceptance": "Allocation parameters and image binding map through native R3V symbols to GEM construction and R300 surface containment with six exact clauses and separate application-validity and kernel-containment controls."},
+        {"id": "packet-suspend-mapping", "status": "in_progress", "acceptance": "Packet admission and suspend mappings distinguish Vulkan obligations from independent kernel containment."}
+      ],
+      "work": "Map pinned Vulkan prose clauses through R3V symbols, DRM interfaces, kernel handlers, and existing policy row identifiers into a machine-readable requirements tracker.",
+      "acceptance": "Each requirement carries source revisions, exact discovery queries, owner, classification, decisive test, and result reference."
+    },
+    {
+      "id": "memory-type-ordering",
+      "status": "completed",
+      "work": "Reproduce the native memory-type strict-subset ordering discrepancy and commit the coordinated table, allocation, binding, requirement, validator, and fixture repair.",
+      "acceptance": "The compiled helper regression reproduces the reversed order before repair and passes after repair. Mesa commit c8c49a4fe8237255dc855df324d75a47fc9b9575 carries the implementation; full driver qualification belongs to the following tasks."
+    },
+    {
+      "id": "memory-type-release-build",
+      "status": "completed",
+      "work": "Configure the release profile from clean detached source and control worktrees pinned to the repair with REPRODUCIBLE_RUN=1, then compile the native driver and registered test targets.",
+      "acceptance": "Release compilation and linking complete at Mesa commit 9a8857e84ca729c44de4ec581cd901b3e341f2a6 with 2805 steps. Two configuration warnings concern redundant selectors and disabled r300 LLVM; compiler-warning searches match zero diagnostics. Review corrections require a separate exact-head qualification."
+    },
+    {
+      "id": "memory-type-runtime-tests",
+      "status": "completed",
+      "work": "Run memory allocation, mapping, object lifetime, public surface, fill route, and submission tests through the built native implementation and drm-shim.",
+      "acceptance": "At Mesa commit 9a8857e84ca729c44de4ec581cd901b3e341f2a6, 84 focused tests report 77 OK and 7 EXPECTEDFAIL. All 441 registered R3V tests report 395 OK, 38 EXPECTEDFAIL, 8 SKIP, and 0 FAIL. These host and DRM shim results leave target and kernel parser qualification open."
+    },
+    {
+      "id": "memory-type-declaration-controls",
+      "status": "completed",
+      "work": "Qualify Mesa commit cd05d991f1df1027423a9e580589a0bcd9e1dc76 with clean detached source and control worktrees. The commit checks equal, incomparable, and reversed tables through the production checker and rejects stale RB2D memory declarations before instance creation.",
+      "acceptance": "The complete release build and registered R3V tests meet their expected results at the corrected commit. The declaration regression rejects device-only, out-of-range, and wide integer indices before host checks."
+    },
+    {
+      "id": "memory-type-evidence-pr",
+      "status": "completed",
+      "work": "Commit the sanitized source-specific result bundles staged in steinmarder-r300, address the two Mesa PR 2186 review threads, and merge the exact-head qualified repairs independently of unrelated DRM work.",
+      "acceptance": "Retained evidence binds the tested commit; the PR meets review and CI gates and its merge reaches origin/main."
+    },
+    {
+      "id": "source-runtime-baselines",
+      "status": "pending",
+      "work": "Reconcile both canonical checkouts, package source pins, installed module and loaded module identity, build roots, and isolated worktree ownership.",
+      "acceptance": "Git and runtime receipts distinguish source, installed payload, and running code."
+    },
+    {
+      "id": "packet-resource-access",
+      "status": "pending",
+      "policy_row": "CS_RELOCATION_ACCESS_DIRECTION",
+      "work": "Enumerate packet resource reads and writes and reproduce incorrect relocation declarations through the real parser before selecting a fix.",
+      "acceptance": "Valid resource roles pass; inaccurate write declarations fail before scheduling, with dependency and fence publication effects tested."
+    },
+    {
+      "id": "packet-admission",
+      "status": "pending",
+      "work": "Exercise R3V IBs, relocation geometry, bounds, tiling, and HyperZ ownership through actual parser code. Audit replay-model divergences before relying on replay results.",
+      "acceptance": "Positive and negative fixtures cover the declared packet surface and each rejection has a source explanation."
+    },
+    {
+      "id": "memory-visibility",
+      "status": "pending",
+      "work": "Map BO allocation, placement, mapping, binding, GART publication, and directional CPU/GPU visibility to existing lifecycle rows.",
+      "acceptance": "Source tests and retained directional target observations distinguish ordering from payload visibility."
+    },
+    {
+      "id": "completion-device-loss",
+      "status": "pending",
+      "work": "Test submission acceptance, dependency import, reservation fence publication, wait errors, reset outcomes, and parked refusal through the kernel and R3V error paths.",
+      "acceptance": "Covered waits return in finite time after device loss with VK_SUCCESS or VK_ERROR_DEVICE_LOST as permitted by the pinned specification. Tests distinguish wait completion from valid GPU output and cover terminal loss and teardown."
+    },
+    {
+      "id": "suspend-exclusion",
+      "status": "pending",
+      "policy_row": "CS_SUSPEND_FENCE_LOCK_CONTEXT",
+      "work": "Trace callers and exclusion around fence draining during suspend before deciding whether the documented precondition or implementation needs correction.",
+      "acceptance": "A complete caller proof or tested lock correction closes the policy question."
+    },
+    {
+      "id": "kernel-repairs",
+      "status": "pending",
+      "work": "Implement confirmed defects with regression tests and update owning policy and source-delta records.",
+      "acceptance": "Reproduced failures are repaired while valid behavior and unsafe-input refusals remain tested."
+    },
+    {
+      "id": "build-package-runtime",
+      "status": "pending",
+      "work": "Build LTS and mainline modules with warnings treated as errors, install through radeon-custom, and run bounded target qualification under existing procedures.",
+      "acceptance": "Both builds pass and steinmarder-r300 retains module identity, preflight, commands, outcomes, and hardware evidence."
+    },
+    {
+      "id": "mesa-review-repairs",
+      "status": "completed",
+      "work": "Requery PR 2183 and address reviewed SHA, command classification, locator validation, omitted summary group, and complete provenance validation in Mesa.",
+      "acceptance": "Focused tests pass and each exact review thread has an evidence-backed disposition."
+    },
+    {
+      "id": "integration",
+      "status": "pending",
+      "work": "Publish focused PRs, resolve review, preserve commits in merges, fast-forward both canonical checkouts, and retire only verified merged task worktrees.",
+      "acceptance": "Merge ancestry, review closure, canonical synchronization, and scoped cleanup are verified."
+    }
+  ]
+}

@@ -495,6 +495,7 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon_connectors.c",
   "drivers/gpu/drm/radeon/radeon_cursor.c",
   "drivers/gpu/drm/radeon/radeon_display.c",
+  "drivers/gpu/drm/radeon/radeon_fence.c",
   "drivers/gpu/drm/radeon/radeon_i2c.c",
   "drivers/gpu/drm/radeon/radeon_irq_kms.c",
   "drivers/gpu/drm/radeon/radeon_kms.c",
