@@ -516,6 +516,10 @@ jobs:
       - name: CS run-form mutant calibration
         run: sh scripts/run_r300_cs_runform_calibration.sh "${RUNNER_TEMP}/runform-calibration"
 
+      - name: Packet0 bitmap bounds calibration
+        run: sh scripts/run_r100_packet0_bitmap_bounds.sh \
+          "${RUNNER_TEMP}/r100-packet0-bitmap-bounds/build" --self-test
+
       - name: importer calibration
         run: |
           # A verdict-producing importer earns trust by rejecting each way a

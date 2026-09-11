@@ -64,10 +64,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* r100_cs_parse_packet0 range-checks with (reg >> 7) > n, so a register whose
- * word index equals the bitmap's entry count passes the check and indexes one
- * word past the array.  Both the kernel and the replay carry that window, so
- * this tool stays below it and asserts the bound rather than walking in.
+/* r100_cs_parse_packet0 range-checks with (reg >> 7) >= n, so a register whose
+ * word index equals the bitmap's entry count is rejected before bitmap access.
+ * The correspondence sweep stops at the last address represented by the
+ * bitmap and asserts that bound.
  */
 #define REG_STEP 4u
 
@@ -1280,10 +1280,10 @@ static int run_expect(unsigned int reg, unsigned int count, int one_reg_wr,
 	unsigned int i, relocs = 0;
 
 	if (one_reg_wr) {
-		if ((reg >> 7) > safe_bm_entries)
+		if ((reg >> 7) >= safe_bm_entries)
 			return 0;
 	} else {
-		if (((reg + (count << 2)) >> 7) > safe_bm_entries)
+		if (((reg + (count << 2)) >> 7) >= safe_bm_entries)
 			return 0;
 	}
 	for (i = 0; i <= count; i++) {
@@ -1371,9 +1371,9 @@ static void check_run_forms(void)
 		AUTH_KERNEL_SOURCE_DERIVED,
 		"r100_cs_parse_packet0 holds the register under ONE_REG_WR "
 		"and breaks at the first unflagged one");
-	control(text_range_has(r100, p0sig, "(reg >> 7) > n") &&
+	control(text_range_has(r100, p0sig, "(reg >> 7) >= n") &&
 		text_range_has(r100, p0sig,
-			       "((reg + (pkt->count << 2)) >> 7) > n"),
+			       "((reg + (pkt->count << 2)) >> 7) >= n"),
 		AUTH_KERNEL_SOURCE_DERIVED,
 		"the bitmap bound covers the whole run in the normal form "
 		"and the first register alone under ONE_REG_WR");
