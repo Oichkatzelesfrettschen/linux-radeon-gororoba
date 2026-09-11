@@ -36,6 +36,11 @@ CS_DIRECT_PREFIX_SHA256 = {
 SUSPEND_DRAIN_DIRECT_PREFIX_SHA256 = (
     "27b08d4967294314ccd455c27198aa83d5130c4233a6f77c33d0ade85d5069dc"
 )
+EXPECTED_TOKEN_PASTE_DIRECTIVES = {
+    "#define REG_GET(FIELD, v) (((v) << FIELD##_SHIFT) & FIELD##_MASK)",
+    "#define REG_SET(FIELD, v) (((v) << FIELD##_SHIFT) & FIELD##_MASK)",
+}
+EXPECTED_RADEON_RING_LOCK_USES = 25
 EXPECTED_POLICY_ROW_SHA256 = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
     "CS_PARKED_EARLY_REFUSAL": "54c22fe4390532a7476fd666051efb5748ed929d2f5dcaab9ef5dfdd7ce2af22",
@@ -1228,7 +1233,9 @@ def check_open_boundaries(root: Path) -> None:
 
 def check_suspend_fence_lock_context(root: Path) -> None:
     device_source = source(root, "radeon_device.c")
-    for source_path in sorted((root / SUBTREE).rglob("*")):
+    token_paste_directives: set[str] = set()
+    for relative in SOURCE_FILES:
+        source_path = root / relative
         if source_path.suffix not in {".c", ".h"}:
             continue
         preprocessor_source = cache_policy.strip_comments(
@@ -1244,6 +1251,13 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             preprocessor_source,
         ):
             raise ContractError("Radeon source aliases radeon_suspend_kms")
+        token_paste_directives.update(
+            line.strip()
+            for line in preprocessor_source.splitlines()
+            if re.match(r"^\s*#\s*define\b", line) and "##" in line
+        )
+    if token_paste_directives != EXPECTED_TOKEN_PASTE_DIRECTIVES:
+        raise ContractError("Radeon preprocessor token-paste denominator differs")
     device_tokens = lifecycle.c_tokens(device_source)
     suspend_definition_count = 0
     for index, token in enumerate(device_tokens[:-1]):
@@ -1390,6 +1404,13 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             "radeon_save_bios_scratch_regs",
         ),
     )
+    radeon_ring_lock_uses = sum(
+        lifecycle.c_tokens(source(root, Path(relative).name)).count("ring_lock")
+        for relative in SOURCE_FILES
+        if Path(relative).suffix in {".c", ".h"}
+    )
+    if radeon_ring_lock_uses != EXPECTED_RADEON_RING_LOCK_USES:
+        raise ContractError("Radeon ring_lock use denominator differs")
 
 
 def check_tree(
@@ -1611,6 +1632,25 @@ SOURCE_MUTATIONS = {
             "}\n"
             "#endif\n"
             "#define SUSPEND_NAME radeon_suspend_kms\n"
+            "int SUSPEND_NAME(struct drm_device *dev, bool suspend,\n"
+            "\t\t bool notify_clients, bool freeze)"
+        ),
+    ),
+    "token paste alias hides live suspend definition": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "#define SUSPEND_NAME radeon_suspend_ ## kms\n"
             "int SUSPEND_NAME(struct drm_device *dev, bool suspend,\n"
             "\t\t bool notify_clients, bool freeze)"
         ),
@@ -2257,6 +2297,22 @@ SOURCE_MUTATIONS = {
             "\tradeon_fence_drop_caller_lock(rdev);"
         ),
     ),
+    "cross-file ring lock helper changes denominator": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "static __maybe_unused void radeon_drop_caller_ring_lock(\n"
+            "\tstruct radeon_device *rdev)\n"
+            "{\n"
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "}\n\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
 }
 
 SOURCE_EXPECTED_ERRORS = {
@@ -2291,11 +2347,17 @@ SOURCE_EXPECTED_ERRORS = {
     "macro alias hides live suspend definition": (
         "Radeon source aliases radeon_suspend_kms"
     ),
+    "token paste alias hides live suspend definition": (
+        "Radeon preprocessor token-paste denominator differs"
+    ),
     "fence wait helper releases caller ring lock": (
         "radeon_fence_wait_empty manipulates ring_lock"
     ),
     "fence wait delegates caller ring lock release": (
         "radeon_fence.c ring_lock use denominator differs"
+    ),
+    "cross-file ring lock helper changes denominator": (
+        "Radeon ring_lock use denominator differs"
     ),
     "parked CS condition is inverted": (
         "command-submission projected path requires one direct parked guard"
