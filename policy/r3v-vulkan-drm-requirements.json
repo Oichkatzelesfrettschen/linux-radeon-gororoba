@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "coverage": "Initial contract mapping includes buffer binding and the mandatory coherent memory type. Allocation, image binding, packet grammar, and suspend rows remain to be mapped. This artifact establishes neither exhaustive coverage nor conformance. scripts/check_r3v_drm_requirement_sources.py validates pinned source locators and policy references; specification anchors and behavioral outcomes require separate verification.",
+  "sources": {
+    "vulkan_commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
+    "vulkan_repository": "https://github.com/KhronosGroup/Vulkan-Docs",
+    "vulkan_chapter_root": "doc/specs/vulkan/chapters/",
+    "mesa_commit": "0b66d14e758c80808e7cc661c008b2a834d12fba",
+    "kernel_commit": "07e65682a835bb807420e079b56387cbf1c0b172"
+  },
+  "requirements": [
+    {
+      "id": "host-coherent-memory-type",
+      "specification": {"chapter": "memory.txt", "anchor": "memory-device-bitmask-list"},
+      "requirement": "At least one memory type is both HOST_VISIBLE and HOST_COHERENT. Coherent memory requires neither application flush nor application invalidation for the respective host and device writes.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "NON_PCIE_GTT_ATTRIBUTE_NORMALIZATION",
+      "mesa_discovery": "rg --fixed-strings 'r3v_native_memory_properties_fill' src/amd/r300/vulkan/r3v_memory_properties_contract.h",
+      "kernel_discovery": ["rg --fixed-strings 'RADEON_GEM_GTT_UC' drivers/gpu/drm/radeon/radeon_object.c"],
+      "interface": "GEM_CREATE cache attributes, GEM_MMAP, and R3V software cache maintenance",
+      "test": "Exercise every native GPU access path with persistently mapped memory and application flush and invalidate calls omitted; verify producer and consumer digests and maintenance ordering through real queue seams, then retain target observations.",
+      "boundary": "R3V advertises software-maintained coherence around synchronous submission. Removing HOST_COHERENT alone violates the required memory-type minimum. A kernel cache-attribute change requires evidence that userspace maintenance cannot meet the complete contract.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "buffer-memory-binding",
+      "specification": {"chapter": "resources.txt", "anchor": "VUID-vkBindBufferMemory-size-01037"},
+      "requirement": "A valid buffer binding fits the required byte size within the allocation after the binding offset. Related valid usage requires an allowed memory type and aligned offset.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "CS_BO_RESERVATION_LOCKS",
+      "mesa_discovery": "rg --fixed-strings 'r3v_BindBufferMemory2' src/amd/r300/vulkan/r3v_native_memory.c",
+      "kernel_discovery": ["rg --fixed-strings 'radeon_bo_list_validate' drivers/gpu/drm/radeon/radeon_cs.c"],
+      "interface": "VkDeviceMemory GEM BO plus resource offset, translated into packet addresses and relocations",
+      "test": "Exercise aligned suballocations, exact-end ranges, multiple resources sharing one allocation, and deliberately invalid range controls through binding and packet construction; qualify parser bounds separately.",
+      "boundary": "Vulkan valid usage constrains the application. Mesa owns resource binding semantics; DRM independently contains packet accesses within GEM objects and retains their lifetime.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "resource-access-dependencies",
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory"},
+      "requirement": "Memory dependencies order operations and include availability and visibility for their access scopes.",
+      "classification": "missing_validation",
+      "owner": "linux-radeon-gororoba",
+      "kernel_policy_row": "CS_RELOCATION_ACCESS_DIRECTION",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_cs_submit' src/amd/r300/vulkan/r3v_native_queue.c",
+      "kernel_discovery": [
+        "rg --fixed-strings 'p->relocs[i].shared = !r->write_domain' drivers/gpu/drm/radeon/radeon_cs.c",
+        "rg --fixed-strings 'dma_resv_usage_rw(!shared)' drivers/gpu/drm/radeon/radeon_sync.c",
+        "rg --fixed-strings 'DMA_RESV_USAGE_READ' drivers/gpu/drm/radeon/radeon_cs.c"
+      ],
+      "interface": "DRM_RADEON_CS relocation read_domains and write_domain",
+      "hypothesis": "A packet that writes through a relocation declared read-only can receive incomplete reservation dependencies and publish a READ fence. Actual packet role validation must be tested before declaring a demonstrated defect.",
+      "test": "Run actual supported packet consumers with accurate and inaccurate access declarations, including duplicate handles; inspect scheduling and fence usage.",
+      "boundary": "Vulkan application synchronization remains required. Malformed relocation declarations test kernel trust enforcement, not valid Vulkan application behavior by themselves.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "memory-availability-visibility",
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-dependencies-memory"},
+      "requirement": "Written values become available and visible to the accesses included in the memory dependency.",
+      "classification": "hardware_uncertainty",
+      "owner": "steinmarder-r300",
+      "kernel_policy_row": "RS482_CACHED_GTT_PAYLOAD_VISIBILITY",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_bo_cache_sync' src/amd/r300/vulkan/r3v_native_memory.c",
+      "kernel_discovery": ["rg --fixed-strings 'RS480_REQ_TYPE_SNOOP_DIS' drivers/gpu/drm/radeon/rs400.c"],
+      "interface": "GEM mappings, GART translations, CPU cache maintenance, and completion fences",
+      "test": "Retain CPU-to-GPU and GPU-to-CPU producer/consumer digests with completed fences, mapping identity, raw cache controls, and maintenance-on/off controls under the existing hardware procedure.",
+      "boundary": "Source ordering and a signaled reservation fence alone do not prove payload visibility or effective snooping.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "queue-fence-completion",
+      "specification": {"chapter": "synchronization.txt", "anchor": "synchronization-fences-signaling"},
+      "requirement": "The fence signal operation follows the submitted batches and the earlier queue operations included in its synchronization scope.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "CS_RESERVATION_FENCE_PUBLICATION",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_completion_await' src/amd/r300/vulkan/r3v_native_queue.c",
+      "kernel_discovery": ["rg --fixed-strings 'radeon_gem_wait_idle_ioctl' drivers/gpu/drm/radeon/radeon_gem.c"],
+      "interface": "DRM_RADEON_GEM_WAIT_IDLE on the submission completion BO",
+      "test": "Exercise accepted submissions, delayed completion, ioctl refusal, and completion failure through the real queue and kernel seams; verify Vulkan fence state and retained buffer lifetime.",
+      "boundary": "Kernel fence publication establishes ordering metadata. Device execution and output validity require separate observations.",
+      "test_status": "not_run"
+    },
+    {
+      "id": "device-loss-finite-waits",
+      "specification": {"chapter": "devsandqueues.txt", "anchor": "devsandqueues-lost-device"},
+      "requirement": "Device loss is terminal for the logical device. Covered indefinite waits return in finite time with VK_SUCCESS or VK_ERROR_DEVICE_LOST; object handles remain valid for destruction and mapped contents become undefined.",
+      "classification": "missing_validation",
+      "owner": "mesa-26-gororoba",
+      "kernel_policy_row": "FENCE_FORCE_COMPLETION_PUBLICATION",
+      "mesa_discovery": "rg --fixed-strings 'radeon_drm_vk_completion_await' src/amd/radeon/drm_vk/radeon_drm_vk_completion.c",
+      "kernel_discovery": [
+        "rg --fixed-strings 'radeon_fence_driver_force_completion_parked' drivers/gpu/drm/radeon/radeon_fence.c",
+        "rg --fixed-strings 'gpu_parked' drivers/gpu/drm/radeon/radeon_cs.c"
+      ],
+      "interface": "Submission and wait errno propagation, reservation fence errors, and terminal hardware admission",
+      "test": "Inject terminal completion errors through compiled seams and verify finite Vulkan waits, logical-device loss handling, and object teardown. Qualify target recovery separately.",
+      "boundary": "A permitted successful wait after device loss does not certify successful GPU output. Exactly-once effects after successful reset remain a separate hardware question.",
+      "test_status": "not_run"
+    }
+  ]
+}
