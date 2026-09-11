@@ -25,7 +25,7 @@ import check_rs4xx_gart_cache_policy as cache_policy
 POLICY = Path("policy/radeon-cs-reservation-fence-contract.tsv")
 SUBTREE = Path("drivers/gpu/drm/radeon")
 EXPECTED_POLICY_SHA256 = (
-    "bc8106ea1a0a9bd275588acf76cec59890cf67e4d1aff294a94c221248adb2d7"
+    "a00b27666969efe989f21df304c0323fc91245f44cfc0d9d5e08629bb8ac9332"
 )
 CS_DIRECT_PREFIX_SHA256 = {
     "relocs": "bd4645062b4348cbecfb5a1353312a61f20f1e5909401bf2c9cac9717e652ead",
@@ -36,7 +36,7 @@ CS_DIRECT_PREFIX_SHA256 = {
 EXPECTED_POLICY_ROW_SHA256 = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
     "CS_PARKED_EARLY_REFUSAL": "54c22fe4390532a7476fd666051efb5748ed929d2f5dcaab9ef5dfdd7ce2af22",
-    "CS_RELOCATION_RECORD_GEOMETRY": "8b9a3b46b9eeb3d1f220231321dd11d651c48d353cc2214576c4b4889b57f8c0",
+    "CS_RELOCATION_RECORD_GEOMETRY": "7164f4a0b95f2a9760dc97ee876dc76471461e7fc5598b475f1692b371d0bf52",
     "CS_BO_RESERVATION_LOCKS": "bf5abee5a62cdad029f42d6967d562c2d4679698ebd2986cc03df67f26a33ec9",
     "CS_RESERVATION_DEPENDENCY_IMPORT": "e3980ff208d5320c64504ae557b94a5360ec46c4274c15a6eda89116af9942a8",
     "CS_RING_DEPENDENCY_AND_IB_SCHEDULE": "911cf696a10ad7bc9973cc9ae29212bd84dac11129b51f1729e064e35c346eb1",
@@ -109,7 +109,7 @@ EXPECTED_EXTERNAL = {
 EXPECTED_NONCLAIMS = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "Source binding does not prove live callback execution.",
     "CS_PARKED_EARLY_REFUSAL": "The source transaction guard does not prove target park or recovery behavior.",
-    "CS_RELOCATION_RECORD_GEOMETRY": "Static admission does not prove every userspace producer emits correct domains.",
+    "CS_RELOCATION_RECORD_GEOMETRY": "Parser geometry and bitmap bounds do not prove every userspace producer emits correct access domains.",
     "CS_BO_RESERVATION_LOCKS": "Reservation locks and transaction admission do not perform payload cache maintenance.",
     "CS_RESERVATION_DEPENDENCY_IMPORT": "Imported fences prove execution ordering, not cache visibility.",
     "CS_RING_DEPENDENCY_AND_IB_SCHEDULE": "A successful schedule means committed work, not completed work.",
@@ -159,6 +159,7 @@ SOURCE_FILES = (
     "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
     "drivers/gpu/drm/radeon/radeon_sync.c",
     "drivers/gpu/drm/radeon/radeon_ttm.c",
+    "drivers/gpu/drm/radeon/r100.c",
     "drivers/gpu/drm/radeon/r300.c",
     "drivers/gpu/drm/radeon/rs400.c",
 )
@@ -592,6 +593,22 @@ def check_ioctl_and_relocation_admission(root: Path) -> None:
             "relocs_chunk->length_dw - idx < 4",
             "relocs_chunk->kdata[idx + 3]",
             "p->relocs[(idx / 4)]",
+        ),
+    )
+
+    packet0 = function(root, "r100.c", "r100_cs_parse_packet0")
+    if packet0.count("(reg >> 7) >= n") != 1:
+        raise ContractError("packet0 repeated-register bitmap bound differs")
+    if packet0.count("((reg + (pkt->count << 2)) >> 7) >= n") != 1:
+        raise ContractError("packet0 advancing-register bitmap bound differs")
+    require_order(
+        "packet0 bitmap admission precedes access",
+        packet0,
+        (
+            "(reg >> 7) >= n",
+            "((reg + (pkt->count << 2)) >> 7) >= n",
+            "j = (reg >> 7)",
+            "auth[j]",
         ),
     )
 
@@ -1238,6 +1255,16 @@ SOURCE_MUTATIONS = {
         "drivers/gpu/drm/radeon/Makefile",
         "\tradeon_cs.o radeon_bios.o",
         "\tradeon_bios.o",
+    ),
+    "packet0 repeated-register bound accepts the end index": (
+        "drivers/gpu/drm/radeon/r100.c",
+        "\t\tif ((reg >> 7) >= n) {",
+        "\t\tif ((reg >> 7) > n) {",
+    ),
+    "packet0 advancing-register bound accepts the end index": (
+        "drivers/gpu/drm/radeon/r100.c",
+        "\t\tif (((reg + (pkt->count << 2)) >> 7) >= n) {",
+        "\t\tif (((reg + (pkt->count << 2)) >> 7) > n) {",
     ),
     "RS400 drops its init callback": (
         "drivers/gpu/drm/radeon/radeon_asic.c",
