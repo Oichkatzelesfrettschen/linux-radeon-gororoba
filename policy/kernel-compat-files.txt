@@ -1,8 +1,10 @@
 # Radeon source files carrying the v6.18 to v7.1 compatibility boundary.
+Makefile
 atombios_crtc.c
 radeon.h
 radeon_device.c
 radeon_fbdev.c
+radeon_fbdev_compat.mk
 radeon_gem.c
 radeon_irq_kms.c
 radeon_legacy_crtc.c
