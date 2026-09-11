@@ -1270,6 +1270,11 @@ def check_suspend_fence_lock_context(root: Path) -> None:
                 "suspend ring unlock must directly follow the ring loop"
             )
         loop_statement = statements[direct_loop_indexes[0]]
+        loop_condition_end = lifecycle.matching_token(loop_statement, 1, "(", ")")
+        if loop_statement[loop_condition_end + 1] != "{":
+            raise lifecycle.LifecycleError(
+                "suspend ring loop requires a directly controlled compound body"
+            )
         loop_spans = lifecycle.direct_function_statements(loop_statement)
         loop_body = tuple(loop_statement[start:end] for start, end in loop_spans)
         expected_loop_body = tuple(
@@ -1435,6 +1440,12 @@ SOURCE_MUTATIONS = {
             "\t\tmutex_lock(&rdev->ring_lock);\n"
             "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
         ),
+    ),
+    "suspend fence drain hides loop body in unreachable guard": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        "\tmutex_lock(&rdev->ring_lock);\n"
+        "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) if (false) {",
     ),
     "suspend wait error leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
