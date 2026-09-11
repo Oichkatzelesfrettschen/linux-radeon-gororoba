@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import difflib
 import re
 import subprocess
 import sys
@@ -175,7 +176,7 @@ def map_row_identity(row: dict[str, str]) -> tuple[str, str, str, str]:
 
 
 def validate_crisscross_map_union(
-    contents: list[bytes], authoritative_index: int
+    contents: list[bytes], authoritative_index: int | None
 ) -> None:
     first, second, result = (
         parse_map(content.decode("utf-8")) for content in contents
@@ -199,36 +200,80 @@ def validate_crisscross_map_union(
             keyed_result[key] == parent_rows[0],
             "source map union alters a parent row",
         )
-    require(authoritative_index in {0, 1}, "source map authority index is invalid")
     parent_rows = (first, second)
-    authoritative_rows = parent_rows[authoritative_index]
-    other_rows = parent_rows[1 - authoritative_index]
-    authoritative_keys = {map_row_identity(row) for row in authoritative_rows}
-    expected_rows = authoritative_rows + [
-        row for row in other_rows if map_row_identity(row) not in authoritative_keys
-    ]
-    require(result == expected_rows, "source map union order differs from authority")
+    allowed_authorities = (0, 1) if authoritative_index is None else (authoritative_index,)
+    require(
+        all(index in {0, 1} for index in allowed_authorities),
+        "source map authority index is invalid",
+    )
+    expected_results = []
+    for authority in allowed_authorities:
+        authoritative_rows = parent_rows[authority]
+        other_rows = parent_rows[1 - authority]
+        authoritative_keys = {map_row_identity(row) for row in authoritative_rows}
+        expected_results.append(authoritative_rows + [
+            row for row in other_rows if map_row_identity(row) not in authoritative_keys
+        ])
+    require(result in expected_results, "source map union order differs from authority")
 
 
-def is_line_insertion_superset(base: bytes, candidate: bytes) -> bool:
-    base_lines = iter(base.splitlines(keepends=True))
-    expected = next(base_lines, None)
-    for line in candidate.splitlines(keepends=True):
+def insertion_runs_by_base_gap(base: bytes, candidate: bytes) -> dict[int, list[bytes]] | None:
+    base_lines = base.splitlines(keepends=True)
+    candidate_lines = candidate.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(
+        None, base_lines, candidate_lines, autojunk=False
+    )
+    insertions: dict[int, list[bytes]] = {}
+    for operation, base_start, base_end, candidate_start, candidate_end in matcher.get_opcodes():
+        if operation == "equal":
+            continue
+        if operation != "insert" or base_start != base_end:
+            return None
+        insertions.setdefault(base_start, []).extend(
+            candidate_lines[candidate_start:candidate_end]
+        )
+    return insertions
+
+
+def insertion_run_is_subsequence(required: list[bytes], candidate: list[bytes]) -> bool:
+    required_lines = iter(required)
+    expected = next(required_lines, None)
+    for line in candidate:
         if line == expected:
-            expected = next(base_lines, None)
+            expected = next(required_lines, None)
     return expected is None
+
+
+def is_gap_preserving_insertion_superset(
+    base: bytes, required: bytes, candidate: bytes
+) -> bool:
+    required_runs = insertion_runs_by_base_gap(base, required)
+    candidate_runs = insertion_runs_by_base_gap(base, candidate)
+    if required_runs is None or candidate_runs is None:
+        return False
+    return all(
+        insertion_run_is_subsequence(lines, candidate_runs.get(gap, []))
+        for gap, lines in required_runs.items()
+    )
 
 
 def validate_insertion_superset_merge(contents: list[bytes]) -> bool:
     base, first, second, result = contents
-    if not (is_line_insertion_superset(base, first)
-            and is_line_insertion_superset(base, second)):
+    if not (insertion_runs_by_base_gap(base, first) is not None
+            and insertion_runs_by_base_gap(base, second) is not None):
         return False
     if result == first and first != second:
-        return is_line_insertion_superset(second, first)
+        return is_gap_preserving_insertion_superset(base, second, first)
     if result == second and first != second:
-        return is_line_insertion_superset(first, second)
+        return is_gap_preserving_insertion_superset(base, first, second)
     return False
+
+
+def path_matches_scope(repository_path: str, pathspec: str | None) -> bool:
+    if pathspec is None:
+        return True
+    normalized = pathspec.rstrip("/")
+    return repository_path == normalized or repository_path.startswith(normalized + "/")
 
 
 def recursive_merge_tree(root: Path, parents: list[str]) -> tuple[str, set[str]]:
@@ -349,6 +394,8 @@ def validate_union_only_merge(
     pathspec: str | None = DRIVER_ROOT.as_posix(),
     authoritative_parent: str | None = None,
     authoritative_path: Callable[[str], bool] | None = None,
+    recursive_reader: Callable[[Path, list[str]], tuple[str, set[str]]] = recursive_merge_tree,
+    blob_reader: Callable[[Path, str], bytes] = read_blob,
 ) -> None:
     require(
         len(parents) == 2,
@@ -367,11 +414,24 @@ def validate_union_only_merge(
     require(bool(merge_bases), f"post-tag source merge has no merge base: {commit}")
     recursive_tree = None
     if len(merge_bases) > 1:
-        recursive_tree, conflict_paths = recursive_merge_tree(root, parents)
+        recursive_tree, conflict_paths = recursive_reader(root, parents)
+        scoped_conflicts = {
+            repository_path
+            for repository_path in conflict_paths
+            if (repository_path == MAP_PATH.as_posix()
+                or path_matches_scope(repository_path, pathspec))
+        }
+        rejected_conflicts = {
+            repository_path
+            for repository_path in scoped_conflicts
+            if repository_path != MAP_PATH.as_posix()
+            and not (authoritative_path is not None
+                     and authoritative_path(repository_path))
+        }
         require(
-            conflict_paths <= {MAP_PATH.as_posix()},
+            not rejected_conflicts,
             "recursive source merge conflicts outside the source map: "
-            + ", ".join(sorted(conflict_paths)),
+            + ", ".join(sorted(rejected_conflicts)),
         )
     union_paths: set[str] = set()
     for merge_base in merge_bases:
@@ -385,6 +445,8 @@ def validate_union_only_merge(
             ]
             if pathspec is not None:
                 arguments.extend(("--", pathspec))
+                if len(merge_bases) > 1:
+                    arguments.append(MAP_PATH.as_posix())
             changed_paths = git_reader(root, *arguments)
             union_paths.update(path for path in changed_paths.splitlines() if path)
     require(bool(union_paths), f"post-tag union merge is path-empty: {commit}")
@@ -416,8 +478,9 @@ def validate_union_only_merge(
                     )
                     parsed_entries.append(fields)
                 validate_crisscross_map_union(
-                    [read_blob(root, fields[2]) for fields in parsed_entries],
-                    parents.index(authoritative_parent),
+                    [blob_reader(root, fields[2]) for fields in parsed_entries],
+                    (parents.index(authoritative_parent)
+                     if authoritative_parent is not None else None),
                 )
                 continue
             require(
@@ -432,7 +495,9 @@ def validate_union_only_merge(
             tree_reader(root, parents[1], repository_path),
             tree_reader(root, commit, repository_path),
             repository_path,
-            merge_checker=lambda entries, path: validate_merged_blobs(root, entries, path),
+            merge_checker=lambda entries, path: validate_merged_blobs(
+                root, entries, path, blob_reader
+            ),
         )
 
 
@@ -731,7 +796,10 @@ def self_test(root: Path) -> int:
                 "base",
             ):
                 require(
-                    arguments[5:] in ((), ("--", DRIVER_ROOT.as_posix())),
+                    arguments[5:] in (
+                        (),
+                        ("--", DRIVER_ROOT.as_posix()),
+                    ),
                     "self-test merge pathspec differs",
                 )
                 paths_by_tree = {
@@ -800,6 +868,21 @@ def self_test(root: Path) -> int:
         authoritative_parent="second",
         authoritative_path=lambda path: path == first_path,
     )
+    try:
+        validate_union_only_merge(
+            root,
+            "result",
+            ["first", "second"],
+            git_reader=merge_git_reader((first_path, second_path)),
+            tree_reader=ordinary_tree_reader,
+            pathspec=None,
+            authoritative_parent="second",
+            authoritative_path=lambda path: path == first_path,
+        )
+    except DeltaMapError:
+        rejection_count += 1
+    else:
+        raise DeltaMapError("self-test accepted nonauthoritative result content")
     for authoritative_parent, authoritative_path in (
         ("second", None),
         (None, lambda path: path == first_path),
@@ -949,6 +1032,12 @@ def self_test(root: Path) -> int:
         (base_content, inserted_once,
          inserted_twice.replace(b"anchor-two\nshared-control\n",
                                 b"shared-control\nanchor-two\n"), inserted_twice),
+        (
+            b"A\nB\nA\nB\n",
+            b"A\nX\nB\nA\nB\n",
+            b"A\nB\nA\nX\nB\nA\nB\n",
+            b"A\nB\nA\nX\nB\nA\nB\n",
+        ),
     )
     for contents in invalid_superset_fixtures:
         try:
@@ -1025,6 +1114,74 @@ def self_test(root: Path) -> int:
             rejection_count += 1
         else:
             raise DeltaMapError("self-test accepted an invalid crisscross map union")
+
+    crisscross_map_object_ids = [f"{number:040x}" for number in range(21, 24)]
+    crisscross_blobs = dict(zip(
+        crisscross_map_object_ids,
+        (map_first, map_second, map_base + first_suffix + second_suffix),
+    ))
+
+    def crisscross_blob_reader(_root: Path, object_id: str) -> bytes:
+        return crisscross_blobs[object_id]
+
+    def crisscross_git_reader(_root: Path, *arguments: str) -> str:
+        if arguments == ("merge-base", "--all", "first", "second"):
+            return "base-one\nbase-two\n"
+        if arguments[:3] == ("diff", "--name-only", "--no-renames"):
+            require(
+                arguments[5:] == (
+                    "--", DRIVER_ROOT.as_posix(), MAP_PATH.as_posix()
+                ),
+                "crisscross source-map pathspec omits the map",
+            )
+            return f"{first_path}\n{MAP_PATH.as_posix()}\n"
+        raise DeltaMapError("self-test crisscross git command differs")
+
+    crisscross_entries = {
+        ("first", first_path): "100644 blob " + object_ids[0],
+        ("second", first_path): "100644 blob " + object_ids[1],
+        ("result", first_path): "100644 blob " + object_ids[2],
+        ("recursive", first_path): "100644 blob " + object_ids[2],
+        ("first", MAP_PATH.as_posix()):
+            "100644 blob " + crisscross_map_object_ids[0],
+        ("second", MAP_PATH.as_posix()):
+            "100644 blob " + crisscross_map_object_ids[1],
+        ("result", MAP_PATH.as_posix()):
+            "100644 blob " + crisscross_map_object_ids[2],
+    }
+
+    def crisscross_tree_reader(
+        _root: Path, treeish: str, repository_path: str
+    ) -> str | None:
+        return crisscross_entries[(treeish, repository_path)]
+
+    validate_union_only_merge(
+        root,
+        "result",
+        ["first", "second"],
+        git_reader=crisscross_git_reader,
+        tree_reader=crisscross_tree_reader,
+        recursive_reader=lambda _root, _parents: (
+            "recursive", {"docs/unrelated-conflict.md"}
+        ),
+        blob_reader=crisscross_blob_reader,
+    )
+    try:
+        validate_union_only_merge(
+            root,
+            "result",
+            ["first", "second"],
+            git_reader=crisscross_git_reader,
+            tree_reader=crisscross_tree_reader,
+            recursive_reader=lambda _root, _parents: (
+                "recursive", {first_path}
+            ),
+            blob_reader=crisscross_blob_reader,
+        )
+    except DeltaMapError:
+        rejection_count += 1
+    else:
+        raise DeltaMapError("self-test accepted an in-scope recursive conflict")
 
     print(f"source delta map calibration: {rejection_count} invalid classes rejected")
     return 0
