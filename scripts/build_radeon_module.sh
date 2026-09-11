@@ -26,7 +26,12 @@ set -eu
 
 subtree=drivers/gpu/drm/radeon
 kernel_build_root=${RADEON_MODULE_KERNEL_BUILD_ROOT:-}
-PYTHON=${PYTHON:-/usr/bin/python}
+if [ -z "${PYTHON:-}" ]; then
+  PYTHON=$(command -v python3 || command -v python) || {
+    echo "Python 3 interpreter is unavailable" >&2
+    exit 2
+  }
+fi
 script_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 self_test=0
 requested_profile=default
