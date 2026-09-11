@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import csv
 import difflib
@@ -276,6 +277,18 @@ def path_matches_scope(repository_path: str, pathspec: str | None) -> bool:
     return repository_path == normalized or repository_path.startswith(normalized + "/")
 
 
+def decode_git_path(repository_path: str) -> str:
+    if not repository_path.startswith('"'):
+        return repository_path
+    require(repository_path.endswith('"'), "Git path quotation is incomplete")
+    try:
+        encoded_path = ast.literal_eval("b" + repository_path)
+        require(isinstance(encoded_path, bytes), "Git path quotation is not bytes")
+        return encoded_path.decode("utf-8", errors="surrogateescape")
+    except (SyntaxError, ValueError) as exc:
+        raise DeltaMapError("Git path quotation is invalid") from exc
+
+
 def recursive_merge_tree(root: Path, parents: list[str]) -> tuple[str, set[str]]:
     result = subprocess.run(
         ["git", "merge-tree", "--write-tree", "--messages", *parents],
@@ -288,7 +301,7 @@ def recursive_merge_tree(root: Path, parents: list[str]) -> tuple[str, set[str]]
     require(bool(lines) and SHA40.fullmatch(lines[0]) is not None,
             "recursive merge-tree omitted its tree identity")
     conflict_paths = {
-        match.group(1)
+        decode_git_path(match.group(1))
         for line in lines[1:]
         if (match := re.fullmatch(r"[0-9]{6} [0-9a-f]{40} [123]\t(.+)", line))
     }
@@ -448,7 +461,11 @@ def validate_union_only_merge(
                 if len(merge_bases) > 1:
                     arguments.append(MAP_PATH.as_posix())
             changed_paths = git_reader(root, *arguments)
-            union_paths.update(path for path in changed_paths.splitlines() if path)
+            union_paths.update(
+                decode_git_path(path)
+                for path in changed_paths.splitlines()
+                if path
+            )
     require(bool(union_paths), f"post-tag union merge is path-empty: {commit}")
     for repository_path in sorted(union_paths):
         if authoritative_path is not None and authoritative_path(repository_path):
@@ -720,6 +737,31 @@ def self_test(root: Path) -> int:
             rejection_count += 1
         else:
             raise DeltaMapError("self-test accepted an invalid source-delta map")
+
+    require(
+        decode_git_path('"drivers/gpu/drm/radeon/tab\\tname.c"')
+        == "drivers/gpu/drm/radeon/tab\tname.c",
+        "Git tab path decoding differs",
+    )
+    require(
+        path_matches_scope(
+            decode_git_path('"drivers/gpu/drm/radeon/tab\\tname.c"'),
+            DRIVER_ROOT.as_posix(),
+        ),
+        "decoded Git tab path escapes the driver scope",
+    )
+    require(
+        decode_git_path('"drivers/gpu/drm/radeon/utf8-\\303\\251.c"')
+        == "drivers/gpu/drm/radeon/utf8-é.c",
+        "Git UTF-8 path decoding differs",
+    )
+    for invalid_git_path in ('"unterminated', '"invalid\\xescape"'):
+        try:
+            decode_git_path(invalid_git_path)
+        except DeltaMapError:
+            rejection_count += 1
+        else:
+            raise DeltaMapError("self-test accepted invalid Git path quotation")
 
     validate_union_path("base", "first", "base", "first", "first-only.c")
     validate_union_path("base", "base", "second", "second", "second-only.c")
