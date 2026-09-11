@@ -26,6 +26,13 @@ set -eu
 
 subtree=drivers/gpu/drm/radeon
 kernel_build_root=${RADEON_MODULE_KERNEL_BUILD_ROOT:-}
+if [ -z "${PYTHON:-}" ]; then
+  PYTHON=$(command -v python3 || command -v python) || {
+    echo "Python 3 interpreter is unavailable" >&2
+    exit 2
+  }
+fi
+script_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 self_test=0
 requested_profile=default
 profile_flags=0
@@ -50,7 +57,7 @@ is_lower_hex_identity() {
 }
 
 read_upstream_base() {
-  python3 - "$1" <<'PY'
+  "$PYTHON" - "$1" <<'PY'
 import sys
 import tomllib
 
@@ -180,13 +187,22 @@ EOF
     echo "  CALIBRATION FAIL: absent root expected exit 2, got $got" >&2
     fails=$((fails + 1))
   fi
+  if "$PYTHON" "$script_root/scripts/check_radeon_fbdev_allocation_compat.py" \
+      --root "$script_root" --selftest; then
+    echo "  ok: fbdev allocation compatibility rejects its source mutants"
+  else
+    echo "  CALIBRATION FAIL: fbdev allocation compatibility" >&2
+    fails=$((fails + 1))
+  fi
   [ "$fails" -eq 0 ] || { echo "module build gate calibration: FAIL ($fails)" >&2; exit 1; }
-  echo "module build gate calibration: 4 warning verdicts, 2 profile verdicts, 4 identity verdicts, 2 root verdicts"
+  echo "module build gate calibration: 4 warning verdicts, 2 profile verdicts, 4 identity verdicts, 2 root verdicts, and fbdev allocation compatibility"
   exit 0
 fi
 
 repo_root=$(git rev-parse --show-toplevel) || { echo "not inside a git repo" >&2; exit 2; }
 [ -d "$repo_root/$subtree" ] || { echo "missing driver subtree: $subtree" >&2; exit 2; }
+"$PYTHON" "$repo_root/scripts/check_radeon_fbdev_allocation_compat.py" \
+  --root "$repo_root" || exit 2
 feature_policy="$repo_root/policy/build-features.toml"
 [ -r "$feature_policy" ] || { echo "missing build-feature policy" >&2; exit 2; }
 source_commit=$(git -C "$repo_root" rev-parse HEAD)
@@ -317,13 +333,13 @@ do
     exit 4
   }
 done
-python3 "$repo_root/scripts/check_all_dev_interfaces.py" \
+"$PYTHON" "$repo_root/scripts/check_all_dev_interfaces.py" \
   --module "$WORK/$subtree/radeon.ko" \
   --profile "$resolved_profile" \
   --driver-root "$WORK/$subtree" || exit 4
-python3 "$repo_root/scripts/check_radeon_debugfs_registration.py" \
+"$PYTHON" "$repo_root/scripts/check_radeon_debugfs_registration.py" \
   --root "$WORK" || exit 4
-python3 "$repo_root/scripts/check_parked_admission_guards.py" \
+"$PYTHON" "$repo_root/scripts/check_parked_admission_guards.py" \
   --root "$WORK" || exit 4
 if [ -n "$(git -C "$repo_root" status --porcelain "$subtree")" ]; then
   echo "BUILD FAIL: the tracked checkout is not clean after the build" >&2
