@@ -301,6 +301,14 @@ assemble "${work}/cpp-ci8.bin" \
     "pitch_offset=256,0,0 scissor master=2 walk mask rect=5,0,3,1 ${epilogue}"
 expect accept "CI8 pseudocolor datatype 2 destination launch" "" \
     "${work}/cpp-ci8.bin"
+assemble "${work}/cpp-ci8-row-end.bin" \
+    "pitch_offset=256,0,0 scissor master=2 walk mask rect=255,0,1,1 ${epilogue}"
+expect accept "CI8 one-byte pixel at the row end" "" \
+    "${work}/cpp-ci8-row-end.bin"
+assemble "${work}/cpp-ci8-past-row.bin" \
+    "pitch_offset=256,0,0 scissor master=2 walk mask rect=256,0,1,1 ${epilogue}"
+expect reject "CI8 one-byte pixel past the row end" \
+    "x starts past the pitch" "${work}/cpp-ci8-past-row.bin"
 assemble "${work}/before-pitch.bin" \
     "scissor master=6 walk mask rect=0,0,1,1 pitch_offset=256,0,0 ${epilogue}"
 expect reject "geometry before DST_PITCH_OFFSET" \
