@@ -65,7 +65,8 @@ def source_text(root: Path, revision: str, path: str) -> str:
     require(not relative.is_absolute() and ".." not in relative.parts,
             f"uncontained source path: {path}")
     result = subprocess.run(
-        ["git", "-C", str(root), "show", f"{revision}:{path}"],
+        ["git", "--no-replace-objects", "-C", str(root), "show",
+         f"{revision}:{path}"],
         check=True, capture_output=True, text=True,
     )
     return result.stdout
@@ -90,7 +91,8 @@ def check_specification(specification: dict, vulkan: Path) -> None:
     revision = SOURCE_IDENTITY["vulkan_commit"]
     path = SOURCE_IDENTITY["vulkan_chapter_root"] + chapter
     result = subprocess.run(
-        ["git", "-C", str(vulkan), "rev-parse", f"{revision}:{path}"],
+        ["git", "--no-replace-objects", "-C", str(vulkan), "rev-parse",
+         f"{revision}:{path}"],
         check=True, capture_output=True, text=True,
     )
     require(result.stdout.strip() == CHAPTER_BLOBS[chapter],
@@ -112,6 +114,7 @@ def check_specification(specification: dict, vulkan: Path) -> None:
 
 
 def check(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> None:
+    require(type(document["schema_version"]) is int, "schema version must be an integer")
     require(document["schema_version"] == 2, "unsupported schema")
     require(document["sources"] == SOURCE_IDENTITY, "source identity drift")
     require(bool(document["coverage"].strip()), "missing coverage boundary")
@@ -164,6 +167,10 @@ def selftest(document: dict, kernel: Path, mesa: Path, vulkan: Path) -> int:
          "src/amd/r300/vulkan/r3v_native_memory.c"),
     ]
     bad_documents = []
+    for schema_version in (True, 2.0):
+        mutated = copy.deepcopy(document)
+        mutated["schema_version"] = schema_version
+        bad_documents.append(mutated)
     for field, value in (
         ("anchor", "absent-specification-anchor"),
         ("anchor", "memory-device-bitmask-list.*"),
