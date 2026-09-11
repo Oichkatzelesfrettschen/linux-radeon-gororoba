@@ -1432,11 +1432,11 @@ int r100_cs_parse_packet0(struct radeon_cs_parser *p,
 	 * safe register bitmap.
 	 */
 	if (pkt->one_reg_wr) {
-		if ((reg >> 7) > n) {
+		if ((reg >> 7) >= n) {
 			return -EINVAL;
 		}
 	} else {
-		if (((reg + (pkt->count << 2)) >> 7) > n) {
+		if (((reg + (pkt->count << 2)) >> 7) >= n) {
 			return -EINVAL;
 		}
 	}
