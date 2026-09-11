@@ -122,13 +122,13 @@
       "acceptance": "Both builds pass and steinmarder-r300 retains module identity, preflight, commands, outcomes, and hardware evidence."
     },
     {
-      "id": "mesa-review-repairs",
+      "id": "mesa-source-identity-corrections",
       "status": "completed",
       "work": "Requery PR 2183 and address reviewed SHA, command classification, locator validation, omitted summary group, and complete provenance validation in Mesa.",
       "acceptance": "Focused tests pass and each exact review thread has an evidence-backed disposition."
     },
     {
-      "id": "integration",
+      "id": "repository-publication-closure",
       "status": "pending",
       "work": "Publish focused PRs, resolve review, preserve commits in merges, fast-forward both canonical checkouts, and retire only verified merged task worktrees.",
       "acceptance": "Merge ancestry, review closure, canonical synchronization, and scoped cleanup are verified."
