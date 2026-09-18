@@ -393,7 +393,12 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 			ret = -ENODEV;
 			goto err_disable;
 		}
-		rdev->rs4xx_bound_module_ref_held = !!THIS_MODULE;
+		/* try_module_get() succeeded above, so the reference is held
+		 * and owes a module_put(); the flag records that debt. Testing
+		 * THIS_MODULE here read as a condition but is the address of
+		 * __this_module in a modular build, which is never null.
+		 */
+		rdev->rs4xx_bound_module_ref_held = true;
 	}
 
 	ret = radeon_driver_load_kms(ddev, flags);
