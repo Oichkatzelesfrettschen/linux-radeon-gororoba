@@ -329,6 +329,12 @@ jobs:
         run: sh scripts/radeon_deployment_preflight.sh --self-test
       - name: GART TLB fault-injection runner calibration
         run: bash scripts/run_rs400_gart_tlb_fault_injection.sh --self-test
+      # shellcheck ships on the hosted image; ruff does not, and the version
+      # decides which rules fire, so it is pinned to the one this tree is clean
+      # against rather than taken from whatever pip resolves on the day.
+      - name: Install ruff
+        run: pipx install ruff==0.14.11
+
       - name: ruff
         run: ruff check scripts/
       - name: build-relevance classifier calibration
