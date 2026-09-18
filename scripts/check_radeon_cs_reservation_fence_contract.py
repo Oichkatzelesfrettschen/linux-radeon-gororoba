@@ -36,11 +36,10 @@ CS_DIRECT_PREFIX_SHA256 = {
 SUSPEND_DRAIN_DIRECT_PREFIX_SHA256 = (
     "27b08d4967294314ccd455c27198aa83d5130c4233a6f77c33d0ade85d5069dc"
 )
-EXPECTED_TOKEN_PASTE_DIRECTIVES = {
-    "#define REG_GET(FIELD, v) (((v) << FIELD##_SHIFT) & FIELD##_MASK)",
-    "#define REG_SET(FIELD, v) (((v) << FIELD##_SHIFT) & FIELD##_MASK)",
-}
-EXPECTED_RADEON_RING_LOCK_USES = 25
+EXPECTED_TOKEN_PASTE_SHA256 = (
+    "d22a941be9c95941c5a57d1ac9747ec79e837159d7332426d6a7b1544445fc31"
+)
+EXPECTED_RADEON_RING_LOCK_USES = 30
 EXPECTED_POLICY_ROW_SHA256 = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
     "CS_PARKED_EARLY_REFUSAL": "54c22fe4390532a7476fd666051efb5748ed929d2f5dcaab9ef5dfdd7ce2af22",
@@ -1234,18 +1233,21 @@ def check_open_boundaries(root: Path) -> None:
 def check_suspend_fence_lock_context(root: Path) -> None:
     device_source = source(root, "radeon_device.c")
     token_paste_directives: set[str] = set()
-    for relative in SOURCE_FILES:
-        source_path = root / relative
-        if source_path.suffix not in {".c", ".h"}:
-            continue
+    suspend_source_paths = sorted(
+        source_path
+        for source_path in (root / SUBTREE).rglob("*")
+        if source_path.suffix in {".c", ".h"}
+    )
+    for source_path in suspend_source_paths:
         preprocessor_source = cache_policy.strip_comments(
             source_path.read_text(encoding="utf-8")
         ).replace("\\\n", "")
         if re.search(
-            r"(?m)^\s*#\s*(?:define|undef)\s+mutex_(?:un)?lock\b",
+            r"(?m)^\s*#\s*(?:define|undef)\s+"
+            r"(?:mutex_(?:un)?lock|radeon_fence_wait_empty)\b",
             preprocessor_source,
         ):
-            raise ContractError("Radeon source shadows ring mutex primitives")
+            raise ContractError("Radeon source shadows suspend lock contract symbols")
         if re.search(
             r"(?m)^\s*#\s*define\b[^\n]*\bradeon_suspend_kms\b",
             preprocessor_source,
@@ -1256,7 +1258,10 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             for line in preprocessor_source.splitlines()
             if re.match(r"^\s*#\s*define\b", line) and "##" in line
         )
-    if token_paste_directives != EXPECTED_TOKEN_PASTE_DIRECTIVES:
+    token_paste_sha256 = hashlib.sha256(
+        "\n".join(sorted(token_paste_directives)).encode("utf-8")
+    ).hexdigest()
+    if token_paste_sha256 != EXPECTED_TOKEN_PASTE_SHA256:
         raise ContractError("Radeon preprocessor token-paste denominator differs")
     device_tokens = lifecycle.c_tokens(device_source)
     suspend_definition_count = 0
@@ -1405,9 +1410,10 @@ def check_suspend_fence_lock_context(root: Path) -> None:
         ),
     )
     radeon_ring_lock_uses = sum(
-        lifecycle.c_tokens(source(root, Path(relative).name)).count("ring_lock")
-        for relative in SOURCE_FILES
-        if Path(relative).suffix in {".c", ".h"}
+        lifecycle.c_tokens(
+            cache_policy.strip_comments(source_path.read_text(encoding="utf-8"))
+        ).count("ring_lock")
+        for source_path in suspend_source_paths
     )
     if radeon_ring_lock_uses != EXPECTED_RADEON_RING_LOCK_USES:
         raise ContractError("Radeon ring_lock use denominator differs")
@@ -1579,6 +1585,18 @@ SOURCE_MUTATIONS = {
             "#define __RADEON_H__\n"
             "#undef mutex_unlock\n"
             "#define mutex_unlock(lock) do { } while (0)\n"
+        ),
+    ),
+    "wait macro shadows suspend fence drain": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#define radeon_fence_wait_empty(rdev, ring) 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
         ),
     ),
     "preprocessor disabled suspend definition is selected": (
@@ -2298,19 +2316,15 @@ SOURCE_MUTATIONS = {
         ),
     ),
     "cross-file ring lock helper changes denominator": (
-        "drivers/gpu/drm/radeon/radeon_device.c",
-        (
-            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
-            "\t\t       bool notify_clients, bool freeze)"
-        ),
+        "drivers/gpu/drm/radeon/radeon_kms.c",
+        "static void radeon_rs4xx_finish_terminal_shutdown(\n",
         (
             "static __maybe_unused void radeon_drop_caller_ring_lock(\n"
             "\tstruct radeon_device *rdev)\n"
             "{\n"
             "\tmutex_unlock(&rdev->ring_lock);\n"
             "}\n\n"
-            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
-            "\t\t       bool notify_clients, bool freeze)"
+            "static void radeon_rs4xx_finish_terminal_shutdown(\n"
         ),
     ),
 }
@@ -2330,13 +2344,16 @@ SOURCE_EXPECTED_ERRORS = {
         "suspend fence drain lock reachability: exact direct statement prefix differs"
     ),
     "mutex unlock macro shadows suspend releases": (
-        "Radeon source shadows ring mutex primitives"
+        "Radeon source shadows suspend lock contract symbols"
     ),
     "mutex lock macro shadows suspend acquisition": (
-        "Radeon source shadows ring mutex primitives"
+        "Radeon source shadows suspend lock contract symbols"
     ),
     "included header shadows suspend release primitive": (
-        "Radeon source shadows ring mutex primitives"
+        "Radeon source shadows suspend lock contract symbols"
+    ),
+    "wait macro shadows suspend fence drain": (
+        "Radeon source shadows suspend lock contract symbols"
     ),
     "preprocessor disabled suspend definition is selected": (
         "radeon_suspend_kms definition denominator differs"
@@ -2580,7 +2597,14 @@ POLICY_MUTATIONS = {
 
 
 def copy_inputs(source_root: Path, destination: Path) -> None:
-    for relative in (*SOURCE_FILES, str(POLICY)):
+    relative_inputs = set(SOURCE_FILES)
+    relative_inputs.add(str(POLICY))
+    relative_inputs.update(
+        str(source_path.relative_to(source_root))
+        for source_path in (source_root / SUBTREE).rglob("*")
+        if source_path.suffix in {".c", ".h"}
+    )
+    for relative in sorted(relative_inputs):
         source_path = source_root / relative
         destination_path = destination / relative
         destination_path.parent.mkdir(parents=True, exist_ok=True)
