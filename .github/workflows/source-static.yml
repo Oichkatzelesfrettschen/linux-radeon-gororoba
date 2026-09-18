@@ -245,7 +245,10 @@ jobs:
       # did not build carries no information, so it is not generated.
       - name: radeon.ko builds from the tracked subtree
         env:
-          RADEON_BUILD_MAKE_VARS: CONFIG_DEBUG_INFO_BTF_MODULES=n
+          # An empty value, not "n". scripts/Makefile.modfinal gates the BTF
+          # step with "ifdef CONFIG_DEBUG_INFO_BTF_MODULES", and ifdef is true
+          # for any non-empty value, so =n leaves BTF enabled.
+          RADEON_BUILD_MAKE_VARS: CONFIG_DEBUG_INFO_BTF_MODULES=
         run: |
           set -eu
           timeout 300 sh scripts/build_radeon_module.sh --self-test
@@ -318,7 +321,10 @@ jobs:
       # did not build carries no information, so it is not generated.
       - name: radeon.ko builds from the tracked subtree
         env:
-          RADEON_BUILD_MAKE_VARS: CONFIG_DEBUG_INFO_BTF_MODULES=n
+          # An empty value, not "n". scripts/Makefile.modfinal gates the BTF
+          # step with "ifdef CONFIG_DEBUG_INFO_BTF_MODULES", and ifdef is true
+          # for any non-empty value, so =n leaves BTF enabled.
+          RADEON_BUILD_MAKE_VARS: CONFIG_DEBUG_INFO_BTF_MODULES=
         run: |
           set -eu
           timeout 300 sh scripts/build_radeon_module.sh --self-test
