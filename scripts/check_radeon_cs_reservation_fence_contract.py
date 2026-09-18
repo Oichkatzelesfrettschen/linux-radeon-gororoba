@@ -33,6 +33,13 @@ CS_DIRECT_PREFIX_SHA256 = {
     "ioctl": "34d442fa506862b82b7d389cf62034e7c950f2c0dd51ea9d999cdeb1a4383839",
     "next_reloc": "bd02f061ab8376685f57aaaf9e108cc2ac1a67bbd90a27abb082442393caaa2e",
 }
+SUSPEND_DRAIN_DIRECT_PREFIX_SHA256 = (
+    "27b08d4967294314ccd455c27198aa83d5130c4233a6f77c33d0ade85d5069dc"
+)
+EXPECTED_TOKEN_PASTE_SHA256 = (
+    "d22a941be9c95941c5a57d1ac9747ec79e837159d7332426d6a7b1544445fc31"
+)
+EXPECTED_RADEON_RING_LOCK_USES = 30
 EXPECTED_POLICY_ROW_SHA256 = {
     "RS482_ASIC_COMMAND_CALLBACK_BINDING": "d0e5e963d5aabfe1527f79e142842983ac64f8073799cba819501e3e3f7b71ab",
     "CS_PARKED_EARLY_REFUSAL": "54c22fe4390532a7476fd666051efb5748ed929d2f5dcaab9ef5dfdd7ce2af22",
@@ -1224,6 +1231,55 @@ def check_open_boundaries(root: Path) -> None:
 
 
 def check_suspend_fence_lock_context(root: Path) -> None:
+    device_source = source(root, "radeon_device.c")
+    token_paste_directives: set[str] = set()
+    suspend_source_paths = sorted(
+        source_path
+        for source_path in (root / SUBTREE).rglob("*")
+        if source_path.suffix in {".c", ".h"}
+    )
+    for source_path in suspend_source_paths:
+        preprocessor_source = cache_policy.strip_comments(
+            source_path.read_text(encoding="utf-8")
+        ).replace("\\\n", "")
+        if re.search(
+            r"(?m)^\s*#\s*(?:define|undef)\s+"
+            r"(?:mutex_(?:un)?lock|radeon_fence_wait_empty)\b",
+            preprocessor_source,
+        ):
+            raise ContractError("Radeon source shadows suspend lock contract symbols")
+        if re.search(
+            r"(?m)^\s*#\s*define\b[^\n]*\bradeon_suspend_kms\b",
+            preprocessor_source,
+        ):
+            raise ContractError("Radeon source aliases radeon_suspend_kms")
+        token_paste_directives.update(
+            line.strip()
+            for line in preprocessor_source.splitlines()
+            if re.match(r"^\s*#\s*define\b", line) and "##" in line
+        )
+    token_paste_sha256 = hashlib.sha256(
+        "\n".join(sorted(token_paste_directives)).encode("utf-8")
+    ).hexdigest()
+    if token_paste_sha256 != EXPECTED_TOKEN_PASTE_SHA256:
+        raise ContractError("Radeon preprocessor token-paste denominator differs")
+    device_tokens = lifecycle.c_tokens(device_source)
+    suspend_definition_count = 0
+    for index, token in enumerate(device_tokens[:-1]):
+        if token != "radeon_suspend_kms" or device_tokens[index + 1] != "(":
+            continue
+        condition_end = lifecycle.matching_token(device_tokens, index + 1, "(", ")")
+        if condition_end + 1 < len(device_tokens) and device_tokens[condition_end + 1] == "{":
+            suspend_definition_count += 1
+    if suspend_definition_count != 1:
+        raise ContractError("radeon_suspend_kms definition denominator differs")
+
+    wait_empty = function(root, "radeon_fence.c", "radeon_fence_wait_empty")
+    if "ring_lock" in lifecycle.c_tokens(wait_empty):
+        raise ContractError("radeon_fence_wait_empty manipulates ring_lock")
+    if lifecycle.c_tokens(source(root, "radeon_fence.c")).count("ring_lock") != 4:
+        raise ContractError("radeon_fence.c ring_lock use denominator differs")
+
     suspend = function(root, "radeon_device.c", "radeon_suspend_kms")
     lock = "mutex_lock(&rdev->ring_lock);"
     unlock = "mutex_unlock(&rdev->ring_lock);"
@@ -1236,6 +1292,7 @@ def check_suspend_fence_lock_context(root: Path) -> None:
         spans = lifecycle.direct_function_statements(tokens)
         statements = tuple(tokens[start:end] for start, end in spans)
         lock_tokens = lifecycle.c_tokens(lock)
+        unlock_tokens = lifecycle.c_tokens(unlock)
         loop_prefix = lifecycle.c_tokens("for (i = 0; i < RADEON_NUM_RINGS; i++)")
         direct_lock_indexes = [
             index
@@ -1247,13 +1304,87 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             for index, statement in enumerate(statements)
             if statement[: len(loop_prefix)] == loop_prefix
         ]
-        if len(direct_lock_indexes) != 1 or len(direct_loop_indexes) != 1:
+        direct_unlock_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if statement == unlock_tokens
+        ]
+        direct_goto_indexes = [
+            index
+            for index, statement in enumerate(statements)
+            if statement[:1] == ("goto",)
+        ]
+        goto_targets = {
+            tokens[index + 1]
+            for index, token in enumerate(tokens[:-2])
+            if token == "goto" and tokens[index + 2] == ";"
+        }
+        if (
+            len(direct_lock_indexes) != 1
+            or len(direct_loop_indexes) != 1
+            or len(direct_unlock_indexes) != 1
+        ):
             raise lifecycle.LifecycleError(
-                "suspend fence drain requires one direct lock and ring loop"
+                "suspend fence drain requires one direct lock, ring loop, and unlock"
             )
+        if direct_goto_indexes:
+            raise lifecycle.LifecycleError(
+                "suspend function-level goto bypasses the fence drain"
+            )
+        if goto_targets != {"rs4xx_suspend_parked"}:
+            raise lifecycle.LifecycleError(
+                "suspend goto targets must only reach the parked exit"
+            )
+        lifecycle.require_direct_statement_prefix_sha256(
+            "suspend fence drain lock reachability",
+            statements,
+            direct_lock_indexes[0],
+            SUSPEND_DRAIN_DIRECT_PREFIX_SHA256,
+        )
         if direct_lock_indexes[0] + 1 != direct_loop_indexes[0]:
             raise lifecycle.LifecycleError(
                 "suspend ring loop must directly follow ring lock acquisition"
+            )
+        if direct_loop_indexes[0] + 1 != direct_unlock_indexes[0]:
+            raise lifecycle.LifecycleError(
+                "suspend ring unlock must directly follow the ring loop"
+            )
+        loop_statement = statements[direct_loop_indexes[0]]
+        loop_condition_end = lifecycle.matching_token(loop_statement, 1, "(", ")")
+        if loop_statement[loop_condition_end + 1] != "{":
+            raise lifecycle.LifecycleError(
+                "suspend ring loop requires a directly controlled compound body"
+            )
+        loop_spans = lifecycle.direct_function_statements(loop_statement)
+        loop_body = tuple(loop_statement[start:end] for start, end in loop_spans)
+        expected_loop_body = tuple(
+            lifecycle.c_tokens(statement)
+            for statement in (
+                "r = radeon_fence_wait_empty(rdev, i);",
+                (
+                    "if (r) {"
+                    "if (radeon_rs4xx_hardware_target(rdev)) {"
+                    "mutex_unlock(&rdev->ring_lock);"
+                    "goto rs4xx_suspend_parked;"
+                    "}"
+                    "radeon_fence_driver_force_completion(rdev, i);"
+                    "} else {"
+                    "flush_delayed_work(&rdev->fence_drv[i].lockup_work);"
+                    "}"
+                ),
+                (
+                    "if (radeon_rs4xx_hardware_target(rdev) && "
+                    "READ_ONCE(rdev->gpu_parked)) {"
+                    "r = -EIO;"
+                    "mutex_unlock(&rdev->ring_lock);"
+                    "goto rs4xx_suspend_parked;"
+                    "}"
+                ),
+            )
+        )
+        if loop_body != expected_loop_body:
+            raise lifecycle.LifecycleError(
+                "suspend ring loop direct statement topology differs"
             )
     except lifecycle.LifecycleError as exc:
         raise ContractError(str(exc)) from exc
@@ -1278,6 +1409,14 @@ def check_suspend_fence_lock_context(root: Path) -> None:
             "radeon_save_bios_scratch_regs",
         ),
     )
+    radeon_ring_lock_uses = sum(
+        lifecycle.c_tokens(
+            cache_policy.strip_comments(source_path.read_text(encoding="utf-8"))
+        ).count("ring_lock")
+        for source_path in suspend_source_paths
+    )
+    if radeon_ring_lock_uses != EXPECTED_RADEON_RING_LOCK_USES:
+        raise ContractError("Radeon ring_lock use denominator differs")
 
 
 def check_tree(
@@ -1394,6 +1533,154 @@ SOURCE_MUTATIONS = {
             "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
         ),
     ),
+    "suspend function-level goto bypasses fence drain": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tgoto rs4xx_suspend_parked;\n"
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
+    "suspend conditional goto bypasses fence drain": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tif (true)\n"
+            "\t\tgoto rs4xx_suspend_parked;\n"
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {"
+        ),
+    ),
+    "mutex unlock macro shadows suspend releases": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#undef mutex_unlock\n"
+            "#define mutex_unlock(lock) do { } while (0)\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "mutex lock macro shadows suspend acquisition": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#undef mutex_lock\n"
+            "#define mutex_lock(lock) do { } while (0)\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "included header shadows suspend release primitive": (
+        "drivers/gpu/drm/radeon/radeon.h",
+        "#define __RADEON_H__\n",
+        (
+            "#define __RADEON_H__\n"
+            "#undef mutex_unlock\n"
+            "#define mutex_unlock(lock) do { } while (0)\n"
+        ),
+    ),
+    "wait macro shadows suspend fence drain": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#define radeon_fence_wait_empty(rdev, ring) 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "preprocessor disabled suspend definition is selected": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "nonstandard return duplicate suspend definition is selected": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "typeof(0) radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+    ),
+    "macro alias hides live suspend definition": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "#define SUSPEND_NAME radeon_suspend_kms\n"
+            "int SUSPEND_NAME(struct drm_device *dev, bool suspend,\n"
+            "\t\t bool notify_clients, bool freeze)"
+        ),
+    ),
+    "token paste alias hides live suspend definition": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)"
+        ),
+        (
+            "#if 0\n"
+            "int radeon_suspend_kms(struct drm_device *dev, bool suspend,\n"
+            "\t\t       bool notify_clients, bool freeze)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+            "#endif\n"
+            "#define SUSPEND_NAME radeon_suspend_ ## kms\n"
+            "int SUSPEND_NAME(struct drm_device *dev, bool suspend,\n"
+            "\t\t bool notify_clients, bool freeze)"
+        ),
+    ),
+    "suspend fence drain hides loop body in unreachable guard": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\tmutex_lock(&rdev->ring_lock);\n\tfor (i = 0; i < RADEON_NUM_RINGS; i++) {",
+        (
+            "\tmutex_lock(&rdev->ring_lock);\n"
+            "\tfor (i = 0; i < RADEON_NUM_RINGS; i++) if (false) {"
+        ),
+    ),
     "suspend wait error leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         (
@@ -1408,6 +1695,33 @@ SOURCE_MUTATIONS = {
             "\t\t\t}"
         ),
     ),
+    "suspend wait error conditionally bypasses ring unlock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n\t\t\t\tgoto rs4xx_suspend_parked;",
+        (
+            "\t\t\t\tif (false)\n"
+            "\t\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+    ),
+    "suspend wait error hides unlock in unreachable decoy guard": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        (
+            "\t\t\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\tgoto rs4xx_suspend_parked;\n"
+            "\t\t\t}"
+        ),
+        (
+            "\t\t\tif (false) {\n"
+            "\t\t\t\tif (radeon_rs4xx_hardware_target(rdev)) {\n"
+            "\t\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\t\t\tgoto rs4xx_suspend_parked;\n"
+            "\t\t\t\t}\n"
+            "\t\t\t}\n"
+            "\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+    ),
     "suspend parked observation leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         (
@@ -1417,10 +1731,29 @@ SOURCE_MUTATIONS = {
         ),
         ("\t\t\tr = -EIO;\n\t\t\tgoto rs4xx_suspend_parked;"),
     ),
+    "suspend parked observation conditionally bypasses ring unlock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t\t\tmutex_unlock(&rdev->ring_lock);\n\t\t\tgoto rs4xx_suspend_parked;",
+        (
+            "\t\t\tif (false)\n"
+            "\t\t\t\tmutex_unlock(&rdev->ring_lock);\n"
+            "\t\t\tgoto rs4xx_suspend_parked;"
+        ),
+    ),
     "suspend successful drain leaks ring lock": (
         "drivers/gpu/drm/radeon/radeon_device.c",
         "\t}\n\tmutex_unlock(&rdev->ring_lock);\n\n\tradeon_save_bios_scratch_regs(rdev);",
         "\t}\n\n\tradeon_save_bios_scratch_regs(rdev);",
+    ),
+    "suspend successful drain conditionally bypasses ring unlock": (
+        "drivers/gpu/drm/radeon/radeon_device.c",
+        "\t}\n\tmutex_unlock(&rdev->ring_lock);\n\n\tradeon_save_bios_scratch_regs(rdev);",
+        (
+            "\t}\n"
+            "\tif (false)\n"
+            "\t\tmutex_unlock(&rdev->ring_lock);\n\n"
+            "\tradeon_save_bios_scratch_regs(rdev);"
+        ),
     ),
     "parked CS condition is inverted": (
         "drivers/gpu/drm/radeon/radeon_cs.c",
@@ -1956,6 +2289,44 @@ SOURCE_MUTATIONS = {
             "\t\tif (r == -EBUSY || (rs4xx_device && r == -EHOSTDOWN))"
         ),
     ),
+    "fence wait helper releases caller ring lock": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        "\tseq[ring] = rdev->fence_drv[ring].sync_seq[ring];",
+        (
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "\tseq[ring] = rdev->fence_drv[ring].sync_seq[ring];"
+        ),
+    ),
+    "fence wait delegates caller ring lock release": (
+        "drivers/gpu/drm/radeon/radeon_fence.c",
+        (
+            "int radeon_fence_wait_empty(struct radeon_device *rdev, int ring)\n"
+            "{\n"
+            "\tuint64_t seq[RADEON_NUM_RINGS] = {};"
+        ),
+        (
+            "static void radeon_fence_drop_caller_lock(struct radeon_device *rdev)\n"
+            "{\n"
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "}\n\n"
+            "int radeon_fence_wait_empty(struct radeon_device *rdev, int ring)\n"
+            "{\n"
+            "\tuint64_t seq[RADEON_NUM_RINGS] = {};\n\n"
+            "\tradeon_fence_drop_caller_lock(rdev);"
+        ),
+    ),
+    "cross-file ring lock helper changes denominator": (
+        "drivers/gpu/drm/radeon/radeon_kms.c",
+        "static void radeon_rs4xx_finish_terminal_shutdown(\n",
+        (
+            "static __maybe_unused void radeon_drop_caller_ring_lock(\n"
+            "\tstruct radeon_device *rdev)\n"
+            "{\n"
+            "\tmutex_unlock(&rdev->ring_lock);\n"
+            "}\n\n"
+            "static void radeon_rs4xx_finish_terminal_shutdown(\n"
+        ),
+    ),
 }
 
 SOURCE_EXPECTED_ERRORS = {
@@ -1965,6 +2336,45 @@ SOURCE_EXPECTED_ERRORS = {
     "reset implementation drops writer lock": (
         "reset backup, reset, replay, and force-completion structure: "
         "missing or out of order: down_write(&rdev->exclusive_lock)"
+    ),
+    "suspend function-level goto bypasses fence drain": (
+        "suspend function-level goto bypasses the fence drain"
+    ),
+    "suspend conditional goto bypasses fence drain": (
+        "suspend fence drain lock reachability: exact direct statement prefix differs"
+    ),
+    "mutex unlock macro shadows suspend releases": (
+        "Radeon source shadows suspend lock contract symbols"
+    ),
+    "mutex lock macro shadows suspend acquisition": (
+        "Radeon source shadows suspend lock contract symbols"
+    ),
+    "included header shadows suspend release primitive": (
+        "Radeon source shadows suspend lock contract symbols"
+    ),
+    "wait macro shadows suspend fence drain": (
+        "Radeon source shadows suspend lock contract symbols"
+    ),
+    "preprocessor disabled suspend definition is selected": (
+        "radeon_suspend_kms definition denominator differs"
+    ),
+    "nonstandard return duplicate suspend definition is selected": (
+        "radeon_suspend_kms definition denominator differs"
+    ),
+    "macro alias hides live suspend definition": (
+        "Radeon source aliases radeon_suspend_kms"
+    ),
+    "token paste alias hides live suspend definition": (
+        "Radeon preprocessor token-paste denominator differs"
+    ),
+    "fence wait helper releases caller ring lock": (
+        "radeon_fence_wait_empty manipulates ring_lock"
+    ),
+    "fence wait delegates caller ring lock release": (
+        "radeon_fence.c ring_lock use denominator differs"
+    ),
+    "cross-file ring lock helper changes denominator": (
+        "Radeon ring_lock use denominator differs"
     ),
     "parked CS condition is inverted": (
         "command-submission projected path requires one direct parked guard"
@@ -2187,7 +2597,14 @@ POLICY_MUTATIONS = {
 
 
 def copy_inputs(source_root: Path, destination: Path) -> None:
-    for relative in (*SOURCE_FILES, str(POLICY)):
+    relative_inputs = set(SOURCE_FILES)
+    relative_inputs.add(str(POLICY))
+    relative_inputs.update(
+        str(source_path.relative_to(source_root))
+        for source_path in (source_root / SUBTREE).rglob("*")
+        if source_path.suffix in {".c", ".h"}
+    )
+    for relative in sorted(relative_inputs):
         source_path = source_root / relative
         destination_path = destination / relative
         destination_path.parent.mkdir(parents=True, exist_ok=True)
