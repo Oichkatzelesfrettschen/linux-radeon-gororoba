@@ -296,6 +296,16 @@ if grep -q '^CONFIG_CC_IS_CLANG=y' "$KB/include/config/auto.conf" 2>/dev/null ||
 else
   set --
 fi
+# Extra make variables for callers that build against a kernel they did not
+# build themselves. A container installs a packaged kernel's headers and its
+# own pahole, and the two versions need not agree; BTF encoding then warns on
+# the mismatch, which reports the environment rather than the source under
+# test. Turning BTF off is the caller's call, so it arrives as a variable
+# rather than being decided here.
+if [ -n "${RADEON_BUILD_MAKE_VARS:-}" ]; then
+  # shellcheck disable=SC2086
+  set -- "$@" $RADEON_BUILD_MAKE_VARS
+fi
 build_log="$WORK/build.log"
 build_status=0
 # shellcheck disable=SC2086

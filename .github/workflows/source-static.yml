@@ -238,7 +238,14 @@ jobs:
 
       # with_build_slot.sh serialized builds against a shared workstation. Each
       # container job has the runner to itself, so the slot is not taken here.
+      # The container's pahole and the packaged kernel's pahole need not be the
+      # same version, and BTF encoding warns when they differ. That warning
+      # describes the image, not the driver, and the build gate treats every
+      # warning as a failure. BTF for a module built against a kernel this job
+      # did not build carries no information, so it is not generated.
       - name: radeon.ko builds from the tracked subtree
+        env:
+          RADEON_BUILD_MAKE_VARS: CONFIG_DEBUG_INFO_BTF_MODULES=n
         run: |
           set -eu
           timeout 300 sh scripts/build_radeon_module.sh --self-test
@@ -304,7 +311,14 @@ jobs:
 
       # with_build_slot.sh serialized builds against a shared workstation. Each
       # container job has the runner to itself, so the slot is not taken here.
+      # The container's pahole and the packaged kernel's pahole need not be the
+      # same version, and BTF encoding warns when they differ. That warning
+      # describes the image, not the driver, and the build gate treats every
+      # warning as a failure. BTF for a module built against a kernel this job
+      # did not build carries no information, so it is not generated.
       - name: radeon.ko builds from the tracked subtree
+        env:
+          RADEON_BUILD_MAKE_VARS: CONFIG_DEBUG_INFO_BTF_MODULES=n
         run: |
           set -eu
           timeout 300 sh scripts/build_radeon_module.sh --self-test
