@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   history-plan:
-    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       matrix: ${{ steps.history.outputs.matrix }}
@@ -82,7 +82,7 @@ jobs:
   history-build:
     needs: history-plan
     if: needs.history-plan.outputs.matrix != '[]'
-    runs-on: [self-hosted, linux, cachyos, workstation-host]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
