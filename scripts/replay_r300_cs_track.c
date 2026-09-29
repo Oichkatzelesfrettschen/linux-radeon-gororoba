@@ -176,6 +176,7 @@ struct array {
 	int bound;
 	unsigned int bo;
 	unsigned int esize;
+	unsigned int offset;	/* stream byte offset added to the relocation */
 };
 
 /* r100_cs_track_2d_dst: the legacy 2D destination as DST_PITCH_OFFSET,
@@ -380,8 +381,10 @@ static void track_clear(struct track *t)
 	t->immd_dwords = 0xFFFFFFFFUL;
 	t->num_arrays = 11;
 	t->max_indx = 0x00FFFFFFUL;
-	for (i = 0; i < R300_MAX_ARRAYS; i++)
+	for (i = 0; i < R300_MAX_ARRAYS; i++) {
 		t->arrays[i].esize = 0x7F;
+		t->arrays[i].offset = 0;
+	}
 }
 
 /* r300_cs_tcl_bypass_vtx_output_check: the TCL-bypass vertex-output width
@@ -690,7 +693,8 @@ static int track_check(struct parser *p)
 				       "bound", prim_walk, i);
 				return -EINVAL;
 			}
-			if (size > p->bos[t->arrays[i].bo].size) {
+			if ((uint64_t)t->arrays[i].offset + size >
+			    p->bos[t->arrays[i].bo].size) {
 				reject("(PW %u) vertex array %u need %lu "
 				       "dwords have %lu dwords", prim_walk, i,
 				       size >> 2,
@@ -710,7 +714,8 @@ static int track_check(struct parser *p)
 				       "bound", prim_walk, i);
 				return -EINVAL;
 			}
-			if (size > p->bos[t->arrays[i].bo].size) {
+			if ((uint64_t)t->arrays[i].offset + size >
+			    p->bos[t->arrays[i].bo].size) {
 				reject("(PW %u) vertex array %u need %lu "
 				       "dwords have %lu dwords", prim_walk, i,
 				       size >> 2,
@@ -1189,12 +1194,14 @@ static int load_vbpntr(struct parser *p, struct packet *pkt)
 		v = p->ib[idx];
 		t->arrays[i + 0].bound = 1;
 		t->arrays[i + 0].bo = bo;
+		t->arrays[i + 0].offset = p->ib[idx + 1];
 		t->arrays[i + 0].esize = (v >> 8) & 0x7F;
 		r = next_reloc(p, &bo);
 		if (r)
 			return r;
 		t->arrays[i + 1].bound = 1;
 		t->arrays[i + 1].bo = bo;
+		t->arrays[i + 1].offset = p->ib[idx + 2];
 		t->arrays[i + 1].esize = (v >> 24) & 0x7F;
 	}
 	if (c & 1) {
@@ -1204,6 +1211,7 @@ static int load_vbpntr(struct parser *p, struct packet *pkt)
 		v = p->ib[idx];
 		t->arrays[i + 0].bound = 1;
 		t->arrays[i + 0].bo = bo;
+		t->arrays[i + 0].offset = p->ib[idx + 1];
 		t->arrays[i + 0].esize = (v >> 8) & 0x7F;
 	}
 	note("  vbpntr: %u arrays, esize %u\n", c, t->arrays[0].esize);

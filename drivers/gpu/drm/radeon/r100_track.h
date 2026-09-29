@@ -22,6 +22,7 @@ struct r100_cs_track_cb {
 struct r100_cs_track_array {
 	struct radeon_bo	*robj;
 	unsigned		esize;
+	unsigned		offset;
 };
 
 /* The legacy 2D engine's destination surface as the command stream

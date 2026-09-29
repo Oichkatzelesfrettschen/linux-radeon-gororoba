@@ -382,11 +382,14 @@ int r200_packet0_check(struct radeon_cs_parser *p,
 			return -EINVAL;
 		}
 
-		track->z_enabled = !!(idx_value & RADEON_Z_ENABLE);
+		/* Stencil and test enables both reach the depth BO. */
+		track->z_enabled = !!(idx_value & (RADEON_STENCIL_ENABLE |
+						   RADEON_Z_ENABLE));
 		track->cb_dirty = true;
 		track->zb_dirty = true;
 		break;
 	case RADEON_RB3D_ZSTENCILCNTL:
+		track->z_write_enabled = !!(idx_value & RADEON_Z_WRITE_ENABLE);
 		switch (idx_value & 0xf) {
 		case 0:
 			track->zb.cpp = 2;
@@ -411,6 +414,13 @@ int r200_packet0_check(struct radeon_cs_parser *p,
 				      idx, reg);
 			radeon_cs_dump_packet(p, pkt);
 			return r;
+		}
+		/* The occlusion counter stores one dword at the relocated address. */
+		if ((u64)idx_value + 4 > radeon_bo_size(reloc->robj)) {
+			dev_warn(p->dev, "RB3D_ZPASS_ADDR offset 0x%08X out of range "
+				 "for BO of size %lu\n", idx_value,
+				 radeon_bo_size(reloc->robj));
+			return -EINVAL;
 		}
 		ib[idx] = idx_value + ((u32)reloc->gpu_offset);
 		break;
