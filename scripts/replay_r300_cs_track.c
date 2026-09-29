@@ -102,6 +102,10 @@
 #define R300_RB3D_BLENDCNTL		0x4E04
 #define R300_ZB_CNTL			0x4F00
 #define R300_ZB_FORMAT			0x4F10
+#define R300_ZB_ZPASS_ADDR		0x4F5C
+#define R300_STENCIL_ENABLE		(1 << 0)
+#define R300_Z_ENABLE			(1 << 1)
+#define R300_Z_WRITE_ENABLE		(1 << 2)
 #define R300_ZB_DEPTHOFFSET		0x4F20
 #define R300_ZB_DEPTHPITCH		0x4F24
 #define R300_RB3D_AARESOLVE_OFFSET	0x4E80
@@ -785,7 +789,6 @@ static int register_consumes_reloc(unsigned int reg)
 	if (reg >= 0x4540 && reg <= 0x457C)
 		return 1;
 	switch (reg) {
-	case 0x4f5c:	/* R300_ZB_ZPASS_ADDR */
 	case 0x1428:	/* RADEON_SRC_PITCH_OFFSET */
 		return 1;
 	default:
@@ -820,6 +823,21 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		t->cb[i].bo = bo;
 		t->cb[i].offset = v;
 		t->cb_dirty = 1;
+		break;
+	case R300_ZB_ZPASS_ADDR:
+		r = next_reloc(p, &bo);
+		if (r) {
+			reject("no reloc for ib[%u]=0x%04X", idx, reg);
+			return r;
+		}
+		/* The occlusion counter stores one dword at the relocated
+		 * address; the u64 compare cannot wrap.
+		 */
+		if ((uint64_t)v + 4 > p->bos[bo].size) {
+			reject("ZB_ZPASS_ADDR offset 0x%08X out of range for "
+			       "BO of size %lu", v, p->bos[bo].size);
+			return -EINVAL;
+		}
 		break;
 	case R300_ZB_DEPTHOFFSET:
 		r = next_reloc(p, &bo);
@@ -999,7 +1017,9 @@ static int packet0_check(struct parser *p, unsigned int idx, unsigned int reg)
 		t->cb_dirty = 1;
 		break;
 	case R300_ZB_CNTL:
-		t->z_enabled = (v & 2) != 0;
+		/* Stencil, test, and write each reach the depth BO. */
+		t->z_enabled = (v & (R300_STENCIL_ENABLE | R300_Z_ENABLE |
+				     R300_Z_WRITE_ENABLE)) != 0;
 		t->zb_dirty = 1;
 		break;
 	case R300_ZB_FORMAT:
