@@ -134,6 +134,7 @@ struct r100_cs_track {
 	bool				xdir_left_to_right;
 	bool				ydir_top_to_bottom;
 	bool				z_enabled;
+	bool				z_write_enabled;
 	bool                            separate_cube;
 	bool				zb_cb_clear;
 	bool				blend_read_enable;
