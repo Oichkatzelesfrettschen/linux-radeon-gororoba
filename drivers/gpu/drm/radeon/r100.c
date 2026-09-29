@@ -1383,7 +1383,6 @@ int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
 		idx_value = radeon_get_ib_value(p, idx);
 		ib[idx+1] = radeon_get_ib_value(p, idx + 1) + ((u32)reloc->gpu_offset);
 
-		track->arrays[i + 0].offset = radeon_get_ib_value(p, idx + 1);
 		track->arrays[i + 0].esize = idx_value >> 8;
 		track->arrays[i + 0].robj = reloc->robj;
 		track->arrays[i + 0].esize &= 0x7F;
@@ -1395,7 +1394,6 @@ int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
 			return r;
 		}
 		ib[idx+2] = radeon_get_ib_value(p, idx + 2) + ((u32)reloc->gpu_offset);
-		track->arrays[i + 1].offset = radeon_get_ib_value(p, idx + 2);
 		track->arrays[i + 1].robj = reloc->robj;
 		track->arrays[i + 1].esize = idx_value >> 24;
 		track->arrays[i + 1].esize &= 0x7F;
@@ -1410,7 +1408,6 @@ int r100_packet3_load_vbpntr(struct radeon_cs_parser *p,
 		}
 		idx_value = radeon_get_ib_value(p, idx);
 		ib[idx+1] = radeon_get_ib_value(p, idx + 1) + ((u32)reloc->gpu_offset);
-		track->arrays[i + 0].offset = radeon_get_ib_value(p, idx + 1);
 		track->arrays[i + 0].robj = reloc->robj;
 		track->arrays[i + 0].esize = idx_value >> 8;
 		track->arrays[i + 0].esize &= 0x7F;
@@ -2064,7 +2061,6 @@ static int r100_packet3_check(struct radeon_cs_parser *p,
 		track->vtx_size = r100_get_vtx_size(radeon_get_ib_value(p, idx + 2));
 
 		track->arrays[0].robj = reloc->robj;
-		track->arrays[0].offset = radeon_get_ib_value(p, idx);
 		track->arrays[0].esize = track->vtx_size;
 
 		track->max_indx = radeon_get_ib_value(p, idx+1);
@@ -2434,9 +2430,7 @@ int r100_cs_track_check(struct radeon_device *rdev, struct r100_cs_track *track)
 					      "bound\n", prim_walk, i);
 				return -EINVAL;
 			}
-			/* The array starts at its stream-supplied byte offset. */
-			if ((u64)track->arrays[i].offset + size >
-			    radeon_bo_size(track->arrays[i].robj)) {
+			if (size > radeon_bo_size(track->arrays[i].robj)) {
 				dev_warn_once(rdev->dev, "(PW %u) Vertex array %u "
 					      "need %lu dwords have %lu dwords\n",
 					      prim_walk, i, size >> 2,
@@ -2455,9 +2449,7 @@ int r100_cs_track_check(struct radeon_device *rdev, struct r100_cs_track *track)
 					      "bound\n", prim_walk, i);
 				return -EINVAL;
 			}
-			/* The array starts at its stream-supplied byte offset. */
-			if ((u64)track->arrays[i].offset + size >
-			    radeon_bo_size(track->arrays[i].robj)) {
+			if (size > radeon_bo_size(track->arrays[i].robj)) {
 				dev_warn_once(rdev->dev, "(PW %u) Vertex array %u "
 					      "need %lu dwords have %lu dwords\n",
 					      prim_walk, i, size >> 2,
@@ -2793,7 +2785,6 @@ void r100_cs_track_clear(struct radeon_device *rdev, struct r100_cs_track *track
 	for (i = 0; i < track->num_arrays; i++) {
 		track->arrays[i].robj = NULL;
 		track->arrays[i].esize = 0x7F;
-		track->arrays[i].offset = 0;
 	}
 	for (i = 0; i < track->num_texture; i++) {
 		track->textures[i].compress_format = R100_TRACK_COMP_NONE;
