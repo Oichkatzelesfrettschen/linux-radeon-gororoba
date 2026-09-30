@@ -186,7 +186,7 @@ int radeon_ib_schedule(struct radeon_device *rdev, struct radeon_ib *ib,
 
 /*
  * A non-VM IB is one contiguous ring_tmp_bo suballocation, and semaphores and
- * every in-flight IB share that pool until their fences signal.  RS400/RS480
+ * all in-flight IBs share that pool until their fences signal.  RS400/RS480
  * take a 4 MiB pool with a 2 MiB per-IB ceiling, so one IB can exceed 1 MiB
  * while half the pool stays free for semaphores and concurrent clients;
  * CP_IB_BUFSZ.IB_BUFSZ (bits 22:0) counts up to 0x7fffff dwords.  Every other
