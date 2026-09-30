@@ -83,6 +83,8 @@ jobs:
     needs: history-plan
     if: needs.history-plan.outputs.matrix != '[]'
     runs-on: ubuntu-latest
+    container:
+      image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -90,6 +92,16 @@ jobs:
       matrix:
         reconstruction_id: ${{ fromJSON(needs.history-plan.outputs.matrix) }}
     steps:
+      # The container carries pacman and the CachyOS repositories, so the
+      # toolchain and both kernel header trees come from the distribution the
+      # module is built for. Installing before the checkouts puts git, python,
+      # and ssh on PATH for them.
+      - name: Install the toolchain and kernel headers
+        run: |
+          pacman -Sy --noconfirm --needed \
+            base-devel git python openssh clang lld llvm bc rsync curl pahole \
+            linux-cachyos-lts-headers linux-cachyos-headers
+
       - name: Check out trusted control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -133,22 +145,54 @@ jobs:
           [ "$packaging_path" = "$GITHUB_WORKSPACE/packaging" ] || exit 1
           rm -rf -- "$packaging_path"
 
+      # The checkouts are owned by a different uid than the container's root,
+      # and the checker reads the subject repository through git.
+      - name: Trust the checkouts inside the container
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/control"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/subject"
+
+      # Each header package owns one build tree, located through the package
+      # file list. Pacman repositories carry only current versions, so the
+      # exact package pins under ci/kernel-build-roots cannot be satisfied
+      # here; provenance comes from the image digest, pacman's signature check,
+      # and the resolved release, compiler, and manifest recorded in the job
+      # summary. The 6.18 lane is the LTS headers and the 7.1 lane is the
+      # mainline CachyOS headers, whose release the job summary records
+      # because the package tracks the current mainline kernel.
+      - name: Resolve and attest the kernel build roots
+        run: |
+          set -eu
+          resolve() {
+            pacman -Qlq "$1" | sed -n 's|^\(/usr/lib/modules/[^/]*/build\)/$|\1|p' | head -1
+          }
+          root_6_18=$(resolve linux-cachyos-lts-headers)
+          root_7_1=$(resolve linux-cachyos-headers)
+          [ -d "$root_6_18" ] && [ -d "$root_7_1" ] || {
+            echo "kernel build root is not installed" >&2; exit 1; }
+          clang_version=$(clang --version | sed -n '1s/.*version //p')
+          lld_version=$(ld.lld --version | awk 'NR == 1 { print $2 }')
+          {
+            printf '### history-build %s resolved inputs\n\n' "${{ matrix.reconstruction_id }}"
+            printf '| field | value |\n| --- | --- |\n'
+            printf '| clang | `%s` |\n' "$clang_version"
+            printf '| ld.lld | `%s` |\n' "$lld_version"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for lane in 6_18 7_1; do
+            eval "root=\$root_$lane"
+            release=$(basename "$(dirname "$root")")
+            python3 control/scripts/check_kernel_build_root.py \
+              --root "$root" \
+              --emit-manifest "$RUNNER_TEMP/kernel-build-root-$lane.manifest.tsv"
+            printf '| kernel release %s | `%s` |\n' "$lane" "$release" >> "$GITHUB_STEP_SUMMARY"
+          done
+          printf 'ROOT_6_18=%s\nROOT_7_1=%s\n' "$root_6_18" "$root_7_1" >> "$GITHUB_ENV"
+
       - name: Prepare immutable log path
         run: mkdir -p "$RUNNER_TEMP/logs/${{ matrix.reconstruction_id }}"
 
       - name: Build exact reconstruction prefix
-        env:
-          ROOT_6_18: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_618 }}
-          ROOT_7_1: ${{ vars.RADEON_MODULE_KERNEL_BUILD_ROOT_71 }}
         run: |
-          [ -n "$ROOT_6_18" ] || {
-            echo "RADEON_MODULE_KERNEL_BUILD_ROOT_618 is unset" >&2
-            exit 1
-          }
-          [ -n "$ROOT_7_1" ] || {
-            echo "RADEON_MODULE_KERNEL_BUILD_ROOT_71 is unset" >&2
-            exit 1
-          }
           python3 control/scripts/check_reconstruction_history.py \
             --repository subject \
             --control-root control \
