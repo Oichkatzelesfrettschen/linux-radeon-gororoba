@@ -51,9 +51,8 @@ jobs:
 
   # Resolve whether a pull request changes anything the module-build jobs must
   # recompile. A Markdown-only change is documentation and skips those jobs;
-  # every other path builds. module-build-6-18 and module-build-7-1 are
-  # required ruleset contexts, and a required job skipped by a job-level
-  # condition is treated as passing, so a documentation change still merges.
+  # every other path builds. A required job skipped by a job-level condition
+  # is treated as passing, so a documentation change still merges.
   # The dependent jobs read this output fail-closed: a failed or empty
   # classification builds rather than silencing the gate.
   changes:
@@ -181,105 +180,60 @@ jobs:
       - name: Source equivalence attestation is proven
         run: python3 scripts/check_source_equivalence_attestation.py
 
-  module-build-6-18:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
+  # Each lane is one CachyOS headers package. The release a lane builds against
+  # is whatever the pinned image's repositories serve on the day, so this job
+  # resolves it once, and the build jobs declare it in their names and assert
+  # that the packages they install match.
+  kernel-lanes:
     runs-on: ubuntu-latest
     container:
       image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
-    timeout-minutes: 45
+    timeout-minutes: 10
+    outputs:
+      mainline: ${{ steps.resolve.outputs.mainline }}
+      lts: ${{ steps.resolve.outputs.lts }}
     steps:
-      # The container carries pacman and the CachyOS repositories, so the
-      # toolchain and the kernel headers come from the distribution that the
-      # module is built for rather than from a cache on one particular host.
-      # Installing before the checkout puts git and python on PATH for it.
-      - name: Install the toolchain and kernel headers
-        run: |
-          pacman -Sy --noconfirm --needed \
-            base-devel git python clang lld llvm bc rsync curl pahole linux-cachyos-lts-headers
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          clean: true
-
-      # The checkout is owned by a different uid than the container's root, and
-      # the build reads the repository through git.
-      - name: Trust the checkout inside the container
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      # The pinned declarations under ci/kernel-build-roots name package files
-      # from a host cache, and pacman repositories carry only current versions,
-      # so an exact pin cannot be satisfied here. Provenance comes instead from
-      # the image digest above, pacman's own signature check on install, and a
-      # manifest emitted from what actually got installed, recorded in the job
-      # summary so the build is attributable to an exact kernel and compiler.
-      - name: Resolve and attest the kernel build root
+      - name: Resolve the header package versions
+        id: resolve
         run: |
           set -eu
-          root=$(ls -d /usr/lib/modules/*/build | head -1)
-          [ -d "$root" ] || { echo "no kernel build root installed" >&2; exit 1; }
-          release=$(basename "$(dirname "$root")")
-          clang_version=$(clang --version | sed -n '1s/.*version //p')
-          lld_version=$(ld.lld --version | awk 'NR == 1 { print $2 }')
-          python3 scripts/check_kernel_build_root.py \
-            --root "$root" \
-            --emit-manifest "$RUNNER_TEMP/kernel-build-root.manifest.tsv"
+          pacman -Sy --noconfirm
+          version() {
+            pacman -Si "$1" | sed -n 's/^Version[[:space:]]*:[[:space:]]*//p' | head -1
+          }
+          mainline=$(version linux-cachyos-headers)
+          lts=$(version linux-cachyos-lts-headers)
+          [ -n "$mainline" ] && [ -n "$lts" ] || {
+            echo "a headers package version did not resolve" >&2; exit 1; }
+          printf 'mainline=%s\nlts=%s\n' "$mainline" "$lts" >> "$GITHUB_OUTPUT"
           {
-            printf '### module-build-6-18 resolved inputs\n\n'
-            printf '| field | value |\n| --- | --- |\n'
-            printf '| kernel release | `%s` |\n' "$release"
-            printf '| clang | `%s` |\n' "$clang_version"
-            printf '| ld.lld | `%s` |\n' "$lld_version"
-            printf '| manifest rows | `%s` |\n' \
-              "$(wc -l < "$RUNNER_TEMP/kernel-build-root.manifest.tsv")"
+            printf '### kernel lanes\n\n| lane | package | version |\n| --- | --- | --- |\n'
+            printf '| mainline | `linux-cachyos-headers` | `%s` |\n' "$mainline"
+            printf '| lts | `linux-cachyos-lts-headers` | `%s` |\n' "$lts"
           } >> "$GITHUB_STEP_SUMMARY"
-          printf 'KERNEL_BUILD_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
-      # with_build_slot.sh serialized builds against a shared workstation. Each
-      # container job has the runner to itself, so the slot is not taken here.
-      # The kernel's own prepare target warns when the installed pahole is not
-      # the one the kernel was built with, and the gate's calibration asserts
-      # that a toolchain provenance warning fails the build. The repositories
-      # carry only the current pahole, so the matching version comes from the
-      # Arch archive, derived from CONFIG_PAHOLE_VERSION rather than pinned to
-      # a literal that goes stale the next time the kernel is rebuilt.
-      - name: Match pahole to the kernel that will be built against
-        run: |
-          set -eu
-          have=$(pahole --version 2>/dev/null | sed 's/^v//' || echo none)
-          want_code=$(sed -n 's/^CONFIG_PAHOLE_VERSION=//p' \
-            "$KERNEL_BUILD_ROOT/.config" | head -1)
-          [ -n "$want_code" ] || { echo "kernel declares no pahole version" >&2; exit 1; }
-          want="$((want_code / 100)).$((want_code % 100))"
-          echo "kernel wants pahole $want, image carries $have"
-          [ "$have" = "$want" ] && exit 0
-          for rel in 1 2 3; do
-            url="https://archive.archlinux.org/packages/p/pahole/pahole-1%3A$want-$rel-x86_64.pkg.tar.zst"
-            if curl -sLf -o "$RUNNER_TEMP/pahole.pkg.tar.zst" "$url"; then
-              pacman -U --noconfirm "$RUNNER_TEMP/pahole.pkg.tar.zst"
-              break
-            fi
-          done
-          [ "$(pahole --version | sed 's/^v//')" = "$want" ] || {
-            echo "could not obtain pahole $want" >&2; exit 1; }
-
-      - name: radeon.ko builds from the tracked subtree
-        run: |
-          set -eu
-          timeout 300 sh scripts/build_radeon_module.sh --self-test
-          for profile in --prod --observe-dev --probe-dev --mutate-dev
-          do
-            timeout 1800 sh scripts/build_radeon_module.sh \
-              "$profile" --kernel-build-root "$KERNEL_BUILD_ROOT"
-          done
-  module-build-7-1:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
+  module-build:
+    name: module-build (${{ matrix.package }} ${{ needs.kernel-lanes.outputs[matrix.lane] }})
+    needs: [changes, kernel-lanes]
+    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' && needs.kernel-lanes.result == 'success' }}
     runs-on: ubuntu-latest
     container:
       image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: mainline
+            package: linux-cachyos
+            headers: linux-cachyos-headers
+          - lane: lts
+            package: linux-cachyos-lts
+            headers: linux-cachyos-lts-headers
+    env:
+      LANE_PACKAGE: ${{ matrix.package }}
+      HEADERS_PACKAGE: ${{ matrix.headers }}
+      DECLARED_VERSION: ${{ needs.kernel-lanes.outputs[matrix.lane] }}
     steps:
       # The container carries pacman and the CachyOS repositories, so the
       # toolchain and the kernel headers come from the distribution that the
@@ -288,7 +242,17 @@ jobs:
       - name: Install the toolchain and kernel headers
         run: |
           pacman -Sy --noconfirm --needed \
-            base-devel git python clang lld llvm bc rsync curl pahole linux-cachyos-headers
+            base-devel git python clang lld llvm bc rsync curl pahole "$HEADERS_PACKAGE"
+
+      # A mirror update between the lane job and this job moves the package,
+      # and the job name declares the release the lane job resolved.
+      - name: Assert the installed headers match the declared release
+        run: |
+          set -eu
+          installed=$(pacman -Q "$HEADERS_PACKAGE" | awk '{print $2}')
+          [ "$installed" = "$DECLARED_VERSION" ] || {
+            echo "$HEADERS_PACKAGE is $installed, the lane declares $DECLARED_VERSION" >&2
+            exit 1; }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -309,7 +273,8 @@ jobs:
       - name: Resolve and attest the kernel build root
         run: |
           set -eu
-          root=$(ls -d /usr/lib/modules/*/build | head -1)
+          root=$(pacman -Qlq "$HEADERS_PACKAGE" \
+            | sed -n 's|^\(/usr/lib/modules/[^/]*/build\)/$|\1|p' | head -1)
           [ -d "$root" ] || { echo "no kernel build root installed" >&2; exit 1; }
           release=$(basename "$(dirname "$root")")
           clang_version=$(clang --version | sed -n '1s/.*version //p')
@@ -318,8 +283,10 @@ jobs:
             --root "$root" \
             --emit-manifest "$RUNNER_TEMP/kernel-build-root.manifest.tsv"
           {
-            printf '### module-build-7-1 resolved inputs\n\n'
+            printf '### module-build %s %s resolved inputs\n\n' \
+              "$LANE_PACKAGE" "$DECLARED_VERSION"
             printf '| field | value |\n| --- | --- |\n'
+            printf '| headers package | `%s` |\n' "$HEADERS_PACKAGE"
             printf '| kernel release | `%s` |\n' "$release"
             printf '| clang | `%s` |\n' "$clang_version"
             printf '| ld.lld | `%s` |\n' "$lld_version"
