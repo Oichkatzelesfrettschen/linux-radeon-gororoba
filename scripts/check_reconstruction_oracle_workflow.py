@@ -92,10 +92,11 @@ def validate(workflow: str) -> None:
     if "needs:" in plan:
         raise WorkflowError("history-plan must not depend on an oracle transport job")
     build = job_block(workflow, "history-build")
-    require_once(build, "needs: history-plan", "history-build job")
+    require_once(build, "needs: [history-plan, kernel-lanes]", "history-build job")
     require_once(workflow, "Upload immutable commit logs", "workflow")
     check_materialization_job(workflow, "history-plan")
     check_materialization_job(workflow, "history-build")
+    check_materialization_job(workflow, "history-completeness")
 
 
 def self_test(workflow: str) -> int:
@@ -112,7 +113,9 @@ def self_test(workflow: str) -> int:
                 "ref: unpinned-packaging-input",
                 1,
             ),
-            workflow.replace("needs: history-plan", "needs: trusted-oracle", 1),
+            workflow.replace(
+                "needs: [history-plan, kernel-lanes]", "needs: trusted-oracle", 1
+            ),
             workflow.replace(
                 "Upload immutable commit logs",
                 "Upload sanitized migration input",

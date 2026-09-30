@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       matrix: ${{ steps.history.outputs.matrix }}
+      prepared: ${{ steps.history.outputs.prepared }}
     steps:
       - name: Check out trusted control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -62,13 +63,12 @@ jobs:
       - name: Calibrate trusted history checker
         run: python3 control/scripts/check_reconstruction_history.py --self-test
 
+      # Preparation validates every commit and publishes the build matrix.
+      # The union-merge completeness rule runs in history-completeness, so a
+      # failing rule reports on its own check and leaves the build running.
       - name: Validate range and emit build matrix
         id: history
         run: |
-          set --
-          if [ "${{ github.event.pull_request.draft }}" = "false" ]; then
-            set -- --require-complete
-          fi
           python3 control/scripts/check_reconstruction_history.py \
             --repository subject \
             --control-root control \
@@ -76,15 +76,121 @@ jobs:
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
             --prepare \
-            --github-output "$GITHUB_OUTPUT" \
-            "$@"
+            --github-output "$GITHUB_OUTPUT"
 
-  history-build:
-    needs: history-plan
-    if: needs.history-plan.outputs.matrix != '[]'
+  # A ready pull request must also satisfy the completeness rule: the exact-base
+  # union merge head, or the full approved phase sequence. Draft pull requests
+  # skip it.
+  history-completeness:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Check out exact subject head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Check out pinned packaging input
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Oichkatzelesfrettschen/radeon-custom
+          ref: 210e2b06c0266e316f08eb0b2b3e9832884c43de
+          path: packaging
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+          ssh-key: ${{ secrets.RADEON_CUSTOM_READ_DEPLOY_KEY }}
+
+      - name: Materialize hash-verified migration input
+        run: |
+          python3 control/scripts/materialize_migration_input.py \
+            --control-root control \
+            --packaging-root packaging \
+            --output "$RUNNER_TEMP/reconstruction-oracle"
+
+      - name: Discard private-repository checkout
+        if: always()
+        run: |
+          packaging_path="$GITHUB_WORKSPACE/packaging"
+          [ "$packaging_path" = "$GITHUB_WORKSPACE/packaging" ] || exit 1
+          rm -rf -- "$packaging_path"
+
+      - name: Calibrate trusted history checker
+        run: python3 control/scripts/check_reconstruction_history.py --self-test
+
+      - name: Enforce range completeness
+        run: |
+          python3 control/scripts/check_reconstruction_history.py \
+            --repository subject \
+            --control-root control \
+            --oracle-root "$RUNNER_TEMP/reconstruction-oracle" \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --prepare \
+            --require-complete
+
+  # Each lane is one CachyOS headers package. The release a lane builds against
+  # is whatever the pinned image's repositories serve on the day, so this job
+  # resolves it once, and the build jobs declare it in their names and assert
+  # that the packages they install match.
+  kernel-lanes:
     runs-on: ubuntu-latest
     container:
       image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
+    timeout-minutes: 10
+    outputs:
+      mainline: ${{ steps.resolve.outputs.mainline }}
+      lts: ${{ steps.resolve.outputs.lts }}
+    steps:
+      - name: Resolve the header package versions
+        id: resolve
+        run: |
+          set -eu
+          pacman -Sy --noconfirm
+          version() {
+            pacman -Si "$1" | sed -n 's/^Version[[:space:]]*:[[:space:]]*//p' | head -1
+          }
+          mainline=$(version linux-cachyos-headers)
+          lts=$(version linux-cachyos-lts-headers)
+          [ -n "$mainline" ] && [ -n "$lts" ] || {
+            echo "a headers package version did not resolve" >&2; exit 1; }
+          printf 'mainline=%s\nlts=%s\n' "$mainline" "$lts" >> "$GITHUB_OUTPUT"
+          {
+            printf '### kernel lanes\n\n| lane | package | version |\n| --- | --- | --- |\n'
+            printf '| mainline | `linux-cachyos-headers` | `%s` |\n' "$mainline"
+            printf '| lts | `linux-cachyos-lts-headers` | `%s` |\n' "$lts"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The build depends on successful preparation only. always() keeps it running
+  # when history-completeness fails, and the prepared flag keeps it skipped when
+  # preparation itself failed.
+  history-build:
+    name: history-build (${{ matrix.reconstruction_id }}; linux-cachyos ${{ needs.kernel-lanes.outputs.mainline }}, linux-cachyos-lts ${{ needs.kernel-lanes.outputs.lts }})
+    needs: [history-plan, kernel-lanes]
+    if: >-
+      ${{ always() && needs.history-plan.outputs.prepared == 'true'
+      && needs.history-plan.outputs.matrix != '[]'
+      && needs.kernel-lanes.result == 'success' }}
+    runs-on: ubuntu-latest
+    container:
+      image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
+    env:
+      DECLARED_MAINLINE: ${{ needs.kernel-lanes.outputs.mainline }}
+      DECLARED_LTS: ${{ needs.kernel-lanes.outputs.lts }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -101,6 +207,23 @@ jobs:
           pacman -Sy --noconfirm --needed \
             base-devel git python openssh clang lld llvm bc rsync curl pahole \
             linux-cachyos-lts-headers linux-cachyos-headers
+
+      # The job name declares the releases the lane job resolved; a mirror
+      # update between the two jobs moves a package and fails here.
+      - name: Assert the installed headers match the declared releases
+        run: |
+          set -eu
+          for pair in \
+            "linux-cachyos-headers:$DECLARED_MAINLINE" \
+            "linux-cachyos-lts-headers:$DECLARED_LTS"
+          do
+            package=${pair%%:*}
+            declared=${pair#*:}
+            installed=$(pacman -Q "$package" | awk '{print $2}')
+            [ "$installed" = "$declared" ] || {
+              echo "$package is $installed, the lane declares $declared" >&2
+              exit 1; }
+          done
 
       - name: Check out trusted control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -157,18 +280,17 @@ jobs:
       # exact package pins under ci/kernel-build-roots cannot be satisfied
       # here; provenance comes from the image digest, pacman's signature check,
       # and the resolved release, compiler, and manifest recorded in the job
-      # summary. The 6.18 lane is the LTS headers and the 7.1 lane is the
-      # mainline CachyOS headers, whose release the job summary records
-      # because the package tracks the current mainline kernel.
+      # summary. The mainline lane is linux-cachyos-headers and the lts lane is
+      # linux-cachyos-lts-headers.
       - name: Resolve and attest the kernel build roots
         run: |
           set -eu
           resolve() {
             pacman -Qlq "$1" | sed -n 's|^\(/usr/lib/modules/[^/]*/build\)/$|\1|p' | head -1
           }
-          root_6_18=$(resolve linux-cachyos-lts-headers)
-          root_7_1=$(resolve linux-cachyos-headers)
-          [ -d "$root_6_18" ] && [ -d "$root_7_1" ] || {
+          root_lts=$(resolve linux-cachyos-lts-headers)
+          root_mainline=$(resolve linux-cachyos-headers)
+          [ -d "$root_lts" ] && [ -d "$root_mainline" ] || {
             echo "kernel build root is not installed" >&2; exit 1; }
           clang_version=$(clang --version | sed -n '1s/.*version //p')
           lld_version=$(ld.lld --version | awk 'NR == 1 { print $2 }')
@@ -178,19 +300,22 @@ jobs:
             printf '| clang | `%s` |\n' "$clang_version"
             printf '| ld.lld | `%s` |\n' "$lld_version"
           } >> "$GITHUB_STEP_SUMMARY"
-          for lane in 6_18 7_1; do
+          for lane in lts mainline; do
             eval "root=\$root_$lane"
             release=$(basename "$(dirname "$root")")
             python3 control/scripts/check_kernel_build_root.py \
               --root "$root" \
               --emit-manifest "$RUNNER_TEMP/kernel-build-root-$lane.manifest.tsv"
-            printf '| kernel release %s | `%s` |\n' "$lane" "$release" >> "$GITHUB_STEP_SUMMARY"
+            printf '| %s kernel release | `%s` |\n' "$lane" "$release" >> "$GITHUB_STEP_SUMMARY"
           done
-          printf 'ROOT_6_18=%s\nROOT_7_1=%s\n' "$root_6_18" "$root_7_1" >> "$GITHUB_ENV"
+          printf 'ROOT_LTS=%s\nROOT_MAINLINE=%s\n' "$root_lts" "$root_mainline" >> "$GITHUB_ENV"
 
       - name: Prepare immutable log path
         run: mkdir -p "$RUNNER_TEMP/logs/${{ matrix.reconstruction_id }}"
 
+      # The script's flag names predate the package naming and belong to the
+      # trusted control code; --root-6-18 takes the lts root and --root-7-1 the
+      # mainline root.
       - name: Build exact reconstruction prefix
         run: |
           python3 control/scripts/check_reconstruction_history.py \
@@ -200,8 +325,8 @@ jobs:
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
             --reconstruction-id "${{ matrix.reconstruction_id }}" \
-            --root-6-18 "$ROOT_6_18" \
-            --root-7-1 "$ROOT_7_1" \
+            --root-6-18 "$ROOT_LTS" \
+            --root-7-1 "$ROOT_MAINLINE" \
             --log-root "$RUNNER_TEMP/logs/${{ matrix.reconstruction_id }}" \
             --build-timeout-seconds 900
 
