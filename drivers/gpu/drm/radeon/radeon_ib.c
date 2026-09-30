@@ -184,6 +184,35 @@ int radeon_ib_schedule(struct radeon_device *rdev, struct radeon_ib *ib,
 	return 0;
 }
 
+/*
+ * A non-VM IB is one contiguous ring_tmp_bo suballocation, and semaphores and
+ * every in-flight IB share that pool until their fences signal.  RS400/RS480
+ * take a 4 MiB pool with a 2 MiB per-IB ceiling, so one IB can exceed 1 MiB
+ * while half the pool stays free for semaphores and concurrent clients;
+ * CP_IB_BUFSZ.IB_BUFSZ (bits 22:0) counts up to 0x7fffff dwords.  Every other
+ * family keeps the 1 MiB pool with the pool as its ceiling.
+ */
+static unsigned radeon_ib_pool_size(struct radeon_device *rdev)
+{
+	if (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)
+		return RADEON_IB_POOL_BYTES_RS400;
+	return RADEON_IB_POOL_SIZE * 64 * 1024;
+}
+
+/**
+ * radeon_ib_max_dw - largest IB one submission may carry
+ *
+ * @rdev: radeon_device pointer
+ *
+ * Returns the per-submission IB ceiling in dwords.
+ */
+unsigned radeon_ib_max_dw(struct radeon_device *rdev)
+{
+	if (rdev->family == CHIP_RS400 || rdev->family == CHIP_RS480)
+		return RADEON_IB_MAX_BYTES_RS400 / 4;
+	return radeon_ib_pool_size(rdev) / 4;
+}
+
 /**
  * radeon_ib_pool_init - Init the IB (Indirect Buffer) pool
  *
@@ -203,7 +232,7 @@ int radeon_ib_pool_init(struct radeon_device *rdev)
 
 	if (rdev->family >= CHIP_BONAIRE) {
 		r = radeon_sa_bo_manager_init(rdev, &rdev->ring_tmp_bo,
-					      RADEON_IB_POOL_SIZE*64*1024, 256,
+					      radeon_ib_pool_size(rdev), 256,
 					      RADEON_GEM_DOMAIN_GTT,
 					      RADEON_GEM_GTT_WC);
 	} else {
@@ -211,7 +240,7 @@ int radeon_ib_pool_init(struct radeon_device *rdev)
 		 * to the command stream checking
 		 */
 		r = radeon_sa_bo_manager_init(rdev, &rdev->ring_tmp_bo,
-					      RADEON_IB_POOL_SIZE*64*1024, 256,
+					      radeon_ib_pool_size(rdev), 256,
 					      RADEON_GEM_DOMAIN_GTT, 0);
 	}
 	if (r) {

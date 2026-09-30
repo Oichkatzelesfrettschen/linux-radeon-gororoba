@@ -354,6 +354,23 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 									p->nchunks,
 									user_chunk.chunk_id,
 									user_chunk.length_dw);
+			/*
+			 * radeon_cs_ib_fill sizes the IB as length_dw * 4 and
+			 * the CS parser walks ib.ptr to length_dw, so the
+			 * ceiling applies before that multiply and before the
+			 * AGP kdata copy.
+			 */
+			if (p->rdev &&
+			    p->chunks[i].length_dw > radeon_ib_max_dw(p->rdev)) {
+				DRM_ERROR("cs IB too big: %u dwords, max %u\n",
+					  p->chunks[i].length_dw,
+					  radeon_ib_max_dw(p->rdev));
+				return radeon_rs480_cs_parser_init_fail(p, "ib_too_big",
+									-EINVAL, i,
+									p->nchunks,
+									user_chunk.chunk_id,
+									user_chunk.length_dw);
+			}
 		}
 		if (user_chunk.chunk_id == RADEON_CHUNK_ID_CONST_IB) {
 			p->chunk_const_ib = &p->chunks[i];

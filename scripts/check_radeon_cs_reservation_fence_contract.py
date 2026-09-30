@@ -29,7 +29,7 @@ EXPECTED_POLICY_SHA256 = (
 )
 CS_DIRECT_PREFIX_SHA256 = {
     "relocs": "bd4645062b4348cbecfb5a1353312a61f20f1e5909401bf2c9cac9717e652ead",
-    "parser_init": "3e13e4a348a49a3343eb3ba83499f57f9af4d135603a2f755ab0eba1c8cd6488",
+    "parser_init": "bc5892a0d5a8e3e3e280b636547e5479ffab9555ecd2d2d40f5a8766c38c4d81",
     "ioctl": "34d442fa506862b82b7d389cf62034e7c950f2c0dd51ea9d999cdeb1a4383839",
     "next_reloc": "bd02f061ab8376685f57aaaf9e108cc2ac1a67bbd90a27abb082442393caaa2e",
 }
