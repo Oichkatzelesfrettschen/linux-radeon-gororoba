@@ -287,6 +287,7 @@ def verify_post_tag_head(
     parents: list[str],
     trusted_base: str,
 ) -> None:
+    """Enforce the exact-base union merge shape of a ready post-tag head."""
     try:
         require_trusted_merge_parent(commit, parents, trusted_base)
     except HistoryError as exc:
@@ -514,6 +515,22 @@ def phase_order(
         raise HistoryError("ready range lacks the complete approved phase sequence")
 
 
+def enforce_post_tag_head(
+    commit: str,
+    parents: list[str],
+    trusted_base: str,
+    require_complete: bool,
+) -> None:
+    """Apply the union-merge head rule only when completeness is required."""
+    if require_complete:
+        verify_post_tag_head(commit, parents, trusted_base)
+
+
+# One matrix entry stands for the whole post-tag range: its head tree builds
+# against both kernel roots, because the range carries no per-commit plan rows.
+POST_TAG_ID = "post-tag"
+
+
 def prepare(
     repository: Path,
     control_root: Path,
@@ -550,10 +567,10 @@ def prepare(
             .decode("utf-8")
             .split()
         )
-        verify_post_tag_head(head, head_and_parents[1:], base)
+        enforce_post_tag_head(head, head_and_parents[1:], base, require_complete)
         verify_source_delta_contract(repository)
-        print("post-tag source range: no reconstruction matrix")
-        return []
+        print("post-tag source range: head builds as one matrix entry")
+        return [(POST_TAG_ID, head)]
 
     prepared: list[tuple[str, str]] = []
     commit_ids: list[str] = []
@@ -674,10 +691,13 @@ def build_one(
     if len(matches) != 1:
         raise HistoryError(f"range does not contain exactly one {commit_id}")
     commit = matches[0][1]
-    control = load_control(control_root)
-    plans = control["plans"]
-    assert isinstance(plans, dict)
-    plan = plans[commit_id]
+    post_tag = commit_id == POST_TAG_ID
+    plan: dict[str, object] = {}
+    if not post_tag:
+        control = load_control(control_root)
+        plans = control["plans"]
+        assert isinstance(plans, dict)
+        plan = plans[commit_id]
 
     log_root.mkdir(parents=True, exist_ok=True)
     runner_temp = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).resolve()
@@ -698,9 +718,10 @@ def build_one(
             .decode("utf-8")
             .strip()
         )
-        if actual != plan["expected_driver_tree"]:
+        if not post_tag and actual != plan["expected_driver_tree"]:
             raise HistoryError(f"{commit_id}: detached worktree tree differs")
-        verify_worktree_manifest(worktree, control_root, plan)
+        if not post_tag:
+            verify_worktree_manifest(worktree, control_root, plan)
         if commit_id in {"B14", "M24"}:
             legacy_count, target_count, compiler = verify_outputs(
                 worktree / "drivers/gpu/drm/radeon",
@@ -713,8 +734,8 @@ def build_one(
 
         lock_path = Path.home() / ".cache/gororoba-ci/radeon-build.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lanes = split_csv(plan["kernel_lanes"])
         roots = {"6.18": root_6_18, "7.1": root_7_1}
+        lanes = list(roots) if post_tag else split_csv(plan["kernel_lanes"])
         for lane in lanes:
             run_build(
                 worktree,
@@ -733,13 +754,15 @@ def build_one(
             git(repository, "worktree", "remove", "--force", str(worktree))
         if temporary.exists():
             shutil.rmtree(temporary)
-    print(f"{commit_id}: exact prefix and {plan['kernel_lanes']} builds pass")
+    built = ",".join(roots) if post_tag else plan["kernel_lanes"]
+    print(f"{commit_id}: exact prefix and {built} builds pass")
 
 
 def append_matrix(path: Path, prepared: list[tuple[str, str]]) -> None:
+    """Publish the build matrix; `prepared=true` marks a completed preparation."""
     matrix = json.dumps([commit_id for commit_id, _ in prepared], separators=(",", ":"))
     with path.open("a", encoding="utf-8") as output:
-        output.write(f"matrix={matrix}\n")
+        output.write(f"matrix={matrix}\nprepared=true\n")
 
 
 def self_test() -> int:
@@ -830,6 +853,23 @@ def self_test() -> int:
             union_rejections += 1
         else:
             raise HistoryError("union calibration accepted a one-parent head")
+
+        # Preparation admits a linear head; enforcement rejects it.
+        enforce_post_tag_head("head", ["linear-parent"], "base", False)
+        enforce_post_tag_head("head", ["feature", "base"], "base", True)
+        try:
+            enforce_post_tag_head("head", ["linear-parent"], "base", True)
+        except HistoryError:
+            union_rejections += 1
+        else:
+            raise HistoryError("enforcement accepted a one-parent head")
+        with tempfile.TemporaryDirectory() as scratch:
+            github_output = Path(scratch) / "output"
+            append_matrix(github_output, [(POST_TAG_ID, "head")])
+            if github_output.read_text(encoding="utf-8") != (
+                'matrix=["post-tag"]\nprepared=true\n'
+            ):
+                raise HistoryError("post-tag preparation output differs")
 
         verify_post_tag_paths(
             "commit",
