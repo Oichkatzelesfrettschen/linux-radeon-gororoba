@@ -134,6 +134,9 @@ extern int radeon_cik_support;
 #define RADEON_USEC_IB_TEST_TIMEOUT		1000000 /* 1s */
 /* RADEON_IB_POOL_SIZE must be a power of 2 */
 #define RADEON_IB_POOL_SIZE			16
+/* RS400/RS480 IB pool and per-submission IB ceiling, in bytes */
+#define RADEON_IB_POOL_BYTES_RS400		(4 << 20)
+#define RADEON_IB_MAX_BYTES_RS400		(2 << 20)
 #define RADEON_DEBUGFS_MAX_COMPONENTS		32
 #define RADEON_BIOS_NUM_SCRATCH			8
 
@@ -994,6 +997,7 @@ void radeon_ib_free(struct radeon_device *rdev, struct radeon_ib *ib);
 int radeon_ib_schedule(struct radeon_device *rdev, struct radeon_ib *ib,
 		       struct radeon_ib *const_ib, bool hdp_flush);
 int radeon_ib_pool_init(struct radeon_device *rdev);
+unsigned radeon_ib_max_dw(struct radeon_device *rdev);
 void radeon_ib_pool_fini(struct radeon_device *rdev);
 int radeon_ib_ring_tests(struct radeon_device *rdev);
 /* Ring access between begin & end cannot sleep */
