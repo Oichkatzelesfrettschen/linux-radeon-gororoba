@@ -120,7 +120,7 @@ jobs:
       - name: Upstream base declaration is complete
         run: |
           for k in repository tag tag_object commit path subtree_tree; do
-            grep -qE "^$k[[:space:]]*=" UPSTREAM_BASE.toml || {
+            grep -qE "^${k}[[:space:]]*=" UPSTREAM_BASE.toml || {
               echo "UPSTREAM_BASE.toml is missing $k" >&2; exit 1; }
           done
           # A tag name is mutable, so identity rests on the two object IDs.
@@ -137,7 +137,7 @@ jobs:
                    migration_manifest_sha256 generated_output_proof_sha256 \
                    base_delta_map_sha256 patch_transitions_sha256 \
                    mechanism_map_sha256 legacy_payload_manifest_sha256; do
-            grep -qE "^$k[[:space:]]*=" MIGRATION_INPUT.toml || {
+            grep -qE "^${k}[[:space:]]*=" MIGRATION_INPUT.toml || {
               echo "MIGRATION_INPUT.toml is missing $k" >&2; exit 1; }
           done
           grep -qE '^packaging_commit[[:space:]]*=[[:space:]]*"[0-9a-f]{40}"' MIGRATION_INPUT.toml || {
@@ -153,7 +153,7 @@ jobs:
           # The pin repeats the upstream identity so a reconstruction commit
           # is self-describing; the two declarations must agree.
           for k in commit subtree_tree; do
-            base=$(grep -m1 -E "^$k[[:space:]]*=" UPSTREAM_BASE.toml | grep -oE '[0-9a-f]{40}')
+            base=$(grep -m1 -E "^${k}[[:space:]]*=" UPSTREAM_BASE.toml | grep -oE '[0-9a-f]{40}')
             case "$k" in
               commit) pin=$(grep -E '^upstream_commit' MIGRATION_INPUT.toml | grep -oE '[0-9a-f]{40}') ;;
               subtree_tree) pin=$(grep -E '^upstream_subtree' MIGRATION_INPUT.toml | grep -oE '[0-9a-f]{40}') ;;
