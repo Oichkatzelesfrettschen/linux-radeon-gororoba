@@ -353,7 +353,7 @@ DEFINE_SHOW_ATTRIBUTE(rs400_debugfs_gart_page_table);
  *
  * Register selection policy: read-only status and identity registers only.
  * No command-processor, DMA, or power-management control registers.  The
- * list is pinned to the set empirically confirmed on RS482 (1002:5974)
+ * list is pinned to the set empirically confirmed on RS485M (1002:5974)
  * via radeontool on 6.18.26-1-cachyos-lts; SAFE_REGS.tsv in the DKMS
  * package is the canonical source of truth.
  */
@@ -3294,7 +3294,7 @@ DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_3d_read);
  * precondition on evidence rather than by relaxation.  The header
  * records the full SCLK_CNTL and SCLK_CNTL2 force observations as
  * separate flags, which classify the capture's scope without gating it.
- * On RS482 1002:5974 the BIOS leaves SCLK_CNTL at 0xfffffff9 with every
+ * On RS485M 1002:5974 the BIOS leaves SCLK_CNTL at 0xfffffff9 with every
  * FORCEON bit asserted at rest, so the gate is satisfied there before
  * the lease writes anything and adds no local assurance; it discriminates
  * on a device whose firmware gates 3D clocks dynamically.
@@ -4050,7 +4050,7 @@ DEFINE_SHOW_ATTRIBUTE(rs480_gated_read);
 /* PLL write-path discriminator.
  *
  * The VAP census lease writes the 3D force masks to SCLK_CNTL (PLL 0x0d) and
- * SCLK_CNTL2 (PLL 0x1e) and reads both back.  On RS482 (1002:5974) neither
+ * SCLK_CNTL2 (PLL 0x1e) and reads both back.  On RS485M (1002:5974) neither
  * readback proves the write landed: SCLK_CNTL reads 0xfffffff9 at rest, so the
  * lease reasserts bits the BIOS already holds set, and SCLK_CNTL2 reads
  * 0x00000000 before and after its force write.  Three mechanisms produce that
@@ -4145,7 +4145,7 @@ static void rs480_safe_regs_debugfs_init(struct radeon_device *rdev)
 		return;
 
 	/* CHIP_RS480 covers 1002:5954, 1002:5955, 1002:5974, and 1002:5975.
-	 * The curated register evidence covers RS482 (1002:5974).
+	 * The curated register evidence covers RS485M (1002:5974).
 	 */
 	if (rdev->family != CHIP_RS400 && rdev->family != CHIP_RS480)
 		return;
@@ -4372,7 +4372,7 @@ static int radeon_debugfs_rs480_mc_flush_set(void *data, u64 val)
 
 	radeon_ring_unlock_commit(rdev, ring, false);
 	radeon_device_unlock_hardware(rdev);
-	DRM_INFO("RS482 cache drain packet emitted on the CP ring.\n");
+	DRM_INFO("RS485M cache drain packet emitted on the CP ring.\n");
 	return 0;
 }
 /* simple_attr_open wires the "%llu\n" setter and nonseekable_open clears
