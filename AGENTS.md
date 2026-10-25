@@ -50,10 +50,10 @@ machine, so a `CHIP_RS480` guard executes on four device IDs while its evidence
 covers one.
 
 Three levels stay distinct in code and prose. `CHIP_RS480` names the family and
-is the correct subject of an `rdev->family` guard. `RS482 (1002:5974)` names the
-part every retained hardware claim binds to, reached through
-`rdev->pdev->device`. `RS485M` names the platform chipset from DMI and the
-`1002:5950` host bridge, and it stays out of GPU register and reset claims.
+is the correct subject of an `rdev->family` guard. `RS485M (1002:5974)` names the
+mobile target part every retained hardware claim binds to, reached through
+`rdev->pdev->device`, distinguished from desktop RS482 (`1002:5975`). `RS485M`
+also names the platform chipset from DMI and the `1002:5950` host bridge.
 
 `policy/rs4xx-guard-scope.tsv` records, for each fork-added guard, the mechanism,
 the current guard, the device IDs it executes on, the device IDs its evidence

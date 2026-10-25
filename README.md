@@ -215,10 +215,9 @@ reproduces what the legacy tree shipped.
 ## Identity terminology
 
 `CHIP_RS480` names the family constant and covers `1002:5954`, `1002:5955`,
-`1002:5974`, and `1002:5975`. `RS482 (1002:5974)` names the part every retained
-hardware claim binds to. `RS485M` names the platform chipset of the target
-machine, sourced from DMI and the `1002:5950` host bridge, and it stays out of
-GPU register and reset claims.
+`1002:5974`, and `1002:5975`. `RS485M (1002:5974)` names the mobile target part every retained
+hardware claim binds to, distinguished from desktop RS482 (`1002:5975`). `RS485M`
+also names the platform chipset of the target machine, sourced from DMI and the `1002:5950` host bridge.
 
 ## Hardware and memory path contracts
 
