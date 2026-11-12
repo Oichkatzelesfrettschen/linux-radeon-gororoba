@@ -15,7 +15,7 @@ repository. `CLAUDE.md` is a tracked repository-relative symbolic link to `AGENT
 - Keep secrets, hostnames, and absolute local paths out of tracked files, commits, and logs.
 - Commits and PRs carry no AI attribution trailer; `Co-authored-by:` names human co-authors only. A patch sent to another project follows that project's disclosure policy, which the owner decides per submission.
 - A hazardous path opens on the exact token its declaration names as armed; a selector whose zero or `-1` is meaningful takes a separate arming variable.
-- Run the Validation checks before pushing, and report an unrun check as `not run` with the reason.
+- Run the Validation checks before pushing, calibrate a new verdict script on a known-good and a known-bad input, and report an unrun check as `not run` with the reason.
 
 ## What this repository owns
 
@@ -58,25 +58,18 @@ rather than silently narrowed, because narrowing changes behavior.
 
 ## Comment vocabulary
 
-A source comment spends only vocabulary its reader already holds. The reader is
-a kernel maintainer arriving with this tree and nothing else, so a term that
-resolves through a project glossary names nothing and the mechanism replaces it.
+A source comment spends vocabulary its reader holds: the reader is a kernel
+maintainer arriving with this tree and nothing else. A symbol grepped from the
+tree carries its own definition (`gpu_parked`, `exclusive_lock`,
+`TTM_PL_VRAM`, `dma_resv`), and an established term of the field stays a term
+(`critical section`, `buffer object`, `fence`, `page table entry`).
 
-Three sources supply admissible terms. A symbol grepped from the tree carries
-its own definition: `gpu_parked`, `exclusive_lock`, `TTM_PL_VRAM`, `dma_resv`.
-An established term of art in the surrounding field stays a term: `critical
-section`, `buffer object`, `fence`, `page table entry`. Plain mechanism English
-carries the rest.
-
-Two constructions fail. An analytical frame borrowed from another field prices
-in that field's vocabulary, so `absorbing state` becomes the mechanism it
-describes: reset recovery has failed and the device stays parked until reboot.
-A compression coined for this project reads as standard and is not, so
-`imported BO` becomes `a buffer object created for a dma-buf import` and `new
-object lifetime` becomes `allocates a buffer object`.
-
-Those frames keep their home in findings, commit bodies, and
-`policy/`-adjacent prose that defines them. This rule governs source comments,
+A frame borrowed from another field or a compression coined for this project
+gives way to its mechanism: `absorbing state` becomes reset recovery has failed
+and the device stays parked until reboot, `imported BO` becomes a buffer object
+created for a dma-buf import, and `new object lifetime` becomes allocates a
+buffer object. Those frames keep their home in findings, commit bodies, and
+`policy/`-adjacent prose that defines them; this rule governs source comments,
 `policy/` table values, and identifiers.
 
 ## History shape
@@ -119,8 +112,6 @@ asked to both reproduce and change a legacy fact.
 - Two kernel targets are required: the 6.18 LTS line and current mainline.
   The version-compat class is itself a source delta, so a change touching it
   builds against both.
-- A verdict-producing script calibrates on known-good and known-bad inputs
-  before it is trusted.
 - A change touching `radeon_gem.c`, `radeon_prime.c`, or the park path in
   `radeon_device.c` runs `scripts/check_parked_admission_guards.py`, and
   `--selftest` alongside it. A compile test cannot see a parked refusal break:
