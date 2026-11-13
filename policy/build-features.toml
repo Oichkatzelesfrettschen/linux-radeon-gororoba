@@ -1230,11 +1230,11 @@ source_mechanisms = ["M10.first-read"]
 dependencies = ["rs4xx-debugfs", "hazard-readers"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and hardware transaction admission"
+operation_gate = "compiled probe profile, runtime probe profile, exact index-selector arm, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
-arming_model = "explicit-index-selection"
+arming_model = "exact-boolean-token-and-index-selection"
 privilege = "debugfs-root"
 execution_scope = "scope_refs"
 evidence_scope = "scope_refs"
@@ -1245,11 +1245,11 @@ side_effect_class = "direct-mmio-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "one selected first read from a finite table"
 locking = "device hardware transaction across the selected MMIO read"
-error_contract = "invalid index or failed lifecycle gate returns before MMIO"
+error_contract = "invalid index or failed lifecycle gate returns before MMIO; an index-selector arm other than exactly 1 returns before MMIO or control writes"
 tests = [
   "normal: selected index performs one first read",
   "boundary: final index emits one bounded row",
-  "failure: negative sentinel returns before MMIO",
+  "failure: negative sentinel, and index zero with the index-selector arm unset, 0, 2, or -1, return before MMIO",
   "adversarial: repeated file reads cannot bypass one-selection bounds",
 ]
 production_promotion_condition = "target-silicon evidence removes the first-read hazard"
@@ -1272,11 +1272,11 @@ source_mechanisms = ["M09"]
 dependencies = ["rs4xx-debugfs", "hazard-readers"]
 evidence_dependencies = []
 runtime_profile = "probe-dev"
-operation_gate = "compiled probe profile, runtime probe profile, selected index, supported family, and hardware transaction admission"
+operation_gate = "compiled probe profile, runtime probe profile, exact index-selector arm, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
-arming_model = "explicit-index-selection"
+arming_model = "exact-boolean-token-and-index-selection"
 privilege = "debugfs-root"
 execution_scope = "scope_refs"
 evidence_scope = "scope_refs"
@@ -1287,11 +1287,11 @@ side_effect_class = "direct-mmio-read"
 interface_class = "raw-hardware-reader"
 resource_bounds = "one selected direct read from each finite probe table"
 locking = "device hardware transaction across the selected MMIO read"
-error_contract = "invalid index or failed lifecycle gate returns before MMIO"
+error_contract = "invalid index or failed lifecycle gate returns before MMIO; an index-selector arm other than exactly 1 returns before MMIO or control writes"
 tests = [
   "normal: selected probe emits one bounded row",
   "boundary: final table index performs one read",
-  "failure: negative sentinel returns before MMIO",
+  "failure: negative sentinel, and index zero with the index-selector arm unset, 0, 2, or -1, return before MMIO",
   "adversarial: index zero is treated as armed rather than as a default-off value",
 ]
 production_promotion_condition = "selected register graduates to the safe observation list"
@@ -1311,14 +1311,14 @@ source_objects = [
   "drivers/gpu/drm/radeon/radeon_rs4xx_dev.c",
 ]
 source_mechanisms = ["M11.force-clock"]
-dependencies = ["rs4xx-debugfs"]
+dependencies = ["rs4xx-debugfs", "hazard-readers"]
 evidence_dependencies = []
 runtime_profile = "mutate-dev"
-operation_gate = "compiled mutate profile, runtime mutate profile, selected index, supported family, and hardware transaction admission"
+operation_gate = "compiled mutate profile, runtime mutate profile, exact index-selector arm, selected index, supported family, and hardware transaction admission"
 availability_default = "absent-in-prod"
 runtime_profile_default = "off"
 operation_arm_default = "unarmed"
-arming_model = "explicit-index-selection"
+arming_model = "exact-boolean-token-and-index-selection"
 privilege = "debugfs-root"
 execution_scope = "scope_refs"
 evidence_scope = "scope_refs"
@@ -1329,11 +1329,11 @@ side_effect_class = "hardware-control-write"
 interface_class = "raw-hardware-writer"
 resource_bounds = "one selected read bracketed by bounded SCLK save, force, and restore"
 locking = "device hardware transaction and per-device clock-control lock"
-error_contract = "failed gate returns before control writes and every entered path restores SCLK"
+error_contract = "failed gate returns before control writes and every entered path restores SCLK; an index-selector arm other than exactly 1 returns before control writes"
 tests = [
   "normal: selected index saves, forces, reads, and restores once",
   "boundary: final index stays within the finite table",
-  "failure: closed hardware admission returns before SCLK control",
+  "failure: closed hardware admission, and index zero with the index-selector arm unset, 0, 2, or -1, return before SCLK control",
   "adversarial: self-restoring writes remain mutation",
 ]
 production_promotion_condition = "no production promotion for force-clock register probes"

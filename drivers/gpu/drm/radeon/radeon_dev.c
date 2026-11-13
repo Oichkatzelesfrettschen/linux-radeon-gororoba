@@ -145,6 +145,7 @@ int radeon_rs480_frontier_index = -1;
 int radeon_rs480_vertex_index = -1;
 int radeon_rs480_hazard_index = -1;
 int radeon_rs480_hazard_readers_armed;
+int radeon_rs480_index_selectors_armed;
 int radeon_rs480_cp_status_arm;
 int radeon_rs480_rb3d_cache_arm;
 int radeon_rs480_zb_cache_arm;
@@ -352,21 +353,21 @@ module_param_named(rs480_r400_us_cs, radeon_rs480_r400_us_cs, int, 0644);
 #if RADEON_PROBE_DEV
 MODULE_PARM_DESC(rs480_frontier_index,
 	"RS480 attended frontier probe: residual frontier exhausted; no valid "
-	"index performs an MMIO read.  -1 (default) remains disarmed."
+	"index performs an MMIO read.  -1 (default) remains disarmed.  The access also needs rs480_index_selectors_armed=1."
 );
 module_param_named(rs480_frontier_index, radeon_rs480_frontier_index, int, 0644);
 
 MODULE_PARM_DESC(rs480_vertex_index,
 	"RS480 attended vertex-engine probe: hold the VAP_PVS/SE_TCL engine clocked "
 	"with a continuous HB-TCL draw loop, then set N (0..6) to perform one RREG32.  "
-	"-1 (default) remains disarmed.");
+	"-1 (default) remains disarmed.  The access also needs rs480_index_selectors_armed=1.");
 module_param_named(rs480_vertex_index, radeon_rs480_vertex_index, int, 0644);
 
 MODULE_PARM_DESC(rs480_hazard_index,
 	"RS480 hazard-tier first-observation read: index (0..21) that "
 	"radeon_rs480_hazard_read reads per open.  The list is read-safe "
 	"name-pattern false-positives (BIOS/GUI scratch, SE viewport, "
-	"SW_SEMAPHORE, WAIT_UNTIL), NOT wedge hazards.  -1 (default) disarmed."
+	"SW_SEMAPHORE, WAIT_UNTIL), NOT wedge hazards.  -1 (default) disarmed.  The access also needs rs480_index_selectors_armed=1."
 );
 module_param_named(rs480_hazard_index, radeon_rs480_hazard_index, int, 0644);
 #endif
@@ -375,7 +376,7 @@ module_param_named(rs480_hazard_index, radeon_rs480_hazard_index, int, 0644);
 MODULE_PARM_DESC(rs480_force_clock_index,
 	"RS480 per-domain force-clock-then-read: index (0..4) into the VIP/CAP "
 	"force-clock table read per open; the domain SCLK_CNTL FORCE bit is set, "
-	"the register read, and SCLK_CNTL restored.  -1 (default) disarmed.");
+	"the register read, and SCLK_CNTL restored.  -1 (default) disarmed.  The access also needs rs480_index_selectors_armed=1.");
 module_param_named(rs480_force_clock_index, radeon_rs480_force_clock_index, int, 0644);
 
 MODULE_PARM_DESC(rs480_force_clock_3d_index,
@@ -384,7 +385,7 @@ MODULE_PARM_DESC(rs480_force_clock_3d_index,
 	"in SCLK_CNTL (PLL 0x0d) and TCL/CBA/GA in SCLK_CNTL2 (PLL 0x1e) -- reads "
 	"the register, then restores both PLL registers.  The 3D engine is the "
 	"block class whose VAP write wedged the reset-less K8; a stalled read needs "
-	"a physical power cycle.  -1 (default) disarmed.");
+	"a physical power cycle.  -1 (default) disarmed.  The access also needs rs480_index_selectors_armed=1.");
 module_param_named(rs480_force_clock_3d_index, radeon_rs480_force_clock_3d_index, int, 0644);
 
 MODULE_PARM_DESC(rs480_vap_census_arm,
@@ -423,14 +424,14 @@ MODULE_PARM_DESC(rs480_gated_read_index,
 	"RS480 gated-state plain-read probe (HAZARD): index into the inactive-DISP2 "
 	"CRTC2 table; clears FORCE_DISP2, plain-reads, restores, to test whether a "
 	"read stalls when the clock is gated.  A stall needs a physical power cycle.  "
-	"-1 (default) disarmed.");
+	"-1 (default) disarmed.  The access also needs rs480_index_selectors_armed=1.");
 module_param_named(rs480_gated_read_index, radeon_rs480_gated_read_index, int, 0644);
 
 MODULE_PARM_DESC(rs480_pll_write_probe_index,
 	"RS480 PLL write-path probe (HAZARD): index into the set-bit table; clears "
 	"one PLL bit that reads set, reads it back, and restores, to establish "
 	"whether WREG32_PLL lands on this device.  A stall between the write and "
-	"the restore needs a physical power cycle.  -1 (default) disarmed.");
+	"the restore needs a physical power cycle.  -1 (default) disarmed.  The access also needs rs480_index_selectors_armed=1.");
 module_param_named(rs480_pll_write_probe_index, radeon_rs480_pll_write_probe_index, int, 0644);
 #endif
 
@@ -443,4 +444,16 @@ MODULE_PARM_DESC(rs480_hazard_readers_armed,
 	"HOST_PATH_CNTL (0x0130), which gates the HyperTransport host path.  Set 1 "
 	"to arm an attended read.");
 module_param_named(rs480_hazard_readers_armed, radeon_rs480_hazard_readers_armed, int, 0644);
+
+MODULE_PARM_DESC(rs480_index_selectors_armed,
+	"RS480 index-selector arm gate: 0 (default) closes every selector path "
+	"before its register access, whatever the selector holds.  Index zero is a "
+	"valid selection, so the selector alone cannot mean consent.  Set exactly 1 "
+	"to let the force-clock, 3D force-clock, gated-read, PLL write-path, "
+	"frontier, vertex, and hazard-read selectors (rs480_force_clock_index, "
+	"rs480_force_clock_3d_index, rs480_gated_read_index, "
+	"rs480_pll_write_probe_index, rs480_frontier_index, rs480_vertex_index, "
+	"rs480_hazard_index) perform the access an in-range index selects.  Every "
+	"other value, including 2 and -1, keeps them closed.");
+module_param_named(rs480_index_selectors_armed, radeon_rs480_index_selectors_armed, int, 0644);
 #endif

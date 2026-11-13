@@ -1,6 +1,6 @@
 # Development interface surface audit
 
-The development surface is 42 fork-added debugfs nodes and 28 module
+The development surface is 42 fork-added debugfs nodes and 29 module
 parameters, compiled only into development profiles and registered under the
 per-device DRM debugfs root. This audit records, per node, the mode, the
 profile tier, the gates that stand between an open file descriptor and MMIO,
@@ -55,11 +55,11 @@ columns record the gates beyond that shared guard.
 | radeon_rs400_gart_tlb_fault_inject | 0200 | mutate-dev | family in {CHIP_RS400, CHIP_RS480}; the exact token 1 or 1 with a newline arms one invalidation | RS4xx GART TLB invalidate fault injection |
 | radeon_rs400_gart_reenable | 0200 | mutate-dev | family in {CHIP_RS400, CHIP_RS480}; the exact token 1 or 1 with a newline; hardware transaction admission; -EBUSY while the GFX ring holds emitted fences | RS4xx GART re-enable |
 | radeon_rs480_cp_me_ram_dump | 0400 | probe-dev | rs480_cp_me_ram_dump=1 in the seq start(); engine-idle contract | none |
-| radeon_rs480_hazard_read | 0400 | probe-dev | rs480_hazard_readers_armed == 1 and rs480_hazard_index selection | none |
-| radeon_rs480_frontier_probe, radeon_rs480_vertex_probe | 0400 | probe-dev | index selector (-1 sentinel) | none |
+| radeon_rs480_hazard_read | 0400 | probe-dev | rs480_index_selectors_armed == 1 and rs480_hazard_index selection | none |
+| radeon_rs480_frontier_probe, radeon_rs480_vertex_probe | 0400 | probe-dev | rs480_index_selectors_armed == 1 and index selector (-1 sentinel) | none |
 | radeon_rs480_cp_me_oracle | 0400 | probe-dev | exact token 0x4f524331; IGP live-fire excluded | none |
-| radeon_rs480_force_clock_read, _force_clock_3d_read, _gated_read | 0400 | mutate-dev | index selector (-1 sentinel) | RS4xx force-clock read / force-clock 3D read / gated-state read |
-| radeon_rs480_pll_write_probe | 0400 | mutate-dev | index selector (-1 sentinel) | RS4xx PLL write-path probe |
+| radeon_rs480_force_clock_read, _force_clock_3d_read, _gated_read | 0400 | mutate-dev | rs480_index_selectors_armed == 1 and index selector (-1 sentinel) | RS4xx force-clock read / force-clock 3D read / gated-state read |
+| radeon_rs480_pll_write_probe | 0400 | mutate-dev | rs480_index_selectors_armed == 1 and index selector (-1 sentinel) | RS4xx PLL write-path probe |
 | radeon_rs480_cp_ib_scratch_oracle | 0400 | mutate-dev | rs480_cp_ib_scratch_oracle arm | RS4xx CP scratch oracle |
 | radeon_rs480_reset_hang_probe | 0400 | mutate-dev | exact WD3A or WD3B token; admitted frontend state; forced request under reset writer lock; parked check and RBBM sample under reset read lock | RS4xx reset hang probe |
 | radeon_rs480_vap_status_census | 0400 | mutate-dev | exact token 0x56415043 consumed by cmpxchg; single-census gate; pm-mutex clock lease; verified SCLK force and restore | RS4xx VAP status census |
@@ -109,16 +109,20 @@ byte-identically from the legacy packaging series
 
 ## Module parameter arming domains
 
-The 17 parameters keep the three arming domains: booleans open at exactly 1
-(`rs480_hazard_readers_armed`, `rs480_r400_us_cs`, `palm_pci_reset_unsafe`,
-`rs480_safe_regs`, `rs480_candidate_regs`, `rs480_cp_me_ram_dump`), index
-selectors use the -1 sentinel where any in-range nonnegative value selects
+The parameters keep the three arming domains: booleans open at exactly 1
+(`rs480_hazard_readers_armed`, `rs480_index_selectors_armed`,
+`rs480_r400_us_cs`, `palm_pci_reset_unsafe`, `rs480_safe_regs`,
+`rs480_candidate_regs`, `rs480_cp_me_ram_dump`), index selectors use the -1
+sentinel where any in-range nonnegative value selects
 (`rs480_force_clock_index`, `rs480_force_clock_3d_index`,
 `rs480_gated_read_index`, `rs480_pll_write_probe_index`,
-`rs480_frontier_index`, `rs480_vertex_index`,
-`rs480_hazard_index`), and exact-token gates require their named constant
-(`rs480_cp_me_ram_inject`, `rs480_cp_me_oracle`,
-`rs480_reset_hang_probe`, `rs480_cp_ib_scratch_oracle`).
+`rs480_frontier_index`, `rs480_vertex_index`, `rs480_hazard_index`), and
+exact-token gates require their named constant (`rs480_cp_me_ram_inject`,
+`rs480_cp_me_oracle`, `rs480_reset_hang_probe`,
+`rs480_cp_ib_scratch_oracle`). Index zero selects the first table entry, so
+no selector value doubles as consent: each of the seven selector paths also
+requires `rs480_index_selectors_armed` to equal exactly 1, and 0, unset, 2, and
+-1 keep all seven closed before the register access.
 `rs480_reset_mask` selects a mask where 0 is
 the baseline. `profile_dev` is 0444 load-time-only; development arming binds
 to one device through `radeon_dev_arm_holder`

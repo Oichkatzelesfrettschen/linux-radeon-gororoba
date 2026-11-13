@@ -33,6 +33,7 @@ candidate-registers	debugfs-file	radeon_rs480_uma_status	drivers/gpu/drm/radeon/
 candidate-registers	debugfs-file	radeon_rs480_combios_table_census	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 candidate-registers	debugfs-file	radeon_rs480_sclk_cntl	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M03.passive
 hazard-readers	module-parameter	rs480_hazard_readers_armed	drivers/gpu/drm/radeon/radeon_dev.c	M03.hazard
+hazard-readers	module-parameter	rs480_index_selectors_armed	drivers/gpu/drm/radeon/radeon_dev.c	M03.hazard
 cp-me-dump	module-parameter	rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_dev.c	M05
 cp-me-dump	debugfs-file	radeon_rs480_cp_me_ram_dump	drivers/gpu/drm/radeon/radeon_rs4xx_dev.c	M05
 cp-status-pair	module-parameter	rs480_cp_status_arm	drivers/gpu/drm/radeon/radeon_dev.c	M10.status-pair

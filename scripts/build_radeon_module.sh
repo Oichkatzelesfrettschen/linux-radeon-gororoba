@@ -201,8 +201,15 @@ EOF
     echo "  CALIBRATION FAIL: DRM client compatibility" >&2
     fails=$((fails + 1))
   fi
+  if "$PYTHON" "$script_root/scripts/test_rs480_index_selector_arming.py" \
+      --root "$script_root" --selftest; then
+    echo "  ok: index-selector arming rejects its known-bad gates"
+  else
+    echo "  CALIBRATION FAIL: index-selector arming" >&2
+    fails=$((fails + 1))
+  fi
   [ "$fails" -eq 0 ] || { echo "module build gate calibration: FAIL ($fails)" >&2; exit 1; }
-  echo "module build gate calibration: 4 warning verdicts, 2 profile verdicts, 4 identity verdicts, 2 root verdicts, fbdev allocation compatibility, and DRM client compatibility"
+  echo "module build gate calibration: 4 warning verdicts, 2 profile verdicts, 4 identity verdicts, 2 root verdicts, fbdev allocation compatibility, DRM client compatibility, and index-selector arming"
   exit 0
 fi
 
@@ -211,6 +218,8 @@ repo_root=$(git rev-parse --show-toplevel) || { echo "not inside a git repo" >&2
 "$PYTHON" "$repo_root/scripts/check_radeon_fbdev_allocation_compat.py" \
   --root "$repo_root" || exit 2
 "$PYTHON" "$repo_root/scripts/check_radeon_drm_client_compat.py" \
+  --root "$repo_root" || exit 2
+"$PYTHON" "$repo_root/scripts/test_rs480_index_selector_arming.py" \
   --root "$repo_root" || exit 2
 feature_policy="$repo_root/policy/build-features.toml"
 [ -r "$feature_policy" ] || { echo "missing build-feature policy" >&2; exit 2; }
