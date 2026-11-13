@@ -3443,8 +3443,8 @@ def self_test(root: Path) -> int:
     expected_counts = {
         "prod": (0, 0, 0),
         "observe-dev": (4, 2, 19),
-        "probe-dev": (13, 14, 29),
-        "mutate-dev": (25, 28, 42),
+        "probe-dev": (13, 15, 29),
+        "mutate-dev": (25, 29, 42),
     }
     for profile, expected in expected_counts.items():
         selected = profile_rows(rows, features, profile)
@@ -3463,11 +3463,11 @@ def self_test(root: Path) -> int:
         ("observe-dev", "observe-dev"): (4, 2, 19),
         ("probe-dev", "off"): (0, 0, 0),
         ("probe-dev", "observe-dev"): (4, 2, 19),
-        ("probe-dev", "probe-dev"): (13, 14, 29),
+        ("probe-dev", "probe-dev"): (13, 15, 29),
         ("mutate-dev", "off"): (0, 0, 0),
         ("mutate-dev", "observe-dev"): (4, 2, 19),
-        ("mutate-dev", "probe-dev"): (13, 14, 29),
-        ("mutate-dev", "mutate-dev"): (25, 28, 42),
+        ("mutate-dev", "probe-dev"): (13, 15, 29),
+        ("mutate-dev", "mutate-dev"): (25, 29, 42),
     }
     for selection, expected in runtime_counts.items():
         selected = runtime_rows(rows, features, *selection)

@@ -1742,6 +1742,11 @@ static int rs480_frontier_probe_show(struct seq_file *m, void *unused)
 	const struct rs480_candidate_reg *reg;
 	u32 value;
 
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the frontier selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
+
 	if (!ARRAY_SIZE(rs480_frontier_probe_reg_list)) {
 		seq_puts(m, "frontier probe exhausted: no residual registers\n");
 		goto out_unlock;
@@ -1772,7 +1777,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_frontier_probe);
  * engine is held clocked by a continuous HB-TCL draw loop (the open falsification
  * of the clock-gating ceiling).  The two confirmed-wedge offsets and the
  * write-only FIFO ports (0x2200, 0x2208) are excluded so they cannot be armed;
- * only the named control registers are reachable.  Disarmed at index -1. */
+ * only the named control registers are reachable.  Disarmed at index -1 and
+ * whenever radeon_rs480_index_selectors_armed != 1. */
 static const struct rs480_candidate_reg rs480_vertex_engine_reg_list[] = {
 	{ 0x221C, "VAP_CLIP_CNTL", 0 },
 	{ 0x2284, "VAP_PVS_STATE_FLUSH_REG", 0 },
@@ -1791,6 +1797,11 @@ static int rs480_vertex_probe_show(struct seq_file *m, void *unused)
 	int idx = radeon_rs480_vertex_index;
 	const struct rs480_candidate_reg *reg;
 	u32 value;
+
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the vertex selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
 
 	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_vertex_engine_reg_list)) {
 		seq_printf(m,
@@ -1825,7 +1836,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_vertex_probe);
  * per-register observed value.
  *
  * This node takes that first observation under discipline: one register per
- * open, selected by radeon_rs480_hazard_index (default -1 disarmed), so each
+ * open, selected by radeon_rs480_hazard_index (default -1 disarmed; the read also needs
+ * radeon_rs480_index_selectors_armed == 1), so each
  * value is captured deliberately before the register is promoted into the
  * read-only safe-regs list.  It is NOT a wedge-hazard probe and shares no
  * mechanism with the attended frontier_probe node above.
@@ -1878,6 +1890,11 @@ static int rs480_hazard_read_show(struct seq_file *m, void *unused)
 		return 0;
 	int idx = radeon_rs480_hazard_index;
 	const struct rs480_candidate_reg *reg;
+
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the hazard-read selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
 
 	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_hazard_read_reg_list)) {
 		seq_printf(m,
@@ -2737,7 +2754,9 @@ void radeon_rs480_re_debugfs_register(struct drm_minor *minor)
  * yet validated: a display-config read that stalls with the FORCE bit clear
  * and completes with it set confirms the bit gates that domain; completion in
  * both states means the domain does not gate and the entry is plainly safe.
- * Disarmed by default (radeon_rs480_force_clock_index == -1). */
+ * Disarmed by default (radeon_rs480_force_clock_index == -1); the read also
+ * needs radeon_rs480_index_selectors_armed == 1, because index zero selects the
+ * first entry. */
 #define RS480_SCLK_CNTL_PLL_INDEX 0x0000000Du
 #define RS480_SCLK_FORCE_VIP      (1u << 23)
 #define RS480_SCLK_FORCE_DISP1    (1u << 18)
@@ -2935,6 +2954,11 @@ static int rs480_force_clock_read_show(struct seq_file *m, void *unused)
 	u32 sclk_orig, value;
 	int idx = radeon_rs480_force_clock_index;
 
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the force-clock selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
+
 	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_force_clock_list)) {
 		seq_printf(m, "disarmed (radeon_rs480_force_clock_index = %d)\n", idx);
 		goto out_unlock;
@@ -2972,7 +2996,9 @@ DEFINE_SHOW_ATTRIBUTE(rs480_force_clock_read);
  * the restore WREG32_PLL unrun and freezes both cores -- a physical power
  * cycle.  The table holds only 3D CONTROL and STATUS registers (no instruction
  * or parameter memory), the VAP entries are ordered last, and the node is
- * disarmed by default (radeon_rs480_force_clock_3d_index == -1). */
+ * disarmed by default (radeon_rs480_force_clock_3d_index == -1) and needs
+ * radeon_rs480_index_selectors_armed == 1 besides, because index zero selects
+ * the first entry. */
 #define RS480_SCLK_CNTL2_PLL_INDEX 0x0000001Eu
 #define RS480_SCLK_FORCE_VAP       (1u << 21)
 #define RS480_SCLK_3D_FORCE_ALL    (RS480_SCLK_FORCE_VAP | (1u << 27) | \
@@ -3244,6 +3270,11 @@ static int rs480_force_clock_3d_read_show(struct seq_file *m, void *unused)
 	const struct rs480_force_clock_3d_reg *e;
 	u32 sclk_orig, sclk2_orig, value;
 	int idx = radeon_rs480_force_clock_3d_index;
+
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the 3D force-clock selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
 
 	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_force_clock_3d_list)) {
 		seq_printf(m, "disarmed (radeon_rs480_force_clock_3d_index = %d): "
@@ -3996,7 +4027,8 @@ static const struct file_operations rs480_vap_burst_fops = {
  * power cycle.  The table holds only inactive-DISP2 CRTC2 registers (the second
  * pipe drives no display on this board, so clearing FORCE_DISP2 cannot blank
  * the visible panel), and the node is disarmed by default
- * (radeon_rs480_gated_read_index == -1).  Caveat: with dynamic clock gating
+ * (radeon_rs480_gated_read_index == -1) and needs
+ * radeon_rs480_index_selectors_armed == 1 besides.  Caveat: with dynamic clock gating
  * disabled (BIOS forces all clocks), clearing one FORCE bit may not gate the
  * clock at all, in which case the read simply completes. */
 struct rs480_gated_read_reg {
@@ -4022,6 +4054,11 @@ static int rs480_gated_read_show(struct seq_file *m, void *unused)
 	const struct rs480_gated_read_reg *e;
 	u32 sclk_orig, value;
 	int idx = radeon_rs480_gated_read_index;
+
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the gated-read selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
 
 	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_gated_read_list)) {
 		seq_printf(m, "disarmed (radeon_rs480_gated_read_index = %d): clears a "
@@ -4074,7 +4111,8 @@ DEFINE_SHOW_ATTRIBUTE(rs480_gated_read);
  * hardware transaction lock and restores unconditionally, but a stall between
  * the write and the restore leaves the register cleared and freezes both cores
  * -- a physical power cycle.  The node is disarmed by default
- * (radeon_rs480_pll_write_probe_index == -1).
+ * (radeon_rs480_pll_write_probe_index == -1) and needs
+ * radeon_rs480_index_selectors_armed == 1 besides.
  */
 struct rs480_pll_write_probe_entry {
 	u8 index;
@@ -4097,6 +4135,11 @@ static int rs480_pll_write_probe_show(struct seq_file *m, void *unused)
 	const struct rs480_pll_write_probe_entry *e;
 	u32 orig, cleared, restored;
 	int idx = radeon_rs480_pll_write_probe_index;
+
+	if (radeon_rs480_index_selectors_armed != 1) {
+		seq_puts(m, "disarmed (rs480_index_selectors_armed != 1): the PLL write-path selector stays closed until the exact arm token is set; set rs480_index_selectors_armed=1 to arm an attended selection\n");
+		goto out_unlock;
+	}
 
 	if (idx < 0 || idx >= (int)ARRAY_SIZE(rs480_pll_write_probe_list)) {
 		seq_printf(m, "disarmed (radeon_rs480_pll_write_probe_index = %d): "

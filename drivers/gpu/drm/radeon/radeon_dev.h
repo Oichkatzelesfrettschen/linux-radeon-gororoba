@@ -82,6 +82,7 @@ extern int radeon_rs480_cp_me_ram_dump;
 extern int radeon_rs480_frontier_index;
 extern int radeon_rs480_hazard_index;
 extern int radeon_rs480_hazard_readers_armed;
+extern int radeon_rs480_index_selectors_armed;
 extern int radeon_rs480_vertex_index;
 extern int radeon_rs480_cp_status_arm;
 extern int radeon_rs480_rb3d_cache_arm;
@@ -91,6 +92,7 @@ extern int radeon_rs480_status_census_records;
 extern int radeon_rs480_status_census_read_order;
 #else
 #define radeon_rs480_hazard_readers_armed 0
+#define radeon_rs480_index_selectors_armed 0
 #endif
 
 #if RADEON_MUTATE_DEV
