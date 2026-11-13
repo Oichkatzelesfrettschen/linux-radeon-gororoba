@@ -33,3 +33,18 @@ package byte, changed signature byte, failed signature, compiler warning, or
 module build failure stops the job. This contract proves compiler and linker
 identity plus bounded module compilation. It does not prove module loading,
 runtime reachability, or hardware behavior.
+
+## Consumers
+
+No workflow or script reads these manifests since the module builds moved to
+hosted runners inside the pinned CachyOS container (`rg -n
+'kernel-toolchains|kernel-build-closure|clang-lld-'` over the tree matches only
+documentation and the manifests themselves). They retain the toolchain
+identity of the 6.18.38 and 7.1.4 roots in `ci/kernel-build-roots` and the
+evidence cited by `README.md` and the two contract documents under `docs/`.
+
+The `source-static` module builds take their compiler from the kernel instead:
+`scripts/match_kernel_toolchain.py` reads `CONFIG_CC_VERSION_TEXT` and
+`CONFIG_PAHOLE_VERSION` from each lane's headers package and installs the exact
+signed build from the Arch Linux Archive when the repository serves a different
+one, so the two lanes follow their kernels when CachyOS rebuilds them.
