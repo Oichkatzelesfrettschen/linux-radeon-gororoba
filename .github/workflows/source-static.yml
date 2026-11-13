@@ -4,11 +4,15 @@
 # tracked-content checks run on every push rather than waiting for the import.
 name: source-static
 
+# The weekly schedule re-resolves both kernel lanes without a push, so a lane
+# that CachyOS rebuilds, or a compiler it ships, is exercised within a week.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
 
 permissions:
   contents: read
@@ -277,8 +281,6 @@ jobs:
             | sed -n 's|^\(/usr/lib/modules/[^/]*/build\)/$|\1|p' | head -1)
           [ -d "$root" ] || { echo "no kernel build root installed" >&2; exit 1; }
           release=$(basename "$(dirname "$root")")
-          clang_version=$(clang --version | sed -n '1s/.*version //p')
-          lld_version=$(ld.lld --version | awk 'NR == 1 { print $2 }')
           python3 scripts/check_kernel_build_root.py \
             --root "$root" \
             --emit-manifest "$RUNNER_TEMP/kernel-build-root.manifest.tsv"
@@ -288,8 +290,6 @@ jobs:
             printf '| field | value |\n| --- | --- |\n'
             printf '| headers package | `%s` |\n' "$HEADERS_PACKAGE"
             printf '| kernel release | `%s` |\n' "$release"
-            printf '| clang | `%s` |\n' "$clang_version"
-            printf '| ld.lld | `%s` |\n' "$lld_version"
             printf '| manifest rows | `%s` |\n' \
               "$(wc -l < "$RUNNER_TEMP/kernel-build-root.manifest.tsv")"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -297,31 +297,25 @@ jobs:
 
       # with_build_slot.sh serialized builds against a shared workstation. Each
       # container job has the runner to itself, so the slot is not taken here.
-      # The kernel's own prepare target warns when the installed pahole is not
-      # the one the kernel was built with, and the gate's calibration asserts
-      # that a toolchain provenance warning fails the build. The repositories
-      # carry only the current pahole, so the matching version comes from the
-      # Arch archive, derived from CONFIG_PAHOLE_VERSION rather than pinned to
-      # a literal that goes stale the next time the kernel is rebuilt.
-      - name: Match pahole to the kernel that will be built against
+      # Kbuild compares the first line of `$(CC) --version` with the kernel's
+      # CONFIG_CC_VERSION_TEXT and the pahole version with
+      # CONFIG_PAHOLE_VERSION, and the module harness fails on either warning.
+      # The headers package records what the kernel was built with, and the
+      # repositories serve only their current compiler, so a lane whose kernel
+      # predates a compiler update would fail on toolchain skew. The matcher
+      # reads the records from the build root, keeps the installed toolchain
+      # when it already matches, and otherwise installs the exact signed build
+      # from the Arch Linux Archive. The compiler family follows the kernel:
+      # the mainline lane is built with clang and the LTS lane with gcc.
+      # Exit 3 reports a toolchain skew that no archive build resolves and
+      # exit 4 an archive or signature failure; the verdict line names the
+      # kernel-recorded and installed compilers, and neither exit is a driver
+      # source defect. The step summary records both sides.
+      - name: Match the toolchain to the kernel that will be built against
         run: |
-          set -eu
-          have=$(pahole --version 2>/dev/null | sed 's/^v//' || echo none)
-          want_code=$(sed -n 's/^CONFIG_PAHOLE_VERSION=//p' \
-            "$KERNEL_BUILD_ROOT/.config" | head -1)
-          [ -n "$want_code" ] || { echo "kernel declares no pahole version" >&2; exit 1; }
-          want="$((want_code / 100)).$((want_code % 100))"
-          echo "kernel wants pahole $want, image carries $have"
-          [ "$have" = "$want" ] && exit 0
-          for rel in 1 2 3; do
-            url="https://archive.archlinux.org/packages/p/pahole/pahole-1%3A$want-$rel-x86_64.pkg.tar.zst"
-            if curl -sLf -o "$RUNNER_TEMP/pahole.pkg.tar.zst" "$url"; then
-              pacman -U --noconfirm "$RUNNER_TEMP/pahole.pkg.tar.zst"
-              break
-            fi
-          done
-          [ "$(pahole --version | sed 's/^v//')" = "$want" ] || {
-            echo "could not obtain pahole $want" >&2; exit 1; }
+          python3 scripts/match_kernel_toolchain.py \
+            --root "$KERNEL_BUILD_ROOT" \
+            --title "module-build $LANE_PACKAGE $DECLARED_VERSION toolchain"
 
       - name: radeon.ko builds from the tracked subtree
         run: |
@@ -360,6 +354,8 @@ jobs:
         run: sh scripts/classify_build_relevance.sh --self-test
       - name: retained kernel root calibration
         run: python3 scripts/check_kernel_build_root.py --self-test
+      - name: kernel toolchain matcher calibration
+        run: python3 scripts/match_kernel_toolchain.py --self-test
       - name: source manifest calibration
         run: python3 scripts/manifest_source_tree.py --self-test
       - name: source closure calibration
