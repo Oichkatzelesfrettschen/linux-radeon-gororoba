@@ -2541,10 +2541,12 @@ int radeon_suspend_kms(struct drm_device *dev, bool suspend,
 	}
 
 	if (notify_clients)
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-		drm_client_dev_suspend(dev);
-#else
+#ifndef RADEON_DRM_CLIENT_CONSOLE_LOCK_ARG_PRESENT
+#error "Radeon DRM client compatibility was not resolved by Kbuild"
+#elif RADEON_DRM_CLIENT_CONSOLE_LOCK_ARG_PRESENT
 		drm_client_dev_suspend(dev, false);
+#else
+		drm_client_dev_suspend(dev);
 #endif
 
 	radeon_rs4xx_hardware_transition_end(
@@ -2731,10 +2733,12 @@ int radeon_resume_kms(struct drm_device *dev, bool resume, bool notify_clients)
 	drm_kms_helper_poll_enable(dev);
 
 	if (notify_clients)
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-		drm_client_dev_resume(dev);
-#else
+#ifndef RADEON_DRM_CLIENT_CONSOLE_LOCK_ARG_PRESENT
+#error "Radeon DRM client compatibility was not resolved by Kbuild"
+#elif RADEON_DRM_CLIENT_CONSOLE_LOCK_ARG_PRESENT
 		drm_client_dev_resume(dev, false);
+#else
+		drm_client_dev_resume(dev);
 #endif
 
 	return 0;
